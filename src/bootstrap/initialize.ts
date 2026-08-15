@@ -58,6 +58,7 @@ interface CanonicalTarget {
   readonly reelierVersion: string;
   readonly installedBuildDigest: string;
   readonly routeSnapshotDigest: string | null;
+  readonly localConfigDigest: string | null;
 }
 
 interface LockRecord {
@@ -152,7 +153,8 @@ export async function initializeAgentProject(options: InitializeAgentProjectOpti
     if (localConfigPlan?.changed && options.yes !== true) throw new LocalMcpConsentRequiredError();
     await assertProjectIdentity(canonicalTarget.projectRoot, rootHandle, rootIdentity.dev, rootIdentity.ino);
     await assertDirectoryIdentity(bootstrapRoot, retainedBootstrapHandle, retainedBootstrapIdentity.dev, retainedBootstrapIdentity.ino, "bootstrap root");
-    const target = Object.freeze({ ...canonicalTarget, routeSnapshotDigest });
+    const localConfigDigest = localConfigPlan === undefined ? null : sha256(localConfigPlan.changed ? localConfigPlan.after : localConfigPlan.before);
+    const target = Object.freeze({ ...canonicalTarget, routeSnapshotDigest, localConfigDigest });
     if (rawJournal !== undefined) {
       journal = parseTransaction(rawJournal);
       const planDigest = plannedDigest(target, journal.initializedAt);
@@ -162,6 +164,7 @@ export async function initializeAgentProject(options: InitializeAgentProjectOpti
           assertTransactionIdentity(journal, target, planDigest);
           if (journal.state === "complete") {
             const report = await readVerifiedComplete(bootstrapRoot, journal);
+            assertLocalConfigVerified(localConfigPlan);
             return withConfiguration(report, localConfigPlan?.summary);
           }
           const recoveryRequired = journal.state === "recovery-required";
@@ -187,7 +190,10 @@ export async function initializeAgentProject(options: InitializeAgentProjectOpti
         }
       }
       assertTransactionIdentity(journal, target, planDigest);
-      if (journal.state === "complete") return withConfiguration(await readVerifiedComplete(bootstrapRoot, journal), localConfigPlan?.summary);
+      if (journal.state === "complete") {
+        assertLocalConfigVerified(localConfigPlan);
+        return withConfiguration(await readVerifiedComplete(bootstrapRoot, journal), localConfigPlan?.summary);
+      }
       throw new Error("named bootstrap journal exists without an exclusively claimed recovery lock");
     }
     if (journal === undefined) {
@@ -323,7 +329,7 @@ async function validateRecoverableGeneration(root: string, journal: TransactionR
   for (const [name, expected] of plannedArtifacts(journal.canonicalTarget, journal.initializedAt)) if (!Buffer.from(await readFile(path.join(root, name))).equals(Buffer.from(expected))) throw new Error("named bootstrap recovery artifact plan mismatch");
 }
 
-async function canonicalizeTarget(options: InitializeAgentProjectOptions): Promise<Omit<CanonicalTarget, "routeSnapshotDigest">> {
+async function canonicalizeTarget(options: InitializeAgentProjectOptions): Promise<Omit<CanonicalTarget, "routeSnapshotDigest" | "localConfigDigest">> {
   if (!path.isAbsolute(options.cwd) || !path.isAbsolute(options.homedir) || !VERSION.test(options.exactVersion)) throw new TypeError("named bootstrap options are invalid");
   if (!NAME.test(options.agentName) || options.agentName.normalize("NFC") !== options.agentName || options.agentName === "." || options.agentName === "..") throw new TypeError("named bootstrap agent name is invalid");
   const cwdInfo = await lstat(options.cwd);
@@ -470,11 +476,14 @@ function parseCheckpoint(value: unknown): CheckpointRecord {
 }
 
 function assertTransactionIdentity(journal: TransactionRecord, target: CanonicalTarget, planDigest: string): void {
-  if (journal.planDigest !== planDigest || digest(journal.canonicalTarget) !== digest(target)) throw new Error("named bootstrap plan identity mismatch or agent name case collision");
+  if (journal.planDigest !== planDigest || digest(journal.canonicalTarget) !== digest(target)) {
+    const changed = Object.keys(target).filter(key => journal.canonicalTarget[key as keyof CanonicalTarget] !== target[key as keyof CanonicalTarget]);
+    throw new Error(`named bootstrap plan identity mismatch or agent name case collision${changed.length === 0 ? "" : ` (${changed.join(",")})`}`);
+  }
 }
 
 function isCanonicalTarget(value: unknown): value is CanonicalTarget {
-  return isRecord(value) && hasExactKeys(value, ["agentName", "agentNameFold", "projectRoot", "reelierVersion", "installedBuildDigest", "routeSnapshotDigest"]) && NAME.test(String(value.agentName)) && value.agentNameFold === String(value.agentName).toLocaleLowerCase("en-US") && path.isAbsolute(String(value.projectRoot)) && VERSION.test(String(value.reelierVersion)) && SHA256.test(String(value.installedBuildDigest)) && (value.routeSnapshotDigest === null || SHA256.test(String(value.routeSnapshotDigest)));
+  return isRecord(value) && hasExactKeys(value, ["agentName", "agentNameFold", "projectRoot", "reelierVersion", "installedBuildDigest", "routeSnapshotDigest", "localConfigDigest"]) && NAME.test(String(value.agentName)) && value.agentNameFold === String(value.agentName).toLocaleLowerCase("en-US") && path.isAbsolute(String(value.projectRoot)) && VERSION.test(String(value.reelierVersion)) && SHA256.test(String(value.installedBuildDigest)) && (value.routeSnapshotDigest === null || SHA256.test(String(value.routeSnapshotDigest))) && (value.localConfigDigest === null || SHA256.test(String(value.localConfigDigest)));
 }
 
 async function writeJournal(projectRoot: string, file: string, journal: TransactionRecord, nativeSession: BootstrapNativeSession): Promise<void> { await nativeSession.writeAtomic(relativePath(projectRoot, file), Buffer.from(canonicalBytes(journal))); }
@@ -501,7 +510,7 @@ function plannedArtifacts(target: CanonicalTarget, initializedAt: string) {
     reelierVersion: target.reelierVersion, installedBuildDigest: target.installedBuildDigest,
     routeSnapshotDigest: target.routeSnapshotDigest, authority: "absent", completeness: "not-proved",
   });
-  const recoveryCommand = `npx reelier@${target.reelierVersion} up`;
+  const recoveryCommand = `npx reelier@${target.reelierVersion} up ${target.agentName}`;
   const report: BootstrapPreparationReport = Object.freeze({
     v: "reelier.named-preparation-report/v1", state: "complete", projectDigest: digest(project), initializedAt,
     authority: "absent", completeness: "not-proved", recoveryCommand, up: "unavailable",
@@ -525,6 +534,9 @@ function withConfiguration(report: BootstrapPreparationReport, configuration: Lo
   const result = { ...report } as BootstrapPreparationReport;
   Object.defineProperty(result, "configuration", { value: configuration, enumerable: false });
   return Object.freeze(result);
+}
+function assertLocalConfigVerified(plan: LocalMcpPreparationPlan | undefined): void {
+  if (plan?.changed) throw new Error("named local MCP configuration drifted from its complete plan");
 }
 function digest(value: unknown): string { return authorityDigest(value); }
 function sha256(value: string | Buffer): string { return `sha256:${createHash("sha256").update(value).digest("hex")}`; }
