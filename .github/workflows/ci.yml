@@ -190,6 +190,11 @@ jobs:
           cache: npm
       - run: npm ci
         if: ${{ needs.pack-authority-host-boundary.result == 'success' && needs.produce-authority-factory-evidence.result == 'success' }}
+      - uses: actions/download-artifact@v4
+        if: ${{ needs.pack-authority-host-boundary.result == 'success' && needs.produce-authority-factory-evidence.result == 'success' }}
+        with:
+          name: native-bootstrap-universal
+          path: native/bootstrap-helper
       # Belt-and-suspenders, not a fix for anything seen on this runner:
       # actions/checkout@v4 always starts from an empty workspace and
       # nothing here caches dist/dist-test, so there is nothing to clean
