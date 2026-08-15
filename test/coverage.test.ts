@@ -31,10 +31,12 @@ test("Codex route translation preserves config and plugin origins with the same 
       plugins: [{ registration: { name: "gmail", marketplace: "official", enabled: true }, inspected: true, location: "parsed", manifestPath: "C:/private/plugins/gmail/mcp.json", candidatesTried: [], servers: [{ name: "gmail.send", origin: "C:/private/plugins/gmail/mcp.json", location: "parsed", transport: "stdio", routing: "unwrapped" }] }],
       inspectedLocations: ["C:/private/.codex/config.toml"],
     },
-    observedAt: "2026-08-15T12:00:00.000Z", freshnessMs: 900_000, sourceDigest: `sha256:${"1".repeat(64)}`,
+    observedAt: "2026-08-15T12:00:00.000Z", freshnessMs: 900_000, sourceDigest: `sha256:${"1".repeat(64)}`, contractIdentityDigest: `sha256:${"3".repeat(64)}`,
     canonicalConfigBytes: "[mcp_servers.gmail]", fileIdentityDigest: `sha256:${"2".repeat(64)}`,
+    sourceInstances: [{ sourceRef: "C:/private/.codex/config.toml", sourceInstanceIdentityDigest: `sha256:${"4".repeat(64)}`, canonicalBytes: "[mcp_servers.gmail]", fileIdentityDigest: `sha256:${"2".repeat(64)}` }, { sourceRef: "C:/private/plugins/gmail/mcp.json", sourceInstanceIdentityDigest: `sha256:${"5".repeat(64)}`, canonicalBytes: "{}", fileIdentityDigest: `sha256:${"6".repeat(64)}` }], surfaces: [],
   });
-  assert.deepEqual(rows.map((row: RouteCoverageV1) => [row.routeId, row.observation]), [["host-config:gmail.send", "observed"], ["plugin-manifest:gmail.send", "uncovered"]]);
+  assert.deepEqual(rows.map((row: RouteCoverageV1) => [row.discoverySource, row.observation]), [["host-config", "observed"], ["plugin-manifest", "uncovered"]]);
+  assert.ok(rows.every((row: RouteCoverageV1) => /^route_[0-9a-f]{64}$/.test(row.routeId)));
 });
 
 test("analyzeCodexConfig classifies a plain stdio entry as unwrapped", () => {

@@ -51,10 +51,11 @@ test("analyzeJsonMcpConfig reports an absent config as absent, with no invented 
 test("Claude Code route translation emits an explicit unknown row for an unreadable plugin registry", () => {
   const rows = translateClaudeCodeCoverage({
     view: { host: "claude-code", sources: [], plugins: [], pluginSource: "C:/private/installed_plugins.json", pluginRegistry: { location: "unreadable", detail: "invalid JSON" }, inspectedLocations: ["C:/private/installed_plugins.json"] },
-    observedAt: "2026-08-15T12:00:00.000Z", freshnessMs: 300_000, sourceDigest: `sha256:${"3".repeat(64)}`,
-    staticSources: [{ sourceRef: "plugin-registry", canonicalBytes: "{invalid", fileIdentityDigest: `sha256:${"4".repeat(64)}` }],
+    observedAt: "2026-08-15T12:00:00.000Z", freshnessMs: 300_000, sourceDigest: `sha256:${"3".repeat(64)}`, contractIdentityDigest: `sha256:${"5".repeat(64)}`,
+    sourceInstances: [{ sourceRef: "plugin-registry", sourceInstanceIdentityDigest: `sha256:${"6".repeat(64)}`, canonicalBytes: "{invalid", fileIdentityDigest: `sha256:${"4".repeat(64)}` }], surfaces: [],
   });
-  assert.deepEqual(rows.map((row: RouteCoverageV1) => [row.routeId, row.observation, row.enforcement, row.reasonCodes]), [["plugin-manifest:registry", "unknown", "absent", ["registry-unreadable"]]]);
+  assert.deepEqual(rows.map((row: RouteCoverageV1) => [row.discoverySource, row.observation, row.enforcement, row.reasonCodes]), [["plugin-manifest", "unknown", "absent", ["registry-unreadable"]]]);
+  assert.match(rows[0]!.routeId, /^route_[0-9a-f]{64}$/);
 });
 
 test("analyzeJsonMcpConfig classifies a plain stdio entry as unwrapped", () => {

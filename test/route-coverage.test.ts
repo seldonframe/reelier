@@ -48,7 +48,7 @@ test("route evidence references are opaque and never endpoint URLs", () => {
 });
 
 test("route refresh uses the injected clock at the exact freshness boundary", () => {
-  const stale = route("route_stale");
+  const stale = route(`route_${"a".repeat(64)}`);
   const refreshed = refreshRouteCoverage({ baseline: [stale], current: [], now: new Date(stale.freshUntil) });
   assert.equal(refreshed[0]?.observation, "unknown");
   assert.equal(refreshed[0]?.enforcement, "absent");
