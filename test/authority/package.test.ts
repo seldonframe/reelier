@@ -50,6 +50,9 @@ test("CI keeps both required matrix contexts failing when authority pack prerequ
   for (const block of downstreamSteps) {
     if (block.startsWith("      - name: Check README tests badge")) {
       assert.ok(block.includes(expectedBadgeGuard), "badge step has the exact combined prerequisite and OS guard");
+    } else if (block.startsWith("      - name: Upload Ubuntu test output")) {
+      assert.match(block, /if: \$\{\{ always\(\) && matrix\.os == 'ubuntu-latest' \}\}/);
+      assert.match(block, /actions\/upload-artifact@v4/);
     } else {
       assert.ok(block.includes(prerequisite), `downstream step is prerequisite-guarded: ${block.split(/\r?\n/, 1)[0]}`);
     }
@@ -58,7 +61,8 @@ test("CI keeps both required matrix contexts failing when authority pack prerequ
   const firstDistTestPosition = testJob.indexOf("dist-test/");
   assert.ok(compilePosition > 0 && compilePosition < firstDistTestPosition, "test checkout compiles before the first dist-test invocation");
   assert.match(testJob.slice(compilePosition, firstDistTestPosition), /run: npx tsc -p tsconfig\.test\.json --pretty false/);
-  assert.match(testJob, /if \[ '\$\{\{ matrix\.os \}\}' = 'ubuntu-latest' \]; then npm test[^\n]*else node --test --test-concurrency=1 dist-test\/test\/authority\/package\.test\.js dist-test\/test\/authority\/linux-authority-cell\.test\.js dist-test\/test\/authority\/authority-cell-connection\.test\.js dist-test\/test\/authority\/certification-portable-evidence\.test\.js/);
+  assert.match(testJob, /if \[ '\$\{\{ matrix\.os \}\}' = 'ubuntu-latest' \]; then timeout[^\n]*npm test/);
+  assert.match(testJob, /else node --test --test-concurrency=1 dist-test\/test\/authority\/package\.test\.js dist-test\/test\/authority\/linux-authority-cell\.test\.js dist-test\/test\/authority\/authority-cell-connection\.test\.js dist-test\/test\/authority\/certification-portable-evidence\.test\.js/);
 });
 
 test("factory evidence producer is checkout-built but installs and runs only the downloaded packed artifact", () => {
