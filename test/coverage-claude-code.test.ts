@@ -268,6 +268,11 @@ test("collectClaudeCodeCoverage joins installed_plugins.json with enabledPlugins
     // The source of each claim is named, so an operator can check it.
     assert.ok(pluginNamed(view, "located")?.enablement?.source.includes("settings.json"));
     assert.ok(pluginNamed(view, "mystery")?.enablement?.source);
+    const locatedManifest = pluginNamed(view, "located")?.manifestPath;
+    const evidence = view.routeEvidence.find((item: { readonly sourceRef: string }) => item.sourceRef === locatedManifest);
+    assert.match(evidence?.sourceInstanceIdentityDigest ?? "", /^sha256:[0-9a-f]{64}$/);
+    assert.match(evidence?.fileIdentityDigest ?? "", /^sha256:[0-9a-f]{64}$/);
+    assert.match(evidence?.canonicalBytes ?? "", /playwright/);
   } finally {
     await rm(fx.root, { recursive: true, force: true });
   }
