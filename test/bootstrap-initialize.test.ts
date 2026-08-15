@@ -230,6 +230,17 @@ test("a complete operator governance import is verified and reported without cop
   });
 });
 
+test("a completed absent-governance plan cannot resume when fixed-root governance is supplied", async () => {
+  await withFixture(async options => {
+    await initializeAgentProject(options);
+    const fixture = await writeProfileGovernanceFixture(options.homedir);
+    const report = await initializeAgentProject({ ...options, governance: { tenant, governanceRef, expectedManifestDigest: fixture.manifestDigest, expectedTrustHeadDigest: fixture.manifest.trustHeadDigest, verificationTime } });
+    const project = JSON.parse(await readFile(path.join(options.cwd, ".reelier", "bootstrap", "project.json"), "utf8"));
+    assert.equal(project.tenant, tenant);
+    assert.match(report.projectDigest, /^sha256:/);
+  });
+});
+
 test("a stale positive PID lock is recovered only after its owner is unavailable", async () => {
   await withFixture(async options => {
     await initializeAgentProject(options);
