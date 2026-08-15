@@ -1,4 +1,4 @@
-import { planInstall, type InstallPlan } from "../wrap.js";
+import { applyInstall, planInstall, type InstallPlan, type InstallResult } from "../wrap.js";
 
 export async function planBootstrapInstall(configPath: string, exactVersion: string, cwd?: string): Promise<InstallPlan> {
   if (!/^[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?$/.test(exactVersion)) throw new TypeError("bootstrap exact version is invalid");
@@ -7,6 +7,11 @@ export async function planBootstrapInstall(configPath: string, exactVersion: str
   const after = JSON.parse(plan.after) as Record<string, unknown>;
   replaceLegacyProxyPackage(after, exactVersion);
   return { ...plan, after: `${JSON.stringify(after, null, 2)}\n` };
+}
+
+export async function applyBootstrapInstall(plan: InstallPlan, options: Readonly<{ consent: boolean }>): Promise<InstallResult> {
+  if (options.consent !== true) throw new TypeError("named bootstrap installation requires explicit consent");
+  return applyInstall(plan);
 }
 
 function replaceLegacyProxyPackage(value: unknown, exactVersion: string): void {
