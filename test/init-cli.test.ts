@@ -4,6 +4,7 @@ import { mkdir, mkdtemp, readFile, rename, rm, unlink, writeFile } from "node:fs
 import os from "node:os";
 import path from "node:path";
 import { cmdInit, type ParsedArgs } from "../src/cli.js";
+import * as cliModule from "../src/cli.js";
 import type { InitializationDependencies } from "../src/initialization.js";
 import type { BootstrapNativeSessionFactory } from "../src/bootstrap/native-helper.js";
 
@@ -164,7 +165,7 @@ test("reelier init my-agent uses named bootstrap while bare init retains its ins
     assert.equal(bare.result, 0);
     const namedResult = await capture(() => cmdInit(named("my-agent", ["yes"]), { cwd: root, homedir: root, dependencies: localDependencies(), nativeSessionFactory: filesystemNativeFactory() }));
     assert.equal(namedResult.result, 0);
-    assert.match(namedResult.output, /npx reelier@0\.32\.1 up/);
+    assert.match(namedResult.output, /npx reelier@0\.32\.1 up my-agent/);
     assert.match(namedResult.output, /Authority absent/);
     assert.match(namedResult.output, /Completeness not-proved/);
     const pointer = JSON.parse(await readFile(path.join(root, ".reelier", "bootstrap", "current.json"), "utf8"));
@@ -263,5 +264,40 @@ test("named init applies one sealed local MCP config transaction idempotently an
     const failed = await capture(() => cmdInit(named("rollback", ["yes"]), { ...overrides, failAt: "after-configuration-publication" } as never));
     assert.equal(failed.result, 1);
     assert.deepEqual(await readFile(config), rollbackOriginal);
+  });
+});
+
+test("pinned up verifies the complete named plan idempotently and refuses drift without writes", async () => {
+  await withTempDir(async root => {
+    const config = await writeTask5bFixture(root);
+    const nativeSessionFactory = filesystemNativeFactory();
+    const overrides = { cwd: root, homedir: root, dependencies: localDependencies(), nativeSessionFactory };
+    assert.equal((await capture(() => cmdInit(named("my-agent", ["yes"]), overrides))).result, 0);
+    const applied = await readFile(config);
+    const cmdUp = (cliModule as unknown as { cmdUp(args: ParsedArgs, overrides: unknown): Promise<number> }).cmdUp;
+
+    const first = await capture(() => cmdUp(named("my-agent"), overrides));
+    const second = await capture(() => cmdUp(named("my-agent"), overrides));
+    assert.equal(first.result, 0);
+    assert.deepEqual(second, first);
+    assert.deepEqual(JSON.parse(first.output), {
+      v: "reelier.named-up-result/v1", status: "verified", agentName: "my-agent", configuration: "verified",
+      authority: "absent", completeness: "not-proved",
+    });
+    assert.deepEqual(await readFile(config), applied);
+
+    await writeFile(config, Buffer.concat([applied, Buffer.from(" \n")]));
+    const drifted = await readFile(config);
+    assert.equal((await capture(() => cmdUp(named("my-agent"), overrides))).result, 1);
+    assert.deepEqual(await readFile(config), drifted);
+
+    await writeFile(config, applied);
+    const routePath = path.join(root, ".reelier", "bootstrap", "route-coverage.json");
+    const route = JSON.parse(await readFile(routePath, "utf8"));
+    route[0].evidenceDigest = `sha256:${"f".repeat(64)}`;
+    await writeFile(routePath, `${JSON.stringify(route, null, 2)}\n`);
+    const beforeRefusal = await readFile(config);
+    assert.equal((await capture(() => cmdUp(named("my-agent"), overrides))).result, 1);
+    assert.deepEqual(await readFile(config), beforeRefusal);
   });
 });

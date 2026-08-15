@@ -85,9 +85,9 @@ test("minimal named preparation freezes the exact descriptor, honest report, and
     assert.equal(project.completeness, "not-proved");
     assert.equal(persisted.authority, "absent");
     assert.equal(persisted.completeness, "not-proved");
-    assert.equal(persisted.recoveryCommand, "npx reelier@0.32.1 up");
-    assert.equal(await readFile(path.join(root, "recovery-command.txt"), "utf8"), "npx reelier@0.32.1 up\n");
-    assert.equal(report.recoveryCommand, "npx reelier@0.32.1 up");
+    assert.equal(persisted.recoveryCommand, "npx reelier@0.32.1 up my-agent");
+    assert.equal(await readFile(path.join(root, "recovery-command.txt"), "utf8"), "npx reelier@0.32.1 up my-agent\n");
+    assert.equal(report.recoveryCommand, "npx reelier@0.32.1 up my-agent");
     assert.deepEqual((await readdir(path.join(options.cwd, ".reelier"))).sort(), ["bootstrap"]);
   });
 });
