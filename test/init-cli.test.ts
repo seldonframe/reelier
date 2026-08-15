@@ -1,10 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rename, rm, unlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { cmdInit, type ParsedArgs } from "../src/cli.js";
 import type { InitializationDependencies } from "../src/initialization.js";
+import type { BootstrapNativeSessionFactory } from "../src/bootstrap/native-helper.js";
 
 function parsed(flags: string[] = []): ParsedArgs {
   return { positional: [], flags: new Set(flags), vars: {}, wraps: [], opts: {}, fails: [] };
@@ -61,6 +62,54 @@ function localDependencies(): InitializationDependencies {
       issues: [],
     }),
   };
+}
+
+function filesystemNativeFactory(delayFirstMutation = false): BootstrapNativeSessionFactory {
+  let held = false;
+  return async ({ root, lockName, lockBytes }) => {
+    if (held) throw new Error("named bootstrap is busy: native lock is held");
+    held = true;
+    const resolve = (relative: string) => path.join(root, ...relative.split("/"));
+    const lockPath = resolve(lockName);
+    let acquisition: Awaited<ReturnType<BootstrapNativeSessionFactory>>["acquisition"];
+    try { acquisition = { status: "recovered", priorBytes: await readFile(lockPath) }; }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; await writeFile(lockPath, lockBytes, { flag: "wx" }); acquisition = { status: "created" }; }
+    let delayed = false;
+    return {
+      acquisition,
+      async replaceLock(bytes) { await writeFile(lockPath, bytes); },
+      async mkdir(relative) { if (delayFirstMutation && !delayed) { delayed = true; await new Promise(resolveDelay => setTimeout(resolveDelay, 30)); } await mkdir(resolve(relative)).catch(error => { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }); },
+      async writeExclusive(relative, bytes) { await writeFile(resolve(relative), bytes, { flag: "wx" }); },
+      async writeAtomic(relative, bytes) { await writeFile(resolve(relative), bytes); },
+      async rename(from, to) { await rename(resolve(from), resolve(to)); },
+      async remove(relative, options) { await rm(resolve(relative), { recursive: options.recursive, force: options.missingOk }); },
+      async close(options) { if (options.removeLock) await unlink(lockPath).catch(() => {}); held = false; },
+    };
+  };
+}
+
+async function writeTask5bFixture(root: string): Promise<string> {
+  const config = path.join(root, ".mcp.json");
+  await writeFile(config, `${JSON.stringify({ mcpServers: {
+    local: { command: "npx", args: ["-y", "@example/local"] },
+    existing: { command: "npx", args: ["-y", "reelier", "mcp", "--wrap", "npx -y @example/existing"] },
+    remote: { type: "http", url: "https://example.invalid/mcp" },
+  } }, null, 2)}\n`);
+  const now = Date.now();
+  const row = (id: string, discoverySource: "host-config" | "plugin-manifest", transport: "mcp-stdio" | "mcp-http", observation: "observed" | "uncovered", reasonCode: string) => ({
+    v: "reelier.route-coverage/v1", routeId: `route_${id.repeat(64)}`, hostId: "codex", discoverySource, transport,
+    observation, replay: "unknown", outcome: "unknown", enforcement: observation === "observed" ? "unchecked" : "absent",
+    observedAt: new Date(now - 1000).toISOString(), freshUntil: new Date(now + 60_000).toISOString(),
+    evidenceDigest: `sha256:${id.repeat(64)}`, topologyEvidenceDigest: null, evidenceRefs: [`source:${id}`], reasonCodes: [reasonCode],
+  });
+  await mkdir(path.join(root, ".reelier", "bootstrap"), { recursive: true });
+  await writeFile(path.join(root, ".reelier", "bootstrap", "route-coverage.json"), `${JSON.stringify([
+    row("1", "host-config", "mcp-stdio", "uncovered", "route-unwrapped"),
+    row("2", "host-config", "mcp-stdio", "observed", "wrapped-route-observed"),
+    row("3", "host-config", "mcp-http", "uncovered", "route-unwrapped"),
+    row("4", "plugin-manifest", "mcp-stdio", "uncovered", "plugin-private"),
+  ], null, 2)}\n`);
+  return config;
 }
 
 test("reelier init --dry-run prints an answer-first A/B/C inspection and writes nothing", async () => {
@@ -169,4 +218,47 @@ test("reelier init rejects more than one agent name", async () => {
   const result = await capture(() => cmdInit({ ...named("one"), positional: ["one", "two"] }));
   assert.equal(result.result, 1);
   assert.match(result.output, /at most one agent name/i);
+});
+
+test("named init applies one sealed local MCP config transaction idempotently and rolls it back byte-exactly", async () => {
+  await withTempDir(async root => {
+    const noConsentRoot = path.join(root, "no-consent");
+    await mkdir(noConsentRoot);
+    const noConsentConfig = await writeTask5bFixture(noConsentRoot);
+    const noConsentBefore = await readFile(noConsentConfig);
+    const noConsent = await capture(() => cmdInit(named("my-agent"), { cwd: noConsentRoot, homedir: root, dependencies: localDependencies(), nativeSessionFactory: filesystemNativeFactory() } as never));
+    assert.equal(noConsent.result, 1);
+    assert.match(noConsent.output, /consent/i);
+    assert.deepEqual(await readFile(noConsentConfig), noConsentBefore);
+
+    const config = await writeTask5bFixture(root);
+    const original = await readFile(config);
+    const overrides = { cwd: root, homedir: root, dependencies: localDependencies(), nativeSessionFactory: filesystemNativeFactory() };
+
+    const first = await capture(() => cmdInit(named("my-agent", ["yes"]), overrides as never));
+    assert.equal(first.result, 0);
+    assert.match(first.output, /wrapped=1.*already-wrapped=1.*unwrappable=1.*unsupported=1/i);
+    const applied = await readFile(config);
+    assert.notDeepEqual(applied, original);
+    assert.deepEqual(JSON.parse(applied.toString()).mcpServers.local.args, ["-y", "reelier@0.32.1", "mcp", "--wrap", "npx -y @example/local"]);
+    assert.deepEqual(JSON.parse(applied.toString()).mcpServers.remote, { type: "http", url: "https://example.invalid/mcp" });
+
+    const second = await capture(() => cmdInit(named("my-agent", ["yes"]), overrides as never));
+    assert.equal(second.result, 0);
+    assert.deepEqual(await readFile(config), applied);
+
+    const competing = { ...overrides, nativeSessionFactory: filesystemNativeFactory(true) };
+    const concurrent = await Promise.all([
+      capture(() => cmdInit(named("concurrent", ["yes"]), competing as never)),
+      capture(() => cmdInit(named("concurrent", ["yes"]), competing as never)),
+    ]);
+    assert.deepEqual(concurrent.map(value => value.result).sort(), [0, 1]);
+
+    await rm(path.join(root, ".reelier", "bootstrap"), { recursive: true, force: true });
+    await writeTask5bFixture(root);
+    const rollbackOriginal = await readFile(config);
+    const failed = await capture(() => cmdInit(named("rollback", ["yes"]), { ...overrides, failAt: "after-configuration-publication" } as never));
+    assert.equal(failed.result, 1);
+    assert.deepEqual(await readFile(config), rollbackOriginal);
+  });
 });
