@@ -10,6 +10,8 @@ import {
   renderCoverageReport,
   type CoverageServer,
 } from "../src/coverage.js";
+import { translateCodexCoverage } from "../src/routes/hosts/codex.js";
+import type { RouteCoverageV1 } from "../src/routes/types.js";
 
 const CONFIG_PATH = "C:/Users/alice/.codex/config.toml";
 
@@ -18,6 +20,21 @@ test("analyzeCodexConfig reports an absent config as absent, with no invented se
   assert.equal(analysis.location, "absent");
   assert.equal(analysis.servers.length, 0);
   assert.equal(analysis.plugins.length, 0);
+});
+
+test("Codex route translation preserves config and plugin origins with the same server name", () => {
+  const rows = translateCodexCoverage({
+    report: {
+      homedir: "C:/private",
+      configPath: "C:/private/.codex/config.toml",
+      config: { configPath: "C:/private/.codex/config.toml", location: "parsed", servers: [{ name: "gmail.send", origin: "C:/private/.codex/config.toml", location: "parsed", transport: "stdio", routing: "wrapped" }], plugins: [], marketplaces: [] },
+      plugins: [{ registration: { name: "gmail", marketplace: "official", enabled: true }, inspected: true, location: "parsed", manifestPath: "C:/private/plugins/gmail/mcp.json", candidatesTried: [], servers: [{ name: "gmail.send", origin: "C:/private/plugins/gmail/mcp.json", location: "parsed", transport: "stdio", routing: "unwrapped" }] }],
+      inspectedLocations: ["C:/private/.codex/config.toml"],
+    },
+    observedAt: "2026-08-15T12:00:00.000Z", freshnessMs: 900_000, sourceDigest: `sha256:${"1".repeat(64)}`,
+    canonicalConfigBytes: "[mcp_servers.gmail]", fileIdentityDigest: `sha256:${"2".repeat(64)}`,
+  });
+  assert.deepEqual(rows.map((row: RouteCoverageV1) => [row.routeId, row.observation]), [["host-config:gmail.send", "observed"], ["plugin-manifest:gmail.send", "uncovered"]]);
 });
 
 test("analyzeCodexConfig classifies a plain stdio entry as unwrapped", () => {

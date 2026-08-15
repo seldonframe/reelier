@@ -24,6 +24,8 @@ import {
   type CoverageServer,
   type CoverageView,
 } from "../src/coverage.js";
+import { translateClaudeCodeCoverage } from "../src/routes/hosts/claude-code.js";
+import type { RouteCoverageV1 } from "../src/routes/types.js";
 import { cmdCoverage } from "../src/cli.js";
 
 function captureConsole(): { lines: string[]; errors: string[]; restore: () => void } {
@@ -44,6 +46,15 @@ test("analyzeJsonMcpConfig reports an absent config as absent, with no invented 
   const source = analyzeJsonMcpConfig(undefined, MCP_JSON);
   assert.equal(source.location, "absent");
   assert.equal(source.servers.length, 0);
+});
+
+test("Claude Code route translation emits an explicit unknown row for an unreadable plugin registry", () => {
+  const rows = translateClaudeCodeCoverage({
+    view: { host: "claude-code", sources: [], plugins: [], pluginSource: "C:/private/installed_plugins.json", pluginRegistry: { location: "unreadable", detail: "invalid JSON" }, inspectedLocations: ["C:/private/installed_plugins.json"] },
+    observedAt: "2026-08-15T12:00:00.000Z", freshnessMs: 300_000, sourceDigest: `sha256:${"3".repeat(64)}`,
+    staticSources: [{ sourceRef: "plugin-registry", canonicalBytes: "{invalid", fileIdentityDigest: `sha256:${"4".repeat(64)}` }],
+  });
+  assert.deepEqual(rows.map((row: RouteCoverageV1) => [row.routeId, row.observation, row.enforcement, row.reasonCodes]), [["plugin-manifest:registry", "unknown", "absent", ["registry-unreadable"]]]);
 });
 
 test("analyzeJsonMcpConfig classifies a plain stdio entry as unwrapped", () => {
