@@ -276,3 +276,14 @@ test("a self-asserted governance summary without fixed-root admission artifacts 
     await assert.rejects(() => initializeAgentProject(options), /governance|operator|trust|admission/i);
   });
 });
+
+test("completed checkpoint state is bound to agent, version, cwd, and consent inputs", async () => {
+  await withFixture(async options => {
+    await initializeAgentProject(options);
+    for (const changed of [
+      { ...options, agentName: "other-agent" },
+      { ...options, exactVersion: "0.32.2" },
+      { ...options, yes: false },
+    ]) await assert.rejects(() => initializeAgentProject(changed), /checkpoint|plan|identity/i);
+  });
+});
