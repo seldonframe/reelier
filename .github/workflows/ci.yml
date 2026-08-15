@@ -110,6 +110,8 @@ jobs:
         with:
           name: native-bootstrap-universal
           path: native/bootstrap-helper
+      - name: Restore Linux helper executable bit
+        run: chmod +x native/bootstrap-helper/linux-x64/reelier-bootstrap-helper
       - run: npm run build
       - run: node scripts/verify-bootstrap-native-artifacts.mjs
       - run: npm run check:authority-contract
@@ -197,6 +199,9 @@ jobs:
         with:
           name: native-bootstrap-universal
           path: native/bootstrap-helper
+      - name: Restore Linux helper executable bit
+        if: ${{ needs.pack-authority-host-boundary.result == 'success' && needs.produce-authority-factory-evidence.result == 'success' && runner.os == 'Linux' }}
+        run: chmod +x native/bootstrap-helper/linux-x64/reelier-bootstrap-helper
       # Belt-and-suspenders, not a fix for anything seen on this runner:
       # actions/checkout@v4 always starts from an empty workspace and
       # nothing here caches dist/dist-test, so there is nothing to clean
