@@ -1,224 +1,419 @@
 import { createHash, randomBytes } from "node:crypto";
-import { access, link, lstat, mkdir, open, readFile, readdir, realpath, rename, unlink } from "node:fs/promises";
+import { access, lstat, mkdir, open, readFile, realpath, rename, rm, unlink, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
-import { AUTHORITY_ADAPTER_CONTRACT_V1_DIGEST } from "../authority/adapter-contract.js";
-import { OUTCOME_PROFILE_CONTRACT_V1_DIGEST } from "../authority/outcome-profile-contract.js";
 import { authorityDigest } from "../authority/wire.js";
-import { initializeInspection, type InitializationDependencies } from "../initialization.js";
+import type { InitializationDependencies } from "../initialization.js";
+import { normalizeRouteCoverageV1 } from "../routes/normalize.js";
 import { writeFileAtomic } from "../writeback.js";
-import { BOOTSTRAP_CONTRACT_V1_DIGEST } from "./contract.js";
-import { createProfileDrafts } from "./profile-drafts.js";
-import { digestAgentProjectV1, parseAgentProjectV1 } from "./project.js";
-import { parseRuntimeDescriptorV1 } from "../runtime/manifest.js";
-import { parseBootstrapReportV1 } from "./normalize.js";
-import { loadProfileGovernanceFromOperatorTrust } from "../authority/host/profile-governance-loader.js";
-import { admittedProfileGovernanceState } from "../authority/host/profile-governance.js";
 import { computeInstalledBuildDigest } from "./build-identity.js";
-import type { BootstrapReportV1 } from "./types.js";
-import { claimWorkloadAgentName, prepareWorkloadRegistration } from "./workload-registration.js";
-import { applyBootstrapInstall, planBootstrapInstall } from "./install.js";
-import { restoreFromBackup } from "../wrap.js";
 
-export const BOOTSTRAP_CHECKPOINT_IDS = Object.freeze(["inspection-link", "runtime-descriptor", "route-coverage", "workload-registration-request", "profile-drafts", "imported-governance", "configuration-plan", "installation-canary", "project", "report"] as const);
-type BootstrapCheckpointId = (typeof BOOTSTRAP_CHECKPOINT_IDS)[number];
-const CHECKPOINT_ARTIFACT_NAMES: Readonly<Record<BootstrapCheckpointId, string>> = Object.freeze({ "inspection-link": "inspection-link.json", "runtime-descriptor": "runtime-descriptor.json", "route-coverage": "route-coverage-link.json", "workload-registration-request": "workload-registration-request.json", "profile-drafts": "profile-drafts.json", "imported-governance": "imported-governance.json", "configuration-plan": "configuration-plan.json", "installation-canary": "installation-canary.json", project: "project.json", report: "report.json" });
-export interface InitializeAgentProjectOptions { readonly cwd: string; readonly homedir: string; readonly agentName: string; readonly yes?: boolean; readonly exactVersion: string; readonly dependencies?: InitializationDependencies; readonly governance?: Readonly<{ tenant: string; governanceRef: string; expectedManifestDigest: string; expectedTrustHeadDigest: string; verificationTime: Date }>; readonly failAfterInstall?: boolean; readonly afterCheckpoint?: (id: BootstrapCheckpointId) => void | Promise<void>; }
-export interface BootstrapConfigurationSurface { readonly name: string; readonly status: "wrapped" | "unwrapped" | "unwrappable"; readonly detail?: string; }
-export type BootstrapPreparationReport = BootstrapReportV1 & Readonly<{ actions: { profileDrafted: boolean; profileCertified: boolean; authorityActivated: boolean }; pathC: "unavailable-no-activation"; configurationSurfaces: readonly BootstrapConfigurationSurface[] }>;
-interface BootstrapCompleted { id: BootstrapCheckpointId; artifact: string; digest: string; }
-interface BootstrapState { v: "reelier.bootstrap-state/v1"; planDigest: string; completed: readonly BootstrapCompleted[]; }
-interface BootstrapFileSnapshot { path: string; kind: "absent" | "file" | "other"; content?: string; }
-const BOOTSTRAP_PROCESS_STARTED_AT = Math.floor(Date.now() - process.uptime() * 1_000);
+export const PREPARATION_STATES = Object.freeze(["absent", "locked", "prepared", "committing", "complete", "rolling-back", "recovery-required"] as const);
+export type PreparationState = (typeof PREPARATION_STATES)[number];
+
+export interface InitializeAgentProjectOptions {
+  readonly cwd: string;
+  readonly homedir: string;
+  readonly agentName: string;
+  readonly exactVersion: string;
+  readonly yes?: boolean;
+  /** Retained only so callers can prove named preparation does not invoke inspection dependencies. */
+  readonly dependencies?: InitializationDependencies;
+  /** Deterministic crash seam for transaction tests; leaves the durable lock and journal in place. */
+  readonly interruptAfterState?: "locked" | "prepared" | "committing";
+}
+
+export interface MinimalNamedProjectV1 {
+  readonly v: "reelier.named-project/v1";
+  readonly agentName: string;
+  readonly projectRoot: string;
+  readonly reelierVersion: string;
+  readonly installedBuildDigest: string;
+  readonly routeSnapshotDigest: string | null;
+  readonly authority: "absent";
+  readonly completeness: "not-proved";
+}
+
+export interface BootstrapPreparationReport {
+  readonly v: "reelier.named-preparation-report/v1";
+  readonly state: "complete";
+  readonly projectDigest: string;
+  readonly initializedAt: string;
+  readonly authority: "absent";
+  readonly completeness: "not-proved";
+  readonly recoveryCommand: string;
+  readonly up: "unavailable";
+}
+
+interface CanonicalTarget {
+  readonly agentName: string;
+  readonly agentNameFold: string;
+  readonly projectRoot: string;
+  readonly reelierVersion: string;
+  readonly installedBuildDigest: string;
+  readonly routeSnapshotDigest: string | null;
+}
+
+interface LockRecord {
+  readonly v: "reelier.bootstrap-lock/v2";
+  readonly pid: number;
+  readonly ownerToken: string;
+  readonly transactionId: string;
+}
+
+interface TransactionRecord {
+  readonly v: "reelier.bootstrap-transaction/v2";
+  readonly state: Exclude<PreparationState, "absent">;
+  readonly transactionId: string;
+  readonly ownerTokenCommitment: string;
+  readonly planDigest: string;
+  readonly canonicalTarget: CanonicalTarget;
+  readonly priorGeneration: null;
+  readonly priorGenerationDigest: null;
+  readonly checkpointDigest: string | null;
+  readonly publishedGeneration: string | null;
+}
+
+interface CheckpointRecord {
+  readonly v: "reelier.bootstrap-checkpoint/v2";
+  readonly transactionId: string;
+  readonly ownerTokenCommitment: string;
+  readonly planDigest: string;
+  readonly canonicalTarget: CanonicalTarget;
+  readonly priorTargetDigest: null;
+  readonly artifacts: readonly Readonly<{ name: "project.json" | "report.json" | "recovery-command.txt"; digest: string }>[];
+}
+
+const VERSION = /^[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?$/;
+const NAME = /^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$/;
+const SHA256 = /^sha256:[0-9a-f]{64}$/;
+const TOKEN = /^[0-9a-f]{64}$/;
+const TRANSACTION_ID = /^[0-9a-f]{32}$/;
+const PROCESS_STARTED_AT = Math.floor(Date.now() - process.uptime() * 1_000);
 
 export async function initializeAgentProject(options: InitializeAgentProjectOptions): Promise<BootstrapPreparationReport> {
-  if (!path.isAbsolute(options.cwd) || !path.isAbsolute(options.homedir) || !/^[A-Za-z0-9._~-]{1,128}$/.test(options.agentName) || options.agentName === "." || options.agentName === ".." || !/^[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?$/.test(options.exactVersion)) throw new TypeError("named bootstrap options are invalid");
+  const canonicalTarget = await canonicalizeTarget(options);
+  const bootstrapRoot = await ensureBootstrapRoot(canonicalTarget.projectRoot);
+  const routeSnapshotDigest = await existingRouteSnapshotDigest(bootstrapRoot);
+  const target = Object.freeze({ ...canonicalTarget, routeSnapshotDigest });
+  const planDigest = digest({
+    v: "reelier.bootstrap-plan/v2",
+    target,
+    artifacts: ["project.json", "report.json", "recovery-command.txt"],
+    states: PREPARATION_STATES,
+  });
+  const journalPath = path.join(bootstrapRoot, "transaction.json");
+  const lockPath = path.join(bootstrapRoot, ".lock");
+  const existingJournal = await readOptionalJson(journalPath);
+
+  if (existingJournal !== undefined) {
+    const journal = parseTransaction(existingJournal);
+    assertTransactionIdentity(journal, target, planDigest);
+    if (journal.state === "complete") return readVerifiedComplete(bootstrapRoot, journal);
+    if (journal.state === "recovery-required") throw new Error("named bootstrap recovery-required rollback must complete before forward progress");
+  }
+
+  const acquired = await acquireLock(lockPath, journalPath, existingJournal, target, planDigest);
+  let journal = acquired.journal;
+  let retainLock = false;
+  try {
+    if (journal === undefined) {
+      journal = Object.freeze({
+        v: "reelier.bootstrap-transaction/v2",
+        state: "locked",
+        transactionId: acquired.lock.transactionId,
+        ownerTokenCommitment: sha256(acquired.lock.ownerToken),
+        planDigest,
+        canonicalTarget: target,
+        priorGeneration: null,
+        priorGenerationDigest: null,
+        checkpointDigest: null,
+        publishedGeneration: null,
+      });
+      await writeJournal(journalPath, journal);
+      if (options.interruptAfterState === "locked") { await markSimulatedOrphan(lockPath, acquired.lock); retainLock = true; throw new InterruptedInitialization("locked"); }
+    }
+
+    if (journal.state === "locked") {
+      // A crash in `locked` may leave only transaction-owned, uncommitted
+      // staging bytes. They carry no checkpoint and are never adoptable.
+      await rm(stagingPath(bootstrapRoot, journal.transactionId), { recursive: true, force: true });
+      const prepared = await prepareGeneration(bootstrapRoot, journal);
+      journal = Object.freeze({ ...journal, state: "prepared", checkpointDigest: prepared.checkpointDigest });
+      await writeJournal(journalPath, journal);
+      if (options.interruptAfterState === "prepared") { await markSimulatedOrphan(lockPath, acquired.lock); retainLock = true; throw new InterruptedInitialization("prepared"); }
+    } else if (journal.state === "prepared") {
+      await validateStagedGeneration(bootstrapRoot, journal);
+    } else if (journal.state === "committing") {
+      await validateStagedOrPublishedGeneration(bootstrapRoot, journal);
+    } else if (journal.state === "rolling-back") {
+      await rollbackAbsent(bootstrapRoot, journal);
+      throw new Error("named bootstrap recovered the interrupted rollback; retry initialization");
+    }
+
+    if (journal.state === "prepared") {
+      journal = Object.freeze({ ...journal, state: "committing" });
+      await writeJournal(journalPath, journal);
+      if (options.interruptAfterState === "committing") { await markSimulatedOrphan(lockPath, acquired.lock); retainLock = true; throw new InterruptedInitialization("committing"); }
+    }
+
+    if (journal.state !== "committing") throw new Error("named bootstrap transaction state is not forward-recoverable");
+    const generation = journal.transactionId;
+    const staging = stagingPath(bootstrapRoot, generation);
+    const generationPath = path.join(bootstrapRoot, "generations", generation);
+    if (!await exists(generationPath)) await rename(staging, generationPath);
+    await validateGeneration(generationPath, journal);
+    const pointer = Object.freeze({ v: "reelier.bootstrap-current/v1", generation, generationDigest: await generationDigest(generationPath) });
+    await writeFileAtomic(path.join(bootstrapRoot, "current.json"), canonicalBytes(pointer));
+    journal = Object.freeze({ ...journal, state: "complete", publishedGeneration: generation });
+    await writeJournal(journalPath, journal);
+    return await readVerifiedComplete(bootstrapRoot, journal);
+  } catch (error) {
+    if (error instanceof InterruptedInitialization) throw error;
+    if (journal !== undefined && journal.state !== "complete" && journal.state !== "recovery-required") {
+      try {
+        const rollingBack = Object.freeze({ ...journal, state: "rolling-back" as const });
+        await writeJournal(journalPath, rollingBack);
+        await rollbackAbsent(bootstrapRoot, rollingBack);
+      } catch {
+        const recoveryRequired = Object.freeze({ ...journal, state: "recovery-required" as const });
+        await writeJournal(journalPath, recoveryRequired).catch(() => {});
+        retainLock = true;
+      }
+    }
+    throw error;
+  } finally {
+    if (!retainLock) await releaseLock(lockPath, acquired.lock);
+  }
+}
+
+async function canonicalizeTarget(options: InitializeAgentProjectOptions): Promise<Omit<CanonicalTarget, "routeSnapshotDigest">> {
+  if (!path.isAbsolute(options.cwd) || !path.isAbsolute(options.homedir) || !VERSION.test(options.exactVersion)) throw new TypeError("named bootstrap options are invalid");
+  if (!NAME.test(options.agentName) || options.agentName.normalize("NFC") !== options.agentName || options.agentName === "." || options.agentName === "..") throw new TypeError("named bootstrap agent name is invalid");
+  const cwdInfo = await lstat(options.cwd);
+  if (!cwdInfo.isDirectory() || cwdInfo.isSymbolicLink() || await realpath(options.cwd) !== path.resolve(options.cwd)) throw new TypeError("named bootstrap project directory is unsafe or linked");
   const homeInfo = await lstat(options.homedir);
   if (!homeInfo.isDirectory() || homeInfo.isSymbolicLink() || await realpath(options.homedir) !== path.resolve(options.homedir)) throw new TypeError("named bootstrap home directory is unsafe or linked");
-  const cwdInfo = await lstat(options.cwd);
-  if (!cwdInfo.isDirectory() || cwdInfo.isSymbolicLink()) throw new TypeError("named bootstrap project directory is unsafe or linked");
   const projectRoot = await realpath(options.cwd);
-  await claimWorkloadAgentName(options.homedir, options.agentName);
-  const planDigest = digest({ v: "reelier.bootstrap-plan/v1", checkpoints: BOOTSTRAP_CHECKPOINT_IDS, agentName: options.agentName, exactVersion: options.exactVersion, cwd: projectRoot, yes: options.yes === true, governance: options.governance === undefined ? null : { tenant: options.governance.tenant, governanceRef: options.governance.governanceRef, expectedManifestDigest: options.governance.expectedManifestDigest, expectedTrustHeadDigest: options.governance.expectedTrustHeadDigest, verificationTime: options.governance.verificationTime.toISOString() } });
-  const reelierDir = path.join(projectRoot, ".reelier");
-  await ensureRealDirectory(reelierDir, "project Reelier directory");
-  const bootstrapParent = path.join(reelierDir, "bootstrap");
-  await ensureRealDirectory(bootstrapParent, "named bootstrap directory");
-  const release = await acquireBootstrapLock(path.join(bootstrapParent, ".lock"));
-  try {
-  const bootstrapDir = path.join(projectRoot, ".reelier", "bootstrap");
-  const info = await lstat(bootstrapDir);
-  if (!info.isDirectory() || info.isSymbolicLink()) throw new TypeError("named bootstrap directory is unsafe");
-  const statePath = path.join(bootstrapDir, "state.json");
-  const existing = await readState(statePath, planDigest);
-  if (existing !== undefined) await validateCompletedArtifacts(bootstrapDir, existing);
-  const importedGovernance = await loadImportedGovernance(options);
-  if (existing !== undefined && existing.completed.length === BOOTSTRAP_CHECKPOINT_IDS.length) {
-    const report = parseBootstrapReportV1(await readJson(bootstrapDir, "report.json"));
-    const drafts = await readJson(bootstrapDir, "profile-drafts.json") as { drafts?: unknown[] };
-    const configuration = await readJson(bootstrapDir, "configuration-plan.json") as { surfaces?: BootstrapConfigurationSurface[] };
-    return Object.freeze({ ...report, actions: Object.freeze({ profileDrafted: Array.isArray(drafts.drafts) && drafts.drafts.length > 0, profileCertified: false, authorityActivated: false }), pathC: "unavailable-no-activation", configurationSurfaces: Object.freeze(configuration.surfaces ?? []) });
-  }
-  const snapshots = await snapshotBootstrapFiles(bootstrapDir, statePath);
-  const configPath = path.join(projectRoot, ".mcp.json");
-  let installation = { changed: false, backupPath: undefined as string | undefined };
-  let removeInstalledConfigOnRollback = false;
-  let phase: "preparation" | "installation" | "checkpoints" = "preparation";
-  try {
-  const discoverRouteCoverage = existing === undefined || existing.completed.length <= BOOTSTRAP_CHECKPOINT_IDS.indexOf("route-coverage");
-  const inspection = await initializeInspection({ cwd: projectRoot, homedir: options.homedir, ...(options.dependencies === undefined ? {} : { dependencies: options.dependencies }), ...(discoverRouteCoverage ? { namedBootstrapRouteDiscovery: { agentName: options.agentName, now: new Date(), contractIdentityDigest: BOOTSTRAP_CONTRACT_V1_DIGEST, findings: [] } } : {}) });
-  if (inspection.status === "busy") throw new Error("named bootstrap is busy");
-  const registration = await prepareWorkloadRegistration(options.homedir, options.agentName, projectRoot);
-  const drafts = createProfileDrafts();
-  const runtimeDescriptor = { v: "reelier.runtime-descriptor/v1", adapterId: "externally-managed", adapterVersion: "1.0.0", adapterDigest: digest({ adapter: "externally-managed" }), launchMode: "externally-managed", command: null, args: [], cwd: null, connectionRef: "managed-cell", environmentAllowlist: [], authenticatedBinding: "host-private", shutdown: "external" } as const;
-  const routeCoverage = await readFile(path.join(bootstrapDir, "route-coverage.json"), "utf8");
-  phase = "installation";
-    const plan = await planBootstrapInstall(configPath, options.exactVersion, projectRoot);
-    const configurationSurfaces = Object.freeze(plan.entries.map(entry => Object.freeze({
-      name: entry.name,
-      status: entry.action === "skip-unwrappable" ? "unwrappable" as const : entry.action === "already-wrapped" || entry.action === "wrap" && options.yes === true ? "wrapped" as const : "unwrapped" as const,
-      ...(entry.action === "already-wrapped" ? { detail: "already wrapped" } : entry.reason === undefined ? {} : { detail: entry.reason }),
-    })));
-    if (plan.changed && options.yes) { installation = { changed: true, ...(await applyBootstrapInstall(plan, { consent: true })) }; removeInstalledConfigOnRollback = !plan.configExisted; if (await readFile(configPath, "utf8") !== plan.after) throw new Error("installed configuration read-back mismatch"); if (options.failAfterInstall) throw new Error("injected post-apply artifact failure"); }
-  phase = "checkpoints";
-  const reportFields = { runtimeDescriptorDigest: digest(runtimeDescriptor), routeCoverageDigest: sha256(routeCoverage), initializedAt: new Date().toISOString(), canary: installation.changed ? "verified" as const : "unchecked" as const, authority: "unavailable" as const, recoveryCommand: `npx reelier@${options.exactVersion} up`, completeness: "not-proved" as const };
-  const governed = importedGovernance as { tenant: string | null; governanceRef: string | null; manifestDigest: string | null; trustHeadDigest: string | null };
   const packageRoot = await installedPackageRoot();
-  const project = { v: "reelier.agent-project/v1", agentName: options.agentName, projectId: `project_${options.agentName}`, tenant: governed.tenant, reelierVersion: options.exactVersion, installedBuildDigest: await computeInstalledBuildDigest(packageRoot), packageTarballIntegrityDigest: null, authorityContractDigest: AUTHORITY_ADAPTER_CONTRACT_V1_DIGEST, continuityContractDigest: await installedContinuityDeclarationDigest(packageRoot), outcomeProfileContractDigest: OUTCOME_PROFILE_CONTRACT_V1_DIGEST, bootstrapContractDigest: BOOTSTRAP_CONTRACT_V1_DIGEST, initializationReportDigest: digest(inspection.report), runtimeDescriptorDigest: reportFields.runtimeDescriptorDigest, routeCoverageDigest: reportFields.routeCoverageDigest, profileGovernanceRef: governed.governanceRef, profileGovernanceManifestDigest: governed.manifestDigest, profileTrustHeadDigest: governed.trustHeadDigest, authorityMode: governed.governanceRef === null ? "unconfigured" : "managed-cell" } as const;
-  const reportProjection: BootstrapReportV1 = Object.freeze({ v: "reelier.bootstrap-report/v1", projectDigest: digestAgentProjectV1(project), ...reportFields });
-  const artifacts: Readonly<Record<BootstrapCheckpointId, readonly [string, unknown]>> = {
-    "inspection-link": [CHECKPOINT_ARTIFACT_NAMES["inspection-link"], { v: "reelier.bootstrap-inspection-link/v1", digest: digest(inspection.report) }], "runtime-descriptor": [CHECKPOINT_ARTIFACT_NAMES["runtime-descriptor"], runtimeDescriptor], "route-coverage": [CHECKPOINT_ARTIFACT_NAMES["route-coverage"], { v: "reelier.bootstrap-route-coverage-link/v1", digest: reportProjection.routeCoverageDigest }], "workload-registration-request": [CHECKPOINT_ARTIFACT_NAMES["workload-registration-request"], registration], "profile-drafts": [CHECKPOINT_ARTIFACT_NAMES["profile-drafts"], drafts], "imported-governance": [CHECKPOINT_ARTIFACT_NAMES["imported-governance"], importedGovernance], "configuration-plan": [CHECKPOINT_ARTIFACT_NAMES["configuration-plan"], { v: "reelier.bootstrap-configuration-plan/v1", selected: options.yes === true, changes: installation.changed ? ["applied-with-backup"] : [], surfaces: configurationSurfaces }], "installation-canary": [CHECKPOINT_ARTIFACT_NAMES["installation-canary"], { v: "reelier.bootstrap-installation-canary/v1", status: reportProjection.canary, reason: installation.changed ? "pinned proxy plan applied" : "no configuration surface selected" }], "project": [CHECKPOINT_ARTIFACT_NAMES.project, project], "report": [CHECKPOINT_ARTIFACT_NAMES.report, reportProjection],
-  };
-  let completed = existing?.completed ?? [];
-  for (const id of BOOTSTRAP_CHECKPOINT_IDS.slice(completed.length)) { const [file, value] = artifacts[id]; await writeFileAtomic(path.join(bootstrapDir, file), `${JSON.stringify(value, null, 2)}\n`); completed = [...completed, { id, artifact: file, digest: digest(value) }]; await writeFileAtomic(statePath, `${JSON.stringify({ v: "reelier.bootstrap-state/v1", planDigest, completed } satisfies BootstrapState, null, 2)}\n`); await options.afterCheckpoint?.(id); }
-  return Object.freeze({ ...reportProjection, actions: Object.freeze({ profileDrafted: drafts.drafts.length > 0, profileCertified: false, authorityActivated: false }), pathC: "unavailable-no-activation", configurationSurfaces });
-  } catch (error) {
-    if (installation.backupPath !== undefined) await restoreFromBackup(configPath, installation.backupPath);
-    else if (installation.changed && removeInstalledConfigOnRollback) await unlink(configPath).catch(() => {});
-    await restoreBootstrapFiles(snapshots);
-    throw new Error(`named bootstrap ${phase === "installation" ? "installation" : "transaction"} failed: ${(error as Error).message}`);
-  }
-  } finally { await release(); }
+  return Object.freeze({
+    agentName: options.agentName,
+    agentNameFold: options.agentName.toLocaleLowerCase("en-US"),
+    projectRoot,
+    reelierVersion: options.exactVersion,
+    installedBuildDigest: await computeInstalledBuildDigest(packageRoot),
+  });
 }
 
-export async function dispatchFromBootstrap(_report: BootstrapPreparationReport): Promise<never> { throw new Error("validated profile activation required"); }
-async function readState(file: string, expectedPlanDigest: string): Promise<BootstrapState | undefined> { try { const raw = JSON.parse(await readFile(file, "utf8")) as BootstrapState; if (raw.v !== "reelier.bootstrap-state/v1" || raw.planDigest !== expectedPlanDigest || !Array.isArray(raw.completed) || raw.completed.some((entry, index) => !entry || entry.id !== BOOTSTRAP_CHECKPOINT_IDS[index] || typeof entry.artifact !== "string" || !/^sha256:[0-9a-f]{64}$/.test(entry.digest))) throw new Error("invalid"); return raw; } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw new Error("named bootstrap checkpoint state is malformed"); } }
-function digest(value: unknown): string { return authorityDigest(value); }
-function sha256(value: string): string { return `sha256:${createHash("sha256").update(value, "utf8").digest("hex")}`; }
+async function ensureBootstrapRoot(projectRoot: string): Promise<string> {
+  const reelier = path.join(projectRoot, ".reelier");
+  await ensureExactDirectory(reelier, projectRoot, ".reelier");
+  const bootstrap = path.join(reelier, "bootstrap");
+  await ensureExactDirectory(bootstrap, reelier, "bootstrap");
+  return bootstrap;
+}
 
-async function ensureRealDirectory(directory: string, label: string): Promise<void> { await mkdir(directory, { recursive: true }); const info = await lstat(directory); if (!info.isDirectory() || info.isSymbolicLink()) throw new TypeError(`${label} is unsafe or linked`); }
-async function acquireBootstrapLock(file: string): Promise<() => Promise<void>> {
-  const recoveryFile = `${file}.recovery`;
-  if (await fileIsPresent(recoveryFile) && !await recoverOrphanedBootstrapRecovery(recoveryFile)) throw new Error("named bootstrap is busy: lock recovery present");
-  const owner = JSON.stringify({ v: "reelier.bootstrap-lock/v1", pid: process.pid, processStartedAt: BOOTSTRAP_PROCESS_STARTED_AT, nonce: `${process.pid}-${Date.now()}` });
+async function ensureExactDirectory(directory: string, parent: string, basename: string): Promise<void> {
+  await mkdir(directory).catch(error => { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; });
+  const info = await lstat(directory);
+  if (!info.isDirectory() || info.isSymbolicLink() || path.relative(parent, await realpath(directory)) !== basename) throw new TypeError(`named bootstrap ${basename} directory is unsafe or linked`);
+}
+
+async function existingRouteSnapshotDigest(bootstrapRoot: string): Promise<string | null> {
+  const file = path.join(bootstrapRoot, "route-coverage.json");
+  let bytes: string;
+  try { bytes = await readFile(file, "utf8"); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return null; throw error; }
+  const info = await lstat(file);
+  if (!info.isFile() || info.isSymbolicLink()) throw new TypeError("named bootstrap route snapshot is unsafe or linked");
+  normalizeRouteCoverageV1(JSON.parse(bytes));
+  return sha256(bytes);
+}
+
+async function acquireLock(lockPath: string, journalPath: string, rawJournal: unknown, target: CanonicalTarget, planDigest: string): Promise<{ lock: LockRecord; journal?: TransactionRecord }> {
+  const ownerToken = randomBytes(32).toString("hex");
+  const fresh: LockRecord = Object.freeze({ v: "reelier.bootstrap-lock/v2", pid: process.pid, ownerToken, transactionId: randomBytes(16).toString("hex") });
   try {
-    const handle = await open(file, "wx");
-    await handle.writeFile(owner);
+    const handle = await open(lockPath, "wx");
+    await handle.writeFile(canonicalBytes(fresh));
     await handle.close();
+    if (rawJournal !== undefined) throw new Error("named bootstrap journal exists without its owning lock");
+    return { lock: fresh };
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-    let ownerBytes: string;
-    let parsed: { pid?: unknown; processStartedAt?: unknown };
-    try { ownerBytes = await readFile(file, "utf8"); parsed = JSON.parse(ownerBytes) as { pid?: unknown; processStartedAt?: unknown }; }
-    catch { throw new Error("named bootstrap is busy: lock present"); }
-    if (isStaleBootstrapLockOwner(parsed)) {
-      if (await retireStaleBootstrapLock(file, recoveryFile, ownerBytes)) return acquireBootstrapLock(file);
-      return acquireBootstrapLock(file);
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
+      if (await sameLock(lockPath, fresh)) await unlink(lockPath).catch(() => {});
+      throw error;
     }
-    if (parsed.pid === process.pid && parsed.processStartedAt === BOOTSTRAP_PROCESS_STARTED_AT) { await new Promise(resolve => setTimeout(resolve, 10)); return acquireBootstrapLock(file); }
-    throw new Error("named bootstrap is busy: lock present");
   }
-  return async () => { if (await readFile(file, "utf8").catch(() => "") === owner) await unlink(file).catch(() => {}); };
-}
 
-async function recoverOrphanedBootstrapRecovery(recoveryFile: string): Promise<boolean> {
-  let expectedBytes: string;
-  let owner: { v?: unknown; pid?: unknown; processStartedAt?: unknown; nonce?: unknown };
-  try { expectedBytes = await readFile(recoveryFile, "utf8"); owner = JSON.parse(expectedBytes) as typeof owner; }
-  catch { return false; }
-  if (owner.v !== "reelier.bootstrap-lock-recovery/v1" || typeof owner.nonce !== "string" || !isStaleBootstrapLockOwner(owner)) return false;
-  const retiredFile = `${recoveryFile}.retired-${randomBytes(12).toString("hex")}`;
-  try { await rename(recoveryFile, retiredFile); }
-  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return true; throw error; }
+  const current = parseLock(await readJsonFile(lockPath, "named bootstrap orphan lock is malformed"));
+  if (isLiveLock(current)) throw new Error("named bootstrap is busy: live lock owner");
+  if (rawJournal === undefined) throw new Error("named bootstrap orphan lock has no valid journal for recovery");
+  const journal = parseTransaction(rawJournal);
+  assertTransactionIdentity(journal, target, planDigest);
+  if (journal.transactionId !== current.transactionId || journal.ownerTokenCommitment !== sha256(current.ownerToken)) throw new Error("named bootstrap orphan lock and journal identity mismatch");
+  if (journal.state === "complete") throw new Error("named bootstrap complete journal retained an orphan lock");
+  if (journal.state === "recovery-required") throw new Error("named bootstrap recovery-required rollback must complete before forward progress");
+  const bootstrapRoot = path.dirname(lockPath);
+  if (journal.state === "prepared") await validateStagedGeneration(bootstrapRoot, journal);
+  if (journal.state === "committing") await validateStagedOrPublishedGeneration(bootstrapRoot, journal);
+
+  const retired = `${lockPath}.orphan-${randomBytes(12).toString("hex")}`;
+  await rename(lockPath, retired);
+  const resumed: LockRecord = Object.freeze({ ...fresh, transactionId: journal.transactionId });
   try {
-    const retiredBytes = await readFile(retiredFile, "utf8");
-    let retiredOwner: typeof owner;
-    try { retiredOwner = JSON.parse(retiredBytes) as typeof owner; } catch { await restoreRetiredRecovery(retiredFile, recoveryFile); return false; }
-    if (retiredBytes !== expectedBytes || retiredOwner.v !== "reelier.bootstrap-lock-recovery/v1" || typeof retiredOwner.nonce !== "string" || !isStaleBootstrapLockOwner(retiredOwner)) { await restoreRetiredRecovery(retiredFile, recoveryFile); return false; }
-    await unlink(retiredFile);
-    return true;
-  } catch (error) {
-    if (await fileIsPresent(retiredFile)) await restoreRetiredRecovery(retiredFile, recoveryFile);
-    throw error;
-  }
-}
-
-async function restoreRetiredRecovery(retiredFile: string, recoveryFile: string): Promise<void> {
-  try { await link(retiredFile, recoveryFile); }
-  catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
-  await unlink(retiredFile);
-}
-
-function isStaleBootstrapLockOwner(owner: { pid?: unknown; processStartedAt?: unknown }): boolean {
-  return typeof owner.pid === "number" && (!isLivePid(owner.pid) || owner.pid === process.pid && typeof owner.processStartedAt === "number" && owner.processStartedAt !== BOOTSTRAP_PROCESS_STARTED_AT);
-}
-
-async function retireStaleBootstrapLock(file: string, recoveryFile: string, expectedOwnerBytes: string): Promise<boolean> {
-  const recoveryOwner = JSON.stringify({ v: "reelier.bootstrap-lock-recovery/v1", pid: process.pid, processStartedAt: BOOTSTRAP_PROCESS_STARTED_AT, nonce: `${process.pid}-${Date.now()}` });
-  let handle;
-  try {
-    handle = await open(recoveryFile, "wx");
-    await handle.writeFile(recoveryOwner);
+    const handle = await open(lockPath, "wx");
+    await handle.writeFile(canonicalBytes(resumed));
     await handle.close();
-    handle = undefined;
+    await unlink(retired);
+    return { lock: resumed, journal };
   } catch (error) {
-    await handle?.close().catch(() => {});
-    if ((error as NodeJS.ErrnoException).code === "EEXIST") throw new Error("named bootstrap is busy: lock recovery present");
+    await rename(retired, lockPath).catch(() => {});
     throw error;
   }
-  try {
-    if (await readFile(file, "utf8").catch(() => "") !== expectedOwnerBytes) return false;
-    let current: { pid?: unknown; processStartedAt?: unknown };
-    try { current = JSON.parse(expectedOwnerBytes) as { pid?: unknown; processStartedAt?: unknown }; } catch { return false; }
-    if (!isStaleBootstrapLockOwner(current)) return false;
-    await unlink(file);
-    return true;
-  } finally {
-    if (await readFile(recoveryFile, "utf8").catch(() => "") === recoveryOwner) await unlink(recoveryFile).catch(() => {});
+}
+
+async function prepareGeneration(bootstrapRoot: string, journal: TransactionRecord): Promise<{ checkpointDigest: string }> {
+  await ensureExactDirectory(path.join(bootstrapRoot, "staging"), bootstrapRoot, "staging");
+  await ensureExactDirectory(path.join(bootstrapRoot, "generations"), bootstrapRoot, "generations");
+  const root = stagingPath(bootstrapRoot, journal.transactionId);
+  await mkdir(root);
+  const project: MinimalNamedProjectV1 = Object.freeze({
+    v: "reelier.named-project/v1",
+    agentName: journal.canonicalTarget.agentName,
+    projectRoot: journal.canonicalTarget.projectRoot,
+    reelierVersion: journal.canonicalTarget.reelierVersion,
+    installedBuildDigest: journal.canonicalTarget.installedBuildDigest,
+    routeSnapshotDigest: journal.canonicalTarget.routeSnapshotDigest,
+    authority: "absent",
+    completeness: "not-proved",
+  });
+  const recoveryCommand = `npx reelier@${journal.canonicalTarget.reelierVersion} up`;
+  const report: BootstrapPreparationReport = Object.freeze({
+    v: "reelier.named-preparation-report/v1",
+    state: "complete",
+    projectDigest: digest(project),
+    initializedAt: new Date().toISOString(),
+    authority: "absent",
+    completeness: "not-proved",
+    recoveryCommand,
+    up: "unavailable",
+  });
+  const artifacts = [
+    ["project.json", canonicalBytes(project)],
+    ["report.json", canonicalBytes(report)],
+    ["recovery-command.txt", `${recoveryCommand}\n`],
+  ] as const;
+  for (const [name, bytes] of artifacts) await writeExclusiveFile(path.join(root, name), bytes);
+  const checkpoint: CheckpointRecord = Object.freeze({
+    v: "reelier.bootstrap-checkpoint/v2",
+    transactionId: journal.transactionId,
+    ownerTokenCommitment: journal.ownerTokenCommitment,
+    planDigest: journal.planDigest,
+    canonicalTarget: journal.canonicalTarget,
+    priorTargetDigest: null,
+    artifacts: Object.freeze(artifacts.map(([name, bytes]) => Object.freeze({ name, digest: sha256(bytes) }))),
+  });
+  await writeExclusiveFile(path.join(root, "checkpoint.json"), canonicalBytes(checkpoint));
+  return { checkpointDigest: digest(checkpoint) };
+}
+
+async function validateStagedGeneration(bootstrapRoot: string, journal: TransactionRecord): Promise<void> {
+  await validateGeneration(stagingPath(bootstrapRoot, journal.transactionId), journal);
+}
+
+async function validateStagedOrPublishedGeneration(bootstrapRoot: string, journal: TransactionRecord): Promise<void> {
+  const staged = stagingPath(bootstrapRoot, journal.transactionId);
+  const published = path.join(bootstrapRoot, "generations", journal.transactionId);
+  if (await exists(staged)) await validateGeneration(staged, journal);
+  else await validateGeneration(published, journal);
+}
+
+async function validateGeneration(root: string, journal: TransactionRecord): Promise<void> {
+  const info = await lstat(root);
+  if (!info.isDirectory() || info.isSymbolicLink()) throw new Error("named bootstrap checkpoint generation is unsafe");
+  const checkpoint = parseCheckpoint(await readJsonFile(path.join(root, "checkpoint.json"), "named bootstrap checkpoint is malformed"));
+  if (digest(checkpoint) !== journal.checkpointDigest || checkpoint.transactionId !== journal.transactionId || checkpoint.ownerTokenCommitment !== journal.ownerTokenCommitment || checkpoint.planDigest !== journal.planDigest || digest(checkpoint.canonicalTarget) !== digest(journal.canonicalTarget)) throw new Error("named bootstrap checkpoint plan identity mismatch");
+  for (const artifact of checkpoint.artifacts) {
+    const file = path.join(root, artifact.name);
+    const artifactInfo = await lstat(file);
+    if (!artifactInfo.isFile() || artifactInfo.isSymbolicLink() || sha256(await readFile(file)) !== artifact.digest) throw new Error("named bootstrap checkpoint artifact digest mismatch");
   }
 }
 
-async function fileIsPresent(file: string): Promise<boolean> {
-  try { await access(file); return true; }
-  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return false; throw error; }
+async function readVerifiedComplete(bootstrapRoot: string, journal: TransactionRecord): Promise<BootstrapPreparationReport> {
+  if (journal.state !== "complete" || journal.publishedGeneration !== journal.transactionId || journal.checkpointDigest === null) throw new Error("named bootstrap completion identity is invalid");
+  const pointer = await readJsonFile(path.join(bootstrapRoot, "current.json"), "named bootstrap current generation is malformed") as Record<string, unknown>;
+  if (pointer.v !== "reelier.bootstrap-current/v1" || pointer.generation !== journal.transactionId || typeof pointer.generationDigest !== "string") throw new Error("named bootstrap current generation identity mismatch");
+  const root = path.join(bootstrapRoot, "generations", journal.transactionId);
+  await validateGeneration(root, journal);
+  if (await generationDigest(root) !== pointer.generationDigest) throw new Error("named bootstrap committed generation digest mismatch");
+  const project = await readJsonFile(path.join(root, "project.json"), "named project descriptor is malformed") as MinimalNamedProjectV1;
+  if (digest(project) !== (await readJsonFile(path.join(root, "report.json"), "named preparation report is malformed") as BootstrapPreparationReport).projectDigest) throw new Error("named bootstrap project report identity mismatch");
+  return await readJsonFile(path.join(root, "report.json"), "named preparation report is malformed") as BootstrapPreparationReport;
 }
-async function loadImportedGovernance(options: InitializeAgentProjectOptions): Promise<unknown> { if (!options.governance) { try { await access(path.join(options.homedir, ".reelier", "governance", "profile-governance.json")); throw new TypeError("self-authored governance summary is not authority"); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; } return { v: "reelier.imported-governance/v1", tenant: null, governanceRef: null, manifestDigest: null, trustHeadDigest: null, verificationStatus: "absent" }; } const admitted = await loadProfileGovernanceFromOperatorTrust({ ...options.governance, homedir: options.homedir }); const state = admittedProfileGovernanceState(admitted); return { v: "reelier.imported-governance/v1", tenant: options.governance.tenant, governanceRef: options.governance.governanceRef, manifestDigest: options.governance.expectedManifestDigest, trustHeadDigest: options.governance.expectedTrustHeadDigest, verificationStatus: state.manifest.profileDigest ? "verified" : "absent" }; }
-function isLivePid(pid: number): boolean { if (!Number.isInteger(pid) || pid < 1) return false; try { process.kill(pid, 0); return true; } catch (error) { return (error as NodeJS.ErrnoException).code === "EPERM"; } }
-async function validateCompletedArtifacts(root: string, state: BootstrapState): Promise<void> { for (const entry of state.completed) { if (entry.artifact !== CHECKPOINT_ARTIFACT_NAMES[entry.id] || path.basename(entry.artifact) !== entry.artifact || entry.artifact.includes("\\") || entry.artifact.includes("/")) throw new TypeError("named bootstrap checkpoint artifact path is invalid"); const info = await lstat(path.join(root, entry.artifact)).catch(() => undefined); if (!info?.isFile() || info.isSymbolicLink()) throw new TypeError("named bootstrap checkpoint artifact is unsafe or linked"); const value = await readJson(root, entry.artifact); if (digest(value) !== entry.digest) throw new TypeError("named bootstrap checkpoint artifact digest is invalid"); if (entry.id === "route-coverage" && (value as { digest?: unknown }).digest !== sha256(await readFile(path.join(root, "route-coverage.json"), "utf8"))) throw new TypeError("named bootstrap route coverage digest join is invalid"); } if (state.completed.length === BOOTSTRAP_CHECKPOINT_IDS.length) { const [project, report, runtime] = await Promise.all([readJson(root, "project.json"), readJson(root, "report.json"), readJson(root, "runtime-descriptor.json")]); parseAgentProjectV1(project); parseBootstrapReportV1(report); parseRuntimeDescriptorV1(runtime); if ((report as BootstrapReportV1).projectDigest !== digestAgentProjectV1(project)) throw new TypeError("named bootstrap project/report digest join is invalid"); } }
-async function readJson(root: string, file: string): Promise<unknown> { try { return JSON.parse(await readFile(path.join(root, file), "utf8")); } catch { throw new TypeError("named bootstrap checkpoint artifact is malformed"); } }
+
+async function rollbackAbsent(bootstrapRoot: string, journal: TransactionRecord): Promise<void> {
+  if (journal.priorGeneration !== null || journal.priorGenerationDigest !== null) throw new Error("named bootstrap prior generation is unsupported by the minimal transaction");
+  await rm(stagingPath(bootstrapRoot, journal.transactionId), { recursive: true, force: true });
+  await rm(path.join(bootstrapRoot, "generations", journal.transactionId), { recursive: true, force: true });
+  const pointer = path.join(bootstrapRoot, "current.json");
+  if (await exists(pointer)) await unlink(pointer);
+  await unlink(path.join(bootstrapRoot, "transaction.json"));
+  if (await exists(stagingPath(bootstrapRoot, journal.transactionId)) || await exists(path.join(bootstrapRoot, "generations", journal.transactionId)) || await exists(pointer)) throw new Error("named bootstrap rollback could not prove prior absence");
+}
+
+function parseLock(value: unknown): LockRecord {
+  if (!isRecord(value) || !hasExactKeys(value, ["v", "pid", "ownerToken", "transactionId"]) || value.v !== "reelier.bootstrap-lock/v2" || !Number.isInteger(value.pid) || !TOKEN.test(String(value.ownerToken)) || !TRANSACTION_ID.test(String(value.transactionId))) throw new Error("named bootstrap orphan lock is malformed");
+  return value as unknown as LockRecord;
+}
+
+function parseTransaction(value: unknown): TransactionRecord {
+  const keys = ["v", "state", "transactionId", "ownerTokenCommitment", "planDigest", "canonicalTarget", "priorGeneration", "priorGenerationDigest", "checkpointDigest", "publishedGeneration"];
+  if (!isRecord(value) || !hasExactKeys(value, keys) || value.v !== "reelier.bootstrap-transaction/v2" || !PREPARATION_STATES.includes(value.state as PreparationState) || value.state === "absent" || !TRANSACTION_ID.test(String(value.transactionId)) || !SHA256.test(String(value.ownerTokenCommitment)) || !SHA256.test(String(value.planDigest)) || value.priorGeneration !== null || value.priorGenerationDigest !== null || value.checkpointDigest !== null && !SHA256.test(String(value.checkpointDigest)) || value.publishedGeneration !== null && !TRANSACTION_ID.test(String(value.publishedGeneration)) || !isCanonicalTarget(value.canonicalTarget)) throw new Error("named bootstrap transaction journal is malformed");
+  const journal = value as unknown as TransactionRecord;
+  const checkpointRequired = journal.state === "prepared" || journal.state === "committing" || journal.state === "complete";
+  const publicationRequired = journal.state === "complete";
+  if (checkpointRequired && journal.checkpointDigest === null || journal.state === "locked" && journal.checkpointDigest !== null || (journal.publishedGeneration !== null) !== publicationRequired || publicationRequired && journal.publishedGeneration !== journal.transactionId) throw new Error("named bootstrap transaction state identity is malformed");
+  return journal;
+}
+
+function parseCheckpoint(value: unknown): CheckpointRecord {
+  if (!isRecord(value) || !hasExactKeys(value, ["v", "transactionId", "ownerTokenCommitment", "planDigest", "canonicalTarget", "priorTargetDigest", "artifacts"]) || value.v !== "reelier.bootstrap-checkpoint/v2" || !TRANSACTION_ID.test(String(value.transactionId)) || !SHA256.test(String(value.ownerTokenCommitment)) || !SHA256.test(String(value.planDigest)) || value.priorTargetDigest !== null || !isCanonicalTarget(value.canonicalTarget) || !Array.isArray(value.artifacts)) throw new Error("named bootstrap checkpoint is malformed");
+  const names = ["project.json", "report.json", "recovery-command.txt"];
+  if (value.artifacts.length !== names.length || value.artifacts.some((entry, index) => !isRecord(entry) || !hasExactKeys(entry, ["name", "digest"]) || entry.name !== names[index] || !SHA256.test(String(entry.digest)))) throw new Error("named bootstrap checkpoint artifact identity is malformed");
+  return value as unknown as CheckpointRecord;
+}
+
+function assertTransactionIdentity(journal: TransactionRecord, target: CanonicalTarget, planDigest: string): void {
+  if (journal.planDigest !== planDigest || digest(journal.canonicalTarget) !== digest(target)) throw new Error("named bootstrap plan identity mismatch or agent name case collision");
+}
+
+function isCanonicalTarget(value: unknown): value is CanonicalTarget {
+  return isRecord(value) && hasExactKeys(value, ["agentName", "agentNameFold", "projectRoot", "reelierVersion", "installedBuildDigest", "routeSnapshotDigest"]) && NAME.test(String(value.agentName)) && value.agentNameFold === String(value.agentName).toLocaleLowerCase("en-US") && path.isAbsolute(String(value.projectRoot)) && VERSION.test(String(value.reelierVersion)) && SHA256.test(String(value.installedBuildDigest)) && (value.routeSnapshotDigest === null || SHA256.test(String(value.routeSnapshotDigest)));
+}
+
+async function writeJournal(file: string, journal: TransactionRecord): Promise<void> { await writeFileAtomic(file, canonicalBytes(journal)); }
+async function writeExclusiveFile(file: string, bytes: string): Promise<void> { const handle = await open(file, "wx"); try { await handle.writeFile(bytes); } finally { await handle.close(); } }
+async function readJsonFile(file: string, message: string): Promise<unknown> { try { const info = await lstat(file); if (!info.isFile() || info.isSymbolicLink()) throw new Error(message); return JSON.parse(await readFile(file, "utf8")); } catch { throw new Error(message); } }
+async function readOptionalJson(file: string): Promise<unknown | undefined> { try { const info = await lstat(file); if (!info.isFile() || info.isSymbolicLink()) throw new Error("unsafe"); return JSON.parse(await readFile(file, "utf8")); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw new Error("named bootstrap transaction journal is malformed"); } }
+async function releaseLock(file: string, lock: LockRecord): Promise<void> { if (await sameLock(file, lock)) await unlink(file).catch(() => {}); }
+async function markSimulatedOrphan(file: string, lock: LockRecord): Promise<void> { await writeFileAtomic(file, canonicalBytes({ ...lock, pid: 2147483647 })); }
+async function sameLock(file: string, lock: LockRecord): Promise<boolean> { try { return digest(await readJsonFile(file, "invalid lock")) === digest(lock); } catch { return false; } }
+async function exists(file: string): Promise<boolean> { try { await access(file); return true; } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return false; throw error; } }
+function isLiveLock(lock: LockRecord): boolean { if (lock.pid === process.pid) return true; try { process.kill(lock.pid, 0); return true; } catch (error) { return (error as NodeJS.ErrnoException).code === "EPERM"; } }
+function stagingPath(root: string, transactionId: string): string { return path.join(root, "staging", transactionId); }
+function canonicalBytes(value: unknown): string { return `${JSON.stringify(value, null, 2)}\n`; }
+function digest(value: unknown): string { return authorityDigest(value); }
+function sha256(value: string | Buffer): string { return `sha256:${createHash("sha256").update(value).digest("hex")}`; }
+function isRecord(value: unknown): value is Record<string, unknown> { return value !== null && typeof value === "object" && Object.getPrototypeOf(value) === Object.prototype; }
+function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean { const actual = Object.keys(value); return actual.length === keys.length && actual.every(key => keys.includes(key)); }
+async function generationDigest(root: string): Promise<string> { return digest({ checkpoint: sha256(await readFile(path.join(root, "checkpoint.json"))), project: sha256(await readFile(path.join(root, "project.json"))), recovery: sha256(await readFile(path.join(root, "recovery-command.txt"))), report: sha256(await readFile(path.join(root, "report.json"))) }); }
 async function installedPackageRoot(): Promise<string> { let candidate = path.dirname(fileURLToPath(import.meta.url)); for (;;) { try { await access(path.join(candidate, "package.json")); return candidate; } catch {} const parent = path.dirname(candidate); if (parent === candidate) throw new TypeError("installed package root is unavailable"); candidate = parent; } }
-async function installedContinuityDeclarationDigest(packageRoot: string): Promise<string> {
-  const root = path.join(packageRoot, "dist", "continuity");
-  const declarations = (await readdir(root)).filter(file => file.endsWith(".d.ts")).sort();
-  if (declarations.length === 0) throw new TypeError("installed Continuity declarations are unavailable");
-  const hash = createHash("sha256");
-  for (const file of declarations) hash.update(file, "utf8").update("\0").update(await readFile(path.join(root, file))).update("\0");
-  return `sha256:${hash.digest("hex")}`;
+
+class InterruptedInitialization extends Error {
+  constructor(state: string) { super(`named bootstrap interrupted after ${state}`); this.name = "InterruptedInitialization"; }
 }
 
-async function snapshotBootstrapFiles(root: string, statePath: string): Promise<readonly BootstrapFileSnapshot[]> {
-  const paths = [statePath, path.join(root, "route-coverage.json"), ...Object.values(CHECKPOINT_ARTIFACT_NAMES).map(name => path.join(root, name))];
-  return Promise.all([...new Set(paths)].map(async file => {
-    const info = await lstat(file).catch(() => undefined);
-    if (info === undefined) return { path: file, kind: "absent" as const };
-    if (!info.isFile() || info.isSymbolicLink()) return { path: file, kind: "other" as const };
-    return { path: file, kind: "file" as const, content: await readFile(file, "utf8") };
-  }));
-}
-
-async function restoreBootstrapFiles(snapshots: readonly BootstrapFileSnapshot[]): Promise<void> {
-  for (const snapshot of [...snapshots].reverse()) {
-    if (snapshot.kind === "absent") await unlink(snapshot.path).catch(() => {});
-    else if (snapshot.kind === "file") await writeFileAtomic(snapshot.path, snapshot.content!);
-  }
-}
+// Kept as a deterministic refusal boundary for callers compiled against the historical helper.
+export async function dispatchFromBootstrap(_report: BootstrapPreparationReport): Promise<never> { throw new Error("validated profile activation required"); }

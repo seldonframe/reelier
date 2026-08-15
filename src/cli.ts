@@ -4251,8 +4251,6 @@ export interface CmdInitOverrides {
   readonly homedir?: string;
   readonly authorityRoot?: string;
   readonly dependencies?: InitializationDependencies;
-  /** Internal host-provisioned governance reference; deliberately not a CLI flag. */
-  readonly governance?: InitializeAgentProjectOptions["governance"];
 }
 
 export async function cmdInit(args: ParsedArgs, overrides: CmdInitOverrides = {}): Promise<number> {
@@ -4288,12 +4286,12 @@ export async function cmdInit(args: ParsedArgs, overrides: CmdInitOverrides = {}
         yes: args.flags.has("yes"),
         exactVersion: pkg.version,
         ...(overrides.dependencies === undefined ? {} : { dependencies: overrides.dependencies }),
-        ...(overrides.governance === undefined ? {} : { governance: overrides.governance }),
       });
-      console.log(`Prepared '${args.positional[0]}' for observation; Path C is unavailable until independent activation.`);
-      for (const surface of report.configurationSurfaces) console.log(`MCP surface ${surface.name}: ${surface.status}${surface.detail === undefined ? "" : ` (${surface.detail})`}`);
+      console.log(`Prepared '${args.positional[0]}' for local observation.`);
+      console.log("Authority absent");
+      console.log("Completeness not-proved");
       console.log(report.recoveryCommand);
-      console.log("Managed Cell connection (after your operator provisions it): reelier authority connect --endpoint <https-url> --token-ref <opaque-ref> --cell-id <cell-id> --adapter-contract-digest <sha256:digest>");
+      console.log("Runtime unavailable until the pinned up supervisor ships.");
       return 0;
     } catch {
       console.error("Initialization refused: named bootstrap preparation failed.");

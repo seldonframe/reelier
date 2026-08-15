@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
+import { watch } from "node:fs";
 import { promisify } from "node:util";
 import { mkdtemp, mkdir, readFile, readdir, symlink, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -73,19 +74,28 @@ test("real CLI restart recovers an interrupted exact plan and refuses later iden
   const cliPath = path.join(CLI_DIR, "cli.js");
   const transactionPath = path.join(project, ".reelier", "bootstrap", "transaction.json");
   try {
-    const child = spawn(process.execPath, [cliPath, "init", "restart-agent"], { cwd: project, stdio: "ignore" });
-    const deadline = Date.now() + 20_000;
-    while (Date.now() < deadline) {
-      try { if (JSON.parse(await readFile(transactionPath, "utf8")).state === "locked") break; } catch {}
-      await new Promise(resolve => setTimeout(resolve, 10));
-    }
-    assert.equal(JSON.parse(await readFile(transactionPath, "utf8")).state, "locked");
-    child.kill("SIGKILL");
-    await new Promise<void>(resolve => child.once("exit", () => resolve()));
+    const bootstrap = path.join(project, ".reelier", "bootstrap");
+    await mkdir(bootstrap, { recursive: true });
+    let child: ReturnType<typeof spawn>;
+    const interrupted = new Promise<void>((resolve, reject) => {
+      const watcher = watch(bootstrap, async (_event, file) => {
+        if (file !== "transaction.json") return;
+        try {
+          const state = JSON.parse(await readFile(transactionPath, "utf8")).state;
+          if (state === "complete") return;
+          watcher.close();
+          child.kill("SIGKILL");
+          child.once("exit", () => resolve());
+        } catch {}
+      });
+      setTimeout(() => { watcher.close(); reject(new Error("timed out waiting for an incomplete durable CLI state")); }, 20_000).unref();
+    });
+    child = spawn(process.execPath, [cliPath, "init", "restart-agent"], { cwd: project, stdio: "ignore" });
+    await interrupted;
+    assert.notEqual(JSON.parse(await readFile(transactionPath, "utf8")).state, "complete");
 
     const restarted = await execFileAsync(process.execPath, [cliPath, "init", "restart-agent"], { cwd: project });
     assert.match(restarted.stdout, /npx reelier@0\.32\.1 up/);
-    const bootstrap = path.join(project, ".reelier", "bootstrap");
     const pointer = JSON.parse(await readFile(path.join(bootstrap, "current.json"), "utf8"));
     assert.deepEqual((await readdir(path.join(bootstrap, "generations", pointer.generation))).sort(), ["checkpoint.json", "project.json", "recovery-command.txt", "report.json"]);
 
