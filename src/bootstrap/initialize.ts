@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
-import { access, lstat, mkdir, open, readFile, readdir, realpath, rename, rm, unlink } from "node:fs/promises";
-import { fileURLToPath } from "node:url";
+import { access, lstat, mkdir, open, readFile, realpath, rename, rm, unlink } from "node:fs/promises";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import path from "node:path";
 import { authorityDigest } from "../authority/wire.js";
 import type { InitializationDependencies } from "../initialization.js";
@@ -73,6 +73,7 @@ interface TransactionRecord {
   readonly priorGeneration: null;
   readonly priorGenerationDigest: null;
   readonly checkpointDigest: string | null;
+  readonly reboundCheckpointDigest: string | null;
   readonly publishedGeneration: string | null;
 }
 
@@ -91,7 +92,6 @@ const NAME = /^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$/;
 const SHA256 = /^sha256:[0-9a-f]{64}$/;
 const TOKEN = /^[0-9a-f]{64}$/;
 const TRANSACTION_ID = /^[0-9a-f]{32}$/;
-const PROCESS_STARTED_AT = Math.floor(Date.now() - process.uptime() * 1_000);
 const activeLockTokens = new Set<string>();
 const heartbeatTimers = new Map<string, NodeJS.Timeout>();
 const heartbeatCounters = new Map<string, number>();
@@ -100,33 +100,84 @@ export async function initializeAgentProject(options: InitializeAgentProjectOpti
   const canonicalTarget = await canonicalizeTarget(options);
   const rootHandle = await open(canonicalTarget.projectRoot, "r");
   const rootIdentity = await rootHandle.stat();
+  const lockPath = path.join(canonicalTarget.projectRoot, ".reelier-bootstrap.lock");
+  const journalPath = path.join(canonicalTarget.projectRoot, ".reelier", "bootstrap", "transaction.json");
   let bootstrapRoot: string;
-  let acquired: Awaited<ReturnType<typeof acquireLock>>;
+  let acquired!: Awaited<ReturnType<typeof acquireLock>>;
+  let lockAcquired = false;
+  let bootstrapHandle: Awaited<ReturnType<typeof open>> | undefined;
+  let bootstrapIdentity: Awaited<ReturnType<typeof lstat>> | undefined;
   try {
     await assertProjectIdentity(canonicalTarget.projectRoot, rootHandle, rootIdentity.dev, rootIdentity.ino);
+    acquired = await acquireLock(lockPath, journalPath);
+    lockAcquired = true;
     bootstrapRoot = await ensureBootstrapRoot(canonicalTarget.projectRoot);
     await assertProjectIdentity(canonicalTarget.projectRoot, rootHandle, rootIdentity.dev, rootIdentity.ino);
-    acquired = await acquireLock(path.join(bootstrapRoot, ".lock"), path.join(bootstrapRoot, "transaction.json"));
+    bootstrapHandle = await open(bootstrapRoot, "r");
+    bootstrapIdentity = await bootstrapHandle.stat();
+    await assertDirectoryIdentity(bootstrapRoot, bootstrapHandle, bootstrapIdentity.dev, bootstrapIdentity.ino, "bootstrap root");
   } catch (error) {
+    if (lockAcquired) await releaseLock(lockPath, acquired.lock);
+    await bootstrapHandle?.close();
     await rootHandle.close();
     throw error;
   }
-  const journalPath = path.join(bootstrapRoot, "transaction.json");
-  const lockPath = path.join(bootstrapRoot, ".lock");
+  const retainedBootstrapHandle = bootstrapHandle;
+  const retainedBootstrapIdentity = bootstrapIdentity;
+  if (retainedBootstrapHandle === undefined || retainedBootstrapIdentity === undefined) throw new TypeError("named bootstrap physical identity is unavailable");
   let journal: TransactionRecord | undefined;
   let retainLock = false;
+  let rollbackAuthorized = false;
+  let claimRestored = false;
+  let resourcesClosed = false;
   try {
+    const rawJournal = await readOptionalJson(journalPath);
+    if (rawJournal === undefined && acquired.recoveryClaim !== undefined) {
+      await restoreRecoveryClaim(lockPath, acquired.lock, acquired.recoveryClaim);
+      claimRestored = true;
+      throw new Error("named bootstrap is busy: lock owner has no closed recovery journal");
+    }
     const routeSnapshotDigest = await existingRouteSnapshotDigest(bootstrapRoot);
     await assertProjectIdentity(canonicalTarget.projectRoot, rootHandle, rootIdentity.dev, rootIdentity.ino);
+    await assertDirectoryIdentity(bootstrapRoot, retainedBootstrapHandle, retainedBootstrapIdentity.dev, retainedBootstrapIdentity.ino, "bootstrap root");
     const target = Object.freeze({ ...canonicalTarget, routeSnapshotDigest });
     await assertOwnLock(lockPath, acquired.lock);
-    const rawJournal = await readOptionalJson(journalPath);
     if (rawJournal !== undefined) {
       journal = parseTransaction(rawJournal);
       const planDigest = plannedDigest(target, journal.initializedAt);
+      if (acquired.recoveryClaim !== undefined) {
+        try {
+          if (journal.transactionId !== acquired.recoveryClaim.previousLock.transactionId || journal.ownerTokenCommitment !== sha256(acquired.recoveryClaim.previousLock.ownerToken)) throw new Error("named bootstrap recovery lock and journal identity mismatch");
+          assertTransactionIdentity(journal, target, planDigest);
+          if (journal.state === "complete") {
+            const report = await readVerifiedComplete(bootstrapRoot, journal);
+            await finalizeRecoveryClaim(acquired.recoveryClaim);
+            return report;
+          }
+          const recoveryRequired = journal.state === "recovery-required";
+          journal = await rebindForRollback(bootstrapRoot, journal, acquired.lock);
+          rollbackAuthorized = true;
+          await rollbackAbsent(bootstrapRoot, journal);
+          await finalizeRecoveryClaim(acquired.recoveryClaim);
+          await releaseLock(lockPath, acquired.lock);
+          lockAcquired = false;
+          await retainedBootstrapHandle.close();
+          await rootHandle.close();
+          resourcesClosed = true;
+          if (recoveryRequired) throw new Error("named bootstrap recovery-required rollback completed; retry initialization");
+          return await initializeAgentProject(options);
+        } catch (error) {
+          if (!rollbackAuthorized) {
+            await restoreRecoveryClaim(lockPath, acquired.lock, acquired.recoveryClaim);
+            claimRestored = true;
+            journal = undefined;
+          }
+          throw error;
+        }
+      }
       assertTransactionIdentity(journal, target, planDigest);
       if (journal.state === "complete") return await readVerifiedComplete(bootstrapRoot, journal);
-      if (journal.state === "recovery-required") throw new Error("named bootstrap recovery-required rollback must complete before forward progress");
+      throw new Error("named bootstrap journal exists without an exclusively claimed recovery lock");
     }
     if (journal === undefined) {
       const initializedAt = new Date().toISOString();
@@ -142,9 +193,11 @@ export async function initializeAgentProject(options: InitializeAgentProjectOpti
         priorGeneration: null,
         priorGenerationDigest: null,
         checkpointDigest: null,
+        reboundCheckpointDigest: null,
         publishedGeneration: null,
       });
       await assertOwnLock(lockPath, acquired.lock); await writeJournal(journalPath, journal);
+      rollbackAuthorized = true;
       if (options.interruptAfterState === "locked") { await markSimulatedOrphan(lockPath, acquired.lock); retainLock = true; throw new InterruptedInitialization("locked"); }
     }
 
@@ -190,8 +243,9 @@ export async function initializeAgentProject(options: InitializeAgentProjectOpti
     await assertProjectIdentity(canonicalTarget.projectRoot, rootHandle, rootIdentity.dev, rootIdentity.ino);
     return await readVerifiedComplete(bootstrapRoot, journal);
   } catch (error) {
+    if (resourcesClosed) throw error;
     if (error instanceof InterruptedInitialization) throw error;
-    if (journal !== undefined && journal.state !== "complete" && journal.state !== "recovery-required") {
+    if (!claimRestored && rollbackAuthorized && journal !== undefined && journal.state !== "complete") {
       try {
         const rollingBack = Object.freeze({ ...journal, state: "rolling-back" as const });
         await assertOwnLock(lockPath, acquired.lock); await writeJournal(journalPath, rollingBack);
@@ -204,9 +258,65 @@ export async function initializeAgentProject(options: InitializeAgentProjectOpti
     }
     throw error;
   } finally {
-    if (!retainLock) await releaseLock(lockPath, acquired.lock);
-    await rootHandle.close();
+    if (!resourcesClosed) {
+      if (!retainLock && lockAcquired && !claimRestored) await releaseLock(lockPath, acquired.lock);
+      await retainedBootstrapHandle.close();
+      await rootHandle.close();
+    }
   }
+}
+
+async function rebindForRollback(bootstrapRoot: string, journal: TransactionRecord, lock: LockRecord): Promise<TransactionRecord> {
+  const commitment = sha256(lock.ownerToken);
+  if (journal.checkpointDigest === null) {
+    const rolling = Object.freeze({ ...journal, state: "rolling-back" as const, ownerTokenCommitment: commitment, reboundCheckpointDigest: null });
+    await writeJournal(path.join(bootstrapRoot, "transaction.json"), rolling);
+    return rolling;
+  }
+  const staged = stagingPath(bootstrapRoot, journal.transactionId);
+  const published = path.join(bootstrapRoot, "generations", journal.transactionId);
+  const generationRoot = await exists(staged) ? staged : published;
+  const checkpointPath = path.join(generationRoot, "checkpoint.json");
+  const checkpoint = parseCheckpoint(await readJsonFile(checkpointPath, "named bootstrap recovery checkpoint is malformed"));
+  await validateRecoverableGeneration(generationRoot, journal, checkpoint);
+  const rebound = Object.freeze({ ...checkpoint, ownerTokenCommitment: commitment });
+  const reboundDigest = digest(rebound);
+  const transitional = Object.freeze({ ...journal, state: "rolling-back" as const, ownerTokenCommitment: commitment, reboundCheckpointDigest: reboundDigest });
+  await writeJournal(path.join(bootstrapRoot, "transaction.json"), transitional);
+  await writeFileAtomic(checkpointPath, canonicalBytes(rebound));
+  const rolling = Object.freeze({ ...transitional, checkpointDigest: reboundDigest, reboundCheckpointDigest: null });
+  await writeJournal(path.join(bootstrapRoot, "transaction.json"), rolling);
+  return rolling;
+}
+
+async function validateRecoverableGeneration(root: string, journal: TransactionRecord, checkpoint: CheckpointRecord): Promise<void> {
+  const actualDigest = digest(checkpoint);
+  if (actualDigest !== journal.checkpointDigest && actualDigest !== journal.reboundCheckpointDigest || checkpoint.transactionId !== journal.transactionId || checkpoint.planDigest !== journal.planDigest || digest(checkpoint.canonicalTarget) !== digest(journal.canonicalTarget)) throw new Error("named bootstrap recovery checkpoint identity mismatch");
+  for (const artifact of checkpoint.artifacts) {
+    const file = path.join(root, artifact.name);
+    const info = await lstat(file);
+    if (!info.isFile() || info.isSymbolicLink() || sha256(await readFile(file)) !== artifact.digest) throw new Error("named bootstrap recovery artifact digest mismatch");
+  }
+  for (const [name, expected] of plannedArtifacts(journal.canonicalTarget, journal.initializedAt)) if (!Buffer.from(await readFile(path.join(root, name))).equals(Buffer.from(expected))) throw new Error("named bootstrap recovery artifact plan mismatch");
+}
+
+async function restoreRecoveryClaim(lockPath: string, lock: LockRecord, claim: RecoveryClaim): Promise<void> {
+  stopHeartbeat(lock);
+  await unlink(lockPath).catch(() => {});
+  await unlink(`${lockPath}.heartbeat`).catch(() => {});
+  await rename(claim.retiredLockPath, lockPath);
+  if (claim.retiredHeartbeatPath !== null) await rename(claim.retiredHeartbeatPath, `${lockPath}.heartbeat`);
+}
+
+async function finalizeRecoveryClaim(claim: RecoveryClaim): Promise<void> {
+  await unlink(claim.retiredLockPath).catch(() => {});
+  if (claim.retiredHeartbeatPath !== null) await unlink(claim.retiredHeartbeatPath).catch(() => {});
+}
+
+interface RecoveryClaim {
+  readonly previousLock: LockRecord;
+  readonly retiredLockPath: string;
+  readonly retiredHeartbeatPath: string | null;
 }
 
 async function canonicalizeTarget(options: InitializeAgentProjectOptions): Promise<Omit<CanonicalTarget, "routeSnapshotDigest">> {
@@ -218,12 +328,14 @@ async function canonicalizeTarget(options: InitializeAgentProjectOptions): Promi
   if (!homeInfo.isDirectory() || homeInfo.isSymbolicLink() || await realpath(options.homedir) !== path.resolve(options.homedir)) throw new TypeError("named bootstrap home directory is unsafe or linked");
   const projectRoot = await realpath(options.cwd);
   const packageRoot = await installedPackageRoot();
+  const installed = await computeInstalledBuildIdentityWithoutSpawn(packageRoot);
+  if (options.exactVersion !== installed.version) throw new TypeError("named bootstrap exact version does not match the executing package");
   return Object.freeze({
     agentName: options.agentName,
     agentNameFold: options.agentName.toLocaleLowerCase("en-US"),
     projectRoot,
     reelierVersion: options.exactVersion,
-    installedBuildDigest: await computeInstalledBuildDigestWithoutSpawn(packageRoot),
+    installedBuildDigest: installed.digest,
   });
 }
 
@@ -254,7 +366,7 @@ async function existingRouteSnapshotDigest(bootstrapRoot: string): Promise<strin
   return sha256(bytes);
 }
 
-async function acquireLock(lockPath: string, journalPath: string): Promise<{ lock: LockRecord }> {
+async function acquireLock(lockPath: string, _journalPath: string): Promise<{ lock: LockRecord; recoveryClaim?: RecoveryClaim }> {
   const ownerToken = randomBytes(32).toString("hex");
   const fresh: LockRecord = Object.freeze({ v: "reelier.bootstrap-lock/v2", pid: process.pid, ownerToken, transactionId: randomBytes(16).toString("hex") });
   try {
@@ -275,30 +387,28 @@ async function acquireLock(lockPath: string, journalPath: string): Promise<{ loc
   try { current = parseLock(await readJsonFile(lockPath, "named bootstrap orphan lock is malformed")); }
   catch { throw new Error("named bootstrap is busy: lock owner cannot be proved recoverable"); }
   if (activeLockTokens.has(current.ownerToken) || await heartbeatAdvanced(lockPath, current)) throw new Error("named bootstrap is busy: live lock owner");
-  if (!await exists(lockPath)) return acquireLock(lockPath, journalPath);
+  if (!await exists(lockPath)) return acquireLock(lockPath, _journalPath);
   const checked = parseLock(await readJsonFile(lockPath, "named bootstrap orphan lock changed during recovery"));
-  if (digest(checked) !== digest(current)) return acquireLock(lockPath, journalPath);
-  const rawJournal = await readOptionalJson(journalPath);
-  if (rawJournal === undefined) throw new Error("named bootstrap is busy: lock owner has no valid journal for recovery");
-  const journal = parseTransaction(rawJournal);
-  if (journal.transactionId !== current.transactionId || journal.ownerTokenCommitment !== sha256(current.ownerToken)) throw new Error("named bootstrap orphan lock and journal identity mismatch");
-  const bootstrapRoot = path.dirname(lockPath);
-  if (journal.state === "prepared") await validateStagedGeneration(bootstrapRoot, journal);
-  if (journal.state === "committing") await validateStagedOrPublishedGeneration(bootstrapRoot, journal);
-
+  if (digest(checked) !== digest(current)) return acquireLock(lockPath, _journalPath);
   const retired = `${lockPath}.orphan-${randomBytes(12).toString("hex")}`;
   await rename(lockPath, retired);
-  const resumed: LockRecord = Object.freeze({ ...fresh, transactionId: journal.transactionId });
+  const heartbeatPath = `${lockPath}.heartbeat`;
+  const retiredHeartbeat = `${retired}.heartbeat`;
+  let heartbeatRetired = false;
+  try { await rename(heartbeatPath, retiredHeartbeat); heartbeatRetired = true; }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") { await rename(retired, lockPath).catch(() => {}); throw error; } }
+  const resumed: LockRecord = Object.freeze({ ...fresh, transactionId: current.transactionId });
   try {
     const handle = await open(lockPath, "wx");
     await handle.writeFile(canonicalBytes(resumed));
     await handle.sync();
     await handle.close();
-    await unlink(retired);
     await startHeartbeat(lockPath, resumed);
-    return { lock: resumed };
+    return { lock: resumed, recoveryClaim: { previousLock: current, retiredLockPath: retired, retiredHeartbeatPath: heartbeatRetired ? retiredHeartbeat : null } };
   } catch (error) {
+    await unlink(lockPath).catch(() => {});
     await rename(retired, lockPath).catch(() => {});
+    if (heartbeatRetired) await rename(retiredHeartbeat, heartbeatPath).catch(() => {});
     throw error;
   }
 }
@@ -350,8 +460,12 @@ async function validateGeneration(root: string, journal: TransactionRecord): Pro
 }
 
 async function assertProjectIdentity(projectRoot: string, handle: Awaited<ReturnType<typeof open>>, device: number, inode: number): Promise<void> {
-  const [held, current, physical] = await Promise.all([handle.stat(), lstat(projectRoot), realpath(projectRoot)]);
-  if (!held.isDirectory() || !current.isDirectory() || current.isSymbolicLink() || held.dev !== device || held.ino !== inode || current.dev !== device || current.ino !== inode || physical !== projectRoot) throw new TypeError("named bootstrap project root changed during transaction");
+  await assertDirectoryIdentity(projectRoot, handle, device, inode, "project root");
+}
+
+async function assertDirectoryIdentity(directory: string, handle: Awaited<ReturnType<typeof open>>, device: number, inode: number, label: string): Promise<void> {
+  const [held, current, physical] = await Promise.all([handle.stat(), lstat(directory), realpath(directory)]);
+  if (!held.isDirectory() || !current.isDirectory() || current.isSymbolicLink() || held.dev !== device || held.ino !== inode || current.dev !== device || current.ino !== inode || physical !== directory) throw new TypeError(`named bootstrap ${label} changed during transaction`);
 }
 
 async function readVerifiedComplete(bootstrapRoot: string, journal: TransactionRecord): Promise<BootstrapPreparationReport> {
@@ -382,12 +496,12 @@ function parseLock(value: unknown): LockRecord {
 }
 
 function parseTransaction(value: unknown): TransactionRecord {
-  const keys = ["v", "state", "transactionId", "ownerTokenCommitment", "planDigest", "canonicalTarget", "initializedAt", "priorGeneration", "priorGenerationDigest", "checkpointDigest", "publishedGeneration"];
-  if (!isRecord(value) || !hasExactKeys(value, keys) || value.v !== "reelier.bootstrap-transaction/v2" || !PREPARATION_STATES.includes(value.state as PreparationState) || value.state === "absent" || !TRANSACTION_ID.test(String(value.transactionId)) || !SHA256.test(String(value.ownerTokenCommitment)) || !SHA256.test(String(value.planDigest)) || typeof value.initializedAt !== "string" || new Date(value.initializedAt).toISOString() !== value.initializedAt || value.priorGeneration !== null || value.priorGenerationDigest !== null || value.checkpointDigest !== null && !SHA256.test(String(value.checkpointDigest)) || value.publishedGeneration !== null && !TRANSACTION_ID.test(String(value.publishedGeneration)) || !isCanonicalTarget(value.canonicalTarget)) throw new Error("named bootstrap transaction journal is malformed");
+  const keys = ["v", "state", "transactionId", "ownerTokenCommitment", "planDigest", "canonicalTarget", "initializedAt", "priorGeneration", "priorGenerationDigest", "checkpointDigest", "reboundCheckpointDigest", "publishedGeneration"];
+  if (!isRecord(value) || !hasExactKeys(value, keys) || value.v !== "reelier.bootstrap-transaction/v2" || !PREPARATION_STATES.includes(value.state as PreparationState) || value.state === "absent" || !TRANSACTION_ID.test(String(value.transactionId)) || !SHA256.test(String(value.ownerTokenCommitment)) || !SHA256.test(String(value.planDigest)) || typeof value.initializedAt !== "string" || new Date(value.initializedAt).toISOString() !== value.initializedAt || value.priorGeneration !== null || value.priorGenerationDigest !== null || value.checkpointDigest !== null && !SHA256.test(String(value.checkpointDigest)) || value.reboundCheckpointDigest !== null && !SHA256.test(String(value.reboundCheckpointDigest)) || value.publishedGeneration !== null && !TRANSACTION_ID.test(String(value.publishedGeneration)) || !isCanonicalTarget(value.canonicalTarget)) throw new Error("named bootstrap transaction journal is malformed");
   const journal = value as unknown as TransactionRecord;
   const checkpointRequired = journal.state === "prepared" || journal.state === "committing" || journal.state === "complete";
   const publicationRequired = journal.state === "complete";
-  if (checkpointRequired && journal.checkpointDigest === null || journal.state === "locked" && journal.checkpointDigest !== null || (journal.publishedGeneration !== null) !== publicationRequired || publicationRequired && journal.publishedGeneration !== journal.transactionId) throw new Error("named bootstrap transaction state identity is malformed");
+  if (checkpointRequired && journal.checkpointDigest === null || journal.state === "locked" && (journal.checkpointDigest !== null || journal.reboundCheckpointDigest !== null) || journal.state !== "rolling-back" && journal.reboundCheckpointDigest !== null || (journal.publishedGeneration !== null) !== publicationRequired || publicationRequired && journal.publishedGeneration !== journal.transactionId) throw new Error("named bootstrap transaction state identity is malformed");
   return journal;
 }
 
@@ -495,35 +609,45 @@ function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): 
 async function generationDigest(root: string): Promise<string> { return digest({ checkpoint: sha256(await readFile(path.join(root, "checkpoint.json"))), project: sha256(await readFile(path.join(root, "project.json"))), recovery: sha256(await readFile(path.join(root, "recovery-command.txt"))), report: sha256(await readFile(path.join(root, "report.json"))) }); }
 async function installedPackageRoot(): Promise<string> { let candidate = path.dirname(fileURLToPath(import.meta.url)); for (;;) { try { await access(path.join(candidate, "package.json")); return candidate; } catch {} const parent = path.dirname(candidate); if (parent === candidate) throw new TypeError("installed package root is unavailable"); candidate = parent; } }
 
-async function computeInstalledBuildDigestWithoutSpawn(packageRoot: string): Promise<string> {
+async function computeInstalledBuildIdentityWithoutSpawn(packageRoot: string): Promise<{ version: string; digest: string }> {
   const manifest = JSON.parse(await readFile(path.join(packageRoot, "package.json"), "utf8")) as { version?: unknown; files?: unknown };
   if (typeof manifest.version !== "string" || !VERSION.test(manifest.version) || !Array.isArray(manifest.files) || manifest.files.some(value => typeof value !== "string")) throw new TypeError("installed package manifest contract is invalid");
-  const included = new Map<string, string>();
-  const excluded = new Set((manifest.files as string[]).filter(value => value.startsWith("!")).map(value => value.slice(1)));
-  const collect = async (absolute: string): Promise<void> => {
-    const relative = path.relative(packageRoot, absolute).split(path.sep).join("/");
-    if (excluded.has(relative)) return;
-    const info = await lstat(absolute);
-    if (info.isSymbolicLink()) throw new TypeError("installed package contains a linked entry");
-    if (info.isFile()) { if (path.basename(relative) !== "installed-build-digest.json") included.set(relative, absolute); return; }
-    if (!info.isDirectory()) throw new TypeError("installed package contains a non-regular entry");
-    for (const name of (await readdir(absolute)).sort((a, b) => Buffer.from(a).compare(Buffer.from(b)))) await collect(path.join(absolute, name));
-  };
-  await collect(path.join(packageRoot, "package.json"));
-  for (const rule of (manifest.files as string[]).filter(value => !value.startsWith("!"))) {
-    if (/[?*\[\]{}]/.test(rule) || path.isAbsolute(rule) || rule.split("/").some(part => part === "" || part === "." || part === "..")) throw new TypeError("installed package files rule is unsupported");
-    await collect(path.join(packageRoot, ...rule.split("/")));
-  }
-  const paths = [...included.keys()].sort((a, b) => Buffer.from(a).compare(Buffer.from(b)));
+  const npmRoot = await npmInternalModulesRoot();
+  let packlist: (tree: unknown) => Promise<string[]>;
+  let Arborist: new (options: { path: string }) => { loadActual(): Promise<unknown> };
+  try {
+    packlist = (await import(pathToFileURL(path.join(npmRoot, "npm-packlist", "lib", "index.js")).href)).default as typeof packlist;
+    Arborist = (await import(pathToFileURL(path.join(npmRoot, "@npmcli", "arborist", "lib", "index.js")).href)).default as typeof Arborist;
+  } catch { throw new TypeError("canonical npm shipped-file membership is unavailable"); }
+  const tree = await new Arborist({ path: packageRoot }).loadActual();
+  const paths = (await packlist(tree)).filter(relative => path.basename(relative) !== "installed-build-digest.json").sort((a, b) => Buffer.from(a).compare(Buffer.from(b)));
+  if (new Set(paths).size !== paths.length) throw new TypeError("installed package membership contains duplicates");
   const folded = new Set<string>();
-  const files = [];
+  const files: { path: string; digest: string }[] = [];
   for (const relative of paths) {
+    if (relative.length === 0 || relative.includes("\\") || path.isAbsolute(relative) || relative.split("/").some(part => part === "" || part === "." || part === "..")) throw new TypeError("installed package membership is unconfined");
     const fold = relative.toLocaleLowerCase("en-US");
     if (folded.has(fold)) throw new TypeError("installed package paths contain a case collision");
     folded.add(fold);
-    files.push({ path: relative, digest: sha256(await readFile(included.get(relative)!)) });
+    const absolute = path.join(packageRoot, ...relative.split("/"));
+    const info = await lstat(absolute);
+    if (!info.isFile() || info.isSymbolicLink() || path.relative(packageRoot, await realpath(absolute)).split(path.sep).join("/") !== relative) throw new TypeError("installed package membership contains an unsafe file");
+    files.push({ path: relative, digest: sha256(await readFile(absolute)) });
   }
-  return digest({ v: "reelier.installed-build-identity/v1", packageVersion: manifest.version, files });
+  return { version: manifest.version, digest: digest({ v: "reelier.installed-build-identity/v1", packageVersion: manifest.version, files }) };
+}
+
+async function npmInternalModulesRoot(): Promise<string> {
+  const candidates = [
+    process.env.npm_execpath === undefined ? undefined : path.join(path.dirname(path.dirname(process.env.npm_execpath)), "node_modules"),
+    path.join(path.dirname(process.execPath), "node_modules", "npm", "node_modules"),
+    path.resolve(path.dirname(process.execPath), "../lib/node_modules/npm/node_modules"),
+    path.resolve(path.dirname(process.execPath), "../node_modules/npm/node_modules"),
+  ];
+  for (const candidate of candidates) if (candidate !== undefined) {
+    try { await access(path.join(candidate, "npm-packlist", "lib", "index.js")); await access(path.join(candidate, "@npmcli", "arborist", "lib", "index.js")); return candidate; } catch {}
+  }
+  throw new TypeError("canonical npm shipped-file membership is unavailable");
 }
 
 class InterruptedInitialization extends Error {
