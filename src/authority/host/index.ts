@@ -69,3 +69,5 @@ export { createCertificationCellHost, certificationTaskShapeDigest, type Certifi
 export { verifyCertificationOperatorConfigV3, verifyCertificationEndpointManifestV2, verifyCertificationRunnerManifestV2, verifyCertificationScenarioPlanV1 } from "../certification/semantic-verification.js";
 export { createGovernedAuthorityCell, type GovernedAuthorityCellReferenceV1, type GovernedAuthorityCellOptionsV1 } from "./governed-cell.js";
 export { verifyProfileGovernedAuthorityReceipt, type ProfileGovernedAuthorityReceiptV1, type ProfileGovernedAuthorityReceiptVerificationOptionsV1 } from "./profile-governed-receipt.js";
+export type { ProducedReceiptKindV1, PurposeBoundReceiptSignerV1, AuthorityReceiptSigningAuthorityV1 } from "./receipt-authority.js";
+export type { CertificationArtifactKeyBindingV1, CertificationArtifactKeyBindingCommitmentV1 } from "../certification/lifecycle-authority.js";

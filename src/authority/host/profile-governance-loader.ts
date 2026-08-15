@@ -27,8 +27,14 @@ export async function loadProfileGovernanceFromOperatorTrust(input: LoadProfileG
   const values = parseInput(input);
   const root = path.resolve(values.homedir, ".reelier", "trust", "outcome-profiles", values.tenant, values.governanceRef);
   await assertConfinedDirectory(root, values.homedir);
+  const rootIdentity = await lstat(root);
+  const canonicalRoot = await realpath(root);
   const documents = new Map<string, unknown>();
-  for (const name of FILES) documents.set(name, await readConfinedJson(root, name));
+  for (const name of FILES) {
+    assertSameRoot(rootIdentity, await lstat(root), root, canonicalRoot);
+    documents.set(name, await readConfinedJson(root, name));
+    assertSameRoot(rootIdentity, await lstat(root), root, canonicalRoot);
+  }
   const trustPin = parseProfileTrustPin(documents.get("trust-pin.json"));
   const manifest = parseProfileGovernanceManifest(documents.get("manifest.json"));
   const draft = parseOutcomeProfileDraft(documents.get("profile.json"));
@@ -44,7 +50,14 @@ export async function loadProfileGovernanceFromOperatorTrust(input: LoadProfileG
   ]);
   const verified = verifyProfileGovernanceOffline({ tenant: values.tenant, draft, report, conformance, activation, trustRoots: roots, packs: createFirstPartyPackRegistry(), now: values.verificationTime });
   if (manifest.profileDigest !== verified.profileDigest || manifest.conformanceReportDigest !== verified.conformanceReportDigest || manifest.conformanceDigest !== verified.conformanceDigest || manifest.activationDigest !== verified.activationDigest || manifest.trustPinDigest !== verified.trustPinDigest || manifest.trustHeadDigest !== verified.trustHeadDigest) throw new TypeError("profile governance manifest artifact linkage mismatch");
-  return createAdmittedProfileGovernance({ draft, report, conformance, activation, manifest, manifestDigest, operatorRootDigest: authorityDigest({ v: "reelier.profile-governance-operator-root/v1", tenant: values.tenant, governanceRef: values.governanceRef, canonicalRoot: await realpath(root) }) });
+  assertSameRoot(rootIdentity, await lstat(root), root, canonicalRoot);
+  return createAdmittedProfileGovernance({
+    draft, report, conformance, activation, manifest,trustPin, manifestDigest,
+    operatorRootDigest: authorityDigest({ v: "reelier.profile-governance-operator-root/v1", tenant: values.tenant, governanceRef: values.governanceRef, canonicalRoot }),
+    certifier: { signerId: trustPin.certifier.signerId, publicKeySpkiBase64: trustPin.certifier.publicKeySpkiBase64 },
+    operator: { signerId: trustPin.operator.signerId, publicKeySpkiBase64: trustPin.operator.publicKeySpkiBase64 },
+    reload:{tenant:values.tenant,governanceRef:values.governanceRef,expectedManifestDigest:values.expectedManifestDigest,expectedTrustHeadDigest:values.expectedTrustHeadDigest,homedir:values.homedir},
+  });
 }
 
 export async function inspectProfileGovernanceStatus(input: LoadProfileGovernanceInputV1): Promise<ProfileGovernanceStatusV1> {
@@ -104,4 +117,9 @@ async function readConfinedJson(root: string, name: typeof FILES[number]): Promi
 
 function sameIdentity(left: Awaited<ReturnType<typeof lstat>>, right: Awaited<ReturnType<typeof lstat>>): boolean {
   return left.dev === right.dev && left.ino === right.ino && left.size === right.size && left.mtimeMs === right.mtimeMs;
+}
+
+function assertSameRoot(before: Awaited<ReturnType<typeof lstat>>, after: Awaited<ReturnType<typeof lstat>>, root: string, canonicalRoot: string): void {
+  if (!after.isDirectory() || after.isSymbolicLink() || before.dev !== after.dev || before.ino !== after.ino) throw new TypeError("profile governance physical root identity changed");
+  if (path.resolve(root) !== canonicalRoot) throw new TypeError("profile governance physical root is not canonical");
 }

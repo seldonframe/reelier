@@ -89,11 +89,63 @@ export interface SignedTenantProfileActivationV1 {
   readonly jobCardDigest: string;
   readonly contractDigest: string;
   readonly deploymentDigest: string;
-  readonly routeAuthorityDigest: string;
+  readonly routeScopeDigest: string;
   readonly trustHeadDigest: string;
+  readonly authorityTrustHeadDigest: string;
   readonly validFrom: string;
   readonly validUntil: string;
   readonly state: "activated" | "revoked";
+  readonly signerId: string;
+  readonly signature: AuthoritySignature;
+}
+
+export interface AuthorityRouteScopeV1 {
+  readonly v: "reelier.authority-route-scope/v1";
+  readonly tenant: string;
+  readonly definitionAlias: string;
+  readonly connectorRegistrationDigest: string;
+  readonly operatorConfigurationDigest: string;
+  readonly routeDigest: string;
+  readonly providerId: string;
+  readonly connectorId: string;
+  readonly accountId: string;
+  readonly providerAccountIdentity: string;
+  readonly endpointId: string;
+  readonly credentialSlotId: string;
+  readonly sourceReadRouteDigest: string;
+  readonly projectionSchemaDigest: string;
+}
+
+export interface AuthorityDeploymentSnapshotV1 {
+  readonly v: "reelier.authority-deployment-snapshot/v1";
+  readonly tenant: string;
+  readonly jobCardDigest: string;
+  readonly jobCardAuthorityDigest: string;
+  readonly authorityStateDigest: string;
+  readonly connectorRegistryDigest: string;
+  readonly trustRootSetDigest: string;
+  readonly connectionDescriptorsDigest: string;
+  readonly connectionAdoptionsDigest: string;
+  readonly enforcementDigest: string;
+  readonly routeScopeDigest: string;
+}
+
+export interface SignedProfileAuthorityBindingV1 {
+  readonly v: "reelier.profile-authority-binding/v1";
+  readonly purpose: "profile-authority-binding";
+  readonly tenant: string;
+  readonly profileDigest: string;
+  readonly activationDigest: string;
+  readonly innerReceiptDigest: string;
+  readonly jobCardDigest: string;
+  readonly artifactKeyBindingDigest: string;
+  readonly artifactKeyBindingCommitmentDigest: string;
+  readonly contractDigest: string;
+  readonly deploymentDigest: string;
+  readonly routeScopeDigest: string;
+  readonly routeAuthoritySnapshotDigest: string;
+  readonly authorityTrustHeadDigest: string;
+  readonly observedAt: string;
   readonly signerId: string;
   readonly signature: AuthoritySignature;
 }
@@ -178,7 +230,7 @@ export interface ProfileGovernanceVerificationInputV1 {
   readonly now: Date;
 }
 
-type ProfileSchemaName = "profile-draft" | "profile-conformance-report" | "profile-conformance" | "profile-activation" | "profile-trust-pin" | "profile-governance-manifest";
+type ProfileSchemaName = "profile-draft" | "profile-conformance-report" | "profile-conformance" | "profile-activation" | "profile-authority-evidence" | "profile-trust-pin" | "profile-governance-manifest";
 const profileVerificationRootStates = new WeakMap<object, ProfileVerificationRootState>();
 const validators = new Map<ProfileSchemaName, ValidateFunction>();
 const authorityDirectory = dirname(fileURLToPath(import.meta.url));
@@ -196,6 +248,17 @@ export function parseSignedOutcomeProfileConformance(value: unknown): SignedOutc
 export function parseSignedTenantProfileActivation(value: unknown): SignedTenantProfileActivationV1 {
   const parsed = parseProfileSchema<SignedTenantProfileActivationV1>("profile-activation", value);
   if (parseCanonicalTime(parsed.validUntil) <= parseCanonicalTime(parsed.validFrom)) throw new TypeError("profile activation validity interval is invalid");
+  return parsed;
+}
+export function parseAuthorityRouteScope(value: unknown): AuthorityRouteScopeV1 {
+  return parseClosedDigestRecord(value, "authority route scope", ["v", "tenant", "definitionAlias", "connectorRegistrationDigest", "operatorConfigurationDigest", "routeDigest", "providerId", "connectorId", "accountId", "providerAccountIdentity", "endpointId", "credentialSlotId", "sourceReadRouteDigest", "projectionSchemaDigest"], "reelier.authority-route-scope/v1") as unknown as AuthorityRouteScopeV1;
+}
+export function parseAuthorityDeploymentSnapshot(value: unknown): AuthorityDeploymentSnapshotV1 {
+  return parseClosedDigestRecord(value, "authority deployment snapshot", ["v", "tenant", "jobCardDigest", "jobCardAuthorityDigest", "authorityStateDigest", "connectorRegistryDigest", "trustRootSetDigest", "connectionDescriptorsDigest", "connectionAdoptionsDigest", "enforcementDigest", "routeScopeDigest"], "reelier.authority-deployment-snapshot/v1") as unknown as AuthorityDeploymentSnapshotV1;
+}
+export function parseSignedProfileAuthorityBinding(value: unknown): SignedProfileAuthorityBindingV1 {
+  const parsed = parseProfileSchema<SignedProfileAuthorityBindingV1>("profile-authority-evidence", value);
+  parseCanonicalTime(parsed.observedAt);
   return parsed;
 }
 export function parseProfileTrustPin(value: unknown): ProfileTrustPinV1 {
@@ -297,7 +360,7 @@ function parseProfileSchema<T>(name: ProfileSchemaName, value: unknown): T {
     validate = ajv.compile(JSON.parse(schemaText) as object);
     validators.set(name, validate);
   }
-  if (!validate(value)) throw new TypeError(`invalid ${name}: ${ajv.errorsText(validate.errors, { separator: "; " })}`);
+  if (!validate(value)) throw new TypeError(`invalid closed ${name}: ${ajv.errorsText(validate.errors, { separator: "; " })}`);
   return deepFreeze(JSON.parse(authorityCanonicalBytes(value).toString("utf8")) as T);
 }
 
@@ -306,6 +369,18 @@ function parseAnchor(value: ProfileVerificationAnchorV1): ProfileVerificationAnc
   assertExactKeys(value, keys, "profile verification anchor");
   if (typeof value.tenant !== "string" || typeof value.governanceRef !== "string" || typeof value.signerId !== "string" || (value.purpose !== "profile-conformance" && value.purpose !== "profile-activation") || typeof value.publicKeySpkiBase64 !== "string" || !Array.isArray(value.currentTrustEvents) || typeof value.currentTrustEventsDigest !== "string" || typeof value.trustHeadDigest !== "string") throw new TypeError("profile verification anchor is invalid");
   return deepFreeze(JSON.parse(authorityCanonicalBytes(value).toString("utf8")) as ProfileVerificationAnchorV1);
+}
+
+function parseClosedDigestRecord(value: unknown, label: string, keys: readonly string[], version: string): Readonly<Record<string, string>> {
+  assertOwnDataTree(value, label);
+  assertExactKeys(value, keys, label);
+  if (value.v !== version) throw new TypeError(`${label} version is invalid`);
+  for (const key of keys) {
+    const member = value[key];
+    if (typeof member !== "string" || member.length === 0) throw new TypeError(`${label} ${key} is invalid`);
+    if (key.endsWith("Digest") && !/^sha256:(?!0{64}$)[0-9a-f]{64}$/.test(member)) throw new TypeError(`${label} ${key} is invalid`);
+  }
+  return deepFreeze(JSON.parse(authorityCanonicalBytes(value).toString("utf8")) as Record<string, string>);
 }
 
 function replayProfileTrust(pin: ProfileTrustPinV1, verificationEpoch?: number): void {
@@ -384,7 +459,7 @@ function exactInput(input: ProfileGovernanceVerificationInputV1): ProfileGoverna
 function assertExactKeys(value: unknown, expected: readonly string[], label: string): asserts value is Record<string, unknown> {
   if (value === null || typeof value !== "object" || Object.getPrototypeOf(value) !== Object.prototype) throw new TypeError(`${label} must be a plain record`);
   const keys = Reflect.ownKeys(value);
-  if (keys.length !== expected.length || keys.some(key => typeof key !== "string" || !expected.includes(key))) throw new TypeError(`${label} must contain exact fields`);
+  if (keys.length !== expected.length || keys.some(key => typeof key !== "string" || !expected.includes(key))) throw new TypeError(`${label} is closed and must contain exact fields`);
   for (const key of keys) {
     const descriptor = Object.getOwnPropertyDescriptor(value, key);
     if (!descriptor || !("value" in descriptor) || !descriptor.enumerable) throw new TypeError(`${label} fields must be enumerable own data properties`);

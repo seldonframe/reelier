@@ -106,6 +106,7 @@ function validateNativeAuthority(route: JsonHttpsRouteV1, routeDigest: string, o
   if (operatorConfigurationDigest !== undefined && !DIGEST.test(operatorConfigurationDigest)) throw new JsonHttpsSecurityError("operator configuration digest is invalid");
   if (routeAuthority && !DIGEST.test(routeAuthority.operatorConfigurationDigest)) throw new JsonHttpsSecurityError("route authority operator configuration digest is invalid");
   if (routeAuthority && !DIGEST.test(routeAuthority.routeDigest)) throw new JsonHttpsSecurityError("route authority route digest is invalid");
+  if (routeAuthority && routeAuthority.projectionSchemaDigest !== route.projectionSchemaDigest) throw new JsonHttpsSecurityError("route authority projection schema digest does not match native route");
   if (operatorConfigurationDigest !== undefined && routeAuthority?.operatorConfigurationDigest !== operatorConfigurationDigest) throw new JsonHttpsSecurityError("operator configuration digest does not match route authority");
   if (routeAuthority !== undefined && routeAuthority.routeDigest !== routeDigest) throw new JsonHttpsSecurityError("route authority digest does not match native route");
 }

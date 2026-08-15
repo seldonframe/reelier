@@ -12,10 +12,12 @@ import { certificationWorkspaceRoot, confinedExistingDirectory, ensureConfinedDi
 import { AUTHORITY_ADAPTER_CONTRACT_V1_DIGEST } from "../adapter-contract.js";
 import { verifyAuthorityReceiptBundle } from "../verify.js";
 import { createPortableAuthorityReceiptPublication } from "../host/portable-receipts.js";
+import { constructAuthorityReceiptBundle, validateLifecycleAuthorityReceiptSigningAuthority, type ValidatedAuthorityReceiptSigningAuthorityV1 } from "../host/receipt-authority.js";
 
 export interface CertificationReceiptExtensionV1 { readonly v: "reelier.certification-receipt-extension/v1"; readonly receiptDigest: string; readonly adapterContractDigest: string; readonly signerId: string; readonly signature: Readonly<{ alg: "ed25519"; sig: string }> }
 
 export function createCertificationLifecycleReceiptPublication(input: Readonly<{ rootDir: string; lifecycle: CertificationLifecycleAuthorityMaterial; signedGrants: readonly any[]; now: () => Date }>): DispatchPublication {
+  const signingAuthority=validateLifecycleAuthorityReceiptSigningAuthority(input.lifecycle);
   const local = createFileReceiptPublication({ rootDir: path.join(input.rootDir, "local") });
   const prior = new Map<string, AuthorityReceipt>();
   const portablePublication: DispatchPublication = Object.freeze({ async publish(value: Parameters<DispatchPublication["publish"]>[0]) {
@@ -28,10 +30,10 @@ export function createCertificationLifecycleReceiptPublication(input: Readonly<{
     }
     let priorReceipt = prior.get(value.state.reservation.reservationId) ?? recovered?.receipt.value;
     if (!priorReceipt && value.phase === "dispatch") {
-      const reservation = portable(value.state, { kind: "ambiguous", resultDigest: authorityDigest({ reservationId: value.state.reservation.reservationId, phase: "reservation" }), reconciliationStatus: "not-attempted" }, "reservation", input);
+      const reservation = await portable(value.state, { kind: "ambiguous", resultDigest: authorityDigest({ reservationId: value.state.reservation.reservationId, phase: "reservation" }), reconciliationStatus: "not-attempted" }, "reservation", {...input,signingAuthority});
       await save(input.rootDir, reservation); await ensureExtension(input.rootDir, reservation, input.lifecycle); priorReceipt = reservation.receipt.value;
     }
-    const bundle = portable(value.state, value.outcome, value.phase, input, priorReceipt, recovered);
+    const bundle = await portable(value.state, value.outcome, value.phase, {...input,signingAuthority}, priorReceipt, recovered);
     prior.set(value.state.reservation.reservationId, bundle.receipt.value);
     await save(input.rootDir, bundle);
     if (input.lifecycle.schedule === "cut-after-conflict-receipt-before-extension" && value.phase === "reconcile" && value.outcome.reconciliationStatus === "conflict") throw new Error("controlled cut");
@@ -41,7 +43,7 @@ export function createCertificationLifecycleReceiptPublication(input: Readonly<{
   return createPortableAuthorityReceiptPublication({ localPublication: local, portablePublication, beforePublish: async () => { await certificationWorkspaceRoot(input.rootDir); } });
 }
 
-function portable(state: DispatchRequestState, outcome: DispatchOutcome, phase: string, input: Readonly<{ lifecycle: CertificationLifecycleAuthorityMaterial; signedGrants: readonly any[]; now: () => Date }>, prior?: AuthorityReceipt, recovered?: AuthorityReceiptBundle): AuthorityReceiptBundle {
+async function portable(state: DispatchRequestState, outcome: DispatchOutcome, phase: "reservation"|"dispatch"|"cancelled"|"ambiguous"|"reconcile", input: Readonly<{ lifecycle: CertificationLifecycleAuthorityMaterial; signedGrants: readonly any[]; now: () => Date;signingAuthority:ValidatedAuthorityReceiptSigningAuthorityV1 }>, prior?: AuthorityReceipt, recovered?: AuthorityReceiptBundle): Promise<AuthorityReceiptBundle> {
   const raw = state as any, decision = raw.signedDecision ?? (recovered ? { decisionContext: recovered.receipt.value.decisionContext, decisionContextDigest: recovered.receipt.value.decisionContextDigest, gateEvent: recovered.gateEvent.value, gateEventDigest: recovered.gateEvent.digest, signerId: recovered.gateEvent.signerId, signature: recovered.gateEvent.signature } : undefined), contract = raw.contract?.contract ?? recovered?.contract.value, source = raw.source?.bundle ?? recovered?.sourceBundle.value, capability = raw.capability ?? recovered?.capability.value, effect = raw.effect ?? recovered?.transportEffect.value;
   const at = input.now().toISOString(), receiptId = portableReceiptId(state.reservation.reservationId, phase, outcome.resultDigest);
   const states: any[] = [{ state: "reserved", at, eventDigest: authorityDigest({ state: "reserved", reservationId: state.reservation.reservationId }) }];
@@ -52,7 +54,7 @@ function portable(state: DispatchRequestState, outcome: DispatchOutcome, phase: 
   const evidence = createAuthorityEvidence({ evidenceId: `evidence_${receiptId.slice(8)}`, receiptId, decisionContextDigest: decision.decisionContextDigest, gateEventDigest: decision.gateEventDigest, effectDigest: authorityDigest(effect), reservationId: `reservation_${authorityDigest(state.reservation.reservationId).slice(7, 31)}`, timeline: states, dispatchedRequestDigest: phase === "cancelled" || phase === "reservation" ? null : authorityDigest({ v: "reelier.dispatched-request/v1", reservationId: state.reservation.reservationId, effectDigest: state.effectDigest, effect }), providerResponseDigest: outcome.kind === "acknowledged" ? outcome.providerResultDigest ?? outcome.resultDigest : null, reconciliation: { recipeId: effect.reconciliation.recipeId, verdict: phase === "reservation" ? "not-attempted" : outcome.reconciliationStatus ?? "not-attempted", normalizedProjectionDigest: phase === "reservation" ? null : outcome.normalizedProjectionDigest ?? null }, topology: { egress: "unchecked", secretIsolation: "verified", ingressAuthentication: "verified", notes: "Hermetic in-Cell provider; production topology not asserted." } });
   const receipt = createAuthorityReceipt({ receiptId, gateEventDigest: decision.gateEventDigest, decisionContextDigest: decision.decisionContextDigest, decisionContext: decision.decisionContext, evidence, priorReceiptDigest: prior ? authorityDigest(prior) : null, claims: { authorization: "verified", sourceCompleteness: "verified", dispatch: phase === "cancelled" || phase === "reservation" ? "absent" : "verified", providerAcknowledgment: outcome.kind === "acknowledged" ? "verified" : "unchecked", reconciliation: outcome.reconciliationStatus === "matched" ? "verified" : "unchecked", topology: "unchecked", completeness: "unchecked" } });
   const pack = parseAuthorityWire("pack-manifest", { v: "reelier.outcome-pack-manifest/v1", packId: "github_issue_labels", packDigest: contract.packDigest, definitions: [decision.decisionContext.definitionAlias] });
-  return createAuthorityReceiptBundle({ v: "reelier.authority-receipt-bundle/v1", contract: recovered?.contract ?? signed("outcome-contract", contract, input.lifecycle), delegation: recovered?.delegation ?? input.signedGrants.map(grant => signedExisting("delegation-grant", grant)), sourceBundle: recovered?.sourceBundle ?? signed("source-bundle", source, input.lifecycle), capability: recovered?.capability ?? signed("compiled-capability", capability, input.lifecycle), transportEffect: recovered?.transportEffect ?? signed("transport-effect", effect, input.lifecycle), gateEvent: recovered?.gateEvent ?? signedExisting("gate-event", { value: decision.gateEvent, digest: decision.gateEventDigest, signerId: decision.signerId, signature: decision.signature }), evidence: signed("authority-evidence", evidence, input.lifecycle), receipt: signed("authority-receipt", receipt, input.lifecycle), packManifest: recovered?.packManifest ?? signed("pack-manifest", pack, input.lifecycle) });
+  return constructAuthorityReceiptBundle({phase,state,outcome,observedAt:at,foundations:{contract:recovered?.contract??signed("outcome-contract",contract,input.lifecycle),delegation:recovered?.delegation??input.signedGrants.map(grant=>signedExisting("delegation-grant",grant)),gateEvent:recovered?.gateEvent??signedExisting("gate-event",{value:decision.gateEvent,digest:decision.gateEventDigest,signerId:decision.signerId,signature:decision.signature}),packManifest:pack},signingAuthority:input.signingAuthority,...(prior?{priorReceipt:prior}:{}),...(recovered?{recovered}:{})});
 }
 
 function portableReceiptId(reservationId: string, phase: string, resultDigest: string): string { return `receipt_${authorityDigest({ reservationId, phase, result: resultDigest }).slice(7, 31)}`; }

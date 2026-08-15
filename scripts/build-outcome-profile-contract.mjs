@@ -9,6 +9,7 @@ const descriptorTarget = join(contractDirectory, "contract-descriptor.json");
 const sourceTarget = fileURLToPath(new URL("../src/authority/outcome-profile-contract.ts", import.meta.url));
 const members = [
   "profile-activation.schema.json",
+  "profile-authority-evidence.schema.json",
   "profile-conformance-report.schema.json",
   "profile-conformance.schema.json",
   "profile-draft.schema.json",

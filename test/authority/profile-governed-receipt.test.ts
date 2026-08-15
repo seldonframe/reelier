@@ -12,7 +12,7 @@ test("profile-governed receipt verifies the unchanged inner authority bundle bef
 test("offline governed verification requires an exact enumerable direct Authority root array", () => {
   const fixture = profileGovernanceFixture();
   const wrapper = { v: "reelier.profile-governed-authority-receipt/v1", profileDraft: fixture.draft, profileConformanceReport: fixture.report, profileConformance: fixture.conformance, profileActivation: fixture.activation, authorityReceiptBundle: {}, authorityBindingEvidence: {}, edges: { profileDigest: fixture.manifest.profileDigest, conformanceReportDigest: fixture.manifest.conformanceReportDigest, conformanceDigest: fixture.manifest.conformanceDigest, activationDigest: fixture.manifest.activationDigest, innerReceiptDigest: sha("1"), authorityBindingDigest: sha("2") } };
-  const options = { profileTrustRoots: {}, profilePacks: fixture.packs, jobCardTrustPin: {}, currentAuthorityTrustEvents: [], directAuthorityRoots: [], expectedTenant: "tenant_1", expectedAuthorityCellId: "cell_1", expectedTaskId: "task_1", now: new Date("2026-08-14T12:00:00.000Z") } satisfies ProfileGovernedAuthorityReceiptVerificationOptionsV1;
+  const options = { profileTrustRoots: {} as never, profilePacks: fixture.packs, jobCardTrustPin: {} as never, currentAuthorityTrustEvents: [], directAuthorityRoots: [], expectedTenant: "tenant_1", expectedAuthorityCellId: "cell_1", expectedTaskId: "task_1", now: new Date("2026-08-14T12:00:00.000Z") } satisfies ProfileGovernedAuthorityReceiptVerificationOptionsV1;
   for (const mutated of [
     { ...options, directAuthorityRoots: {} },
     { ...options, directAuthorityRoots: [{ tenant: "tenant_2" }] },
