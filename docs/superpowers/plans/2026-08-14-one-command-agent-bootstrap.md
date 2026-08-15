@@ -426,7 +426,7 @@ Stop and amend this plan again before touching any other tracked path.
 
 **Interfaces:**
 - Consumes: public inert profile artifacts and profile-only offline verification; installed `StaticPackRegistry`; an existing deployment that has passed `loadAuthorityDeployment`; the full external `JobCardTrustPinV1` and parsed `JobCardTrustMaterialV1`; existing `CertificationArtifactKeyBindingV1` plus human commitment; exact parsed state candidates; connector/source/pack/trust registries; canonical native read/write routes with route-owned projection commitment; as-of profile and Authority trust event chains; actual prepared-dispatch state/outcome plus the accepted request's persisted `RouteAuthoritySnapshotV1`; exact already signed contract/delegation/gate foundations; six external purpose-bound receipt signers whose `evidence` signer also signs the domain-separated outer binding; private governed/lifecycle segregation anchors; and the unchanged Authority bundle constructor/parser/verifier.
-- Produces: host-only opaque `AdmittedProfileGovernanceV1` retaining private certifier/operator ID+SPKI; private branded/`WeakMap` runtime provenance containing independently derived installed-pack, eligible-contract, signed-authority, deployment-snapshot, stable-route-scope, as-of/current observations, receipt foundations, artifact-key binding/commitment, segregation anchors, and signer bindings; package-internal `selectEligibleAuthorityContract`, `projectRouteScope`, `CurrentAuthorityTrustViewV1`, `ValidatedAuthorityReceiptSigningAuthorityV1`, their sole factories, and `loadExistingLocalGateSigner`; public type-only `ProducedReceiptKindV1`, `PurposeBoundReceiptSignerV1<K>`, `AuthorityReceiptSigningAuthorityV1`, `CertificationArtifactKeyBindingV1`, and `CertificationArtifactKeyBindingCommitmentV1`; package-private `AuthorityReceiptFoundationsV1`, `AuthorityReceiptBundleConstructionInputV1`, and async `constructAuthorityReceiptBundle`; optional all-or-none durable `DispatchPublication.publishReservation`/`loadDurableHead` compatibility pair over dedicated closed query/head records; `AuthorityRouteScopeV1`; `AuthorityDeploymentSnapshotV1`; standalone eighth Outcome Profile member `SignedProfileAuthorityBindingV1`; cold load plus pre-invoke/pre-reserve revalidation; read-only `inspectProfileGovernanceStatus`; public `createGovernedAuthorityCell`; a governed semantic-CAS receipt store and immutable reservation/terminal/ambiguity/reconciliation chain; `ProfileGovernedAuthorityReceiptV1`; and `verifyProfileGovernedAuthorityReceipt` with separate historical proof and verifier-time current status.
+- Produces: host-only opaque `AdmittedProfileGovernanceV1` retaining private certifier/operator ID+SPKI; private branded/`WeakMap` runtime provenance containing independently derived installed-pack, eligible-contract, signed-authority, deployment-snapshot, stable-route-scope, as-of/current observations, receipt foundations, artifact-key binding/commitment, segregation anchors, and signer bindings; package-internal `selectEligibleAuthorityContract`, `projectRouteScope`, `CurrentAuthorityTrustViewV1`, `ValidatedAuthorityReceiptSigningAuthorityV1`, their sole factories, and `loadExistingLocalGateSigner`; public type-only `ProducedReceiptKindV1`, `PurposeBoundReceiptSignerV1<K>`, `AuthorityReceiptSigningAuthorityV1`, `CertificationArtifactKeyBindingV1`, and `CertificationArtifactKeyBindingCommitmentV1`; package-private `AuthorityReceiptFoundationsV1`, `AuthorityReceiptBundleConstructionInputV1`, and async `constructAuthorityReceiptBundle`; optional all-or-none durable `DispatchPublication.publishReservation`/`loadDurableHead` compatibility pair over shared `DurableDispatchPublicationIdentityV1` plus dedicated closed query/head records; `AuthorityRouteScopeV1`; `AuthorityDeploymentSnapshotV1`; standalone eighth Outcome Profile member `SignedProfileAuthorityBindingV1`; cold load plus pre-invoke/pre-reserve revalidation; read-only `inspectProfileGovernanceStatus`; public `createGovernedAuthorityCell`; a governed semantic-CAS receipt store and immutable reservation/terminal/ambiguity/reconciliation chain; `ProfileGovernedAuthorityReceiptV1`; exact `ProfileGovernedAuthorityReceiptVerificationOptionsV1`; and `verifyProfileGovernedAuthorityReceipt` with separate historical proof and verifier-time current status.
 
 #### Approved Task 2 amendment — independently signed Authority binding
 
@@ -457,8 +457,8 @@ Task 2 and amendment commit; none may be amended or squashed.
 **Approved:** 2026-08-14. All earlier amendments remain immutable decision history. This fourth
 amendment supersedes their terminal-storage recovery gap and structural signing-authority handoff,
 and freezes the non-self-anchoring offline verifier order. That 47-path wave is historical; the
-fifth amendment's 51-path executable wave is now authoritative and
-authoritative; no implementation, schema, ABI, ledger, package, or test path is added. Preserve every
+fifth amendment's 51-path executable wave is now authoritative; no implementation, schema, ABI,
+ledger, package, or test path is added. Preserve every
 earlier Task 2 and amendment commit without amend or squash.
 
 ##### Approved Task 2 fifth amendment — first-principles cumulative reset
@@ -625,10 +625,12 @@ git commit -m "feat(authority): admit independently governed profiles"
 #### Executable Task 2 review fix wave
 
 This fix wave begins at candidate `cc529e5e4136eb9e58cd5f39816798f9636bb715` only after the
-four docs-only amendment commits have passed independent review. It fixes the five original Task 2
+five docs-only amendment commits and the bounded `docs: close first-principles review gaps` fix have
+passed independent review. It fixes the five original Task 2
 blockers, all eight first-amendment review findings, all five second-amendment review findings, and
 both third-amendment Critical findings as one trust-boundary unit. The original RED/GREEN and all
-four amendment commits remain in history; do not amend or squash them.
+five amendment commits and the bounded review-fix commit remain in history; do not amend or squash
+them.
 
 - [ ] **Fix Step 1: Add the strict RED review-gap suite and fixture-only module**
 
@@ -738,12 +740,14 @@ Cell/task, changed binding/commitment, stale refresh, future/forked/rolled-back 
 current readiness refuse. The public runner options and return shape remain unchanged.
 
 In `test/authority/dispatch-coordinator.test.ts`, add the canonical certified prepared path and cuts:
-pre-CAS reserved recovery, post-CAS before reservation-root storage, after root storage/before `consumePreparedDispatch`, after provider
+pre-CAS reserved recovery, after the dispatched append/before `send-started`, after `send-started`/
+before reservation-root storage, after root storage/before `consumePreparedDispatch`, after provider
 apply/before terminal storage, after terminal storage/before ledger transition, and after ledger
 transition, after ambiguity storage/before result-less transition, after result-less ambiguity, after
 reconciliation storage/before transition, and after reconciled transition. Assert pre-send construction/signature/
-verification/storage failure produces zero provider calls; once the prepared CAS succeeds, restart
-never resends. Pre-CAS reserved recovery keeps current bytes. Post-CAS/no-root refuses; R-only
+verification/storage failure produces zero provider calls; once both prepared-commit appends succeed, restart
+never resends. Pre-CAS reserved recovery keeps current bytes. Markerless dispatched refuses without
+a store call; send-started/no-root refuses after the strict null query; R-only
 semantic-CAS publishes exactly one A; T/A adoption performs the matching result-bearing or
 result-less ledger transition without siblings; `L=ambiguous,H=T(ambiguous)|A` is a no-op; and Q is
 adopted as reconciled. Reconciliation obtains its exact prior only from verified H, never an
@@ -752,7 +756,14 @@ identity conflict, wrong reservation-intent/tenant/request/capability/effect/rou
 prior identity, tamper, invalid signature, unreadable store, false-null, multiple heads, semantic
 CAS race, fork, and publisher-throws cases; all refuse without transition, publication,
 reconciliation, or send. Add
-two-node and restart falsifiers whose inner prior comparison fails if any outer receipt digest is
+the markerless-dispatched recovery falsifier and assert durable-store load/publish, ledger
+transition, reconciler, provider, and portable publication counters are each exactly zero; it never
+constructs the strict query. Add compile-time identity coverage plus hostile/mutation cases for
+every identity field, the full stored-intent preimage, optional-field omission, canonical base64,
+nested records, expected dispatched digest, accessors/symbols/extras/prototypes, and mismatch
+between publication, root, query, and head. Mirror store-envelope identity mutations in
+`test/authority/profile-governed-receipt.test.ts`. Add two-node and restart falsifiers whose inner
+prior comparison fails if any outer receipt digest is
 returned or used as `priorReceiptDigest`. With `publishReservation`/`loadDurableHead` absent, assert
 legacy certified trace bytes/call order remain unchanged.
 
@@ -775,6 +786,13 @@ absent. Independently substitute every signed inner artifact signer ID/SPKI/purp
 expire the human/parent/direct receipt/evidence signer after signed `observedAt`; and prove
 historical proof remains verified while current status reports the change. Mutations at or before
 `observedAt` refuse. Prove no receipt-carried key or stored verified flag becomes authority.
+Add exact verification-options mutations: opaque `TrustRoots` in `directAuthorityRoots`,
+self-carried roots, duplicate entries/purposes, extra roots, wrong tenant/signer/principal/SPKI/
+purpose, mismatched separately supplied current events, wrong expected tenant/Cell/task/time,
+accessors, symbols, non-enumerable extras, and prototype substitution all refuse before inner
+verification. Prove the implementation validates the external direct array, appends exactly the
+four externally authorized subkeys, constructs one temporary root set, and never enumerates or
+merges an opaque Authority root handle.
 
 In `test/authority/gate-signer.test.ts`, prove `loadExistingLocalGateSigner` leaves a missing parent
 absent on typed ENOENT refusal, leaves malformed bytes unchanged, performs a successful stable-handle
@@ -991,7 +1009,43 @@ interface AuthorityReceiptSigningAuthorityValidationInputV1 {
 function validateAuthorityReceiptSigningAuthority(
   input: AuthorityReceiptSigningAuthorityValidationInputV1,
 ): ValidatedAuthorityReceiptSigningAuthorityV1;
+
+export interface ProfileGovernedAuthorityReceiptVerificationOptionsV1 {
+  readonly profileTrustRoots: ProfileVerificationRootsV1;
+  readonly profilePacks: StaticPackRegistry;
+  readonly jobCardTrustPin: JobCardTrustPinV1;
+  readonly currentAuthorityTrustEvents: readonly TrustEventV1[];
+  readonly directAuthorityRoots: readonly TrustRootEntry[];
+  readonly expectedTenant: string;
+  readonly expectedAuthorityCellId: string;
+  readonly expectedTaskId: string;
+  readonly now: Date;
+  readonly priorAuthorityReceipt?: AuthorityReceipt;
+}
 ```
+
+`ProfileGovernedAuthorityReceiptVerificationOptionsV1` is an exact own-data record in
+`src/authority/host/profile-governed-receipt.ts`; reject accessors, symbols, extras,
+non-enumerable/inherited properties, prototype substitution, and invalid optional presence before
+reading any root/event/key. `profileTrustRoots` remains the profile-only opaque handle and never
+enters Authority verification. `directAuthorityRoots` must be an enumerable array of exact
+`TrustRootEntry` records; opaque `TrustRoots`, receipt-carried roots, duplicate tenant/signer/SPKI/
+purpose tuples, duplicate purposes, or roots with extra/wrong tenant, signer, SPKI, principal, or
+purpose refuse. Direct roots may cover only the exact independently anchored inner purposes
+`outcome-contract`, `delegation-grant`, `gate-event`, `authority-evidence`, and
+`authority-receipt`; the four artifact-subkey purposes cannot appear in this array. Validate every
+direct entry against the independently derived Job Card Authority
+as-of view for `expectedTenant`, `expectedAuthorityCellId`, `expectedTaskId`, and `now`. Only after
+the binding and human commitment authorize the four artifact entries may the verifier append
+exactly those four to the validated direct array, call `createTrustRoots` once for a temporary set,
+and pass that set to unchanged `verifyAuthorityReceiptBundle`. No opaque-root enumeration/merge,
+trust ABI change, or `verify.ts` change is permitted.
+
+`currentAuthorityTrustEvents` is independently supplied verifier context, never copied from the
+receipt. Strict replay must join it to the readiness/history in `jobCardTrustPin` as one contiguous,
+time-filtered, non-rollback/non-fork chain; a mismatch with the pin's committed current-event view
+refuses. `now` is used only as the verifier-time boundary, while signed `observedAt` values retain
+their historical checks.
 
 The trust-view factory strictly parses `jobCardTrustPin.signedReadiness`, `keyDescriptors`,
 `readinessTrustEvents`, and time-filtered `currentTrustEvents`, and first runs existing
@@ -1452,30 +1506,28 @@ Preserve the existing `publish` method exactly and add these two optional, all-o
 seams in `src/authority/host/dispatch.ts`:
 
 ```ts
-export type DurableDispatchPublicationQueryV1 = Readonly<{
-  v: "reelier.durable-dispatch-publication-query/v1";
+export type DurableDispatchPublicationIdentityV1 = Readonly<{
+  v: "reelier.durable-dispatch-publication-identity/v1";
   reservationId: string;
-  ledgerState: "dispatched" | "ambiguous";
-  sendStarted: true;
-  reservationIntentDigest: string;
   tenant: string;
   requestDigest: string;
   capabilityDigest: string;
   effectDigest: string;
   routeAuthorityDigest: string;
   expectedDispatchedRequestDigest: string;
+  reservationIntentDigest: string;
+}>;
+
+export type DurableDispatchPublicationQueryV1 = Readonly<{
+  v: "reelier.durable-dispatch-publication-query/v1";
+  identity: DurableDispatchPublicationIdentityV1;
+  ledgerState: "dispatched" | "ambiguous";
+  sendStarted: true;
 }>;
 
 export type DurableDispatchPublicationHeadV1 = Readonly<{
   v: "reelier.durable-dispatch-publication-head/v1";
-  reservationId: string;
-  reservationIntentDigest: string;
-  tenant: string;
-  requestDigest: string;
-  capabilityDigest: string;
-  effectDigest: string;
-  routeAuthorityDigest: string;
-  expectedDispatchedRequestDigest: string;
+  identity: DurableDispatchPublicationIdentityV1;
   receiptRef: string;
   evidenceDigest: string;
   reservationReceiptRef: string;
@@ -1513,6 +1565,7 @@ export interface DispatchPublication {
   }>): Promise<Readonly<{ receiptRef: string; evidenceDigest: string }>>;
   publishReservation?(input: Readonly<{
     phase: "reservation";
+    identity: DurableDispatchPublicationIdentityV1;
     state: DispatchRequestState;
     outcome: DispatchOutcome;
     dispatchedRequestDigest: null;
@@ -1526,10 +1579,38 @@ export interface DispatchPublication {
 
 Every scalar is an exact own-data property; parse with `Reflect.ownKeys` and reject symbols,
 accessors, extras, inherited/non-enumerable fields, invalid discriminated pairs, noncanonical or zero
-digests, and prototype substitution. The dedicated query is constructed from the ledger's already
-validated reservation and commits its state, `sendStarted`, exact canonical reservation-intent
-digest, tenant/request/capability/effect/route identities, and expected dispatched-request digest;
-it is never a `DispatchRequestState` cast. A reservation head is the unique root and has
+digests, and prototype substitution. Derive the identity once from the actual persisted
+`ReservationSnapshot` immediately after the prepared commit; never from private provenance or a
+cast. Its `reservationIntentDigest` is exactly:
+
+```ts
+authorityDigest({
+  v: "reelier.dispatch-reservation-intent/v1",
+  intent: parsedStoredReservationIntent,
+})
+```
+
+`parsedStoredReservationIntent` is the full closed `StoredReservationIntent`-equivalent value:
+`tenant`, `requester`, `definitionAlias`, `requestId`, `requestDigest`, `canonicalRequestDigest`,
+canonical `canonicalRequestBase64`, `requestKey`, `ingressClaimDigest`, `decisionContextDigest`,
+`capabilityId`, `capabilityDigest`, canonical `capabilityBase64`, `contractDigest`,
+`sourceBundleDigest`, `sourceSnapshotDigest`, `authorityStateDigest`, exact closed `limits`,
+`limitsDigest`, `outcomeKey`, `effectDigest`, optional canonical `effectCanonicalBase64`, `issuedAt`,
+`expiresAt`, exact ordered `limitSlots`, optional exact `executionContext`, and optional exact
+`routeAuthority`. Strictly normalize base64, ISO times, digests, numeric limits/slots, nested closed
+records, and optional-property omission; reject accessors, symbols, extras, prototypes, and
+non-enumerable properties. No reservation sequence/update time, result, marker, runtime handle,
+callback, private provenance, or other ambient member enters the preimage.
+
+The identity copies tenant/request/capability/effect from that parsed intent,
+`routeAuthorityDigest = authorityDigest(parsedStoredReservationIntent.routeAuthority)`, and
+`expectedDispatchedRequestDigest =
+parsedStoredReservationIntent.routeAuthority.expectedMaterializedRequestDigest`; require the
+prepared description's materialized-request digest to equal it. Governed publication refuses an
+intent without the required exact dynamic `routeAuthority`. The
+coordinator passes the same frozen identity to `publishReservation`, stores it in R, and nests it
+unchanged in every later query/head. The query adds only the current ledger state and literal
+`sendStarted: true`; it is never a `DispatchRequestState` cast. A reservation head is the unique root and has
 `reservationReceiptRef === receiptRef` and no prior. Each successor identifies that root and its
 immediate verified inner prior. `loadDurableHead` returns `null` only after a readable, verified
 store proves no chain for the query. Unreadable storage, tamper, fork, multiple heads, query mismatch,
@@ -1539,13 +1620,15 @@ reconcilers, ledger, sources, credentials, or providers.
 Legacy publishers omit both methods and retain exact calls, transitions, results, and traces. A
 configuration exposing exactly one method refuses at construction. The governed factory requires
 both. On the certified `adapter.prepare &&
-ledger.commitPreparedDispatch` branch, call it only after successful prepared CAS and before
+ledger.commitPreparedDispatch` branch, call it only after the commit method returns a lease (which
+proves both durable appends completed), after rereading/strictly parsing the persisted reservation
+and deriving the one identity, and before
 `consumePreparedDispatch`. Supply the exact synthetic reservation outcome defined in Fix Step 3.
 Construction/signature/unchanged-inner-verifier/outer-verifier/immutable-store failure propagates
 before `consumePreparedDispatch`, so provider send count remains zero. Do not call this method on any
 legacy/non-certified/cancel path.
 
-The governed store uses semantic CAS/idempotency: exactly one reservation root per exact query and
+The governed store uses semantic CAS/idempotency: exactly one reservation root per exact identity and
 at most one successor per exact prior and semantic phase. A byte-identical replay returns the same
 head; any competing successor/fork throws. Concurrent live/recovery attempts therefore cannot
 create siblings. The publisher owns only immutable receipt-chain/prior state and never reads or
@@ -1573,10 +1656,11 @@ state table is exhaustive:
 | Ledger `L` | Verified durable head `H` | Only permitted action |
 |---|---|---|
 | `reserved` (pre-CAS) | not queried | Preserve the existing prepared-dispatch recovery semantics byte-for-byte. |
-| `dispatched` | `null` | Refuse: the post-CAS reservation root is absent; do not publish or send. |
-| `dispatched` | root `R` only | Append exactly one ambiguity successor `A`, verify/store it, then transition to result-less `ambiguous`. |
-| `dispatched` | terminal `T` acknowledged or definitive-failure | Adopt `T`: transition with `T.receiptRef` as the ledger result, without sibling or resend. |
-| `dispatched` | terminal `T` ambiguous or ambiguity `A` | Adopt it with a result-less `ambiguous` transition. |
+| `dispatched`, `sendStarted !== true` | not queried | Permanent fail-closed refusal; do not construct/cast the query and make zero durable-store, transition, reconcile, publication, or provider calls. |
+| `dispatched`, `sendStarted === true` | `null` | Refuse: the send-started reservation root is absent; do not publish or send. |
+| `dispatched`, `sendStarted === true` | root `R` only | Append exactly one ambiguity successor `A`, verify/store it, then transition to result-less `ambiguous`. |
+| `dispatched`, `sendStarted === true` | terminal `T` acknowledged or definitive-failure | Adopt `T`: transition with `T.receiptRef` as the ledger result, without sibling or resend. |
+| `dispatched`, `sendStarted === true` | terminal `T` ambiguous or ambiguity `A` | Adopt it with a result-less `ambiguous` transition. |
 | `ambiguous` | exact matching ambiguous `T` or `A` | No-op. The filesystem ledger has no ambiguous `resultDigest`. |
 | `ambiguous` | reconciliation `Q` | Adopt `Q`: transition to `reconciled` with `Q.receiptRef`. |
 | either queried state | conflict, tamper, fork, multiple heads, unreadable store, wrong prior/root/query | Refuse with no publish, transition, reconcile, or send. |
@@ -1589,8 +1673,10 @@ reconciled ledger transition. It never obtains an ambiguous prior from a ledger 
 acknowledged/definitive terminal gets no ambiguity sibling. Maker and verifier remain different
 roles; a verifier constructs the verified receipt graph rather than trusting maker flags.
 
-Freeze the crash behavior exactly: a cut before certified CAS remains existing reserved/pre-CAS
-recovery; a cut after CAS but before root storage leaves no send and recovery refuses; a cut after
+Freeze the crash behavior exactly: a cut before the dispatched append remains existing reserved/
+pre-CAS recovery; a cut after dispatched but before `send-started` is the permanent markerless
+refusal and never queries the store; a cut after `send-started` but before root storage leaves no
+send and recovery refuses after a verified-null store query; a cut after
 root storage/before send or after provider apply/before terminal storage sees `R` and appends one
 `A`; a cut after terminal storage/before ledger transition adopts `T` with no new receipt; a cut
 after ledger transition is a no-op. A cut after reconciliation storage/before its ledger transition
@@ -1611,9 +1697,11 @@ Its outer digest is storage/evidence identity only. Never return it from `Dispat
 it in a ledger result, or use it as an inner `priorReceiptDigest`. A terminal node uses the
 reservation `receiptRef`; a reconciliation node uses the immediately preceding inner `receiptRef`.
 
-`verifyProfileGovernedAuthorityReceipt` takes external profile roots, external current Job Card
-trust/readiness, external direct Authority trust roots, and external current Authority descriptors/
-events. It performs exactly this order:
+`verifyProfileGovernedAuthorityReceipt` takes only the exact
+`ProfileGovernedAuthorityReceiptVerificationOptionsV1` declared in Fix Step 3. Profile roots, packs,
+the full Job Card pin, separately supplied current Authority events, enumerable direct Authority
+roots, expected tenant/Cell/task, verifier time, and optional prior inner receipt remain distinct
+fields. It performs exactly this order:
 
 1. Strictly parse the closed outer envelope, its signed profile-authority binding, the artifact-key
    binding, and the human commitment. Parse only; none is trusted and no verified result or roots
@@ -1780,6 +1868,13 @@ foreach ($subject in $subjects) {
   git show --check --oneline $commit
   if ($LASTEXITCODE -ne 0) { throw "Whitespace failure in $commit ($subject)" }
 }
+$reviewFixSubject = 'docs: close first-principles review gaps'
+$reviewFixCommit = git log --format=%H --fixed-strings --grep=$reviewFixSubject -1 "$base..HEAD"
+if (-not $reviewFixCommit -or (git show -s --format=%s $reviewFixCommit) -ne $reviewFixSubject) {
+  throw "Missing immutable Task 2 review-fix commit: $reviewFixSubject"
+}
+git show --check --oneline $reviewFixCommit
+if ($LASTEXITCODE -ne 0) { throw "Whitespace failure in $reviewFixCommit ($reviewFixSubject)" }
 git diff --check "$base..HEAD"
 if ($LASTEXITCODE -ne 0) { throw 'Task 2 range whitespace failure' }
 ```

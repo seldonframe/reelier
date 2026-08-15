@@ -491,17 +491,23 @@ ceiling is exactly 51 tracked paths.
 
 The Authority ledger and governed receipt store have disjoint ownership. The coordinator alone owns
 ledger transitions. The immutable governed store alone owns receipt-chain/prior truth and never
-reads or mutates the ledger. Certified prepared CAS durably records `dispatched` plus `sendStarted`;
-after that CAS and before provider send, the governed publisher constructs, verifies, and atomically
-stores reservation root R. It stores terminal T after provider outcome and before the matching ledger
+reads or mutates the ledger. Certified prepared commit is two durable appends: the
+`reserved -> dispatched` transition may survive a crash before the `send-started` marker. Governed
+dispatch/recovery checks that marker before constructing any store query. A markerless dispatched
+row is permanently refused with no store call, transition, reconciliation, publication, or provider
+send. Once `sendStarted === true`, and before provider send, the governed publisher constructs,
+verifies, and atomically stores reservation root R. It stores terminal T after provider outcome and before the matching ledger
 transition. Acknowledged/definitive transitions carry `T.innerReceiptRef`; ambiguous transitions are
 always result-less because the concrete filesystem ledger rejects an ambiguous `resultDigest`.
 Outer digests are never ledger results or inner priors.
 
 Durable compatibility is an optional all-or-none pair: reservation publication plus a read-only head
-query. The query is a dedicated strict record, not a `DispatchRequestState` cast. It commits
-reservation ID, ledger state, `sendStarted`, exact reservation-intent digest, tenant, request,
-capability, effect, route, and expected dispatched-request identities. The returned closed union
+query. Publication and query share one closed identity derived once from the actual persisted
+reservation. Its reservation-intent digest is the domain-separated authority digest of the full
+strictly parsed `StoredReservationIntent`-equivalent value, including canonical byte encodings,
+ordered limits, optional execution context, and exact dynamic route; ledger/runtime/provenance
+members are excluded. The query nests that identity and adds only ledger state plus literal
+`sendStarted: true`; it is a dedicated strict record, not a `DispatchRequestState` cast. The returned closed union
 commits the same query identity plus inner receipt/evidence reference, root, exact prior, phase, and
 terminal kind. `null` means only that a verified readable store contains no chain; unreadable,
 tampered, forked, or multiply headed storage throws. Semantic CAS permits exactly one R and at most
@@ -511,17 +517,19 @@ node and can never fork. Portable forwarding never owns lifecycle.
 | Ledger L | Verified store head H | Coordinator action |
 |---|---|---|
 | `reserved`, pre-CAS | not queried | Preserve current cancellation/recovery bytes; no governed durable method runs. |
-| `dispatched`, no chain | `null` | Refuse: CAS/send-started without R is an integrity failure; never send or synthesize. |
-| `dispatched` | R | Semantic-CAS one ambiguity A after R, then result-less `dispatched -> ambiguous`; no resend. |
-| `dispatched` | T acknowledged/definitive | Adopt T and transition with `T.innerReceiptRef`; no sibling/resend. |
-| `dispatched` | T ambiguous or A | Adopt exact head and transition result-less to `ambiguous`; no sibling/resend. |
+| `dispatched`, `sendStarted !== true` | not queried | Permanently refuse before constructing the strict query; zero store, transition, reconcile, publication, or provider calls. |
+| `dispatched`, `sendStarted === true`, no chain | `null` | Refuse: send-started without R is an integrity failure; never send or synthesize. |
+| `dispatched`, `sendStarted === true` | R | Semantic-CAS one ambiguity A after R, then result-less `dispatched -> ambiguous`; no resend. |
+| `dispatched`, `sendStarted === true` | T acknowledged/definitive | Adopt T and transition with `T.innerReceiptRef`; no sibling/resend. |
+| `dispatched`, `sendStarted === true` | T ambiguous or A | Adopt exact head and transition result-less to `ambiguous`; no sibling/resend. |
 | `ambiguous` | exact T-ambiguous or A | No-op. The store head, not the ledger, supplies reconciliation prior. |
 | `ambiguous` | Q reconciled | Adopt Q and transition with `Q.innerReceiptRef`; no resend. |
 | `ambiguous` | anything else | Refuse as conflict/tamper/fork. |
 
 Reconciliation first loads and verifies exact T-ambiguous or A, uses that head's inner receipt as
 prior, semantic-CAS appends Q, and only then transitions the ledger to `reconciled` with
-`Q.innerReceiptRef`. The crash matrix covers pre-CAS reserved; post-CAS before R; after R before
+`Q.innerReceiptRef`. The crash matrix covers pre-CAS reserved; partial prepared commit after the
+dispatched transition but before `send-started`; send-started before R; after R before
 send; after provider apply before T; after T before ledger terminal; after result-less ambiguity; after
 Q before reconciled; and every after-transition no-op. Phase/terminal, query, root, prior, identity,
 signature, multiple-head, and concurrent recovery falsifiers all refuse without resend. Legacy
@@ -557,6 +565,12 @@ material. It creates/registers a private refreshable trust context into that gen
 the unchanged public certification runner; no public runner API widens. The lifecycle adapter can
 mint only lifecycle-mode validation from that registered context. Governed composition mints only
 governed mode from admitted private provenance.
+
+Offline verification accepts an exact closed options record whose direct Authority roots are an
+enumerable `readonly TrustRootEntry[]`, never opaque `TrustRoots`. Every direct entry must match the
+external Authority as-of view by tenant, signer, SPKI, and exact direct-purpose set; duplicate,
+self-carried, extra, or wrong-purpose roots refuse. Only after artifact binding authorization are
+the four exact subkey entries appended to make one temporary root set for the unchanged verifier.
 
 Offline verification order is fixed: strictly parse all closed records; verify profile artifacts
 against external profile trust as of `observedAt`; verify external Authority readiness/event prefixes
