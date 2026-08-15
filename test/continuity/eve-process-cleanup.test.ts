@@ -23,7 +23,14 @@ test("Linux Eve cleanup kills a SIGTERM-resistant descendant after its launcher 
     assert.notEqual(leader.exitCode, null);
     assert.equal(processExists(descendantPid), true);
 
+    const closePromise = once(leader, "close").then(() => true);
     await stopEveProcess(leader);
+
+    const closed = await Promise.race([
+      closePromise,
+      new Promise<boolean>(resolveClosed => setTimeout(() => resolveClosed(false), 2_000)),
+    ]);
+    assert.equal(closed, true, "Eve launcher stdio must close after process-group cleanup");
 
     assert.equal(await waitForProcessExit(descendantPid, 2_000), true, `descendant PID ${descendantPid} survived Eve cleanup`);
   } finally {
