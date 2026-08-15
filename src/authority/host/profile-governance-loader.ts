@@ -53,7 +53,7 @@ export async function loadProfileGovernanceFromOperatorTrust(input: LoadProfileG
   assertSameRoot(rootIdentity, await lstat(root), root, canonicalRoot);
   return createAdmittedProfileGovernance({
     draft, report, conformance, activation, manifest,trustPin, manifestDigest,
-    operatorRootDigest: authorityDigest({ v: "reelier.profile-governance-operator-root/v1", tenant: values.tenant, governanceRef: values.governanceRef, canonicalRoot }),
+    operatorRootDigest: authorityDigest({ v: "reelier.profile-governance-operator-root/v1", tenant: values.tenant, governanceRef: values.governanceRef, canonicalRoot, device: String(rootIdentity.dev), inode: String(rootIdentity.ino) }),
     certifier: { signerId: trustPin.certifier.signerId, publicKeySpkiBase64: trustPin.certifier.publicKeySpkiBase64 },
     operator: { signerId: trustPin.operator.signerId, publicKeySpkiBase64: trustPin.operator.publicKeySpkiBase64 },
     reload:{tenant:values.tenant,governanceRef:values.governanceRef,expectedManifestDigest:values.expectedManifestDigest,expectedTrustHeadDigest:values.expectedTrustHeadDigest,homedir:values.homedir},

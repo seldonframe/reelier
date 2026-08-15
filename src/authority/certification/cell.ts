@@ -272,7 +272,7 @@ async function bindHermeticGitHubAuthority(pinPath: string, input: Certification
   }
   const human = descriptors.find(item => item.keyId === pin.signedReadiness.signerKeyId)!;
   const lifecycle = consumeCertificationLifecycleAuthority(input.handle, input.binding, input.commitment, { authorityCellId: identifiers.authorityCellId, taskId: identifiers.taskId, readinessDigest: authorityDigest(pin.signedReadiness), descriptors: selected as AuthorityKeyDescriptorV1[], humanDescriptor: human, now });
-  registerCertificationLifecycleTrustContext(lifecycle);
+  registerCertificationLifecycleTrustContext(lifecycle,{jobCardTrustPin:pin,expectedAuthorityCellId:identifiers.authorityCellId,expectedTaskId:identifiers.taskId,observedAt:now});
   const get = <P extends "outcome-contract" | "gate-event" | "authority-journal">(purpose: P) => lifecycle.direct.get(purpose)!;
   const contract = get("outcome-contract"), gate = get("gate-event"), journal = get("authority-journal");
   return Object.freeze({ contractDescriptor: contract.descriptor, gateDescriptor: gate.descriptor, journalDescriptor: journal.descriptor, signContract: (digest: string) => signAuthorityDigest(contract.privateKey, "outcome-contract", digest), signGate: (digest: string) => signAuthorityDigest(gate.privateKey, "gate-event", digest), signJournal: (digest: string) => signAuthorityDigest(journal.privateKey, "authority-journal", digest), lifecycle, binding: input.binding, commitment: input.commitment, keyDescriptors: descriptors, signedReadiness: pin.signedReadiness });
