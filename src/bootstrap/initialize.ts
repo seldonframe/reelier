@@ -1,5 +1,5 @@
-import { createHash } from "node:crypto";
-import { access, lstat, mkdir, open, readFile, realpath, unlink } from "node:fs/promises";
+import { createHash, randomBytes } from "node:crypto";
+import { access, link, lstat, mkdir, open, readFile, realpath, rename, unlink } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { AUTHORITY_ADAPTER_CONTRACT_V1_DIGEST } from "../authority/adapter-contract.js";
@@ -100,7 +100,7 @@ function sha256(value: string): string { return `sha256:${createHash("sha256").u
 async function ensureRealDirectory(directory: string, label: string): Promise<void> { await mkdir(directory, { recursive: true }); const info = await lstat(directory); if (!info.isDirectory() || info.isSymbolicLink()) throw new TypeError(`${label} is unsafe or linked`); }
 async function acquireBootstrapLock(file: string): Promise<() => Promise<void>> {
   const recoveryFile = `${file}.recovery`;
-  if (await fileIsPresent(recoveryFile)) throw new Error("named bootstrap is busy: lock recovery present");
+  if (await fileIsPresent(recoveryFile) && !await recoverOrphanedBootstrapRecovery(recoveryFile)) throw new Error("named bootstrap is busy: lock recovery present");
   const owner = JSON.stringify({ v: "reelier.bootstrap-lock/v1", pid: process.pid, processStartedAt: BOOTSTRAP_PROCESS_STARTED_AT, nonce: `${process.pid}-${Date.now()}` });
   try {
     const handle = await open(file, "wx");
@@ -120,6 +120,34 @@ async function acquireBootstrapLock(file: string): Promise<() => Promise<void>> 
     throw new Error("named bootstrap is busy: lock present");
   }
   return async () => { if (await readFile(file, "utf8").catch(() => "") === owner) await unlink(file).catch(() => {}); };
+}
+
+async function recoverOrphanedBootstrapRecovery(recoveryFile: string): Promise<boolean> {
+  let expectedBytes: string;
+  let owner: { v?: unknown; pid?: unknown; processStartedAt?: unknown; nonce?: unknown };
+  try { expectedBytes = await readFile(recoveryFile, "utf8"); owner = JSON.parse(expectedBytes) as typeof owner; }
+  catch { return false; }
+  if (owner.v !== "reelier.bootstrap-lock-recovery/v1" || typeof owner.nonce !== "string" || !isStaleBootstrapLockOwner(owner)) return false;
+  const retiredFile = `${recoveryFile}.retired-${randomBytes(12).toString("hex")}`;
+  try { await rename(recoveryFile, retiredFile); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return true; throw error; }
+  try {
+    const retiredBytes = await readFile(retiredFile, "utf8");
+    let retiredOwner: typeof owner;
+    try { retiredOwner = JSON.parse(retiredBytes) as typeof owner; } catch { await restoreRetiredRecovery(retiredFile, recoveryFile); return false; }
+    if (retiredBytes !== expectedBytes || retiredOwner.v !== "reelier.bootstrap-lock-recovery/v1" || typeof retiredOwner.nonce !== "string" || !isStaleBootstrapLockOwner(retiredOwner)) { await restoreRetiredRecovery(retiredFile, recoveryFile); return false; }
+    await unlink(retiredFile);
+    return true;
+  } catch (error) {
+    if (await fileIsPresent(retiredFile)) await restoreRetiredRecovery(retiredFile, recoveryFile);
+    throw error;
+  }
+}
+
+async function restoreRetiredRecovery(retiredFile: string, recoveryFile: string): Promise<void> {
+  try { await link(retiredFile, recoveryFile); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
+  await unlink(retiredFile);
 }
 
 function isStaleBootstrapLockOwner(owner: { pid?: unknown; processStartedAt?: unknown }): boolean {
