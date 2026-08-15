@@ -458,7 +458,9 @@ mod tests {
                 .status,
             "ok"
         );
-        let OpenSessionResult::Acquired(_, recovered) = open(&root, owner) else {
+        drop(first);
+        let OpenSessionResult::Acquired(mut recovered_session, recovered) = open(&root, owner)
+        else {
             panic!("orphan recovery refused")
         };
         assert_eq!(recovered.status, "recovered");
@@ -466,6 +468,17 @@ mod tests {
             recovered.prior_bytes_hex.as_deref(),
             Some("6c6f636b2d6f6e65")
         );
+        assert_eq!(
+            recovered_session
+                .execute(Command::Close {
+                    id: "0000000000000004".into(),
+                    owner_token: owner.into(),
+                    remove_lock: false
+                })
+                .status,
+            "ok"
+        );
+        drop(recovered_session);
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -521,6 +534,7 @@ mod tests {
                 .status,
             "ok"
         );
+        drop(session);
         fs::remove_dir_all(root).unwrap();
     }
 }
