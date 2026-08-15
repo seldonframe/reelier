@@ -233,6 +233,18 @@ test("named install restores config after an injected post-apply failure and ver
   });
 });
 
+test("named install rolls back when a later checkpoint artifact write fails", async () => {
+  await withFixture(async options => {
+    const config = path.join(options.cwd, ".mcp.json");
+    const original = JSON.stringify({ mcpServers: { local: { command: "npx", args: ["-y", "@example/server"] } } });
+    await writeFile(config, original, "utf8");
+    await mkdir(path.join(options.cwd, ".reelier", "bootstrap", "project.json"), { recursive: true });
+
+    await assert.rejects(() => initializeAgentProject(options));
+    assert.equal(await readFile(config, "utf8"), original);
+  });
+});
+
 test("a complete operator governance import is verified and reported without copying roots into the project", async () => {
   await withFixture(async options => {
     const fixture = await writeProfileGovernanceFixture(options.homedir);
@@ -262,6 +274,40 @@ test("a stale positive PID lock is recovered only after its owner is unavailable
     await initializeAgentProject(options);
     await assert.rejects(lstat(lock), { code: "ENOENT" });
   });
+});
+
+test("a stale lock from an earlier generation of the reused current PID is recovered", async () => {
+  await withFixture(async options => {
+    await initializeAgentProject(options);
+    const lock = path.join(options.cwd, ".reelier", "bootstrap", ".lock");
+    await writeFile(lock, JSON.stringify({ v: "reelier.bootstrap-lock/v1", pid: process.pid, processStartedAt: 0, nonce: "stale-generation" }), "utf8");
+    let rescueNeeded = false;
+    const rescue = setTimeout(() => {
+      rescueNeeded = true;
+      void rm(lock, { force: true });
+    }, 250);
+    try {
+      const report = await initializeAgentProject(options);
+      assert.equal(report.pathC, "unavailable-no-activation");
+      assert.equal(rescueNeeded, false, "a reused PID does not make an earlier process generation live");
+    } finally { clearTimeout(rescue); await rm(lock, { force: true }); }
+  });
+});
+
+test("case-colliding workload names are admitted atomically before the losing project writes artifacts", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "reelier-workload-case-race-"));
+  try {
+    const home = path.join(root, "home"), projectA = path.join(root, "a"), projectB = path.join(root, "b");
+    await Promise.all([mkdir(home, { recursive: true }), mkdir(projectA), mkdir(projectB)]);
+    const results = await Promise.allSettled([
+      initializeAgentProject({ cwd: projectA, homedir: home, agentName: "Case-Agent", exactVersion: "0.32.1" }),
+      initializeAgentProject({ cwd: projectB, homedir: home, agentName: "case-agent", exactVersion: "0.32.1" }),
+    ]);
+    assert.equal(results.filter(result => result.status === "fulfilled").length, 1);
+    assert.equal(results.filter(result => result.status === "rejected" && /case collision/i.test(String(result.reason))).length, 1);
+    const losingProject = results[0].status === "rejected" ? projectA : projectB;
+    await assert.rejects(lstat(path.join(losingProject, ".reelier")), { code: "ENOENT" });
+  } finally { await rm(root, { recursive: true, force: true }); }
 });
 
 test("checkpoint artifact paths are closed basenames and cannot redirect validation outside bootstrap", async () => {

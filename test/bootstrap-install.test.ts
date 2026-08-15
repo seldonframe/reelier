@@ -32,6 +32,27 @@ test("named bootstrap plans an exact-version proxy without changing legacy wrapp
   }
 });
 
+test("exact-version pinning is scoped to the newly wrapped server map entry", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "reelier-bootstrap-install-scope-"));
+  try {
+    const config = path.join(root, ".claude.json");
+    const otherProject = path.join(root, "other-project");
+    const legacy = { command: "npx", args: ["-y", "reelier", "mcp", "--wrap", "npx -y @legacy/server"] };
+    await writeFile(config, JSON.stringify({
+      mcpServers: { shared: legacy },
+      projects: {
+        [root]: { mcpServers: { shared: { command: "npx", args: ["-y", "@current/server"] } } },
+        [otherProject]: { mcpServers: { shared: legacy } },
+      },
+    }), "utf8");
+
+    const after = JSON.parse((await planBootstrapInstall(config, "0.32.1", root)).after);
+    assert.deepEqual(after.mcpServers.shared.args, ["-y", "reelier", "mcp", "--wrap", "npx -y @legacy/server"]);
+    assert.deepEqual(after.projects[otherProject].mcpServers.shared.args, ["-y", "reelier", "mcp", "--wrap", "npx -y @legacy/server"]);
+    assert.deepEqual(after.projects[root].mcpServers.shared.args, ["-y", "reelier@0.32.1", "mcp", "--wrap", "npx -y @current/server"]);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 test("named install applies only with explicit consent, backs up before replacement, and rolls back a partial failure", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "reelier-bootstrap-apply-"));
   try {
