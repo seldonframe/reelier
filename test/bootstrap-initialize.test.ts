@@ -328,6 +328,21 @@ test("a stale lock from an earlier generation of the reused current PID is recov
   });
 });
 
+test("stale-lock retirement cannot unlink through another recovery generation", async () => {
+  await withFixture(async options => {
+    await initializeAgentProject(options);
+    const lock = path.join(options.cwd, ".reelier", "bootstrap", ".lock");
+    const recovery = `${lock}.recovery`;
+    const stale = JSON.stringify({ v: "reelier.bootstrap-lock/v1", pid: -1, processStartedAt: 0, nonce: "stale-owner" });
+    const activeRecovery = JSON.stringify({ v: "reelier.bootstrap-lock-recovery/v1", pid: process.pid, nonce: "active-recovery" });
+    await Promise.all([writeFile(lock, stale, "utf8"), writeFile(recovery, activeRecovery, "utf8")]);
+
+    await assert.rejects(() => initializeAgentProject(options), /busy|lock|recovery/i);
+    assert.equal(await readFile(lock, "utf8"), stale);
+    assert.equal(await readFile(recovery, "utf8"), activeRecovery);
+  });
+});
+
 test("case-colliding workload names are admitted atomically before the losing project writes artifacts", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "reelier-workload-case-race-"));
   try {
