@@ -103,3 +103,17 @@ test("loader refuses linked artifacts even when the linked bytes match the diges
   } finally { await fx.dispose(); }
 });
 
+test("loader refuses a linked manifest before trusting its bytes", async (context) => {
+  const load = await loadProductionLoader();
+  const fx = await fixture();
+  try {
+    const manifest = path.join(fx.root, "native", "bootstrap-helper", "manifest.json");
+    const outside = path.join(fx.root, "outside-manifest.json");
+    await writeFile(outside, await readFile(manifest));
+    await rm(manifest);
+    try { await symlink(outside, manifest, "file"); } catch (error) { if ((error as NodeJS.ErrnoException).code === "EPERM") { context.skip("symlink privilege unavailable"); return; } throw error; }
+    const result = await load({ packageRoot: fx.root, platform: "linux", architecture: "x64" });
+    assert.deepEqual(result, { status: "refused", reason: "manifest-invalid" });
+    assert.equal("absolutePath" in result, false);
+  } finally { await fx.dispose(); }
+});
