@@ -129,3 +129,27 @@ Round-2 open risks
 
 - Stale-lock recovery is deliberately limited to a deterministic invalid/dead negative PID test marker; portable liveness verification for arbitrary crashed-process PIDs remains a follow-up.
 - The canary validates only that the pinned config transformation was applied; it does not launch a real MCP child or prove provider/authority behavior.
+
+Review-fix round 3
+
+- `fb4121d` adds direct RED probes for positive-PID stale lock recovery, checkpoint artifact path escape, project-scoped workload key separation, and governance/project pin joins.
+- `6d3ebee` adds ESRCH-aware lock recovery with nonce-owned release, closed-basename artifact validation, project-scoped workload-key mapping, and project governance pin propagation.
+
+Round-3 test results (verbatim tail)
+
+```text
+✔ planWrapOffer: a malformed config never crashes init's closing step — honest skip note, file untouched (3.6776ms)
+ℹ tests 61
+ℹ suites 0
+ℹ pass 61
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 3651.5231
+```
+
+Round-3 open risks
+
+- Positive PID liveness is process-local and best-effort (`kill(pid, 0)`); a portable cross-host stale-lock protocol remains future work.
+- The named install canary remains a configuration read-back, not an MCP process health check.
