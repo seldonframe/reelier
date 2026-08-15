@@ -1,7 +1,7 @@
 use cap_std::ambient_authority;
 use cap_std::fs::{Dir, OpenOptions};
-use fs4::{FileExt, TryLockError};
 use serde::{Deserialize, Serialize};
+use std::fs::TryLockError;
 use std::io::{ErrorKind, Read, Seek, SeekFrom, Write};
 use std::path::{Component, Path};
 
@@ -131,8 +131,7 @@ pub fn open_session(request: OpenSessionRequest) -> OpenSessionResult {
     }
     let mut prior = Vec::new();
     if lock_file.seek(SeekFrom::Start(0)).is_err()
-        || lock_file
-            .by_ref()
+        || Read::by_ref(&mut lock_file)
             .take((MAX_BYTES + 1) as u64)
             .read_to_end(&mut prior)
             .is_err()
