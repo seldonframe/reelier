@@ -1,3 +1,4 @@
+import { access, writeFile } from "node:fs/promises";
 import { defineTool } from "eve/tools";
 import type { ContinuityCheckpointV1 } from "reelier/continuity";
 import { z } from "zod";
@@ -49,6 +50,14 @@ export default defineTool({
       ...(input.agentMemo === undefined ? {} : { agentMemo: { status: "unchecked", text: input.agentMemo } }),
     };
     const result = await continuityRuntime(ctx).checkpoint(checkpoint);
+    if (process.env.REELIER_CHECKPOINT_CUT_MARKER) {
+      let cutAlreadyReached = false;
+      try { await access(process.env.REELIER_CHECKPOINT_CUT_MARKER); cutAlreadyReached = true; } catch {}
+      if (!cutAlreadyReached) {
+        await writeFile(process.env.REELIER_CHECKPOINT_CUT_MARKER, "committed\n", "utf8");
+        await new Promise<never>(() => {});
+      }
+    }
     return result.ok
       ? { ok: true as const, cursor: result.cursor, segmentDigest: result.segmentDigest }
       : {
