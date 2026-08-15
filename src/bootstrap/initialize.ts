@@ -29,6 +29,8 @@ export async function initializeAgentProject(options: InitializeAgentProjectOpti
   if (!path.isAbsolute(options.cwd) || !path.isAbsolute(options.homedir) || !/^[A-Za-z0-9._~-]{1,128}$/.test(options.agentName) || options.agentName === "." || options.agentName === ".." || !/^[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?$/.test(options.exactVersion)) throw new TypeError("named bootstrap options are invalid");
   const homeInfo = await lstat(options.homedir);
   if (!homeInfo.isDirectory() || homeInfo.isSymbolicLink() || await realpath(options.homedir) !== path.resolve(options.homedir)) throw new TypeError("named bootstrap home directory is unsafe or linked");
+  const cwdInfo = await lstat(options.cwd);
+  if (!cwdInfo.isDirectory() || cwdInfo.isSymbolicLink()) throw new TypeError("named bootstrap project directory is unsafe or linked");
   const projectRoot = await realpath(options.cwd);
   const planDigest = digest({ v: "reelier.bootstrap-plan/v1", checkpoints: BOOTSTRAP_CHECKPOINT_IDS, agentName: options.agentName, exactVersion: options.exactVersion, cwd: projectRoot, yes: options.yes === true });
   const reelierDir = path.join(projectRoot, ".reelier");
