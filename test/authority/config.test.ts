@@ -4,6 +4,7 @@ import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { loadAuthorityHostConfig, validateAuthorityHostConfig } from "../../src/authority/host/config.js";
+import { sha } from "./profile-governance-fixture.js";
 
 test("authority YAML accepts nested endpoint mappings", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "reelier-authority-config-"));
@@ -38,6 +39,7 @@ test("canonical native HTTPS routes carry only opaque credential slot ids", () =
     allowedMethods: ["PUT" as const, "POST" as const], allowedPathPrefixes: ["/z", "/a"], credentialSlotId: "github.tracer",
     responseSemanticsProfileId: "github.labels.v1", reconciliationRecipeId: "github.labels.read.v1", readEndpointId: "github.read",
     egressPolicyDigest: "sha256:" + "1".repeat(64),
+    projectionSchemaDigest: sha("a"),
   };
   const parsed = validateAuthorityHostConfig({ ...base, nativeHttpsRoutes: [route, { ...route, endpointId: "github.read", allowedMethods: ["GET"], readEndpointId: "github.read" }] });
   assert.equal(parsed.nativeHttpsRoutes?.[0]?.credentialSlotId, "github.tracer");
@@ -48,4 +50,10 @@ test("canonical native HTTPS routes carry only opaque credential slot ids", () =
   assert.equal(JSON.stringify(parsed).includes("secretRef"), false);
   assert.throws(() => validateAuthorityHostConfig({ ...base, nativeHttpsRoutes: [{ ...route, secretRef: "env:CANARY" }] }), /route|unknown|invalid/i);
   assert.throws(() => validateAuthorityHostConfig({ ...base, endpoints: [{ endpointId: "github.write", baseUrl: "https://api.github.com", accountIdentity: "acct", allowedMethods: ["PUT"], allowedPathPrefixes: ["/repos"] }], nativeHttpsRoutes: [route, { ...route, endpointId: "github.read", allowedMethods: ["GET"], readEndpointId: "github.read" }] }), /overlap|identit/i);
+});
+
+test("native route config refuses a missing or substituted projection schema commitment", () => {
+  const base = { version: 1 as const, tenant: "tenant", requester: "operator", definitions: [], topology: "isolated" as const };
+  const route = { v: "reelier.json-https-route/v1" as const, providerId: "github", connectorId: "github", accountId: "acct", providerAccountIdentity: "github:acct", endpointId: "github.write", origin: "https://api.github.com", allowedMethods: ["PUT"], allowedPathPrefixes: ["/repos"], credentialSlotId: "slot", responseSemanticsProfileId: "github.labels.v1", reconciliationRecipeId: "github.labels.read.v1", readEndpointId: "github.read", egressPolicyDigest: sha("1") };
+  assert.throws(() => validateAuthorityHostConfig({ ...base, nativeHttpsRoutes: [route] }), /projectionSchemaDigest|projection schema/i);
 });

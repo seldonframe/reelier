@@ -16,6 +16,7 @@ const Ajv = require("ajv/dist/2020").default as new (options: object) => {
 };
 const members = [
   "profile-activation.schema.json",
+  "profile-authority-evidence.schema.json",
   "profile-conformance-report.schema.json",
   "profile-conformance.schema.json",
   "profile-draft.schema.json",
@@ -24,7 +25,7 @@ const members = [
   "profile-trust-pin.schema.json",
 ];
 
-test("Outcome Profile contract is a separate exact seven-schema digest", () => {
+test("Outcome Profile contract is a separate exact eight-schema digest", () => {
   assert.deepEqual(OUTCOME_PROFILE_CONTRACT_V1.members.map((member: Readonly<{ path: string }>) => member.path), members);
   assert.equal(OUTCOME_PROFILE_CONTRACT_V1.digest, OUTCOME_PROFILE_CONTRACT_V1_DIGEST);
   assert.equal(authorityDigest({ v: OUTCOME_PROFILE_CONTRACT_V1.v, domain: OUTCOME_PROFILE_CONTRACT_V1.domain, members: OUTCOME_PROFILE_CONTRACT_V1.members }), OUTCOME_PROFILE_CONTRACT_V1_DIGEST);

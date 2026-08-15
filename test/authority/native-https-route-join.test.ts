@@ -9,6 +9,7 @@ import { createReservedDispatchHandle } from "../../src/authority/gate.js";
 import { __testSetAuthorityCellHostPlatform } from "../../src/authority/host/platform.js";
 import { createAuthorityLatencyRecorder } from "../../src/authority/host/latency.js";
 import type { RouteAuthoritySnapshotV1 } from "../../src/authority/ledger.js";
+import { profileGovernanceFixture } from "./profile-governance-fixture.js";
 
 const sha = (c: string) => `sha256:${c.repeat(64)}`;
 const routeAuthority = (): RouteAuthoritySnapshotV1 => ({
@@ -26,6 +27,7 @@ const identityFor = (route: RouteAuthoritySnapshotV1, overrides: Partial<{ provi
 const verifier = { purpose: "authority-evidence" as const, signerId: "github-identity-signer", publicKey: identityKeys.publicKey, verify: async () => true };
 
 test("certified dispatch enforces route reread, double authority validation, commit, and send ordering", async () => {
+  profileGovernanceFixture();
   const restore = __testSetAuthorityCellHostPlatform("linux");
   try {
     const events: string[] = [];

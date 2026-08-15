@@ -13,6 +13,7 @@ import { prepareJsonHttpsEffect } from "../../src/authority/drivers/json-https.j
 import { createHttpResponseSemanticsProfileRegistry, parseHttpResponseSemanticsProfileV1 } from "../../src/authority/host/http-response-semantics.js";
 import { createJsonHttpsDispatchAdapter } from "../../src/authority/host/json-https-connector.js";
 import { jsonHttpsRouteDigest } from "../../src/authority/host/json-https-route.js";
+import { profileGovernanceFixture } from "./profile-governance-fixture.js";
 
 const digest = (value: unknown) => authorityDigest(value);
 const projection: MaterializedHttpRequestProjectionV1 = Object.freeze({
@@ -26,6 +27,7 @@ const projection: MaterializedHttpRequestProjectionV1 = Object.freeze({
 });
 
 test("prepared dispatch joint consumption sends once and refuses a second consume", async () => {
+  profileGovernanceFixture();
   const events: string[] = [];
   const prepared = createPreparedDispatch({
     description: {
@@ -97,7 +99,7 @@ test("injected clocks refuse stale authority and expired monotonic deadline befo
 });
 
 test("native route digest binds every canonical route authority field", async () => {
-  const route = { v: "reelier.json-https-route/v1" as const, providerId: "github", connectorId: "github", accountId: "acct", providerAccountIdentity: "github:acct", endpointId: "write", origin: "https://api.github.com", allowedMethods: ["PUT" as const], allowedPathPrefixes: ["/repos"], credentialSlotId: "slot", responseSemanticsProfileId: "profile-a", reconciliationRecipeId: "recipe", readEndpointId: "read", egressPolicyDigest: digest("egress") };
+  const route = { v: "reelier.json-https-route/v1" as const, providerId: "github", connectorId: "github", accountId: "acct", providerAccountIdentity: "github:acct", endpointId: "write", origin: "https://api.github.com", allowedMethods: ["PUT" as const], allowedPathPrefixes: ["/repos"], credentialSlotId: "slot", responseSemanticsProfileId: "profile-a", reconciliationRecipeId: "recipe", readEndpointId: "read", egressPolicyDigest: digest("egress"), projectionSchemaDigest: digest("projection") };
   const changed = { ...route, responseSemanticsProfileId: "profile-b" };
   const secrets = { async resolve() { return "unused"; }, async acquireSlot() { return { readOnce: () => "secret" }; } };
   const effect = { endpointId: "write", method: "PUT" as const, path: "/repos/a", query: "", headers: {}, bodyBase64: Buffer.from("{}").toString("base64") };
@@ -111,7 +113,7 @@ test("native route digest binds every canonical route authority field", async ()
 });
 
 test("native preparation rejects an unknown response profile before slot acquisition", async () => {
-  const route = { v: "reelier.json-https-route/v1" as const, providerId: "github", connectorId: "github", accountId: "acct", providerAccountIdentity: "github:acct", endpointId: "write", origin: "https://api.github.com", allowedMethods: ["PUT" as const], allowedPathPrefixes: ["/repos"], credentialSlotId: "slot", responseSemanticsProfileId: "unreviewed", reconciliationRecipeId: "recipe", readEndpointId: "read", egressPolicyDigest: digest("egress") };
+  const route = { v: "reelier.json-https-route/v1" as const, providerId: "github", connectorId: "github", accountId: "acct", providerAccountIdentity: "github:acct", endpointId: "write", origin: "https://api.github.com", allowedMethods: ["PUT" as const], allowedPathPrefixes: ["/repos"], credentialSlotId: "slot", responseSemanticsProfileId: "unreviewed", reconciliationRecipeId: "recipe", readEndpointId: "read", egressPolicyDigest: digest("egress"), projectionSchemaDigest: digest("projection") };
   const effect = { endpointId: "write", method: "PUT" as const, path: "/repos/a", query: "", headers: {}, bodyBase64: Buffer.from("{}").toString("base64") };
   let acquired = false;
   await assert.rejects(() => prepareJsonHttpsEffect(effect as never, route, { async resolve() { throw new Error("must not resolve"); }, async acquireSlot() { acquired = true; return { readOnce: () => "secret" }; } }, { responseSemanticsProfiles: createHttpResponseSemanticsProfileRegistry([{ v: "reelier.http-response-semantics/v1", profileId: "reviewed", acknowledgedStatuses: [200] }]) } as never), /profile/i);
@@ -119,7 +121,7 @@ test("native preparation rejects an unknown response profile before slot acquisi
 });
 
 test("native preparation rejects sealed operator and route authority drift before secret materialization", async () => {
-  const route = { v: "reelier.json-https-route/v1" as const, providerId: "github", connectorId: "github", accountId: "acct", providerAccountIdentity: "github:acct", endpointId: "write", origin: "https://api.github.com", allowedMethods: ["PUT" as const], allowedPathPrefixes: ["/repos"], credentialSlotId: "slot", responseSemanticsProfileId: "reviewed", reconciliationRecipeId: "recipe", readEndpointId: "read", egressPolicyDigest: digest("egress") };
+  const route = { v: "reelier.json-https-route/v1" as const, providerId: "github", connectorId: "github", accountId: "acct", providerAccountIdentity: "github:acct", endpointId: "write", origin: "https://api.github.com", allowedMethods: ["PUT" as const], allowedPathPrefixes: ["/repos"], credentialSlotId: "slot", responseSemanticsProfileId: "reviewed", reconciliationRecipeId: "recipe", readEndpointId: "read", egressPolicyDigest: digest("egress"), projectionSchemaDigest: digest("projection") };
   const effect = { endpointId: "write", method: "PUT" as const, path: "/repos/a", query: "", headers: {}, bodyBase64: Buffer.from("{}").toString("base64") };
   const profiles = createHttpResponseSemanticsProfileRegistry([{ v: "reelier.http-response-semantics/v1", profileId: "reviewed", acknowledgedStatuses: [200] }]);
   let acquired = false;
@@ -132,7 +134,7 @@ test("native preparation rejects sealed operator and route authority drift befor
 });
 
 test("certified adapter preparation passes and validates durable route authority before acquiring a slot", async () => {
-  const route = { v: "reelier.json-https-route/v1" as const, providerId: "github", connectorId: "github", accountId: "acct", providerAccountIdentity: "github:acct", endpointId: "write", origin: "https://api.github.com", allowedMethods: ["PUT" as const], allowedPathPrefixes: ["/repos"], credentialSlotId: "slot", responseSemanticsProfileId: "reviewed", reconciliationRecipeId: "recipe", readEndpointId: "read", egressPolicyDigest: digest("egress") };
+  const route = { v: "reelier.json-https-route/v1" as const, providerId: "github", connectorId: "github", accountId: "acct", providerAccountIdentity: "github:acct", endpointId: "write", origin: "https://api.github.com", allowedMethods: ["PUT" as const], allowedPathPrefixes: ["/repos"], credentialSlotId: "slot", responseSemanticsProfileId: "reviewed", reconciliationRecipeId: "recipe", readEndpointId: "read", egressPolicyDigest: digest("egress"), projectionSchemaDigest: digest("projection") };
   const read = { ...route, endpointId: "read", allowedMethods: ["GET" as const] };
   let acquired = false;
   const adapter = createJsonHttpsDispatchAdapter({ endpoints: [], routes: [route, read], operatorConfigurationDigest: digest("sealed-config"), responseSemanticsProfiles: [{ v: "reelier.http-response-semantics/v1", profileId: "reviewed", acknowledgedStatuses: [200] }], secrets: { async resolve() { acquired = true; throw new Error("must not resolve"); }, async acquireSlot() { acquired = true; return { readOnce: () => "secret" }; } } });
@@ -147,7 +149,7 @@ test("response semantics profiles reject sparse status arrays before canonicaliz
 });
 
 test("prepared native behavior digest binds route, operator configuration, and response profile", async () => {
-  const route = { v: "reelier.json-https-route/v1" as const, providerId: "github", connectorId: "github", accountId: "acct", providerAccountIdentity: "github:acct", endpointId: "write", origin: "https://api.github.com", allowedMethods: ["PUT" as const], allowedPathPrefixes: ["/repos"], credentialSlotId: "slot", responseSemanticsProfileId: "reviewed", reconciliationRecipeId: "recipe", readEndpointId: "read", egressPolicyDigest: digest("egress") };
+  const route = { v: "reelier.json-https-route/v1" as const, providerId: "github", connectorId: "github", accountId: "acct", providerAccountIdentity: "github:acct", endpointId: "write", origin: "https://api.github.com", allowedMethods: ["PUT" as const], allowedPathPrefixes: ["/repos"], credentialSlotId: "slot", responseSemanticsProfileId: "reviewed", reconciliationRecipeId: "recipe", readEndpointId: "read", egressPolicyDigest: digest("egress"), projectionSchemaDigest: digest("projection") };
   const effect = { endpointId: "write", method: "PUT" as const, path: "/repos/a", query: "", headers: {}, bodyBase64: Buffer.from("{}").toString("base64") };
   const profiles = createHttpResponseSemanticsProfileRegistry([{ v: "reelier.http-response-semantics/v1", profileId: "reviewed", acknowledgedStatuses: [200] }]);
   const options = { responseSemanticsProfiles: profiles, operatorConfigurationDigest: digest("sealed-config"), routeAuthority: { operatorConfigurationDigest: digest("sealed-config"), routeDigest: jsonHttpsRouteDigest(route) }, reservationId: "r", allocationId: "a", authorityGeneration: "g", authorityExpiresAt: new Date(Date.now() + 60_000).toISOString() };

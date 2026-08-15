@@ -15,6 +15,9 @@ import {
   parseProfileConformanceReport,
   parseProfileGovernanceManifest,
   parseProfileTrustPin,
+  parseAuthorityDeploymentSnapshot,
+  parseAuthorityRouteScope,
+  parseSignedProfileAuthorityBinding,
   parseSignedOutcomeProfileConformance,
   parseSignedTenantProfileActivation,
   verifyProfileGovernanceOffline,
@@ -25,7 +28,11 @@ import {
   type ProfileVerificationAnchorV1,
   type SignedOutcomeProfileConformanceV1,
   type SignedTenantProfileActivationV1,
+  type AuthorityDeploymentSnapshotV1,
+  type AuthorityRouteScopeV1,
+  type SignedProfileAuthorityBindingV1,
 } from "../../src/authority/outcome-profile.js";
+import { profileGovernanceFixture } from "./profile-governance-fixture.js";
 
 const certifier = generateKeyPairSync("ed25519");
 const operator = generateKeyPairSync("ed25519");
@@ -450,4 +457,15 @@ test("inert parsers reject impossible canonical times and reused trust keys", ()
   const pin = fixtureTrustPin();
   assert.throws(() => parseProfileTrustPin({ ...pin, currentTrustEvents: pin.currentTrustEvents.map((event, index) => index === 0 ? { ...event, at: "2026-02-31T10:00:00.000Z" } : event) }), TypeError);
   assert.throws(() => parseProfileTrustPin({ ...pin, operator: { ...pin.operator, publicKeySpkiBase64: pin.certifier.publicKeySpkiBase64 } }), TypeError);
+});
+
+test("deployment, stable route scope, and signed Authority binding are closed independent artifacts", () => {
+  profileGovernanceFixture();
+  const scope: AuthorityRouteScopeV1 = { v: "reelier.authority-route-scope/v1", tenant: "tenant_1", definitionAlias: "github_issue_labels", connectorRegistrationDigest: sha("1"), operatorConfigurationDigest: sha("2"), routeDigest: sha("3"), providerId: "github", connectorId: "github", accountId: "acct", providerAccountIdentity: "github:acct", endpointId: "github.write", credentialSlotId: "slot", sourceReadRouteDigest: sha("4"), projectionSchemaDigest: sha("5") };
+  const deployment: AuthorityDeploymentSnapshotV1 = { v: "reelier.authority-deployment-snapshot/v1", tenant: "tenant_1", jobCardDigest: sha("6"), jobCardAuthorityDigest: sha("7"), authorityStateDigest: sha("8"), connectorRegistryDigest: sha("9"), trustRootSetDigest: sha("a"), connectionDescriptorsDigest: sha("b"), connectionAdoptionsDigest: sha("c"), enforcementDigest: sha("d"), routeScopeDigest: authorityDigest(scope) };
+  const binding: SignedProfileAuthorityBindingV1 = { v: "reelier.profile-authority-binding/v1", purpose: "profile-authority-binding", tenant: "tenant_1", profileDigest: sha("1"), activationDigest: sha("2"), innerReceiptDigest: sha("3"), jobCardDigest: sha("4"), artifactKeyBindingDigest: sha("5"), artifactKeyBindingCommitmentDigest: sha("6"), contractDigest: sha("7"), deploymentDigest: authorityDigest(deployment), routeScopeDigest: authorityDigest(scope), routeAuthoritySnapshotDigest: sha("8"), authorityTrustHeadDigest: sha("9"), observedAt: "2026-08-14T12:00:00.000Z", signerId: "evidence_1", signature: { alg: "ed25519", sig: Buffer.alloc(64).toString("base64") } };
+  assert.deepEqual(parseAuthorityRouteScope(scope), scope);
+  assert.deepEqual(parseAuthorityDeploymentSnapshot(deployment), deployment);
+  assert.deepEqual(parseSignedProfileAuthorityBinding(binding), binding);
+  for (const parse of [parseAuthorityRouteScope, parseAuthorityDeploymentSnapshot, parseSignedProfileAuthorityBinding] as const) assert.throws(() => parse({ extra: true } as never), /closed|unknown|missing/i);
 });

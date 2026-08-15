@@ -8,6 +8,7 @@ import {
   lookupJsonHttpsRoute,
   parseJsonHttpsRouteV1,
 } from "../../src/authority/host/json-https-route.js";
+import { profileGovernanceFixture } from "./profile-governance-fixture.js";
 
 const sha = (value: string) => `sha256:${createHash("sha256").update(value).digest("hex")}`;
 const routeInput = () => ({
@@ -25,6 +26,7 @@ const routeInput = () => ({
   reconciliationRecipeId: "github.issue-labels.readback.v1",
   readEndpointId: "github.issue.labels.readback",
   egressPolicyDigest: sha("github-egress"),
+  projectionSchemaDigest: sha("github-labels-projection"),
 });
 
 test("canonical HTTPS routes freeze the GitHub labels write and independent read routes", () => {
@@ -46,7 +48,17 @@ test("canonical HTTPS routes freeze the GitHub labels write and independent read
     { ...write, allowedPathPrefixes: ["/repos/example/tracer/issues/2/labels"] }, { ...write, credentialSlotId: "github.other" },
     { ...write, responseSemanticsProfileId: "github.issue-labels.v2" }, { ...write, reconciliationRecipeId: "github.issue-labels.readback.v2" },
     { ...write, readEndpointId: "github.issue.labels.readback.other" }, { ...write, egressPolicyDigest: sha("other-egress") },
+    { ...write, projectionSchemaDigest: sha("other-projection") },
   ]) assert.notEqual(jsonHttpsRouteDigest(write), jsonHttpsRouteDigest(differingRoute));
+});
+
+test("projection schema commitment is required, nonzero, and identical across read and write routes", () => {
+  profileGovernanceFixture();
+  const write = parseJsonHttpsRouteV1(routeInput());
+  const read = parseJsonHttpsRouteV1({ ...routeInput(), endpointId: "github.issue.labels.readback", allowedMethods: ["GET"], readEndpointId: "github.issue.labels.readback" });
+  assert.equal(write.projectionSchemaDigest, read.projectionSchemaDigest);
+  assert.throws(() => parseJsonHttpsRouteV1({ ...routeInput(), projectionSchemaDigest: `sha256:${"0".repeat(64)}` }), /projection|digest|zero/i);
+  assert.throws(() => createJsonHttpsRouteRegistry([write, { ...read, projectionSchemaDigest: sha("substituted") }]), /projection|equivalence|schema/i);
 });
 
 test("canonical HTTPS route parsing is closed and inert", () => {

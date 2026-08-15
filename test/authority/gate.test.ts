@@ -15,13 +15,22 @@ import { createAuthorityStatePort, digestAuthorityState, type AuthorityStateBack
 import { FsAuthorityLedger } from "../../src/authority/host/fs-ledger.js";
 import { createFileGateDecisionSink } from "../../src/authority/decision.js";
 import {
-  createAuthorityGate, createReservedDispatchHandle,
+  createAuthorityGate, createReservedDispatchHandle, selectEligibleAuthorityContract,
   unwrapReservedDispatchHandle, type AuthorityGateDependencies, type GateResult,
 } from "../../src/authority/gate.js";
 import { AuthorityBoundaryError, type GateRefusalReason } from "../../src/authority/errors.js";
 import { bindableTempRoot } from "./bindable-root.js";
+import { profileGovernanceFixture } from "./profile-governance-fixture.js";
 
 const sha=(c:string)=>`sha256:${c.repeat(64)}`;
+
+test("the shared eligible-contract selector is closed and cannot be caller-directed", () => {
+  profileGovernanceFixture();
+  let getters = 0;
+  const hostile = Object.defineProperty({}, "snapshot", { enumerable: true, get() { getters += 1; throw new Error("getter invoked"); } });
+  assert.throws(() => selectEligibleAuthorityContract(hostile as never), /own data|closed|exact fields/i);
+  assert.equal(getters, 0);
+});
 const planAt="2026-01-15T00:00:29.000Z",decisionAt="2026-01-15T00:00:30.000Z";
 const limits={maxEffectsPerWindow:10,windowSeconds:3600,maxEffectsPerSourceTrigger:2,maxBodyBytes:4096};
 const grantConstraints=(connectorId="connector_1",accountId="account_1")=>({definitionAliases:["definition_1"],audiences:["requester_1"],connectorAccounts:[{connectorId,accountId}],projectionPointers:["/message"],riskClasses:["message"],limits});

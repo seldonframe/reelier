@@ -4,6 +4,7 @@ import { generateKeyPairSync } from "node:crypto";
 import { authorityDigest } from "../../src/authority/wire.js";
 import { AUTHORITY_ADAPTER_CONTRACT_V1_DIGEST } from "../../src/authority/adapter-contract.js";
 import { createCertificationLifecycleAuthorityCeremony, createCertificationArtifactKeyBinding } from "../../src/authority/certification/lifecycle-authority.js";
+import { profileGovernanceFixture } from "./profile-governance-fixture.js";
 
 const descriptor = (keyId: string, purpose: "certification-readiness", publicKey: ReturnType<typeof generateKeyPairSync>["publicKey"]) => ({ v: "reelier.authority-key-descriptor/v1" as const, keyId, role: "human-sponsor" as const, purpose, algorithm: "ed25519" as const, publicKeySpkiBase64: publicKey.export({ type: "spki", format: "der" }).toString("base64") });
 
@@ -18,6 +19,7 @@ test("pre-readiness lifecycle ceremony exposes only activated public descriptors
 });
 
 test("artifact subkeys are closed, purpose-separated, evidence-root delegated, and human committed", () => {
+  profileGovernanceFixture();
   const ceremony = createCertificationLifecycleAuthorityCeremony();
   const humanKey = generateKeyPairSync("ed25519");
   const human = descriptor("human_readiness_signer", "certification-readiness", humanKey.publicKey);
@@ -39,5 +41,7 @@ test("artifact subkeys are closed, purpose-separated, evidence-root delegated, a
   assert.equal(JSON.stringify(result).match(/private|secret|token/gi), null);
   assert.equal(new Set(result.binding.entries.map(item => item.keyId)).size, 4);
   assert.equal(new Set(result.binding.entries.map(item => item.publicKeyDigest)).size, 4);
+  assert.equal(Object.isFrozen(result.binding), true);
+  assert.equal(Object.isFrozen(result.humanCommitment), true);
 });
 
