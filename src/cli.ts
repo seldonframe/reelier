@@ -128,6 +128,7 @@ import {
   renderInitializationReport,
   type InitializationDependencies,
 } from "./initialization.js";
+import { initializeAgentProject } from "./bootstrap/initialize.js";
 
 // Exported (alongside cmdPush below) so test/push-cli.test.ts can drive
 // cmdPush's console output directly with a fake ParsedArgs + monkeypatched
@@ -216,6 +217,10 @@ export function parseArgv(argv: string[]): ParsedArgs {
       || arg === "--candidate"
       || arg === "--descriptors"
       || arg === "--trust-events"
+      || arg === "--endpoint"
+      || arg === "--token-ref"
+      || arg === "--cell-id"
+      || arg === "--adapter-contract-digest"
     ) {
       const val = argv[++i];
       if (!val || val.startsWith("--")) {
@@ -4254,6 +4259,42 @@ export async function cmdInit(args: ParsedArgs, overrides: CmdInitOverrides = {}
 
   if (args.flags.has("signing")) {
     return cmdInitSigning(homedir);
+  }
+
+  if (args.positional.length > 1) {
+    console.error("Initialization refused: at most one agent name is allowed.");
+    return 1;
+  }
+
+  if (args.positional.length === 1) {
+    try {
+      let packageBytes: string;
+      try {
+        packageBytes = await readFile(new URL("../package.json", import.meta.url), "utf8");
+      } catch {
+        // tsconfig.test places cli.js under dist-test/src while a packed CLI
+        // lives under dist/; both layouts retain the package manifest above
+        // their output root, at one of these two stable relative locations.
+        packageBytes = await readFile(new URL("../../package.json", import.meta.url), "utf8");
+      }
+      const pkg = JSON.parse(packageBytes) as { version?: unknown };
+      if (typeof pkg.version !== "string") throw new Error("installed version unavailable");
+      const report = await initializeAgentProject({
+        cwd,
+        homedir,
+        agentName: args.positional[0],
+        yes: args.flags.has("yes"),
+        exactVersion: pkg.version,
+        ...(overrides.dependencies === undefined ? {} : { dependencies: overrides.dependencies }),
+      });
+      console.log(`Prepared '${args.positional[0]}' for observation; Path C is unavailable until independent activation.`);
+      console.log(report.recoveryCommand);
+      console.log("Managed Cell connection (after your operator provisions it): reelier authority connect --endpoint <https-url> --token-ref <opaque-ref> --cell-id <cell-id> --adapter-contract-digest <sha256:digest>");
+      return 0;
+    } catch {
+      console.error("Initialization refused: named bootstrap preparation failed.");
+      return 1;
+    }
   }
 
   try {
