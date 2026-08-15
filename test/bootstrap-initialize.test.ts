@@ -55,7 +55,7 @@ test("an orphan lock is recovered only when its closed journal and exact plan ar
     // The prior call has returned and no longer owns anything, even though a
     // diagnostic PID in its residue necessarily names this still-live test
     // process. PID liveness must not turn valid crash recovery into a refusal.
-    const lockPath = path.join(options.cwd, ".reelier", "bootstrap", ".lock");
+    const lockPath = path.join(options.cwd, ".reelier-bootstrap.lock");
     const lock = JSON.parse(await readFile(lockPath, "utf8"));
     await writeFile(lockPath, `${JSON.stringify({ ...lock, pid: process.pid })}\n`);
     const resumed = await initializeAgentProject(options);
@@ -66,7 +66,7 @@ test("an orphan lock is recovered only when its closed journal and exact plan ar
   await withFixture(async options => {
     const bootstrap = path.join(options.cwd, ".reelier", "bootstrap");
     await mkdir(bootstrap, { recursive: true });
-    await writeFile(path.join(bootstrap, ".lock"), `${JSON.stringify({ v: "reelier.bootstrap-lock/v2", pid: 2147483647, ownerToken: "a".repeat(64), transactionId: "b".repeat(32) })}\n`);
+    await writeFile(path.join(options.cwd, ".reelier-bootstrap.lock"), `${JSON.stringify({ v: "reelier.bootstrap-lock/v2", pid: 2147483647, ownerToken: "a".repeat(64), transactionId: "b".repeat(32) })}\n`);
     const before = await readdir(bootstrap);
     await assert.rejects(() => initializeAgentProject(options), /orphan|journal|recovery/i);
     assert.deepEqual(await readdir(bootstrap), before);
@@ -242,7 +242,7 @@ test("restart refuses checkpoint or plan identity drift without adopting staged 
     for (const changed of [
       { ...options, agentName: "MY-AGENT" },
       { ...options, exactVersion: "0.32.2" },
-    ]) await assert.rejects(() => initializeAgentProject(changed), /plan|identity|case/i);
+    ]) await assert.rejects(() => initializeAgentProject(changed), /plan|identity|case|version/i);
     assert.equal(await readFile(path.join(bootstrap, "current.json"), "utf8"), before);
   });
 });
