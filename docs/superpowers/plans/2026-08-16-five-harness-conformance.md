@@ -69,10 +69,23 @@ defined must amend this plan and receive review before implementation begins.
   - `test/failure-injection-conformance.test.ts`
   - `.superpowers/sdd/task-6-failure-injection-report.md`
 - Task 7 (hermetic outcome bundle):
-  - `conformance/hermetic-outcome/v0/check.mjs`
-  - `conformance/hermetic-outcome/v0/bundle.schema.json`
-  - `test/hermetic-outcome-conformance.test.ts`
+- `conformance/hermetic-outcome/v0/check.mjs`
+- `conformance/hermetic-outcome/v0/bundle.schema.json`
+- `test/hermetic-outcome-conformance.test.ts`
   - `.superpowers/sdd/task-7-hermetic-outcome-report.md`
+
+### Final cross-task hardening
+
+- `conformance/aggregate/v0/check.mjs`
+- `conformance/aggregate/v0/report.schema.json`
+- `test/aggregate-conformance.test.ts`
+- `conformance/semantic-matrix/v0/check.mjs`
+- `conformance/semantic-matrix/v0/report.schema.json`
+- `test/semantic-matrix-conformance.test.ts`
+- `.superpowers/sdd/2026-08-16-five-harness-conformance/task-1-report.md`
+- `.superpowers/sdd/2026-08-16-five-harness-conformance/task-2-report.md`
+- `.superpowers/sdd/task-3-coverage-envelope-report.md`
+- `docs/superpowers/plans/2026-08-16-five-harness-conformance.md`
 
 ## Tasks
 
