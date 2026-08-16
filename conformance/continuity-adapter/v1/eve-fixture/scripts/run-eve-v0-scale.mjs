@@ -11,7 +11,9 @@ if (!output) throw new TypeError("usage: run-eve-v0-scale.mjs --out <directory>"
 const fixtureRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const runner = resolve(fixtureRoot, "scripts", "run-live-agent-adapter-v0.mjs");
 const levels = [1, 5, 20, 100];
-const concurrency = 10;
+// Eve's local dev runtime is deliberately heavy. Keep the fan-out bounded so
+// this measures delegation proof, not accidental host memory exhaustion.
+const concurrency = 2;
 
 function runWorker(level, index, target) {
   return new Promise((resolveWorker) => {
