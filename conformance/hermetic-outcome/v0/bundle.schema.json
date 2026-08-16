@@ -1,0 +1,152 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "reelier.hermetic-outcome-bundle/v0",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["descriptor", "delegation", "coverage", "dispatch", "providerState", "receipt", "failureInjection", "finalReport"],
+  "properties": {
+    "descriptor": { "$ref": "#/$defs/descriptor" },
+    "delegation": { "$ref": "#/$defs/delegation" },
+    "coverage": { "$ref": "#/$defs/coverage" },
+    "dispatch": { "$ref": "#/$defs/dispatch" },
+    "providerState": { "$ref": "#/$defs/providerState" },
+    "receipt": { "$ref": "#/$defs/receipt" },
+    "failureInjection": { "$ref": "#/$defs/failureInjection" },
+    "finalReport": { "$ref": "#/$defs/finalReport" }
+  },
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^sha256:(?!0{64}$)[0-9a-f]{64}$" },
+    "id": { "type": "string", "pattern": "^[A-Za-z0-9._~-]{1,128}$" },
+    "time": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$" },
+    "signature": {
+      "type": "object", "additionalProperties": false, "required": ["alg", "sig"],
+      "properties": { "alg": { "const": "ed25519" }, "sig": { "type": "string", "pattern": "^[A-Za-z0-9+/]{86}==$" } }
+    },
+    "limits": {
+      "type": "object", "additionalProperties": false,
+      "required": ["maxEffectsPerWindow", "windowSeconds", "maxEffectsPerSourceTrigger", "maxBodyBytes"],
+      "properties": {
+        "maxEffectsPerWindow": { "type": "integer", "minimum": 1 }, "windowSeconds": { "type": "integer", "minimum": 1 },
+        "maxEffectsPerSourceTrigger": { "type": "integer", "minimum": 1 }, "maxBodyBytes": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "grant": {
+      "type": "object", "additionalProperties": false,
+      "required": ["v", "tenant", "grantId", "parentDigest", "sponsor", "grantor", "grantee", "issuedAt", "expiresAt", "constraints"],
+      "properties": {
+        "v": { "const": "reelier.delegation-grant/v1" }, "tenant": { "$ref": "#/$defs/id" }, "grantId": { "$ref": "#/$defs/id" },
+        "parentDigest": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/digest" }] }, "sponsor": { "$ref": "#/$defs/id" },
+        "grantor": { "$ref": "#/$defs/id" }, "grantee": { "$ref": "#/$defs/id" }, "issuedAt": { "$ref": "#/$defs/time" }, "expiresAt": { "$ref": "#/$defs/time" },
+        "constraints": {
+          "type": "object", "additionalProperties": false,
+          "required": ["definitionAliases", "audiences", "connectorAccounts", "projectionPointers", "riskClasses", "limits"],
+          "properties": {
+            "definitionAliases": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string" } },
+            "audiences": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "#/$defs/id" } },
+            "connectorAccounts": { "type": "array", "minItems": 1, "items": { "type": "object", "additionalProperties": false, "required": ["connectorId", "accountId"], "properties": { "connectorId": { "$ref": "#/$defs/id" }, "accountId": { "$ref": "#/$defs/id" } } } },
+            "projectionPointers": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string" } },
+            "riskClasses": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "#/$defs/id" } },
+            "limits": { "$ref": "#/$defs/limits" }
+          }
+        }
+      }
+    },
+    "descriptor": {
+      "type": "object", "additionalProperties": false,
+      "required": ["v", "bundleId", "schemaId", "artifactNames", "commitments"],
+      "properties": {
+        "v": { "const": "reelier.hermetic-outcome-descriptor/v0" }, "bundleId": { "const": "hermetic-reversible-transition" },
+        "schemaId": { "const": "reelier.hermetic-outcome-bundle/v0" },
+        "artifactNames": { "type": "array", "minItems": 8, "maxItems": 8, "uniqueItems": true, "items": { "type": "string" } },
+        "commitments": { "type": "object", "minProperties": 7, "maxProperties": 7, "additionalProperties": { "$ref": "#/$defs/digest" } }
+      }
+    },
+    "delegation": {
+      "type": "object", "additionalProperties": false,
+      "required": ["v", "parentGrant", "parentCommitmentDigest", "childGrant", "childCommitmentDigest", "principal", "sessionBinding", "signerId", "publicKey", "signature"],
+      "properties": {
+        "v": { "const": "reelier.hermetic-delegation-evidence/v0" }, "parentGrant": { "$ref": "#/$defs/grant" }, "parentCommitmentDigest": { "$ref": "#/$defs/digest" },
+        "childGrant": { "$ref": "#/$defs/grant" }, "childCommitmentDigest": { "$ref": "#/$defs/digest" },
+        "principal": { "type": "object", "additionalProperties": false, "required": ["v", "id", "kind"], "properties": { "v": { "const": "reelier.principal/v1" }, "id": { "$ref": "#/$defs/id" }, "kind": { "const": "requester" } } },
+        "sessionBinding": {
+          "type": "object", "additionalProperties": false,
+          "required": ["v", "cellId", "adapterContractDigest", "authorityContractDigest", "tenant", "principalId", "taskId", "runtimeSessionId", "jobId", "jobCardDigest", "grantId", "grantDigest", "allocationId", "profileDigest", "activationDigest", "profileTrustHeadDigest", "expiresAt", "bindingObservedAt", "bindingFreshUntil", "topologyEvidenceDigest", "topologyFreshUntil"],
+          "properties": {
+            "v": { "const": "reelier.authority-cell-session-binding/v1" }, "cellId": { "$ref": "#/$defs/id" }, "adapterContractDigest": { "$ref": "#/$defs/digest" }, "authorityContractDigest": { "$ref": "#/$defs/digest" },
+            "tenant": { "$ref": "#/$defs/id" }, "principalId": { "$ref": "#/$defs/id" }, "taskId": { "$ref": "#/$defs/id" }, "runtimeSessionId": { "$ref": "#/$defs/id" }, "jobId": { "$ref": "#/$defs/id" }, "jobCardDigest": { "$ref": "#/$defs/digest" },
+            "grantId": { "$ref": "#/$defs/id" }, "grantDigest": { "$ref": "#/$defs/digest" }, "allocationId": { "$ref": "#/$defs/id" }, "profileDigest": { "$ref": "#/$defs/digest" }, "activationDigest": { "$ref": "#/$defs/digest" }, "profileTrustHeadDigest": { "$ref": "#/$defs/digest" },
+            "expiresAt": { "$ref": "#/$defs/time" }, "bindingObservedAt": { "$ref": "#/$defs/time" }, "bindingFreshUntil": { "$ref": "#/$defs/time" }, "topologyEvidenceDigest": { "$ref": "#/$defs/digest" }, "topologyFreshUntil": { "$ref": "#/$defs/time" }
+          }
+        },
+        "signerId": { "$ref": "#/$defs/id" }, "publicKey": { "type": "string", "minLength": 40 }, "signature": { "$ref": "#/$defs/signature" }
+      }
+    },
+    "coverage": {
+      "type": "object", "additionalProperties": false,
+      "required": ["v", "mode", "status", "passEligibility", "topology", "completeness", "reasonCodes"],
+      "properties": {
+        "v": { "const": "reelier.hermetic-coverage-evidence/v0" }, "mode": { "const": "discovery-only" }, "status": { "const": "failed" },
+        "passEligibility": { "const": false }, "topology": { "const": "unchecked" }, "completeness": { "const": "unchecked" },
+        "reasonCodes": { "type": "array", "minItems": 3, "maxItems": 3, "uniqueItems": true, "items": { "type": "string" } }
+      }
+    },
+    "decisionContext": {
+      "type": "object", "additionalProperties": false,
+      "required": ["v", "tenant", "requester", "definitionAlias", "requestId", "requestDigest", "requestKey", "contractDigest", "capabilityId", "capabilityDigest", "outcomeKey", "effectDigest", "snapshots"],
+      "properties": {
+        "v": { "const": "reelier.decision-context/v1" }, "tenant": { "$ref": "#/$defs/id" }, "requester": { "$ref": "#/$defs/id" }, "definitionAlias": { "type": "string" }, "requestId": { "$ref": "#/$defs/id" },
+        "requestDigest": { "$ref": "#/$defs/digest" }, "requestKey": { "$ref": "#/$defs/digest" }, "contractDigest": { "$ref": "#/$defs/digest" }, "capabilityId": { "$ref": "#/$defs/id" }, "capabilityDigest": { "$ref": "#/$defs/digest" }, "outcomeKey": { "$ref": "#/$defs/digest" }, "effectDigest": { "$ref": "#/$defs/digest" },
+        "snapshots": { "type": "object", "additionalProperties": false, "required": ["sourceBundleDigest", "authorityStateDigest"], "properties": { "sourceBundleDigest": { "$ref": "#/$defs/digest" }, "authorityStateDigest": { "$ref": "#/$defs/digest" } } }
+      }
+    },
+    "dispatch": {
+      "type": "object", "additionalProperties": false,
+      "required": ["v", "decisionContext", "decisionContextDigest", "delegationCommitmentDigest", "gateEvent", "gateEventDigest", "reservation", "dispatchedRequestDigest", "providerResponseDigest", "attempts"],
+      "properties": {
+        "v": { "const": "reelier.hermetic-dispatch-evidence/v0" }, "decisionContext": { "$ref": "#/$defs/decisionContext" }, "decisionContextDigest": { "$ref": "#/$defs/digest" }, "delegationCommitmentDigest": { "$ref": "#/$defs/digest" },
+        "gateEvent": { "type": "object", "additionalProperties": false, "required": ["v", "eventId", "at", "verdict", "reasonCode", "decisionContextDigest"], "properties": { "v": { "const": "reelier.gate-event/v1" }, "eventId": { "$ref": "#/$defs/id" }, "at": { "$ref": "#/$defs/time" }, "verdict": { "const": "accepted" }, "reasonCode": { "const": "accepted" }, "decisionContextDigest": { "$ref": "#/$defs/digest" } } },
+        "gateEventDigest": { "$ref": "#/$defs/digest" },
+        "reservation": { "type": "object", "additionalProperties": false, "required": ["reservationId", "idempotencyKey", "state", "effectsReserved"], "properties": { "reservationId": { "$ref": "#/$defs/id" }, "idempotencyKey": { "$ref": "#/$defs/digest" }, "state": { "const": "reconciled" }, "effectsReserved": { "const": 1 } } },
+        "dispatchedRequestDigest": { "$ref": "#/$defs/digest" }, "providerResponseDigest": { "$ref": "#/$defs/digest" },
+        "attempts": { "type": "array", "minItems": 2, "maxItems": 2, "items": { "type": "object", "additionalProperties": false, "required": ["attemptId", "reservationId", "decision", "providerEffectDelta"], "properties": { "attemptId": { "$ref": "#/$defs/id" }, "reservationId": { "$ref": "#/$defs/id" }, "decision": { "enum": ["dispatched", "duplicate"] }, "providerEffectDelta": { "type": "integer", "minimum": 0, "maximum": 1 } } } }
+      }
+    },
+    "state": { "type": "object", "additionalProperties": false, "required": ["resourceId", "value", "revision"], "properties": { "resourceId": { "$ref": "#/$defs/id" }, "value": { "enum": ["off", "on"] }, "revision": { "type": "integer", "minimum": 0 } } },
+    "providerState": {
+      "type": "object", "additionalProperties": false,
+      "required": ["v", "preState", "postState", "restoredState", "acknowledgment", "postStateEvidence", "providerEffectCount", "rollbackEffectCount"],
+      "properties": {
+        "v": { "const": "reelier.hermetic-provider-state/v0" }, "preState": { "$ref": "#/$defs/state" }, "postState": { "$ref": "#/$defs/state" }, "restoredState": { "$ref": "#/$defs/state" },
+        "acknowledgment": { "type": "object", "additionalProperties": false, "required": ["v", "status", "providerEventId", "reservationId"], "properties": { "v": { "const": "reelier.provider-acknowledgment/v1" }, "status": { "const": "acknowledged" }, "providerEventId": { "$ref": "#/$defs/id" }, "reservationId": { "$ref": "#/$defs/id" } } },
+        "postStateEvidence": { "type": "object", "additionalProperties": false, "required": ["v", "requestId", "dispatchRequestDigest", "expectedProjectionDigest", "observedProjectionDigest", "observationMethod", "observedAt", "confidence", "signerId", "signature"], "properties": { "v": { "const": "reelier.certification-post-state-evidence/v1" }, "requestId": { "$ref": "#/$defs/id" }, "dispatchRequestDigest": { "$ref": "#/$defs/digest" }, "expectedProjectionDigest": { "$ref": "#/$defs/digest" }, "observedProjectionDigest": { "$ref": "#/$defs/digest" }, "observationMethod": { "const": "hermetic-authoritative-read" }, "observedAt": { "$ref": "#/$defs/time" }, "confidence": { "const": "exact" }, "signerId": { "$ref": "#/$defs/id" }, "signature": { "$ref": "#/$defs/signature" } } },
+        "providerEffectCount": { "const": 1 }, "rollbackEffectCount": { "const": 1 }
+      }
+    },
+    "receipt": {
+      "type": "object", "additionalProperties": false,
+      "required": ["v", "receiptId", "gateEventDigest", "decisionContextDigest", "evidenceDigest", "priorReceiptDigest", "decisionContext", "claims"],
+      "properties": {
+        "v": { "const": "reelier.authority-receipt/v1" }, "receiptId": { "$ref": "#/$defs/id" }, "gateEventDigest": { "$ref": "#/$defs/digest" }, "decisionContextDigest": { "$ref": "#/$defs/digest" }, "evidenceDigest": { "$ref": "#/$defs/digest" }, "priorReceiptDigest": { "type": "null" }, "decisionContext": { "$ref": "#/$defs/decisionContext" },
+        "claims": { "type": "object", "additionalProperties": false, "required": ["authorization", "sourceCompleteness", "dispatch", "providerAcknowledgment", "reconciliation", "topology", "completeness"], "properties": { "authorization": { "const": "verified" }, "sourceCompleteness": { "const": "verified" }, "dispatch": { "const": "verified" }, "providerAcknowledgment": { "const": "verified" }, "reconciliation": { "const": "verified" }, "topology": { "const": "unchecked" }, "completeness": { "const": "unchecked" } } }
+      }
+    },
+    "failureInjection": {
+      "type": "object", "additionalProperties": false,
+      "required": ["v", "task6Report", "task6ReportDigest", "task6Status", "cases", "nonClaims"],
+      "properties": {
+        "v": { "const": "reelier.hermetic-failure-injection/v0" }, "task6Report": { "const": ".superpowers/sdd/task-6-failure-injection-report.md" }, "task6ReportDigest": { "$ref": "#/$defs/digest" }, "task6Status": { "const": "failed" },
+        "cases": { "type": "array", "minItems": 2, "maxItems": 2, "items": { "type": "object", "additionalProperties": false, "required": ["caseId", "task6Disposition", "result"], "properties": { "caseId": { "enum": ["duplicate-retry", "provider-ack-without-matching-post-state"] }, "task6Disposition": { "const": "reconciliation-required" }, "result": { "enum": ["verified-zero-effect", "checker-refuses-mismatch"] } } } },
+        "nonClaims": { "type": "array", "minItems": 2, "uniqueItems": true, "items": { "type": "string" } }
+      }
+    },
+    "finalReport": {
+      "type": "object", "additionalProperties": false,
+      "required": ["v", "status", "outcomeEvidence", "coverage", "receiptDigest", "delegationDigest", "providerStateDigest", "humanExceptions", "nonClaims", "reasonCodes"],
+      "properties": {
+        "v": { "const": "reelier.hermetic-outcome-final-report/v0" }, "status": { "const": "non-passing" }, "outcomeEvidence": { "const": "verified" }, "coverage": { "const": "discovery-only" },
+        "receiptDigest": { "$ref": "#/$defs/digest" }, "delegationDigest": { "$ref": "#/$defs/digest" }, "providerStateDigest": { "$ref": "#/$defs/digest" },
+        "humanExceptions": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string" } }, "nonClaims": { "type": "array", "minItems": 4, "uniqueItems": true, "items": { "type": "string" } }, "reasonCodes": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string" } }
+      }
+    }
+  }
+}
