@@ -3,10 +3,15 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { resolve } from "node:path";
+import { spawnSync } from "node:child_process";
+import { createRequire } from "node:module";
 
 const agent = await import(pathToFileURL(resolve("conformance/agent-adapter/v0/check.mjs")).href);
 const continuity = await import(pathToFileURL(resolve("conformance/continuity-adapter/v1/check.mjs")).href);
 const aggregate = await import(pathToFileURL(resolve("conformance/aggregate/v0/check.mjs")).href);
+const Ajv2020 = createRequire(import.meta.url)("ajv/dist/2020").default;
+const aggregateSchema = JSON.parse(readFileSync(resolve("conformance/aggregate/v0/report.schema.json"), "utf8"));
+const validateStandaloneAggregate = new Ajv2020({ allErrors: true, strict: true }).compile(aggregateSchema);
 
 const agentCandidate = JSON.parse(readFileSync(resolve("conformance/agent-adapter/v0/fixtures/grok-build-observed.json"), "utf8"));
 const agentReport = agent.checkCandidate(agentCandidate);
@@ -80,5 +85,18 @@ test("aggregate rejects an agent report with an unexpected top-level property", 
 test("unknown-like aggregate states are never passing", () => {
   for (const state of ["unknown", "uncovered", "unchecked", "absent", "pending", "not-tested", "unsupported", "failed", "continuity-only"] as const) {
     assert.equal(aggregate.isPassingStatus(state), false, state);
+  }
+});
+
+test("aggregate CLI usage and parse failures emit standalone-schema-valid non-passing evidence", () => {
+  for (const args of [[], [resolve("conformance/aggregate/v0/missing-input.json")]]) {
+    const cli = spawnSync(process.execPath, [resolve("conformance/aggregate/v0/check.mjs"), ...args], { encoding: "utf8" });
+    assert.equal(cli.status, args.length === 0 ? 2 : 1);
+    const report = JSON.parse(cli.stdout);
+    assert.equal(validateStandaloneAggregate(report), true, JSON.stringify(validateStandaloneAggregate.errors));
+    assert.equal(report.status, "failed");
+    assert.equal(report.harnesses.length, 5);
+    assert.ok(report.harnesses.every((row: any) => row.executionStatus === "not-tested" && row.outcomeStatus === "not-tested"));
+    assert.ok(report.harnesses.every((row: any) => row.overallStatus !== "execution-proven"));
   }
 });

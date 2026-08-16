@@ -4,8 +4,18 @@ import { readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { resolve } from "node:path";
 import { spawnSync } from "node:child_process";
+import { createRequire } from "node:module";
 
 const matrix = await import(pathToFileURL(resolve("conformance/semantic-matrix/v0/check.mjs")).href);
+const Ajv2020 = createRequire(import.meta.url)("ajv/dist/2020").default;
+const standaloneAjv = new Ajv2020({ allErrors: true, strict: true });
+standaloneAjv.addSchema(
+  JSON.parse(readFileSync(resolve("conformance/aggregate/v0/report.schema.json"), "utf8")),
+  "https://reelier.dev/contracts/aggregate-conformance/v0/report.schema.json",
+);
+const validateStandaloneMatrix = standaloneAjv.compile(
+  JSON.parse(readFileSync(resolve("conformance/semantic-matrix/v0/report.schema.json"), "utf8")),
+);
 const grokBuild = JSON.parse(readFileSync(resolve("conformance/agent-adapter/v0/fixtures/grok-build-observed.json"), "utf8"));
 const grokBot = JSON.parse(readFileSync(resolve("conformance/agent-adapter/v0/fixtures/grok-bot-observed.json"), "utf8"));
 const eveCandidate = JSON.parse(readFileSync(resolve("conformance/agent-adapter/v0/fixtures/eve-observed.json"), "utf8"));
@@ -228,4 +238,20 @@ test("explicit missing evidence cannot coexist with a candidate or report", () =
       candidates: [{ harnessId: "codex", adapterPath: "agent-adapter/v0", missing: true, ...extra }],
     }), /invalid|oneOf/i);
   }
+});
+
+test("failed matrix validation refuses schema-valid top-level rows that contradict the nested aggregate", () => {
+  const report = matrix.runSemanticMatrix({ v: "reelier.semantic-matrix-input/v0", candidates: [] });
+  const contradictory = structuredClone(report);
+  contradictory.harnesses[0] = {
+    ...contradictory.harnesses[0],
+    evidenceMaturity: "failed",
+    coverageStatus: "failed",
+    executionStatus: "failed",
+    outcomeStatus: "failed",
+    overallStatus: "failed",
+    reasons: ["schema-valid contradictory row"],
+  };
+  assert.equal(validateStandaloneMatrix(contradictory), true, JSON.stringify(validateStandaloneMatrix.errors));
+  assert.equal(matrix.validateSemanticMatrixReport(contradictory), false);
 });
