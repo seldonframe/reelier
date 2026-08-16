@@ -164,6 +164,7 @@ jobs:
           name: authority-factory-public-evidence
           path: factory-evidence
   test:
+    name: test (${{ matrix.os }})
     needs: [pack-authority-host-boundary, produce-authority-factory-evidence]
     # `always()` keeps both required contexts visible on pack failure; the first
     # failing step below prevents visible-but-skipped contexts from going green.
