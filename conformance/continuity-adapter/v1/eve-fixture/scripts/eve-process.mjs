@@ -501,7 +501,16 @@ async function waitForPath(path) { for (let attempt = 0; attempt < 600; attempt 
 function signalProcessGroup(pid, signal) { try { process.kill(-pid, signal); } catch (error) { if (error?.code !== "ESRCH") throw error; } }
 function processGroupExists(pid) { try { process.kill(-pid, 0); return true; } catch (error) { if (error?.code === "ESRCH") return false; throw error; } }
 async function waitForProcessGroupExit(pid, timeout) { const deadline = Date.now() + timeout; while (Date.now() < deadline) { if (!processGroupExists(pid)) return true; await delay(25); } return !processGroupExists(pid); }
-async function waitForExit(child, timeout) { if (child.exitCode !== null) return true; return new Promise((resolveExit) => { const timer = setTimeout(() => { child.off("close", close); resolveExit(false); }, timeout); timer.unref(); const close = () => { clearTimeout(timer); resolveExit(true); }; child.once("close", close); }); }
+async function waitForExit(child, timeout) {
+  if (child.exitCode !== null || child.signalCode !== null) return true;
+  return new Promise((resolveExit) => {
+    const finish = () => { clearTimeout(timer); child.off("exit", finish); child.off("close", finish); resolveExit(true); };
+    const timer = setTimeout(() => { child.off("exit", finish); child.off("close", finish); resolveExit(false); }, timeout);
+    timer.unref();
+    child.once("exit", finish);
+    child.once("close", finish);
+  });
+}
 const delay = (ms) => new Promise((resolveDelay) => setTimeout(resolveDelay, ms));
 
 if (process.argv[2] === "--matrix") {
