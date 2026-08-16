@@ -5,13 +5,15 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 const output = process.argv[2] === "--out" ? resolve(process.argv[3] ?? "") : "";
 if (!output) throw new TypeError("usage: run-live-agent-adapter-v0.mjs --out <directory>");
+const suffixIndex = process.argv.indexOf("--suffix");
+const suffix = suffixIndex >= 0 ? String(process.argv[suffixIndex + 1] ?? "") : "";
 
 const runtimeRoot = await mkdtemp(resolve(tmpdir(), "reelier-eve-live-agent-adapter-v0-"));
 try {
   const fixtureRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
   const { runLiveAgentAdapterV0 } = await import(pathToFileURL(resolve(fixtureRoot, "scripts/eve-process.mjs")).href);
   await mkdir(output, { recursive: true });
-  await runLiveAgentAdapterV0(resolve(output, "candidate.json"), runtimeRoot);
+  await runLiveAgentAdapterV0(resolve(output, "candidate.json"), runtimeRoot, { suffix });
   const report = JSON.parse(await readFile(resolve(output, "report.json"), "utf8"));
   process.stdout.write(`${JSON.stringify({ status: report.status, harnessId: report.adapterId, output })}\n`);
 } catch (error) {

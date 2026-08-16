@@ -16,6 +16,9 @@ const session = Object.freeze({
   jobId: "job_process_record_state",
   authorityCellId: process.env.REELIER_AUTHORITY_CELL_ID ?? `cell_${harnessId}_process`,
 });
+const childPrincipalId = process.env.REELIER_CHILD_PRINCIPAL_ID ?? `${session.principalId}_child`;
+const childAllocationId = process.env.REELIER_CHILD_ALLOCATION_ID ?? `${session.allocationId}_child`;
+const childGrantId = process.env.REELIER_CHILD_GRANT_ID ?? `${session.grantId}_child`;
 const requestId = `request_${harnessId}_process_1`;
 const jobRef = session.jobId;
 
@@ -42,11 +45,11 @@ const server = buildAuthorityMcpServer([{ alias: "fixture_record_state_set_v1" }
     await record({ operation: "delegations.request", input });
     const effects = Number(input?.effects);
     const childPrincipalId = input?.child?.principalId;
-    return { verdict: "accepted", principalId: childPrincipalId, allocationId: `${session.allocationId}_child`, effects };
+    return { verdict: "accepted", principalId: childPrincipalId, allocationId: childAllocationId, effects };
   },
   async delegationStatus(input) {
     await record({ operation: "delegations.status", input });
-    return { grantId: input?.grantId, state: "active", principalId: `${session.principalId}_child`, allocationId: `${session.allocationId}_child`, effects: 1 };
+    return { grantId: input?.grantId ?? childGrantId, state: "active", principalId: childPrincipalId, allocationId: childAllocationId, effects: 1 };
   },
   async taskStatus(input) {
     await record({ operation: "tasks.status", input });

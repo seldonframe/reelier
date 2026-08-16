@@ -13,7 +13,7 @@ const eveCliPath = resolve(sourceFixtureRoot, "node_modules/eve/bin/eve.js");
 const dist = (path) => pathToFileURL(resolve(repositoryRoot, path)).href;
 const listenerByChild = new WeakMap();
 
-export async function runLiveAgentAdapterV0(resultPath, runtimeRoot) {
+export async function runLiveAgentAdapterV0(resultPath, runtimeRoot, options = {}) {
   const [{ createGitHubIssueLabelsFixture }, { startPathCConformancePort }, continuity, authority] = await Promise.all([
     import(dist("dist-test/test/authority/fixtures/github-issue-labels.js")),
     import(dist("dist-test/test/continuity/support/path-c-port.js")),
@@ -22,13 +22,28 @@ export async function runLiveAgentAdapterV0(resultPath, runtimeRoot) {
   ]);
   const { checkCandidate } = await import(pathToFileURL(resolve(repositoryRoot, "conformance/agent-adapter/v0/check.mjs")).href);
   const context = { createGitHubIssueLabelsFixture, startPathCConformancePort, continuity, authority, runtimeRoot };
-  const state = await createScenario(context, "live-agent-adapter-v0", {});
+  const suffix = options.suffix ? `_${String(options.suffix).replace(/[^A-Za-z0-9_-]/gu, "_")}` : "";
+  const state = await createScenario(context, `live-agent-adapter-v0${suffix}`, {});
+  const taskId = `task_eve_process${suffix}`;
+  const principalId = `principal_eve_process${suffix}`;
+  const allocationId = `allocation_eve_root${suffix}`;
+  const childPrincipalId = `principal_eve_1_child${suffix}`;
+  const childAllocationId = `${allocationId}_child`;
+  const grantId = `grant_eve_process_root_child${suffix}`;
   const tracePath = resolve(runtimeRoot, "live-agent-adapter-v0", "adapter-events.jsonl");
   const env = {
     ...state.env,
     REELIER_ADAPTER_CONTRACT_SERVER: resolve(repositoryRoot, "scripts/serve-agent-adapter-contract.mjs"),
     REELIER_EVE_CONTRACT_TRACE: tracePath,
     REELIER_EVE_AGENT_ADAPTER_V0: "1",
+    REELIER_EVE_AGENT_ADAPTER_V0_SUFFIX: suffix,
+    REELIER_TASK_ID: taskId,
+    REELIER_PRINCIPAL_ID: principalId,
+    REELIER_ALLOCATION_ID: allocationId,
+    REELIER_CHILD_PRINCIPAL_ID: childPrincipalId,
+    REELIER_CHILD_ALLOCATION_ID: childAllocationId,
+    REELIER_GRANT_ID: `grant_eve_process_root${suffix}`,
+    REELIER_CHILD_GRANT_ID: grantId,
   };
   let processHandle;
   try {
@@ -59,11 +74,11 @@ export async function runLiveAgentAdapterV0(resultPath, runtimeRoot) {
     const transcript = [
       { operation: "jobs.search", request: { query: "reversible record state" }, response: byOperation.get("jobs.search").response },
       { operation: "jobs.load", request: { jobRef }, response: byOperation.get("jobs.load").response },
-      { operation: "delegations.request", request: { taskId: "task_eve_process", parentAllocationId: "allocation_eve_root", childPrincipalId: "principal_eve_1_child", effects: 1 }, response: byOperation.get("delegations.request").response },
-      { operation: "delegations.status", request: { grantId: "grant_eve_process_root_child" }, response: byOperation.get("delegations.status").response },
-      { operation: "tasks.status", request: { taskId: "task_eve_process" }, response: byOperation.get("tasks.status").response },
-      { operation: "outcomes.invoke", request: { jobRef, requestId: "request_eve_process_1", sourceRefs: { record: "opaque_process_ref" }, choices: {} }, response: byOperation.get("outcomes.invoke").response },
-      { operation: "outcomes.status", request: { requestId: "request_eve_process_1" }, response: byOperation.get("outcomes.status").response },
+      { operation: "delegations.request", request: { taskId, parentAllocationId: allocationId, childPrincipalId, effects: 1 }, response: byOperation.get("delegations.request").response },
+      { operation: "delegations.status", request: { grantId }, response: byOperation.get("delegations.status").response },
+      { operation: "tasks.status", request: { taskId }, response: byOperation.get("tasks.status").response },
+      { operation: "outcomes.invoke", request: { jobRef, requestId: `request_eve_process_1${suffix}`, sourceRefs: { record: "opaque_process_ref" }, choices: {} }, response: byOperation.get("outcomes.invoke").response },
+      { operation: "outcomes.status", request: { requestId: `request_eve_process_1${suffix}` }, response: byOperation.get("outcomes.status").response },
     ];
     const candidate = {
       v: "reelier.agent-adapter-candidate/v0",
@@ -79,7 +94,7 @@ export async function runLiveAgentAdapterV0(resultPath, runtimeRoot) {
         operations: ["jobs.search", "jobs.load", "delegations.request", "delegations.status", "tasks.status", "outcomes.invoke", "outcomes.status"],
         hardCodedJobRefs: [],
       },
-      session: { taskId: "task_eve_process", principalId: "principal_eve_process", allocationId: "allocation_eve_root", remainingEffects: 4 },
+      session: { taskId, principalId, allocationId, remainingEffects: 4 },
       transcript,
       coverageProbes: [
         { mode: "observed", activation: "available", rawWriteReachability: "unknown", topology: "unchecked", completeness: "unchecked" },
