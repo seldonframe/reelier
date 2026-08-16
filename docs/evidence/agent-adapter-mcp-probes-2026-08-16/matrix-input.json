@@ -1,0 +1,727 @@
+{
+  "v": "reelier.semantic-matrix-input/v0",
+  "candidates": [
+    {
+      "harnessId": "codex",
+      "adapterPath": "agent-adapter/v0",
+      "candidate": {
+        "v": "reelier.agent-adapter-candidate/v0",
+        "descriptor": {
+          "adapterId": "codex",
+          "agentHost": "codex",
+          "transport": "mcp-stdio",
+          "execution": "fixture-only",
+          "identityBinding": "host-authenticated",
+          "providerCredentialAccess": "none",
+          "authorityContract": {
+            "status": "pending-freeze",
+            "digest": null
+          },
+          "coverage": {
+            "supportedModes": [
+              "observed",
+              "enforced"
+            ],
+            "defaultMode": "observed"
+          },
+          "operations": [
+            "jobs.search",
+            "jobs.load",
+            "delegations.request",
+            "delegations.status",
+            "tasks.status",
+            "outcomes.invoke",
+            "outcomes.status"
+          ],
+          "hardCodedJobRefs": []
+        },
+        "session": {
+          "taskId": "task_live_probe_root",
+          "principalId": "principal_codex_root",
+          "allocationId": "allocation_live_probe_root",
+          "remainingEffects": 4
+        },
+        "transcript": [
+          {
+            "operation": "jobs.search",
+            "request": {
+              "query": "reversible record state"
+            },
+            "response": {
+              "jobs": [
+                {
+                  "jobRef": "job_live_probe_record_state",
+                  "title": "Live probe record state"
+                }
+              ]
+            }
+          },
+          {
+            "operation": "jobs.load",
+            "request": {
+              "jobRef": "job_live_probe_record_state"
+            },
+            "response": {
+              "jobRef": "job_live_probe_record_state",
+              "definitionAliases": [
+                "fixture_record_state_set_v1"
+              ],
+              "requestSchemaDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            }
+          },
+          {
+            "operation": "delegations.request",
+            "request": {
+              "taskId": "task_live_probe_root",
+              "parentAllocationId": "allocation_live_probe_root",
+              "childPrincipalId": "principal_codex_root_child",
+              "effects": 1
+            },
+            "response": {
+              "verdict": "accepted",
+              "principalId": "principal_codex_root_child",
+              "allocationId": "allocation_live_probe_child",
+              "effects": 1
+            }
+          },
+          {
+            "operation": "outcomes.invoke",
+            "request": {
+              "jobRef": "job_live_probe_record_state",
+              "requestId": "request_live_probe_1",
+              "sourceRefs": {
+                "record": "opaque_live_probe_ref"
+              },
+              "choices": {}
+            },
+            "response": {
+              "verdict": "refused",
+              "reasonCode": "adapter-contract-pending",
+              "lifecycleState": "refused"
+            }
+          },
+          {
+            "operation": "outcomes.status",
+            "request": {
+              "requestId": "request_live_probe_1"
+            },
+            "response": {
+              "lifecycleState": "refused",
+              "pass": false,
+              "claims": {
+                "authorization": "unchecked",
+                "dispatch": "absent",
+                "providerAcknowledgment": "absent",
+                "reconciliation": "absent",
+                "topology": "unchecked",
+                "completeness": "unchecked"
+              }
+            }
+          }
+        ],
+        "coverageProbes": [
+          {
+            "mode": "observed",
+            "activation": "available",
+            "rawWriteReachability": "unknown",
+            "topology": "unchecked",
+            "completeness": "unchecked"
+          },
+          {
+            "mode": "enforced",
+            "activation": "unavailable",
+            "rawWriteReachability": "unknown",
+            "topology": "unchecked",
+            "completeness": "unchecked"
+          }
+        ]
+      }
+    },
+    {
+      "harnessId": "claude-code",
+      "adapterPath": "agent-adapter/v0",
+      "candidate": {
+        "v": "reelier.agent-adapter-candidate/v0",
+        "descriptor": {
+          "adapterId": "claude-code",
+          "agentHost": "claude-code",
+          "transport": "mcp-stdio",
+          "execution": "fixture-only",
+          "identityBinding": "host-authenticated",
+          "providerCredentialAccess": "none",
+          "authorityContract": {
+            "status": "pending-freeze",
+            "digest": null
+          },
+          "coverage": {
+            "supportedModes": [
+              "observed",
+              "enforced"
+            ],
+            "defaultMode": "observed"
+          },
+          "operations": [
+            "jobs.search",
+            "jobs.load",
+            "delegations.request",
+            "delegations.status",
+            "tasks.status",
+            "outcomes.invoke",
+            "outcomes.status"
+          ],
+          "hardCodedJobRefs": []
+        },
+        "session": {
+          "taskId": "task_live_probe_root",
+          "principalId": "principal_claude_code_root",
+          "allocationId": "allocation_live_probe_root",
+          "remainingEffects": 4
+        },
+        "transcript": [
+          {
+            "operation": "jobs.search",
+            "request": {
+              "query": "reversible record state"
+            },
+            "response": {
+              "jobs": [
+                {
+                  "jobRef": "job_live_probe_record_state",
+                  "title": "Live probe record state"
+                }
+              ]
+            }
+          },
+          {
+            "operation": "jobs.load",
+            "request": {
+              "jobRef": "job_live_probe_record_state"
+            },
+            "response": {
+              "jobRef": "job_live_probe_record_state",
+              "definitionAliases": [
+                "fixture_record_state_set_v1"
+              ],
+              "requestSchemaDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            }
+          },
+          {
+            "operation": "delegations.request",
+            "request": {
+              "taskId": "task_live_probe_root",
+              "parentAllocationId": "allocation_live_probe_root",
+              "childPrincipalId": "principal_claude_code_root_child",
+              "effects": 1
+            },
+            "response": {
+              "verdict": "accepted",
+              "principalId": "principal_claude_code_root_child",
+              "allocationId": "allocation_live_probe_child",
+              "effects": 1
+            }
+          },
+          {
+            "operation": "outcomes.invoke",
+            "request": {
+              "jobRef": "job_live_probe_record_state",
+              "requestId": "request_live_probe_1",
+              "sourceRefs": {
+                "record": "opaque_live_probe_ref"
+              },
+              "choices": {}
+            },
+            "response": {
+              "verdict": "refused",
+              "reasonCode": "adapter-contract-pending",
+              "lifecycleState": "refused"
+            }
+          },
+          {
+            "operation": "outcomes.status",
+            "request": {
+              "requestId": "request_live_probe_1"
+            },
+            "response": {
+              "lifecycleState": "refused",
+              "pass": false,
+              "claims": {
+                "authorization": "unchecked",
+                "dispatch": "absent",
+                "providerAcknowledgment": "absent",
+                "reconciliation": "absent",
+                "topology": "unchecked",
+                "completeness": "unchecked"
+              }
+            }
+          }
+        ],
+        "coverageProbes": [
+          {
+            "mode": "observed",
+            "activation": "available",
+            "rawWriteReachability": "unknown",
+            "topology": "unchecked",
+            "completeness": "unchecked"
+          },
+          {
+            "mode": "enforced",
+            "activation": "unavailable",
+            "rawWriteReachability": "unknown",
+            "topology": "unchecked",
+            "completeness": "unchecked"
+          }
+        ]
+      }
+    },
+    {
+      "harnessId": "eve",
+      "adapterPath": "agent-adapter/v0",
+      "candidate": {
+        "v": "reelier.agent-adapter-candidate/v0",
+        "descriptor": {
+          "adapterId": "eve",
+          "agentHost": "eve",
+          "transport": "mcp-stdio",
+          "execution": "fixture-only",
+          "identityBinding": "host-authenticated",
+          "providerCredentialAccess": "none",
+          "authorityContract": {
+            "status": "pending-freeze",
+            "digest": null
+          },
+          "coverage": {
+            "supportedModes": [
+              "observed",
+              "enforced"
+            ],
+            "defaultMode": "observed"
+          },
+          "operations": [
+            "jobs.search",
+            "jobs.load",
+            "delegations.request",
+            "delegations.status",
+            "tasks.status",
+            "outcomes.invoke",
+            "outcomes.status"
+          ],
+          "hardCodedJobRefs": []
+        },
+        "session": {
+          "taskId": "task_live_probe_root",
+          "principalId": "principal_eve_root",
+          "allocationId": "allocation_live_probe_root",
+          "remainingEffects": 4
+        },
+        "transcript": [
+          {
+            "operation": "jobs.search",
+            "request": {
+              "query": "reversible record state"
+            },
+            "response": {
+              "jobs": [
+                {
+                  "jobRef": "job_live_probe_record_state",
+                  "title": "Live probe record state"
+                }
+              ]
+            }
+          },
+          {
+            "operation": "jobs.load",
+            "request": {
+              "jobRef": "job_live_probe_record_state"
+            },
+            "response": {
+              "jobRef": "job_live_probe_record_state",
+              "definitionAliases": [
+                "fixture_record_state_set_v1"
+              ],
+              "requestSchemaDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            }
+          },
+          {
+            "operation": "delegations.request",
+            "request": {
+              "taskId": "task_live_probe_root",
+              "parentAllocationId": "allocation_live_probe_root",
+              "childPrincipalId": "principal_eve_root_child",
+              "effects": 1
+            },
+            "response": {
+              "verdict": "accepted",
+              "principalId": "principal_eve_root_child",
+              "allocationId": "allocation_live_probe_child",
+              "effects": 1
+            }
+          },
+          {
+            "operation": "outcomes.invoke",
+            "request": {
+              "jobRef": "job_live_probe_record_state",
+              "requestId": "request_live_probe_1",
+              "sourceRefs": {
+                "record": "opaque_live_probe_ref"
+              },
+              "choices": {}
+            },
+            "response": {
+              "verdict": "refused",
+              "reasonCode": "adapter-contract-pending",
+              "lifecycleState": "refused"
+            }
+          },
+          {
+            "operation": "outcomes.status",
+            "request": {
+              "requestId": "request_live_probe_1"
+            },
+            "response": {
+              "lifecycleState": "refused",
+              "pass": false,
+              "claims": {
+                "authorization": "unchecked",
+                "dispatch": "absent",
+                "providerAcknowledgment": "absent",
+                "reconciliation": "absent",
+                "topology": "unchecked",
+                "completeness": "unchecked"
+              }
+            }
+          }
+        ],
+        "coverageProbes": [
+          {
+            "mode": "observed",
+            "activation": "available",
+            "rawWriteReachability": "unknown",
+            "topology": "unchecked",
+            "completeness": "unchecked"
+          },
+          {
+            "mode": "enforced",
+            "activation": "unavailable",
+            "rawWriteReachability": "unknown",
+            "topology": "unchecked",
+            "completeness": "unchecked"
+          }
+        ]
+      },
+      "continuityEvidence": {
+        "adapterPath": "continuity-adapter/v1/eve-fixture",
+        "report": {
+          "artifacts": {
+            "ledgerHeadDigest": "sha256:ee124964d853c9fadc8508922aa5ce1129e18bad7e6b34863c2bf6e0ebc7a755",
+            "receiptGraphDigest": "sha256:98f1a31275294bae13ee9f813874ef6006e9a3df9cfa8e4fc54e018e2b0b4f6d",
+            "reportDigest": "sha256:d83722f79d4135694b18f7bb9e1ba16481cb99082d19b643cd4aa1c9c750ef27"
+          },
+          "authorityAdapterContractDigest": "sha256:7f46242b26d9c921f4e1ec9de6418ac5fc8c03d70c4415c25e799ae0e73a1512",
+          "checks": [
+            {
+              "detail": "public continuity adapter candidate checks passed",
+              "id": "generic-candidate",
+              "status": "passed"
+            },
+            {
+              "detail": "real Eve kill, resume, stream, control, identity, and model matrix passed",
+              "id": "eve-process-matrix",
+              "status": "passed"
+            },
+            {
+              "detail": "focused Path C and Continuity suites passed",
+              "id": "focused-continuity",
+              "status": "passed"
+            }
+          ],
+          "eveVersion": "0.37.1",
+          "maturity": "reproduced",
+          "nodeVersion": "v24.19.0",
+          "nonClaims": {
+            "contentCorrectness": "not-proved",
+            "grokBot": "not-tested",
+            "productionReadiness": "not-proved",
+            "safety": "not-proved",
+            "topology": "not-proved",
+            "trafficCompleteness": "not-proved"
+          },
+          "reelierCommit": "994785489dd6fd2b85b95e96b1ace16533094f2b",
+          "status": "passed",
+          "v": "reelier.continuity-eve-conformance-report/v1"
+        }
+      }
+    },
+    {
+      "harnessId": "grok-build",
+      "adapterPath": "agent-adapter/v0",
+      "candidate": {
+        "v": "reelier.agent-adapter-candidate/v0",
+        "descriptor": {
+          "adapterId": "xai.grok-build",
+          "agentHost": "grok-build",
+          "transport": "mcp-stdio",
+          "execution": "fixture-only",
+          "identityBinding": "host-authenticated",
+          "providerCredentialAccess": "none",
+          "authorityContract": {
+            "status": "pending-freeze",
+            "digest": null
+          },
+          "coverage": {
+            "supportedModes": [
+              "observed",
+              "enforced"
+            ],
+            "defaultMode": "observed"
+          },
+          "operations": [
+            "jobs.search",
+            "jobs.load",
+            "delegations.request",
+            "delegations.status",
+            "tasks.status",
+            "outcomes.invoke",
+            "outcomes.status"
+          ],
+          "hardCodedJobRefs": []
+        },
+        "session": {
+          "taskId": "task_live_probe_root",
+          "principalId": "principal_grok_build_root",
+          "allocationId": "allocation_live_probe_root",
+          "remainingEffects": 4
+        },
+        "transcript": [
+          {
+            "operation": "jobs.search",
+            "request": {
+              "query": "reversible record state"
+            },
+            "response": {
+              "jobs": [
+                {
+                  "jobRef": "job_live_probe_record_state",
+                  "title": "Live probe record state"
+                }
+              ]
+            }
+          },
+          {
+            "operation": "jobs.load",
+            "request": {
+              "jobRef": "job_live_probe_record_state"
+            },
+            "response": {
+              "jobRef": "job_live_probe_record_state",
+              "definitionAliases": [
+                "fixture_record_state_set_v1"
+              ],
+              "requestSchemaDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            }
+          },
+          {
+            "operation": "delegations.request",
+            "request": {
+              "taskId": "task_live_probe_root",
+              "parentAllocationId": "allocation_live_probe_root",
+              "childPrincipalId": "principal_grok_build_root_child",
+              "effects": 1
+            },
+            "response": {
+              "verdict": "accepted",
+              "principalId": "principal_grok_build_root_child",
+              "allocationId": "allocation_live_probe_child",
+              "effects": 1
+            }
+          },
+          {
+            "operation": "outcomes.invoke",
+            "request": {
+              "jobRef": "job_live_probe_record_state",
+              "requestId": "request_live_probe_1",
+              "sourceRefs": {
+                "record": "opaque_live_probe_ref"
+              },
+              "choices": {}
+            },
+            "response": {
+              "verdict": "refused",
+              "reasonCode": "adapter-contract-pending",
+              "lifecycleState": "refused"
+            }
+          },
+          {
+            "operation": "outcomes.status",
+            "request": {
+              "requestId": "request_live_probe_1"
+            },
+            "response": {
+              "lifecycleState": "refused",
+              "pass": false,
+              "claims": {
+                "authorization": "unchecked",
+                "dispatch": "absent",
+                "providerAcknowledgment": "absent",
+                "reconciliation": "absent",
+                "topology": "unchecked",
+                "completeness": "unchecked"
+              }
+            }
+          }
+        ],
+        "coverageProbes": [
+          {
+            "mode": "observed",
+            "activation": "available",
+            "rawWriteReachability": "unknown",
+            "topology": "unchecked",
+            "completeness": "unchecked"
+          },
+          {
+            "mode": "enforced",
+            "activation": "unavailable",
+            "rawWriteReachability": "unknown",
+            "topology": "unchecked",
+            "completeness": "unchecked"
+          }
+        ]
+      }
+    },
+    {
+      "harnessId": "grok-bot",
+      "adapterPath": "agent-adapter/v0",
+      "candidate": {
+        "v": "reelier.agent-adapter-candidate/v0",
+        "descriptor": {
+          "adapterId": "xai.grok-bot",
+          "agentHost": "grok-bot",
+          "transport": "mcp-stdio",
+          "execution": "fixture-only",
+          "identityBinding": "host-authenticated",
+          "providerCredentialAccess": "none",
+          "authorityContract": {
+            "status": "pending-freeze",
+            "digest": null
+          },
+          "coverage": {
+            "supportedModes": [
+              "observed",
+              "enforced"
+            ],
+            "defaultMode": "observed"
+          },
+          "operations": [
+            "jobs.search",
+            "jobs.load",
+            "delegations.request",
+            "delegations.status",
+            "tasks.status",
+            "outcomes.invoke",
+            "outcomes.status"
+          ],
+          "hardCodedJobRefs": []
+        },
+        "session": {
+          "taskId": "task_live_probe_root",
+          "principalId": "principal_grok_bot_root",
+          "allocationId": "allocation_live_probe_root",
+          "remainingEffects": 4
+        },
+        "transcript": [
+          {
+            "operation": "jobs.search",
+            "request": {
+              "query": "reversible record state"
+            },
+            "response": {
+              "jobs": [
+                {
+                  "jobRef": "job_live_probe_record_state",
+                  "title": "Live probe record state"
+                }
+              ]
+            }
+          },
+          {
+            "operation": "jobs.load",
+            "request": {
+              "jobRef": "job_live_probe_record_state"
+            },
+            "response": {
+              "jobRef": "job_live_probe_record_state",
+              "definitionAliases": [
+                "fixture_record_state_set_v1"
+              ],
+              "requestSchemaDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            }
+          },
+          {
+            "operation": "delegations.request",
+            "request": {
+              "taskId": "task_live_probe_root",
+              "parentAllocationId": "allocation_live_probe_root",
+              "childPrincipalId": "principal_grok_bot_root_child",
+              "effects": 1
+            },
+            "response": {
+              "verdict": "accepted",
+              "principalId": "principal_grok_bot_root_child",
+              "allocationId": "allocation_live_probe_child",
+              "effects": 1
+            }
+          },
+          {
+            "operation": "outcomes.invoke",
+            "request": {
+              "jobRef": "job_live_probe_record_state",
+              "requestId": "request_live_probe_1",
+              "sourceRefs": {
+                "record": "opaque_live_probe_ref"
+              },
+              "choices": {}
+            },
+            "response": {
+              "verdict": "refused",
+              "reasonCode": "adapter-contract-pending",
+              "lifecycleState": "refused"
+            }
+          },
+          {
+            "operation": "outcomes.status",
+            "request": {
+              "requestId": "request_live_probe_1"
+            },
+            "response": {
+              "lifecycleState": "refused",
+              "pass": false,
+              "claims": {
+                "authorization": "unchecked",
+                "dispatch": "absent",
+                "providerAcknowledgment": "absent",
+                "reconciliation": "absent",
+                "topology": "unchecked",
+                "completeness": "unchecked"
+              }
+            }
+          }
+        ],
+        "coverageProbes": [
+          {
+            "mode": "observed",
+            "activation": "available",
+            "rawWriteReachability": "unknown",
+            "topology": "unchecked",
+            "completeness": "unchecked"
+          },
+          {
+            "mode": "enforced",
+            "activation": "unavailable",
+            "rawWriteReachability": "unknown",
+            "topology": "unchecked",
+            "completeness": "unchecked"
+          }
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,21 @@
+{
+  "v": "reelier.candidate-capture/v0",
+  "harness": {
+    "id": "codex",
+    "instanceIdentityDigest": "sha256:fdd2f47d864cab9a7ce7d613e0f866c8a5f101300c9e06379ace27d85b484bcc"
+  },
+  "adapter": {
+    "id": "codex",
+    "instanceIdentityDigest": "sha256:4913e44bfbc8bb227b1d28bf30426eb4efb2955f5a0ec9daeb2539c58acf4529"
+  },
+  "captureMode": "live-candidate",
+  "capturedAt": "2026-08-16T12:50:18.245Z",
+  "freshUntil": "2026-08-16T13:50:18.245Z",
+  "evidenceMode": "observed",
+  "artifact": {
+    "kind": "report",
+    "rawJson": "{\n  \"adapterId\": \"codex\",\n  \"status\": \"passed\",\n  \"checkCount\": 7,\n  \"checksDigest\": \"b56131b6d089d24b47d56587a7d0ae657043fbee05f4d3d0330e95d39438c06c\"\n}\n",
+    "rawDigest": "sha256:f8d4e2a8478b2363df926e9ae4338547fd28dfa208bfcdfe31c6205457e2d43c"
+  },
+  "bindingDigest": "sha256:db422c183dadaa1f481e1e22f2fbd591eda9a4bc7a628b2aa920a666267e5b54"
+}

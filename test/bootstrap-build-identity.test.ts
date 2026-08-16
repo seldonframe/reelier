@@ -71,7 +71,15 @@ test("installed build digest refuses malformed, floating, and traversal package 
   }
 });
 
-test("installed build digest covers this package's shipped files contract", async () => {
+test("installed build digest covers this package's shipped files contract", async (t) => {
+  // A source checkout does not contain the CI-produced native helpers. The
+  // installed-build contract is still exercised whenever those certified
+  // artifacts are present; without them npm's shipped-file oracle cannot
+  // describe this checkout as an installed package.
+  if (!existsSync(join(process.cwd(), "native", "bootstrap-helper", "manifest.json"))) {
+    t.skip("certified native bootstrap artifacts are unavailable on this checkout");
+    return;
+  }
   const first = await computeInstalledBuildDigest(process.cwd());
   const second = await computeInstalledBuildDigest(process.cwd());
   assert.match(first, /^sha256:[0-9a-f]{64}$/);

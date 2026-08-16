@@ -1,0 +1,21 @@
+{
+  "harnessId": "grok-build",
+  "adapterId": "xai.grok-build",
+  "tools": [
+    "reelier_jobs_search",
+    "reelier_job_load",
+    "reelier_delegation_request",
+    "reelier_delegation_status",
+    "reelier_task_status",
+    "reelier_outcome_invoke",
+    "reelier_outcome_fixture_record_state_set_v1",
+    "reelier_outcome_status"
+  ],
+  "called": [
+    "reelier_jobs_search",
+    "reelier_job_load",
+    "reelier_delegation_request",
+    "reelier_outcome_invoke",
+    "reelier_outcome_status"
+  ]
+}

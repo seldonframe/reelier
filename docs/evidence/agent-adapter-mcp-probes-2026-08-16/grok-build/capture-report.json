@@ -1,0 +1,40 @@
+{
+  "v": "reelier.candidate-capture-report/v0",
+  "status": "failed",
+  "classification": "live-candidate-observed",
+  "harness": {
+    "id": "grok-build",
+    "instanceIdentityDigest": "sha256:4b085c823728a564bc802900ed183740719ad61c5712876ba43f2141c43a877d"
+  },
+  "adapter": {
+    "id": "xai.grok-build",
+    "instanceIdentityDigest": "sha256:ceb86ff16e9a2479b038daf163860d3367b85c7401327f20e7a65e650044f202"
+  },
+  "captureMode": "live-candidate",
+  "evidenceMode": "observed",
+  "artifact": {
+    "kind": "report",
+    "rawDigest": "sha256:5e34650f882c7afb30d0d39b127860448ae62e496416022bd69596e97d358d7d"
+  },
+  "freshness": {
+    "status": "fresh",
+    "capturedAt": "2026-08-16T12:50:19.371Z",
+    "freshUntil": "2026-08-16T13:50:19.371Z",
+    "evaluatedAt": "2026-08-16T12:50:19.371Z"
+  },
+  "bindingDigest": "sha256:859bd83ee9d9a72887f4aa0167bd9861ae5085ae99f27e9ccca700f9607fb31d",
+  "reasonCodes": [
+    "capture-boundary-non-passing",
+    "capture-boundary-only",
+    "route-enforcement-not-proved"
+  ],
+  "nonClaims": {
+    "semanticConformance": "not-proved-by-capture",
+    "liveHarnessExecution": "candidate-supplied-not-proved",
+    "routeEnforcement": "not-proved",
+    "outcomeCorrectness": "not-proved",
+    "trafficCompleteness": "not-proved",
+    "productionSafety": "not-proved"
+  },
+  "reportDigest": "sha256:e0ffe9fab508b07db14da0a4838a8c6fd88167b1071cb60abb2871e6fbab7144"
+}

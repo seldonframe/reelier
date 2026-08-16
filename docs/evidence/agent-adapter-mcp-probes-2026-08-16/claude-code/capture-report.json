@@ -1,0 +1,40 @@
+{
+  "v": "reelier.candidate-capture-report/v0",
+  "status": "failed",
+  "classification": "live-candidate-observed",
+  "harness": {
+    "id": "claude-code",
+    "instanceIdentityDigest": "sha256:f0b651440837096db68e9670b8494ef99421b142ec028a7f712059f7ea3dc888"
+  },
+  "adapter": {
+    "id": "claude-code",
+    "instanceIdentityDigest": "sha256:54a2185411f2e8c7e8125fd63dfac39ea5758f45a06fee55fc5d985ac4136827"
+  },
+  "captureMode": "live-candidate",
+  "evidenceMode": "observed",
+  "artifact": {
+    "kind": "report",
+    "rawDigest": "sha256:f0ca1aec4f867dc7077a0f1e651a6734fc9ab2ee1749f6eb8b2cf1485cd5a7f8"
+  },
+  "freshness": {
+    "status": "fresh",
+    "capturedAt": "2026-08-16T12:50:18.627Z",
+    "freshUntil": "2026-08-16T13:50:18.627Z",
+    "evaluatedAt": "2026-08-16T12:50:18.628Z"
+  },
+  "bindingDigest": "sha256:d497c8ba1ba27dd2968c329126cd5f5899b871ee99a35af0317af5953fe4f825",
+  "reasonCodes": [
+    "capture-boundary-non-passing",
+    "capture-boundary-only",
+    "route-enforcement-not-proved"
+  ],
+  "nonClaims": {
+    "semanticConformance": "not-proved-by-capture",
+    "liveHarnessExecution": "candidate-supplied-not-proved",
+    "routeEnforcement": "not-proved",
+    "outcomeCorrectness": "not-proved",
+    "trafficCompleteness": "not-proved",
+    "productionSafety": "not-proved"
+  },
+  "reportDigest": "sha256:7e5e07ae8d3330eaa6bc80ab497cdb50b7a56a1ce5825838a7e5144bc08f81c6"
+}

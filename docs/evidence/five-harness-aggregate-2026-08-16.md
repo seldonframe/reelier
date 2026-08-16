@@ -1,16 +1,19 @@
 # Five-harness aggregate — 2026-08-16
 
-The aggregate semantic matrix was rerun after attaching the real Grok Bot response. It remains
-`failed` intentionally: no harness may be promoted from observed or fixture evidence to governed
-execution without an adapter report that proves the boundary.
+The aggregate semantic matrix was rerun from the explicit manifest at
+`docs/evidence/agent-adapter-mcp-probes-2026-08-16/manifest.json`. The public Reelier MCP
+authority channel was exercised hermetically for all five harness identities, and every semantic
+vector passed. The aggregate remains `failed` intentionally: those probes prove the public channel
+and pre-freeze refusal semantics, not that the corresponding external harness dispatched through
+that channel.
 
 | Harness | Evidence attached | Aggregate status | What is proved | What remains unproved |
 | --- | --- | --- | --- | --- |
-| Codex | Live read-only coverage probe | `unsupported` / `not-tested` | Host routes were observed | Agent-adapter contract, governed execution, completeness |
-| Claude Code | Live read-only coverage probe | `unsupported` / `not-tested` | Host routes were observed | Agent-adapter contract, governed execution, completeness |
-| Eve | Detached continuity capture and report | `continuity-proven` / execution `not-tested` | Continuity process matrix and focused cleanup | Agent-adapter execution, route coverage, provider outcome |
-| Grok Build | No targetable application/window was available | `unsupported` / `not-tested` | Nothing live | All adapter and execution claims |
-| Grok Bot | Real session response plus machine-checked capture | `unsupported` / `not-tested` | The harness honestly reported no local Reelier repository or adapter contract | Semantic vector, dispatch refusal, enforcement, coverage, outcome |
+| Codex | Hermetic public-MCP probe plus live read-only coverage probe | `fixture-only` / `not-tested` | Public semantic vector and host-route observation | External Codex adapter execution, governed execution, completeness |
+| Claude Code | Hermetic public-MCP probe plus live read-only coverage probe | `fixture-only` / `not-tested` | Public semantic vector and host-route observation | External Claude Code adapter execution, governed execution, completeness |
+| Eve | Hermetic public-MCP probe plus detached continuity capture and report | `fixture-only` / `not-tested` | Public semantic vector, continuity matrix, and focused cleanup | External Eve adapter execution, route coverage, provider outcome |
+| Grok Build | Hermetic public-MCP probe; no targetable application/window was available | `fixture-only` / `not-tested` | Public semantic vector only | External Grok Build adapter execution, governed execution, completeness |
+| Grok Bot | Hermetic public-MCP probe plus real session response and machine-checked capture | `fixture-only` / `not-tested` | Public semantic vector; external session honestly reported no local Reelier repository or adapter contract | External adapter execution, dispatch refusal, enforcement, coverage, outcome |
 
 The Grok Bot capture is classified `observed-only` and is non-passing by design. Its response says
 the session stopped without simulating evidence. The aggregate therefore preserves the distinction
@@ -19,3 +22,11 @@ between a real observation and a successful Reelier adapter execution.
 The disposable GitHub branch/readback/retry/protected-main test has not started. No disposable
 repository and protected-branch target were supplied, and the real Reelier repository must not be
 used as an inferred disposable target.
+
+Verification in this pass:
+
+- focused conformance: 54 passed, 0 failed;
+- clean Linux suite with the Eve fixture installed and a real init process: 3,439 passed, 0 failed,
+  8 skipped;
+- the eight skips are explicit certified-artifact or platform-boundary skips, not promoted
+  evidence.

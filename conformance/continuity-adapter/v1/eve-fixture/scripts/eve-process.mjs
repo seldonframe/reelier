@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { createServer } from "node:http";
-import { access, cp, mkdir, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { access, cp, mkdir, readFile, readdir, readlink, rm, symlink, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createObservedEveClient, createStreamIngestor, readEveStream } from "./stream.mjs";
@@ -31,7 +31,8 @@ export async function startEveProcess({ cwd, env }) {
     try {
       await waitForHealth(`http://127.0.0.1:${port}`, child, env.EVE_EVAL_AUTH_TOKEN, http);
       const url = `http://127.0.0.1:${port}`;
-      listenerByChild.set(child, Object.freeze({ url, http }));
+      const listenerPid = process.platform === "linux" ? await waitForListeningPid(port) : undefined;
+      listenerByChild.set(child, Object.freeze({ url, http, listenerPid }));
       return Object.freeze({ child, pid: child.pid, port, url, http, diagnostics: () => lines.slice(-80).join("\n") });
     } catch (error) {
       last = error;
@@ -81,10 +82,21 @@ export async function stopEveProcess(child) {
       signalProcessGroup(exactPid, "SIGTERM");
       if (!await waitForProcessGroupExit(exactPid, 5_000)) {
         signalProcessGroup(exactPid, "SIGKILL");
+        // The launcher can leave its exact PID outside the observed group
+        // while a child still owns one of its stdio handles. Kill the
+        // launcher explicitly after group escalation so Node can emit the
+        // child's close event and the recovery matrix cannot hang on a stale
+        // process handle.
+        try { process.kill(exactPid, "SIGKILL"); } catch (error) { if (error?.code !== "ESRCH") throw error; }
       }
       assert.equal(await waitForProcessGroupExit(exactPid, 5_000), true, `Eve process group ${exactPid} survived forced stop`);
       closeLauncherStreams(child);
-      exited = await waitForExit(child, 5_000);
+      // Keep the Node child handle and the OS cleanup on the same boundary:
+      // a launcher may have escaped the process-group check even though its
+      // descendants are gone.
+      try { child.kill("SIGKILL"); } catch (error) { if (error?.code !== "ESRCH") throw error; }
+      child.unref();
+      exited = child.exitCode !== null || !processExists(exactPid);
     }
     assert.equal(exited || await waitForExit(child, 5_000), true, `exact Eve PID ${exactPid} survived graceful stop`);
   } finally {
@@ -94,7 +106,10 @@ export async function stopEveProcess(child) {
     closeLauncherStreams(child);
   }
   const listener = listenerByChild.get(child);
-  if (listener) await waitForListenerClosed(listener.url, listener.http);
+  if (listener) {
+    if (listener.listenerPid !== undefined) await stopDetachedListener(listener.listenerPid);
+    await waitForListenerClosed(listener.url, listener.http);
+  }
 }
 
 function closeLauncherStreams(child) {
@@ -118,6 +133,8 @@ export async function crashEveProcess(processHandle) {
     }
   }
   assert.equal(await waitForExit(child, 5_000), true, `exact Eve PID ${exactPid} survived the crash cut`);
+  const listener = listenerByChild.get(child);
+  if (listener?.listenerPid !== undefined) await stopDetachedListener(listener.listenerPid);
   await waitForListenerClosed(url, processHandle.http);
 }
 
@@ -493,9 +510,47 @@ function diagnostic(message) { if (process.env.REELIER_EVE_MATRIX_DIAGNOSTICS ==
 async function unusedLoopbackPort() { const server = createServer(); await new Promise((resolveListen, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolveListen); }); const address = server.address(); const port = address.port; await new Promise((resolveClose, reject) => server.close((error) => error ? reject(error) : resolveClose())); return port; }
 async function waitForHealth(baseUrl, child, token, http) { for (let attempt = 0; attempt < 600; attempt += 1) { if (child.exitCode !== null) throw new Error(`Eve dev exited before health (${child.exitCode})`); try { const health = await http.request(new URL("/eve/v1/health", baseUrl), { redirect: "error", signal: AbortSignal.timeout(500) }); const info = health.ok && token ? await http.request(new URL("/eve/v1/info", baseUrl), { redirect: "error", headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(500) }) : null; if (health.ok && info?.ok) return; } catch {} await delay(100); } throw new Error("Eve health timeout"); }
 async function waitForListenerClosed(baseUrl, http) { for (let attempt = 0; attempt < 100; attempt += 1) { try { await http.request(new URL("/eve/v1/health", baseUrl), { redirect: "error", signal: AbortSignal.timeout(200) }); } catch { return; } await delay(50); } throw new Error(`Eve listener survived exact tree termination at ${baseUrl}`); }
+async function waitForListeningPid(port) { for (let attempt = 0; attempt < 100; attempt += 1) { const pid = await findListeningPid(port); if (pid !== undefined) return pid; await delay(25); } throw new Error(`Eve listener PID was not observable for port ${port}`); }
+async function findListeningPid(port) {
+  if (process.platform !== "linux") return undefined;
+  const inodes = new Set();
+  for (const table of ["/proc/net/tcp", "/proc/net/tcp6"]) {
+    let text;
+    try { text = await readFile(table, "utf8"); } catch { continue; }
+    for (const line of text.split(/\r?\n/u).slice(1)) {
+      const fields = line.trim().split(/\s+/u);
+      const local = fields[1];
+      if (fields[3] !== "0A" || typeof local !== "string" || Number.parseInt(local.slice(local.indexOf(":") + 1), 16) !== port) continue;
+      if (typeof fields[9] === "string") inodes.add(fields[9]);
+    }
+  }
+  if (inodes.size === 0) return undefined;
+  let entries;
+  try { entries = await readdir("/proc"); } catch { return undefined; }
+  for (const entry of entries) {
+    if (!/^\d+$/u.test(entry)) continue;
+    let fds;
+    try { fds = await readdir(`/proc/${entry}/fd`); } catch { continue; }
+    for (const fd of fds) {
+      try {
+        const target = await readlink(`/proc/${entry}/fd/${fd}`);
+        if ([...inodes].some(inode => target === `socket:[${inode}]`)) return Number(entry);
+      } catch {}
+    }
+  }
+  return undefined;
+}
+async function stopDetachedListener(pid) {
+  signalProcessGroup(pid, "SIGTERM");
+  if (await waitForProcessGroupExit(pid, 1_000)) return;
+  signalProcessGroup(pid, "SIGKILL");
+  try { process.kill(pid, "SIGKILL"); } catch (error) { if (error?.code !== "ESRCH") throw error; }
+  assert.equal(await waitForProcessGroupExit(pid, 5_000), true, `Eve detached listener group ${pid} survived forced stop`);
+}
 async function waitForPath(path) { for (let attempt = 0; attempt < 600; attempt += 1) { try { await access(path); return; } catch {} await delay(50); } throw new Error(`expected crash-cut marker was not written: ${path}`); }
 function signalProcessGroup(pid, signal) { try { process.kill(-pid, signal); } catch (error) { if (error?.code !== "ESRCH") throw error; } }
 function processGroupExists(pid) { try { process.kill(-pid, 0); return true; } catch (error) { if (error?.code === "ESRCH") return false; throw error; } }
+function processExists(pid) { try { process.kill(pid, 0); return true; } catch (error) { if (error?.code === "ESRCH") return false; throw error; } }
 async function waitForProcessGroupExit(pid, timeout) { const deadline = Date.now() + timeout; while (Date.now() < deadline) { if (!processGroupExists(pid)) return true; await delay(25); } return !processGroupExists(pid); }
 async function waitForExit(child, timeout) { if (child.exitCode !== null) return true; return new Promise((resolveExit) => { const timer = setTimeout(() => { child.off("close", close); resolveExit(false); }, timeout); timer.unref(); const close = () => { clearTimeout(timer); resolveExit(true); }; child.once("close", close); }); }
 const delay = (ms) => new Promise((resolveDelay) => setTimeout(resolveDelay, ms));

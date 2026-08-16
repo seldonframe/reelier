@@ -1,0 +1,21 @@
+{
+  "v": "reelier.candidate-capture/v0",
+  "harness": {
+    "id": "grok-build",
+    "instanceIdentityDigest": "sha256:4b085c823728a564bc802900ed183740719ad61c5712876ba43f2141c43a877d"
+  },
+  "adapter": {
+    "id": "xai.grok-build",
+    "instanceIdentityDigest": "sha256:ceb86ff16e9a2479b038daf163860d3367b85c7401327f20e7a65e650044f202"
+  },
+  "captureMode": "live-candidate",
+  "capturedAt": "2026-08-16T12:50:19.371Z",
+  "freshUntil": "2026-08-16T13:50:19.371Z",
+  "evidenceMode": "observed",
+  "artifact": {
+    "kind": "report",
+    "rawJson": "{\n  \"adapterId\": \"xai.grok-build\",\n  \"status\": \"passed\",\n  \"checkCount\": 7,\n  \"checksDigest\": \"b56131b6d089d24b47d56587a7d0ae657043fbee05f4d3d0330e95d39438c06c\"\n}\n",
+    "rawDigest": "sha256:5e34650f882c7afb30d0d39b127860448ae62e496416022bd69596e97d358d7d"
+  },
+  "bindingDigest": "sha256:859bd83ee9d9a72887f4aa0167bd9861ae5085ae99f27e9ccca700f9607fb31d"
+}

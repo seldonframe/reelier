@@ -1,0 +1,21 @@
+{
+  "v": "reelier.candidate-capture/v0",
+  "harness": {
+    "id": "claude-code",
+    "instanceIdentityDigest": "sha256:f0b651440837096db68e9670b8494ef99421b142ec028a7f712059f7ea3dc888"
+  },
+  "adapter": {
+    "id": "claude-code",
+    "instanceIdentityDigest": "sha256:54a2185411f2e8c7e8125fd63dfac39ea5758f45a06fee55fc5d985ac4136827"
+  },
+  "captureMode": "live-candidate",
+  "capturedAt": "2026-08-16T12:50:18.627Z",
+  "freshUntil": "2026-08-16T13:50:18.627Z",
+  "evidenceMode": "observed",
+  "artifact": {
+    "kind": "report",
+    "rawJson": "{\n  \"adapterId\": \"claude-code\",\n  \"status\": \"passed\",\n  \"checkCount\": 7,\n  \"checksDigest\": \"b56131b6d089d24b47d56587a7d0ae657043fbee05f4d3d0330e95d39438c06c\"\n}\n",
+    "rawDigest": "sha256:f0ca1aec4f867dc7077a0f1e651a6734fc9ab2ee1749f6eb8b2cf1485cd5a7f8"
+  },
+  "bindingDigest": "sha256:d497c8ba1ba27dd2968c329126cd5f5899b871ee99a35af0317af5953fe4f825"
+}

@@ -1,0 +1,10 @@
+{
+  "harnesses": {
+    "codex": { "candidate": "docs/evidence/agent-adapter-mcp-probes-2026-08-16/codex/candidate.json" },
+    "claude-code": { "candidate": "docs/evidence/agent-adapter-mcp-probes-2026-08-16/claude-code/candidate.json" },
+    "eve": { "candidate": "docs/evidence/agent-adapter-mcp-probes-2026-08-16/eve/candidate.json" },
+    "grok-build": { "candidate": "docs/evidence/agent-adapter-mcp-probes-2026-08-16/grok-build/candidate.json" },
+    "grok-bot": { "candidate": "docs/evidence/agent-adapter-mcp-probes-2026-08-16/grok-bot/candidate.json" }
+  },
+  "eveContinuityReport": "docs/evidence/eve-continuity-capture-2026-08-16/eve-continuity-detached-report.json"
+}

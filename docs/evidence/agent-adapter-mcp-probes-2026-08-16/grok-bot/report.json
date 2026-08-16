@@ -1,0 +1,42 @@
+{
+  "v": "reelier.agent-adapter-conformance-report/v0",
+  "status": "passed",
+  "adapterId": "xai.grok-bot",
+  "checks": [
+    {
+      "id": "universal-operations",
+      "status": "passed",
+      "detail": "adapter exposes only the universal semantic operation set"
+    },
+    {
+      "id": "dynamic-job-discovery",
+      "status": "passed",
+      "detail": "loaded and invoked job references originate in catalog discovery"
+    },
+    {
+      "id": "host-bound-outcome-input",
+      "status": "passed",
+      "detail": "Outcome input contains no authenticated identity or provider authority"
+    },
+    {
+      "id": "attenuated-child-principal",
+      "status": "passed",
+      "detail": "child principal and effect allocation are distinct and narrower"
+    },
+    {
+      "id": "pre-freeze-no-dispatch",
+      "status": "passed",
+      "detail": "pending Adapter Contract refuses without dispatch or a passing receipt"
+    },
+    {
+      "id": "observed-coverage-honesty",
+      "status": "passed",
+      "detail": "observed mode remains available with unchecked topology and completeness"
+    },
+    {
+      "id": "enforced-mode-unavailable",
+      "status": "passed",
+      "detail": "enforced mode remains unavailable without verified topology"
+    }
+  ]
+}

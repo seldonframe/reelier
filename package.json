@@ -86,6 +86,7 @@
     "check:outcome-profile-contract": "node scripts/build-outcome-profile-contract.mjs --check",
     "check:bootstrap-contract": "node scripts/build-bootstrap-contract.mjs --check",
     "check:agent-adapter": "node conformance/agent-adapter/v0/check.mjs",
+    "probe:agent-adapter": "node scripts/run-agent-adapter-mcp-probe.mjs",
     "check:continuity-adapter": "node conformance/continuity-adapter/v1/check.mjs",
     "check:continuity-eve": "npm --prefix conformance/continuity-adapter/v1/eve-fixture ci --ignore-scripts && npm --prefix conformance/continuity-adapter/v1/eve-fixture run conformance",
     "lint:fault-pins": "node scripts/lint-fault-pins.mjs",
