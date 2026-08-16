@@ -205,7 +205,7 @@ test("a passed matrix cannot contain unsupported top-level harness rows", () => 
   const aggregate = {
     v: "reelier.aggregate-conformance-report/v0",
     status: "passed",
-    harnesses: ["codex", "claude-code", "eve", "xai.grok-build", "xai.grok-bot"].map(passingRow),
+    harnesses: ["codex", "claude-code", "eve", "grok-build", "grok-bot"].map(passingRow),
   };
   const report = {
     v: "reelier.semantic-matrix-report/v0",
@@ -254,4 +254,20 @@ test("failed matrix validation refuses schema-valid top-level rows that contradi
   };
   assert.equal(validateStandaloneMatrix(contradictory), true, JSON.stringify(validateStandaloneMatrix.errors));
   assert.equal(matrix.validateSemanticMatrixReport(contradictory), false);
+});
+
+test("failed matrix validation requires exact duplicated harness rows", () => {
+  const report = matrix.runSemanticMatrix({ v: "reelier.semantic-matrix-input/v0", candidates: [] });
+  assert.deepEqual(report.harnesses, report.aggregate.harnesses);
+
+  const mutations = [
+    ["adapterPath", (row: any) => { row.adapterPath = "continuity-adapter/v1"; }],
+    ["reasons", (row: any) => { row.reasons = ["schema-valid invented reason"]; }],
+  ] as const;
+  for (const [label, mutate] of mutations) {
+    const contradictory = structuredClone(report);
+    mutate(contradictory.harnesses[0]);
+    assert.equal(validateStandaloneMatrix(contradictory), true, `${label}: ${JSON.stringify(validateStandaloneMatrix.errors)}`);
+    assert.equal(matrix.validateSemanticMatrixReport(contradictory), false, label);
+  }
 });
