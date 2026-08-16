@@ -117,4 +117,4 @@ Verbatim tail:
 ℹ duration_ms 2126.3976
 ```
 
-Fix commit: recorded after this report update.
+Fix commit: `a8efd3c37acaa022b40a232da86626c9b2c64973`.
