@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["v", "status", "execution", "harnessId", "eveVersion", "nodeVersion", "contract", "eveProcess", "semanticOperations", "transcript", "pathC", "providerEffect", "continuity", "nonClaims", "reportDigest"],
+  "properties": {
+    "v": { "const": "reelier.eve-live-contract-execution/v1" },
+    "status": { "const": "passed" },
+    "execution": { "const": "eve-process-tool-loop" },
+    "harnessId": { "const": "eve" },
+    "eveVersion": { "const": "0.37.1" },
+    "nodeVersion": { "type": "string", "pattern": "^v24\\.[0-9]+\\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$" },
+    "contract": {
+      "type": "object", "additionalProperties": false, "required": ["v", "digest", "bound"],
+      "properties": { "v": { "const": "reelier.adapter-contract/v1" }, "digest": { "$ref": "#/$defs/digest" }, "bound": { "const": true } }
+    },
+    "eveProcess": {
+      "type": "object", "additionalProperties": false, "required": ["pid", "sessionId", "streamEventCount", "stepStartedCount", "boundary"],
+      "properties": { "pid": { "type": ["integer", "null"] }, "sessionId": { "type": "string", "minLength": 1 }, "streamEventCount": { "type": "integer", "minimum": 1 }, "stepStartedCount": { "type": "integer", "minimum": 6 }, "boundary": { "const": "session.waiting" } }
+    },
+    "semanticOperations": { "type": "array", "const": ["jobs.search", "jobs.load", "delegations.request", "outcomes.invoke", "outcomes.status"] },
+    "transcript": {
+      "type": "array", "minItems": 5,
+      "items": {
+        "type": "object", "additionalProperties": false, "required": ["observedAt", "tool", "operation", "input", "response"],
+        "properties": { "observedAt": { "type": "string", "minLength": 1 }, "tool": { "type": "string", "minLength": 1 }, "operation": { "type": "string", "minLength": 1 }, "input": { "type": "object" }, "response": { "type": "object" } }
+      }
+    },
+    "pathC": {
+      "type": "object", "additionalProperties": false, "required": ["authenticated", "outcomeRequests", "statusReads", "providerDispatches", "reservations"],
+      "properties": { "authenticated": { "const": true }, "outcomeRequests": { "const": 1 }, "statusReads": { "const": 1 }, "providerDispatches": { "const": 1 }, "reservations": { "const": 1 } }
+    },
+    "providerEffect": {
+      "type": "object", "additionalProperties": false, "required": ["dispatch", "receipt", "graphDigest"],
+      "properties": { "dispatch": { "const": "observed" }, "receipt": { "const": "verified" }, "graphDigest": { "$ref": "#/$defs/digest" } }
+    },
+    "continuity": {
+      "type": "object", "additionalProperties": false, "required": ["taskId", "cursor", "fixture"],
+      "properties": { "taskId": { "type": "string", "minLength": 1 }, "cursor": { "type": "integer", "minimum": 1 }, "fixture": { "const": "existing-continuity-fixture" } }
+    },
+    "nonClaims": {
+      "type": "object", "additionalProperties": false,
+      "required": ["contentCorrectness", "liveModel", "productionReadiness", "safety", "topology", "trafficCompleteness"],
+      "properties": { "contentCorrectness": { "const": "not-proved" }, "liveModel": { "const": "not-proved" }, "productionReadiness": { "const": "not-proved" }, "safety": { "const": "not-proved" }, "topology": { "const": "not-proved" }, "trafficCompleteness": { "const": "not-proved" } }
+    },
+    "reportDigest": { "$ref": "#/$defs/digest" }
+  },
+  "$defs": { "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" } }
+}

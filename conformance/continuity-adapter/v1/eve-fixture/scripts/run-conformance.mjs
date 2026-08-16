@@ -58,6 +58,7 @@ try {
   await command(process.execPath, [resolve(repositoryRoot, "conformance/continuity-adapter/v1/check.mjs"), resolve(repositoryRoot, "conformance/continuity-adapter/v1/fixtures/core-candidate.mjs")], "generic-candidate");
   const matrixPath = resolve(logsRoot, "matrix.json");
   await command(process.execPath, ["--test", "--test-concurrency=1", resolve(repositoryRoot, "dist-test/test/continuity/eve-kill-resume.test.js")], "eve-process-matrix", { REELIER_EVE_MATRIX_RESULT_PATH: matrixPath });
+  await command(process.execPath, [resolve(fixtureRoot, "scripts/run-live-contract.mjs"), "--out", resolve(repositoryRoot, "docs/evidence/eve-live-contract-execution-2026-08-16")], "eve-live-contract");
   await command(process.execPath, ["--test", "--test-concurrency=1", resolve(repositoryRoot, "dist-test/test/continuity/adapter.test.js"), resolve(repositoryRoot, "dist-test/test/continuity/authority-bridge.test.js"), resolve(repositoryRoot, "dist-test/test/continuity/path-c-port.test.js")], "focused-continuity");
   const matrix = JSON.parse(await readFile(matrixPath, "utf8"));
   const reelierCommit = (await command("git", ["rev-parse", "HEAD"], "git-commit")).trim();
@@ -73,6 +74,7 @@ try {
     checks: Object.freeze([
       { id: "generic-candidate", status: "passed", detail: "public continuity adapter candidate checks passed" },
       { id: "eve-process-matrix", status: "passed", detail: "real Eve kill, resume, stream, control, identity, and model matrix passed" },
+      { id: "eve-live-contract", status: "passed", detail: "real Eve tool loop bound the shared Adapter Contract and exercised the authenticated Path C vector" },
       { id: "focused-continuity", status: "passed", detail: "focused Path C and Continuity suites passed" },
     ]),
     artifacts: { ledgerHeadDigest: matrix.artifacts.ledgerHeadDigest, receiptGraphDigest: matrix.artifacts.receiptGraphDigest },

@@ -13,6 +13,77 @@ const eveCliPath = resolve(sourceFixtureRoot, "node_modules/eve/bin/eve.js");
 const dist = (path) => pathToFileURL(resolve(repositoryRoot, path)).href;
 const listenerByChild = new WeakMap();
 
+export async function runLiveContract(resultPath, runtimeRoot) {
+  const [{ createGitHubIssueLabelsFixture }, { startPathCConformancePort }, continuity, authority] = await Promise.all([
+    import(dist("dist-test/test/authority/fixtures/github-issue-labels.js")),
+    import(dist("dist-test/test/continuity/support/path-c-port.js")),
+    import(dist("dist-test/src/continuity/index.js")),
+    import(dist("dist-test/src/authority/index.js")),
+  ]);
+  const context = { createGitHubIssueLabelsFixture, startPathCConformancePort, continuity, authority, runtimeRoot };
+  const state = await createScenario(context, "live-contract", {});
+  const tracePath = resolve(runtimeRoot, "live-contract", "adapter-events.jsonl");
+  const env = {
+    ...state.env,
+    REELIER_ADAPTER_CONTRACT_SERVER: resolve(repositoryRoot, "scripts/serve-agent-adapter-contract.mjs"),
+    REELIER_EVE_CONTRACT_TRACE: tracePath,
+  };
+  let processHandle;
+  try {
+    processHandle = await startEveProcess({ cwd: state.appRoot, env });
+    const created = await post(processHandle, "/eve/v1/session", state.token, { message: "adapter contract", operationId: "live-contract" });
+    assert.equal(created.status, 202, JSON.stringify(created.body));
+    const sessionId = created.body.sessionId;
+    let cursor = 0;
+    const streamRows = [];
+    for (const message of ["adapter catalog", "adapter load", "adapter delegation", "adapter invoke", "adapter status"]) {
+      const settled = await waitForBoundary(processHandle, sessionId, state.token, cursor);
+      cursor = settled.cursor;
+      streamRows.push(...settled.rows);
+      const next = await post(processHandle, `/eve/v1/session/${encodeURIComponent(sessionId)}`, state.token, { message });
+      assert.equal(next.status, 202, JSON.stringify(next.body));
+    }
+    const final = await waitForBoundary(processHandle, sessionId, state.token, cursor);
+    streamRows.push(...final.rows);
+    const trace = await readJsonLines(tracePath);
+    const contract = trace.find(event => event.operation === "adapter.contract")?.response;
+    const semanticTrace = trace.filter(event => event.operation !== "adapter.contract");
+    assert.equal(contract?.v, "reelier.adapter-contract/v1");
+    assert.match(contract?.digest ?? "", /^sha256:[0-9a-f]{64}$/u);
+    assert.deepEqual(semanticTrace.map(event => event.operation), ["jobs.search", "jobs.load", "delegations.request", "outcomes.invoke", "outcomes.status"]);
+    const counters = state.port.counters();
+    assert.deepEqual(counters, { outcomeRequests: 1, statusReads: 1, providerDispatches: 1, reservations: 1 });
+    const verified = await state.port.exportVerifiedGraph();
+    assert.equal(verified.status, "verified");
+    const snapshot = await state.ledger.read(state.taskId);
+    const base = {
+      v: "reelier.eve-live-contract-execution/v1",
+      status: "passed",
+      execution: "eve-process-tool-loop",
+      harnessId: "eve",
+      eveVersion: "0.37.1",
+      nodeVersion: process.version,
+      contract: { v: contract.v, digest: contract.digest, bound: true },
+      eveProcess: { pid: processHandle.pid, sessionId, streamEventCount: streamRows.length, stepStartedCount: streamRows.filter(event => event.type === "step.started").length, boundary: "session.waiting" },
+      semanticOperations: semanticTrace.map(event => event.operation),
+      transcript: semanticTrace,
+      pathC: { authenticated: true, ...counters },
+      providerEffect: { dispatch: "observed", receipt: "verified", graphDigest: authority.authorityDigest(verified) },
+      continuity: { taskId: snapshot.taskId, cursor: snapshot.cursor, fixture: "existing-continuity-fixture" },
+      nonClaims: { contentCorrectness: "not-proved", liveModel: "not-proved", productionReadiness: "not-proved", safety: "not-proved", topology: "not-proved", trafficCompleteness: "not-proved" },
+    };
+    const report = Object.freeze({ ...base, reportDigest: authority.authorityDigest(base) });
+    assertLiveContractReport(report);
+    await mkdir(dirname(resultPath), { recursive: true });
+    await writeFile(resultPath, `${authority.authorityCanonicalBytes(report).toString("utf8")}\n`, "utf8");
+    await writeFile(resolve(dirname(resultPath), "adapter-events.jsonl"), `${trace.map(event => JSON.stringify(event)).join("\n")}\n`, "utf8");
+    await writeFile(resolve(dirname(resultPath), "eve-stream-events.json"), `${JSON.stringify(streamRows, null, 2)}\n`, "utf8");
+  } finally {
+    await stopEveProcess(processHandle?.child);
+    await state.close();
+  }
+}
+
 export async function startEveProcess({ cwd, env }) {
   let last;
   for (let attempt = 0; attempt < 5; attempt += 1) {
@@ -424,6 +495,18 @@ async function copyFixture(target, patchCheckpoint) {
 
 async function projectionBytes(state, context) {
   return context.authority.authorityCanonicalBytes(context.continuity.createResumeProjection(await state.ledger.read(state.taskId)));
+}
+async function readJsonLines(path) {
+  const text = await readFile(path, "utf8");
+  return text.split(/\r?\n/u).filter(Boolean).map(line => JSON.parse(line));
+}
+function assertLiveContractReport(report) {
+  if (!report || report.v !== "reelier.eve-live-contract-execution/v1" || report.status !== "passed" || report.execution !== "eve-process-tool-loop") throw new TypeError("live Eve contract report identity is invalid");
+  if (report.contract?.v !== "reelier.adapter-contract/v1" || report.contract.bound !== true || !/^sha256:[0-9a-f]{64}$/u.test(report.contract.digest)) throw new TypeError("live Eve contract report is not bound to a frozen contract");
+  if (JSON.stringify(report.semanticOperations) !== JSON.stringify(["jobs.search", "jobs.load", "delegations.request", "outcomes.invoke", "outcomes.status"])) throw new TypeError("live Eve contract semantic vector is incomplete");
+  if (report.pathC?.authenticated !== true || report.pathC.providerDispatches !== 1 || report.pathC.statusReads !== 1 || report.providerEffect?.receipt !== "verified") throw new TypeError("live Eve Path C evidence is incomplete");
+  if (!report.eveProcess?.sessionId || report.eveProcess.stepStartedCount < 6 || report.eveProcess.boundary !== "session.waiting") throw new TypeError("live Eve process evidence is incomplete");
+  if (!report.reportDigest || report.nonClaims?.contentCorrectness !== "not-proved" || report.nonClaims?.liveModel !== "not-proved") throw new TypeError("live Eve contract report non-claims are incomplete");
 }
 async function segmentCount(root, taskId) { return (await readdir(resolve(root, taskId))).filter((name) => /^\d{16}-[0-9a-f]{64}\.json$/u.test(name)).length; }
 async function latestSegment(root, taskId) {
