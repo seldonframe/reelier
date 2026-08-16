@@ -1,0 +1,21 @@
+{
+  "v": "reelier.candidate-capture/v0",
+  "harness": {
+    "id": "grok-bot",
+    "instanceIdentityDigest": "sha256:98588fe4cc2caf1067ad2ef403eea9c6521d4118ca22c97a04a144c8efb3f46c"
+  },
+  "adapter": {
+    "id": "xai.grok-bot",
+    "instanceIdentityDigest": "sha256:98588fe4cc2caf1067ad2ef403eea9c6521d4118ca22c97a04a144c8efb3f46c"
+  },
+  "captureMode": "observed",
+  "capturedAt": "2026-08-16T11:50:05.564Z",
+  "freshUntil": "2026-08-17T11:50:05.563Z",
+  "evidenceMode": "observed",
+  "artifact": {
+    "kind": "report",
+    "rawJson": "{\n  \"harnessId\": \"grok-bot\",\n  \"adapterId\": \"xai.grok-bot\",\n  \"executionMode\": \"unsupported\",\n  \"status\": \"unsupported\",\n  \"adapterContractExposed\": false,\n  \"localRepositoryAccessible\": false,\n  \"routeInventory\": [],\n  \"coveredRoutes\": [],\n  \"uncoveredRoutes\": [\n    \"discoverNamedJob\",\n    \"loadJobDefinition\",\n    \"createAttenuatedChildDelegation\",\n    \"submitOutcomeRequestUnauthenticated\",\n    \"verifyDispatchRefusedWhileAdapterContractPending\"\n  ],\n  \"checks\": [\n    {\n      \"id\": \"local-repo\",\n      \"result\": \"not-found\",\n      \"observed\": \"/workspace empty; reelier not on PATH\"\n    },\n    {\n      \"id\": \"adapter-contract\",\n      \"result\": \"not-exposed\",\n      \"observed\": \"session tools and MCP expose no Adapter Contract, named-job, delegation, or Outcome routes; only unrelated Gmail MCP present and unused\"\n    },\n    {\n      \"id\": \"semantic-vector\",\n      \"result\": \"not-executed\",\n      \"observed\": \"stopped per unsupported rule; no live dispatch, refusal, or lifecycle observed\"\n    }\n  ],\n  \"lifecycle\": {\n    \"observed\": \"not-started\",\n    \"adapterContract\": \"not-exposed\"\n  },\n  \"nonClaims\": [\n    \"live execution\",\n    \"enforcement\",\n    \"coverage completeness\",\n    \"outcome correctness\",\n    \"dispatch refusal while Adapter Contract pending\",\n    \"identity attenuation\",\n    \"route inventory completeness\",\n    \"named-job discovery\",\n    \"child delegation creation\"\n  ]\n}",
+    "rawDigest": "sha256:dd980a2b7477eb9db16fa6c0feeeda8c0b3fc5b8780f0f45eedafec0cfa45aa1"
+  },
+  "bindingDigest": "sha256:62da9bbfac21cf8b83baba8ec6f0e320d856eda3472bf084c70b1e9c1fc23c99"
+}

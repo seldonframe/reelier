@@ -1,0 +1,49 @@
+{
+  "harnessId": "grok-bot",
+  "adapterId": "xai.grok-bot",
+  "executionMode": "unsupported",
+  "status": "unsupported",
+  "adapterContractExposed": false,
+  "localRepositoryAccessible": false,
+  "routeInventory": [],
+  "coveredRoutes": [],
+  "uncoveredRoutes": [
+    "discoverNamedJob",
+    "loadJobDefinition",
+    "createAttenuatedChildDelegation",
+    "submitOutcomeRequestUnauthenticated",
+    "verifyDispatchRefusedWhileAdapterContractPending"
+  ],
+  "checks": [
+    {
+      "id": "local-repo",
+      "result": "not-found",
+      "observed": "/workspace empty; reelier not on PATH"
+    },
+    {
+      "id": "adapter-contract",
+      "result": "not-exposed",
+      "observed": "session tools and MCP expose no Adapter Contract, named-job, delegation, or Outcome routes; only unrelated Gmail MCP present and unused"
+    },
+    {
+      "id": "semantic-vector",
+      "result": "not-executed",
+      "observed": "stopped per unsupported rule; no live dispatch, refusal, or lifecycle observed"
+    }
+  ],
+  "lifecycle": {
+    "observed": "not-started",
+    "adapterContract": "not-exposed"
+  },
+  "nonClaims": [
+    "live execution",
+    "enforcement",
+    "coverage completeness",
+    "outcome correctness",
+    "dispatch refusal while Adapter Contract pending",
+    "identity attenuation",
+    "route inventory completeness",
+    "named-job discovery",
+    "child delegation creation"
+  ]
+}
