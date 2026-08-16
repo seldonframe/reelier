@@ -10,56 +10,84 @@ Files changed
 
 What changed per file
 
-- `conformance/candidate-capture/v0/check.mjs` adds a local-only black-box capture checker shared by
-  Codex, Claude Code, Eve, Grok Build, and Grok Bot. It validates canonical harness/adapter mapping,
-  commits harness and adapter instance identities with timestamps and the exact raw artifact digest,
-  rejects stale/future/overlong captures, parses raw candidate/report JSON only for identity and
-  secret rejection, emits no raw payload, preserves observed versus enforced classification, and
-  produces integrity-committed reports. Fixture and observed captures fail; explicit absence is
-  `not-tested`; only a fresh `live-candidate` can pass this capture boundary.
-- `conformance/candidate-capture/v0/capture.schema.json` defines the closed input envelope and
-  mutually exclusive supplied/missing states, exact five-harness vocabulary, canonical adapter
-  identities, capture modes, freshness fields, artifact kind, raw digest, and binding digest.
-- `conformance/candidate-capture/v0/report.schema.json` defines the closed output, including
-  non-passing fixture/observed constraints, missing-candidate absence constraints, freshness,
-  classification, non-claims, raw artifact digest, binding digest, and report digest.
-- `conformance/candidate-capture/v0/README.md` documents the detached transport-neutral format,
-  report/candidate identity rules, 24-hour maximum freshness, no-credential rule, exact meaning of a
-  passing capture, explicit non-claims, local CLI behavior, and the absence of a package script.
-- `test/candidate-capture-conformance.test.ts` covers all five harnesses, candidate and genuine
-  agent-adapter report shapes, fixture/observed non-success, explicit missing candidates, closed
-  schema refusal, harness/adapter/instance relabeling, raw/report commitment tampering, stale and
-  malformed timestamps, credential/token rejection, output forgery, and CLI absence.
-- `docs/superpowers/plans/2026-08-16-five-harness-conformance.md` contains the user-authorized
-  explicit Files touched allowlists for Tasks 5-7, including every Task 5 file above.
-- `.superpowers/sdd/task-5-candidate-capture-report.md` records scope, TDD evidence, verification,
-  commits, deviations, and open risks.
+- `conformance/candidate-capture/v0/check.mjs` implements the detached five-harness capture
+  boundary. The review fix makes every supplied v0 capture non-passing, emits explicit failed
+  `invalid-candidate` reports for malformed, stale, identity-invalid, digest-invalid, malformed-JSON,
+  and secret-bearing input, and reserves `not-tested`/`candidate-missing` for actual absence. Runtime
+  capture uses the current system clock; deterministic clock entry points are explicitly test-only.
+  Raw payload traversal rejects transport and credential fields and common token forms recursively;
+  invalid reports retain at most a checker-computed raw digest and never raw JSON.
+- `conformance/candidate-capture/v0/capture.schema.json` defines the closed supplied-or-missing input
+  envelope. Caller-supplied `evaluatedAt` was removed: freshness evaluation time is runtime-owned.
+- `conformance/candidate-capture/v0/report.schema.json` defines the closed report variants. It admits
+  no `passed` status. `not-tested` is restricted to absent candidates; supplied classifications and
+  `invalid-candidate` are failed-only, with closed identity, capture/evidence mode, freshness,
+  artifact, binding, reason, and non-claim relationships.
+- `conformance/candidate-capture/v0/README.md` documents runtime-owned freshness, failed-only supplied
+  reports, explicit invalid-candidate behavior, recursive transport/credential rejection, digest-only
+  output, and CLI exit codes 1/2 with no v0 exit-code-0 report.
+- `test/candidate-capture-conformance.test.ts` contains genuine RED/GREEN coverage for all five
+  harnesses, malformed supplied input classification, identity mismatch, trusted runtime freshness,
+  backdated replay, future/invalid timestamps, recursive URL/URI/endpoint/header/cookie/auth/token/
+  secret/password/API-key/access-key rejection, common bearer/sk-/ghp-/xox-/npm_/eyJ forms,
+  digest-only reports, CLI malformed-input classification, and standalone schema cross-fields.
+- `docs/superpowers/plans/2026-08-16-five-harness-conformance.md` records the approved closed Task 5
+  allowlist and objective. It was created/modified earlier in Task 5 and was not changed in this fix
+  round.
+- `.superpowers/sdd/task-5-candidate-capture-report.md` records cumulative Task 5 scope and the review
+  fix's TDD, commits, verification, deviations, and risks.
 
 Deviations from the plan and why
 
-- None. Task 5 stayed within its explicit allowlist. No source package file, package script,
-  dependency, provider, credential, URL fetch, external call, push, merge, formatter, or codemod was
-  added or used.
-- The requested independent code-review subagent was unavailable in this session. A local
-  requirement/diff audit found and fixed raw report compatibility and common token-field rejection;
-  this is a review-process gap, not a product-scope change.
+- No file-scope deviation. The review fix changed the initial implementation's live-candidate
+  success behavior to failed-only v0 reports because a detached standalone capture cannot honestly
+  authenticate supplier identity or prove execution. This implements the review finding and the
+  plan's requirement that unknown, unchecked, and unsupported evidence never become a pass.
+- The initial implementation accepted caller-supplied `evaluatedAt`; the fix removes it and adds
+  test-named deterministic clock helpers so production/CLI evaluation uses trusted runtime time.
+- No external provider, network, credential, GitHub, email, push, merge, formatter, codemod, or
+  package-surface change was used. No file outside the Task 5 allowlist was modified.
 
 TDD evidence
 
-Initial RED command (emitting build before the focused test):
+The emitting test build ran before each focused test command:
 
 ```text
-npx tsc -p tsconfig.test.json
+npx tsc -p tsconfig.test.json --pretty false
 node --test --test-concurrency=1 dist-test/test/candidate-capture-conformance.test.js
 ```
 
-Exit codes: `0`, `1`.
-
-Verbatim RED tail:
+The first review-fix RED exited 1 for the intended missing behavior. Verbatim tail:
 
 ```text
-Error [ERR_MODULE_NOT_FOUND]: Cannot find module 'C:\Users\maxim\CascadeProjects\reelier\.worktrees\five-harness-conformance\conformance\candidate-capture\v0\check.mjs'
-✖ dist-test\test\candidate-capture-conformance.test.js (48.8399ms)
+✖ standalone report schema is failed-only and closes every classification cross-field state (21.3235ms)
+✔ CLI absence emits a closed not-tested report without a synthetic candidate (153.8837ms)
+✖ CLI malformed supplied input emits invalid-candidate instead of generic absence (173.4759ms)
+ℹ tests 12
+ℹ suites 0
+ℹ pass 1
+ℹ fail 11
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 523.6094
+```
+
+The CLI failure was specifically the prohibited fallback:
+
+```text
+AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
++ actual - expected
+
++ 'not-tested'
+- 'failed'
+```
+
+After the first GREEN, a second schema-focused RED proved that canonical identity and evidence
+non-claim cross-fields were still open. Verbatim tail:
+
+```text
+✖ standalone report schema is failed-only and closes every classification cross-field state (37.8153ms)
 ℹ tests 1
 ℹ suites 0
 ℹ pass 0
@@ -67,67 +95,32 @@ Error [ERR_MODULE_NOT_FOUND]: Cannot find module 'C:\Users\maxim\CascadeProjects
 ℹ cancelled 0
 ℹ skipped 0
 ℹ todo 0
-ℹ duration_ms 54.4942
+ℹ duration_ms 208.0515
 ```
 
-Initial GREEN command used the same emitting build and focused test. Exit codes: `0`, `0`.
-
-Verbatim GREEN tail:
-
-```text
-✔ report validation detects status, digest, identity, reason, and freshness forgeries (0.7003ms)
-✔ CLI absence emits a closed not-tested report without a synthetic candidate (139.7194ms)
-ℹ tests 10
-ℹ suites 0
-ℹ pass 10
-ℹ fail 0
-ℹ cancelled 0
-ℹ skipped 0
-ℹ todo 0
-ℹ duration_ms 317.5545
-```
-
-Review-fix RED used the same build/focused-test ordering. The genuine raw report shape and expanded
-token-field mutations were the only failures:
-
-```text
-✖ raw report identity is bound and its exact bytes are committed (0.2057ms)
-✖ credential-like fields and token-shaped values are rejected rather than redacted (1.3244ms)
-ℹ tests 10
-ℹ suites 0
-ℹ pass 8
-ℹ fail 2
-ℹ cancelled 0
-ℹ skipped 0
-ℹ todo 0
-ℹ duration_ms 326.0739
-```
-
-Review-fix GREEN exit codes: `0`, `0`. Verbatim tail:
-
-```text
-✔ report validation detects status, digest, identity, reason, and freshness forgeries (0.7826ms)
-✔ CLI absence emits a closed not-tested report without a synthetic candidate (139.3646ms)
-ℹ tests 10
-ℹ suites 0
-ℹ pass 10
-ℹ fail 0
-ℹ cancelled 0
-ℹ skipped 0
-ℹ todo 0
-ℹ duration_ms 316.3205
-```
+The final focused GREEN tail is included in Final verification below.
 
 Commits
+
+Initial Task 5:
 
 - `cb60a9b` — `test: define black-box candidate capture boundary`
 - `0286c11` — `feat: add black-box candidate capture boundary`
 - `cf49f91` — `fix: accept bound raw adapter reports`
-- Report/allowlist commit: pending this report commit.
+- `e5ea5bf` — `docs: record Task 5 capture evidence`
+- `57c425e` — `docs: add Task 5 implementation report`
+
+Review fix:
+
+- `d260c3b` — `test: close candidate capture trust boundary`
+- `095e25d` — `test: close capture report cross fields`
+- `c3dd63c` — `fix: fail closed candidate capture reports`
+- `d18d79c` — `docs: align candidate capture failure semantics`
+- Report update commit: pending this report-only commit.
 
 Final verification
 
-Commands (fail-fast, no package script):
+Commands, in order:
 
 ```text
 npx tsc --noEmit --pretty false
@@ -135,37 +128,48 @@ npx tsc -p tsconfig.test.json --pretty false
 node --test --test-concurrency=1 dist-test/test/candidate-capture-conformance.test.js dist-test/test/coverage-envelope-conformance.test.js dist-test/test/semantic-matrix-conformance.test.js dist-test/test/aggregate-conformance.test.js dist-test/test/agent-adapter-conformance.test.js dist-test/test/continuity/conformance-runner.test.js
 node scripts/build-authority-contract.mjs --check
 node scripts/build-bootstrap-contract.mjs --check
+git diff --check
 ```
 
-All exit codes: `0`. Both typechecks and both contract checks emitted no output.
-
-Verbatim final test tail:
+All exit codes were 0. Both typechecks, both contract checks, and `git diff --check` emitted no
+output. Verbatim test tail:
 
 ```text
-✔ invalid source reports cannot publish semantic checks (0.2306ms)
-✔ listed missing evidence must be explicit and CLI failures remain schema-valid (389.3479ms)
-✔ a passed matrix cannot contain unsupported top-level harness rows (0.5414ms)
-✔ explicit missing evidence cannot coexist with a candidate or report (0.2472ms)
-ℹ tests 62
+✔ invalid source reports cannot publish semantic checks (0.2338ms)
+✔ listed missing evidence must be explicit and CLI failures remain schema-valid (390.3892ms)
+✔ a passed matrix cannot contain unsupported top-level harness rows (0.5854ms)
+✔ explicit missing evidence cannot coexist with a candidate or report (0.2736ms)
+ℹ tests 64
 ℹ suites 0
-ℹ pass 62
+ℹ pass 64
 ℹ fail 0
 ℹ cancelled 0
 ℹ skipped 0
 ℹ todo 0
-ℹ duration_ms 4653.5768
+ℹ duration_ms 4824.2008
 ```
+
+Allowlist audit before the report-only commit:
+
+```text
+conformance/candidate-capture/v0/README.md
+conformance/candidate-capture/v0/capture.schema.json
+conformance/candidate-capture/v0/check.mjs
+conformance/candidate-capture/v0/report.schema.json
+test/candidate-capture-conformance.test.ts
+```
+
+Every path is in the closed Task 5 allowlist. This report is the sixth review-fix path and is also
+allowlisted.
 
 Open risks
 
-- No actual live harness candidate was supplied during Task 5. All tests are hermetic local fixtures,
-  so Codex, Claude Code, Eve, Grok Build, and Grok Bot live execution remain untested here.
-- Identity and report commitments are unkeyed SHA-256 digests. They detect mutation relative to the
-  supplied original input but do not authenticate who supplied the envelope; harness/adapter
-  instance digests remain asserted at this boundary.
-- A passing `live-candidate` proves only that a fresh, identity-bound candidate was supplied. It
-  does not prove semantic conformance, harness execution, route enforcement, traffic completeness,
-  outcome correctness, or production safety; the output states these non-claims explicitly.
-- Secret rejection uses credential-like field names and common token signatures. It is intentionally
-  fail-closed for recognized forms but cannot prove arbitrary opaque strings are non-secret; harnesses
-  must remove credentials before capture. Raw payloads are never emitted in the report.
+- No actual live harness candidate was supplied. Codex, Claude Code, Eve, Grok Build, and Grok Bot
+  live execution therefore remain unproved by Task 5.
+- Harness and adapter instance digests are unkeyed assertions. They bind relabeling and mutation
+  within the supplied envelope but do not authenticate who supplied it; v0 reports remain failed.
+- The recursive detector closes the named transport/credential keys and common token signatures but
+  cannot prove that an arbitrary opaque string is not a secret. Producers must still remove secrets
+  before capture. Raw payloads are processed locally but never emitted in reports.
+- The conservative URL/token boundary can reject benign payload fields or strings matching a banned
+  shape. This fail-closed false-positive risk is intentional for a credential-free detached boundary.
