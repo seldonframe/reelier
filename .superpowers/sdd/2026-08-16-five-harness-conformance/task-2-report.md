@@ -271,4 +271,6 @@ Deviations and open risks
 
 Fix round 3 commit
 
+Final cross-task hardening update: commits `64b94e0`, `a524b66`, `95a5a40`, and `fa441fa` close exact semantic-row equality and the seven-check agent-adapter source vector. Focused Tasks 1–7 plus continuity now pass 124/124. The Windows repository-wide run remains incomplete/interrupted; it is not a green claim and includes `AUTHORITY_CELL_LINUX_REQUIRED` failures.
+
 - `6a12299` — `test: strengthen passing matrix regression`

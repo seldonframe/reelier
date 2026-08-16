@@ -230,3 +230,5 @@ Verbatim tail, exit 0:
 - No deviation from the hardening allowlist. The schema files were inspected but unchanged because the fixes use already-supported closed shapes plus checker-level cross-array validation.
 - No external calls, credentials, provider writes, push, merge, or publish occurred.
 - This evidence is limited to the emitting build, typechecks, and focused conformance suites above. It does not claim the whole repository is green.
+
+Final cross-task hardening update: commits `64b94e0`, `a524b66`, `95a5a40`, and `fa441fa` close exact semantic-row equality and the seven-check agent-adapter source vector. Focused Tasks 1–7 plus continuity now pass 124/124. The Windows repository-wide run remains incomplete/interrupted; it is not a green claim and includes `AUTHORITY_CELL_LINUX_REQUIRED` failures.
