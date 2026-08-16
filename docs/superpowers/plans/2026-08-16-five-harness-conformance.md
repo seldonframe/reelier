@@ -55,7 +55,24 @@ defined must amend this plan and receive review before implementation begins.
 
 ### Tasks 5–7
 
-- No files are authorized yet. Define each task's explicit allowlist in this plan before editing.
+- Task 5 (live-capture boundary):
+  - `conformance/candidate-capture/v0/check.mjs`
+  - `conformance/candidate-capture/v0/capture.schema.json`
+  - `conformance/candidate-capture/v0/report.schema.json`
+  - `conformance/candidate-capture/v0/README.md`
+  - `test/candidate-capture-conformance.test.ts`
+  - `docs/superpowers/plans/2026-08-16-five-harness-conformance.md`
+  - `.superpowers/sdd/task-5-candidate-capture-report.md`
+- Task 6 (failure injection):
+  - `conformance/failure-injection/v0/check.mjs`
+  - `conformance/failure-injection/v0/report.schema.json`
+  - `test/failure-injection-conformance.test.ts`
+  - `.superpowers/sdd/task-6-failure-injection-report.md`
+- Task 7 (hermetic outcome bundle):
+  - `conformance/hermetic-outcome/v0/check.mjs`
+  - `conformance/hermetic-outcome/v0/bundle.schema.json`
+  - `test/hermetic-outcome-conformance.test.ts`
+  - `.superpowers/sdd/task-7-hermetic-outcome-report.md`
 
 ## Tasks
 
