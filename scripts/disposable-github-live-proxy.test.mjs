@@ -7,6 +7,12 @@ import {
   CONFORMANCE_REPOSITORY,
   createIdempotentGithubTools,
 } from "./disposable-github-mcp-server.mjs";
+import {
+  CONFORMANCE_CONTENT,
+  CONFORMANCE_REQUEST_KEY,
+  buildEvidenceArtifacts,
+  checkEvidenceArtifacts,
+} from "./disposable-github-live-proxy.mjs";
 
 function state(head, tree, blob, content) {
   return { repository: CONFORMANCE_REPOSITORY, branch: CONFORMANCE_BRANCH, path: CONFORMANCE_PATH, head, tree, blob, content };
@@ -98,4 +104,49 @@ test("missing gh authentication refuses before either read or write reaches GitH
   });
 
   await assert.rejects(tools.read({ repository: CONFORMANCE_REPOSITORY, branch: CONFORMANCE_BRANCH, path: CONFORMANCE_PATH }), /gh auth/i);
+});
+
+test("evidence builder classifies Path A and binds one write plus a zero-effect retry", () => {
+  const before = state("1".repeat(40), "2".repeat(40), "3".repeat(40), "before\n");
+  const after = state("4".repeat(40), "5".repeat(40), "6".repeat(40), CONFORMANCE_CONTENT);
+  const artifacts = buildEvidenceArtifacts({
+    before,
+    first: { disposition: "written", effectDelta: 1, requestKey: CONFORMANCE_REQUEST_KEY, before, dispatch: { commit: after.head }, providerState: after },
+    retry: { disposition: "duplicate", effectDelta: 0, requestKey: CONFORMANCE_REQUEST_KEY, before, dispatch: { commit: after.head }, providerState: after },
+    final: after,
+    tools: ["github_read_conformance_state", "github_put_conformance_file", "reelier_start_recording", "reelier_stop_recording"],
+    trace: [
+      { t: "meta", seq: 0, wrapped: ["node scripts/disposable-github-mcp-server.mjs"], policy: { status: "absent" } },
+      { t: "call", seq: 1, i: 0, tool: "github_read_conformance_state", args: {} },
+      { t: "result", seq: 2, i: 0, ok: true, ms: 1, body: {} },
+      { t: "call", seq: 3, i: 1, tool: "github_put_conformance_file", args: { requestKey: CONFORMANCE_REQUEST_KEY } },
+      { t: "result", seq: 4, i: 1, ok: true, ms: 1, body: {} },
+      { t: "call", seq: 5, i: 2, tool: "github_put_conformance_file", args: { requestKey: CONFORMANCE_REQUEST_KEY } },
+      { t: "result", seq: 6, i: 2, ok: true, ms: 1, body: {} },
+      { t: "call", seq: 7, i: 3, tool: "github_read_conformance_state", args: {} },
+      { t: "result", seq: 8, i: 3, ok: true, ms: 1, body: {} },
+    ],
+  });
+
+  assert.equal(checkEvidenceArtifacts(artifacts).status, "passed");
+  assert.equal(artifacts.descriptor.classification, "path-a-live-proxy");
+  assert.equal(artifacts.dispatch.providerWriteCount, 1);
+  assert.equal(artifacts.dispatch.retry.effectDelta, 0);
+  assert.equal(artifacts.finalReport.claims.pathCAuthorityCell, "not-proved");
+  assert.equal(artifacts.finalReport.claims.completeWriteCoverage, "not-proved");
+});
+
+test("machine checker refuses a receipt whose retry claims another provider effect", () => {
+  const after = state("4".repeat(40), "5".repeat(40), "6".repeat(40), CONFORMANCE_CONTENT);
+  const artifacts = buildEvidenceArtifacts({
+    before: state("1".repeat(40), "2".repeat(40), "3".repeat(40), "before\n"),
+    first: { disposition: "written", effectDelta: 1, requestKey: CONFORMANCE_REQUEST_KEY, dispatch: { commit: after.head }, providerState: after },
+    retry: { disposition: "duplicate", effectDelta: 0, requestKey: CONFORMANCE_REQUEST_KEY, dispatch: { commit: after.head }, providerState: after },
+    final: after,
+    tools: ["github_read_conformance_state", "github_put_conformance_file"],
+    trace: [{ t: "meta", seq: 0 }, { t: "call", seq: 1, tool: "github_put_conformance_file" }, { t: "call", seq: 2, tool: "github_put_conformance_file" }],
+  });
+  artifacts.dispatch.retry.effectDelta = 1;
+
+  assert.throws(() => checkEvidenceArtifacts(artifacts), /retry.*zero/i);
 });
