@@ -167,6 +167,25 @@ test("raw report identity is bound and its exact bytes are committed", () => {
   assert.equal(runCapture(forged).classification, "invalid-candidate");
 });
 
+test("safe semantic reports remain admissible only without transport or credential material", () => {
+  const rawJson = JSON.stringify({
+    v: "reelier.agent-adapter-conformance-report/v0",
+    adapterId: "xai.grok-bot",
+    status: "passed",
+    checks: [{ operation: "dynamic-job-discovery", status: "passed", reasonCodes: ["job-discovered"] }],
+    nonClaims: { routeEnforcement: "not-proved" },
+  });
+  const input = presentInput("grok-bot", {
+    artifact: { kind: "report", rawJson, rawDigest: digest(rawJson) },
+  });
+
+  const report = runCapture(input);
+
+  assert.equal(report.classification, "live-candidate-observed");
+  assert.deepEqual(report.artifact, { kind: "report", rawDigest: digest(rawJson) });
+  assert.equal("rawJson" in report.artifact, false);
+});
+
 test("trusted runtime time rejects backdated replay, future dates, invalid timestamps, and caller clocks", () => {
   const cases = [
     presentInput("eve", { capturedAt: "2026-08-14T00:00:00.000Z", freshUntil: "2026-08-15T00:00:00.000Z" }),
@@ -187,6 +206,21 @@ test("trusted runtime time rejects backdated replay, future dates, invalid times
 
 test("raw boundary recursively rejects transport, credential, and common token variants without echoing payload", () => {
   const sensitive = [
+    { nested: { transport: { host: "database.internal", port: 5432 } } },
+    { connectionString: "postgresql://user:password@database.internal/app" },
+    { connectionString: "mysql://user:password@database.internal/app" },
+    { connectionString: "mongodb://user:password@database.internal/app" },
+    { connectionString: "redis://user:password@database.internal/0" },
+    { connectionString: "amqp://user:password@broker.internal/vhost" },
+    { protocol: "tcp" },
+    { host: "database.internal" },
+    { port: 5432 },
+    { socket: "/var/run/service.sock" },
+    { connection: "database-primary" },
+    { value: "custom+transport://opaque-location" },
+    { value: "Basic dXNlcjpwYXNzd29yZA==" },
+    { value: "password=opaque" },
+    { value: "api_key: opaque" },
     { authorization: "Bearer opaque" },
     { nested: { callbackUrl: "https://example.invalid/callback" } },
     { nested: { webhook_uri: "urn:secret:value" } },
@@ -277,4 +311,21 @@ test("CLI malformed supplied input emits invalid-candidate instead of generic ab
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("CLI extra arguments emit failed invalid-candidate while no path remains candidate-missing", () => {
+  const script = resolve("conformance/candidate-capture/v0/check.mjs");
+  const extra = spawnSync(process.execPath, [script, "first.json", "second.json"], { encoding: "utf8" });
+  assert.equal(extra.status, 1);
+  const invalid = JSON.parse(extra.stdout);
+  assert.equal(invalid.status, "failed");
+  assert.equal(invalid.classification, "invalid-candidate");
+  assert.ok(invalid.reasonCodes.includes("invalid-candidate"));
+  assert.equal(invalid.reasonCodes.includes("candidate-missing"), false);
+
+  const absent = spawnSync(process.execPath, [script], { encoding: "utf8" });
+  assert.equal(absent.status, 2);
+  const missing = JSON.parse(absent.stdout);
+  assert.equal(missing.status, "not-tested");
+  assert.deepEqual(missing.reasonCodes, ["candidate-missing", "not-tested"]);
 });
