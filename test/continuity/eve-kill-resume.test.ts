@@ -34,7 +34,11 @@ test("real Eve 0.37.1 preserves Reelier continuity across process and session bo
     });
     const code = await new Promise<number | null>((resolveExit, reject) => {
       run.once("error", reject);
-      run.once("close", resolveExit);
+      run.once("exit", (exitCode) => {
+        run.stdout?.destroy();
+        run.stderr?.destroy();
+        resolveExit(exitCode);
+      });
     });
     assert.equal(code, 0, diagnostics.slice(-4_000));
     const matrix = JSON.parse(await readFile(resultPath, "utf8")) as Matrix;
