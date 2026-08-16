@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
+import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import test from "node:test";
@@ -45,11 +46,24 @@ function processExists(pid: number): boolean {
   catch (error) { if ((error as NodeJS.ErrnoException).code === "ESRCH") return false; throw error; }
 }
 
+async function processIsLive(pid: number): Promise<boolean> {
+  if (!processExists(pid)) return false;
+  try {
+    const stat = await readFile(`/proc/${pid}/stat`, "utf8");
+    const close = stat.lastIndexOf(") ");
+    const state = close < 0 ? undefined : stat.slice(close + 2).trim().split(/\s+/u)[0];
+    return state !== "Z" && state !== "X";
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    return true;
+  }
+}
+
 async function waitForProcessExit(pid: number, timeoutMs: number): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    if (!processExists(pid)) return true;
+    if (!await processIsLive(pid)) return true;
     await new Promise(resolveDelay => setTimeout(resolveDelay, 25));
   }
-  return !processExists(pid);
+  return !await processIsLive(pid);
 }
