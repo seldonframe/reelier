@@ -261,6 +261,41 @@ test("report validation recomputes reasons, route mappings, evidence, claims, an
   assert.equal(coverage.validateCoverageEnvelopeReport({ ...report, provenance: { ...report.provenance, status: "verified" } }), false);
 });
 
+test("report validation rejects a recomputed route status upgrade without the original adapter input", () => {
+  const originalRoute: RouteCoverageV1 = {
+    ...verifiedRoute(), observation: "unknown", enforcement: "absent", topologyEvidenceDigest: null, reasonCodes: [],
+  };
+  const input = envelopeInput("codex", [originalRoute]);
+  const report = coverage.buildCoverageEnvelope(input);
+  const upgradedRoute = {
+    ...report.inventory[0], observation: "observed", enforcement: "verified",
+    topologyEvidenceDigest: digest("d"), reasonCodes: ["wrapped-route-observed"], routing: "wrapped",
+  };
+  const upgraded = withIntegrity({
+    ...report,
+    inventory: [upgradedRoute],
+    wrappedRoutes: [upgradedRoute.routeId],
+    reasonCodes: [
+      "completeness-unchecked", "discovery-is-non-authorizing", "provenance-asserted-only",
+      "source-freshness-absent", "topology-unchecked",
+    ],
+  });
+
+  assert.equal(coverage.validateCoverageEnvelopeReport(upgraded, input), false);
+});
+
+test("report validation rejects a recomputed claim upgrade without the original input commitment", () => {
+  const input = envelopeInput("codex", [verifiedRoute()]);
+  const report = coverage.buildCoverageEnvelope(input);
+  const upgraded = withIntegrity({
+    ...report,
+    claims: { ...report.claims, topology: { status: "verified", evidenceDigest: digest("e") } },
+    reasonCodes: report.reasonCodes.filter((reason: string) => reason !== "topology-unchecked"),
+  });
+
+  assert.equal(coverage.validateCoverageEnvelopeReport(upgraded, input), false);
+});
+
 test("bypass reasons override conflicting wrapped evidence", () => {
   const conflicted = { ...verifiedRoute(), reasonCodes: ["wrapped-route-observed", "direct-http-bypass"] };
   const report = coverage.buildCoverageEnvelope(envelopeInput("codex", [conflicted]));
