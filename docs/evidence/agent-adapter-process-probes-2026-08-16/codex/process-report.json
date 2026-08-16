@@ -1,0 +1,129 @@
+{
+  "v": "reelier.agent-adapter-process-report/v1",
+  "harnessId": "codex",
+  "adapterId": "codex",
+  "execution": "process-boundary",
+  "contract": {
+    "v": "reelier.adapter-contract/v1",
+    "digest": "sha256:7f46242b26d9c921f4e1ec9de6418ac5fc8c03d70c4415c25e799ae0e73a1512",
+    "bound": true
+  },
+  "hostBinding": {
+    "taskId": "task_codex_process",
+    "principalId": "principal_codex_process",
+    "allocationId": "allocation_codex_root"
+  },
+  "toolInventory": [
+    "reelier_adapter_contract",
+    "reelier_jobs_search",
+    "reelier_job_load",
+    "reelier_delegation_request",
+    "reelier_delegation_status",
+    "reelier_task_status",
+    "reelier_outcome_invoke",
+    "reelier_outcome_fixture_record_state_set_v1",
+    "reelier_outcome_status"
+  ],
+  "toolCalls": [
+    "reelier_adapter_contract",
+    "reelier_jobs_search",
+    "reelier_job_load",
+    "reelier_delegation_request",
+    "reelier_outcome_invoke",
+    "reelier_outcome_status"
+  ],
+  "transcript": [
+    {
+      "operation": "jobs.search",
+      "request": {
+        "query": "reversible record state"
+      },
+      "response": {
+        "jobs": [
+          {
+            "jobRef": "job_process_record_state",
+            "title": "Process-boundary record state"
+          }
+        ]
+      }
+    },
+    {
+      "operation": "jobs.load",
+      "request": {
+        "jobRef": "job_process_record_state"
+      },
+      "response": {
+        "jobRef": "job_process_record_state",
+        "definitionAliases": [
+          "fixture_record_state_set_v1"
+        ],
+        "requestSchemaDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      }
+    },
+    {
+      "operation": "delegations.request",
+      "request": {
+        "taskId": "task_codex_process",
+        "parentAllocationId": "allocation_codex_root",
+        "childPrincipalId": "principal_codex_process_child",
+        "effects": 1
+      },
+      "response": {
+        "verdict": "accepted",
+        "principalId": "principal_codex_process_child",
+        "allocationId": "allocation_codex_root_child",
+        "effects": 1
+      }
+    },
+    {
+      "operation": "outcomes.invoke",
+      "request": {
+        "jobRef": "job_process_record_state",
+        "requestId": "request_codex_process_1",
+        "sourceRefs": {
+          "record": "opaque_process_ref"
+        },
+        "choices": {}
+      },
+      "response": {
+        "requestId": "request_codex_process_1",
+        "verdict": "refused",
+        "reasonCode": "adapter-contract-pending",
+        "lifecycleState": "refused"
+      }
+    },
+    {
+      "operation": "outcomes.status",
+      "request": {
+        "requestId": "request_codex_process_1"
+      },
+      "response": {
+        "requestId": "request_codex_process_1",
+        "lifecycleState": "refused",
+        "pass": false,
+        "claims": {
+          "authorization": "unchecked",
+          "dispatch": "absent",
+          "providerAcknowledgment": "absent",
+          "reconciliation": "absent",
+          "topology": "unchecked",
+          "completeness": "unchecked"
+        }
+      }
+    }
+  ],
+  "providerEffect": {
+    "dispatch": "absent",
+    "receipt": "absent",
+    "reason": "adapter-contract-pending"
+  },
+  "coverage": {
+    "mode": "observed",
+    "topology": "unchecked",
+    "completeness": "unchecked",
+    "rawWriteReachability": "unknown"
+  },
+  "eventDigest": "sha256:853b3506db63e1ca217120930058ca5547af24b34ee65243483262b467222d99",
+  "status": "passed",
+  "stderr": ""
+}

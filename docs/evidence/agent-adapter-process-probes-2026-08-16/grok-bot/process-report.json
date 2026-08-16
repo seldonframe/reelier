@@ -1,0 +1,129 @@
+{
+  "v": "reelier.agent-adapter-process-report/v1",
+  "harnessId": "grok-bot",
+  "adapterId": "grok-bot",
+  "execution": "process-boundary",
+  "contract": {
+    "v": "reelier.adapter-contract/v1",
+    "digest": "sha256:7f46242b26d9c921f4e1ec9de6418ac5fc8c03d70c4415c25e799ae0e73a1512",
+    "bound": true
+  },
+  "hostBinding": {
+    "taskId": "task_grok-bot_process",
+    "principalId": "principal_grok-bot_process",
+    "allocationId": "allocation_grok-bot_root"
+  },
+  "toolInventory": [
+    "reelier_adapter_contract",
+    "reelier_jobs_search",
+    "reelier_job_load",
+    "reelier_delegation_request",
+    "reelier_delegation_status",
+    "reelier_task_status",
+    "reelier_outcome_invoke",
+    "reelier_outcome_fixture_record_state_set_v1",
+    "reelier_outcome_status"
+  ],
+  "toolCalls": [
+    "reelier_adapter_contract",
+    "reelier_jobs_search",
+    "reelier_job_load",
+    "reelier_delegation_request",
+    "reelier_outcome_invoke",
+    "reelier_outcome_status"
+  ],
+  "transcript": [
+    {
+      "operation": "jobs.search",
+      "request": {
+        "query": "reversible record state"
+      },
+      "response": {
+        "jobs": [
+          {
+            "jobRef": "job_process_record_state",
+            "title": "Process-boundary record state"
+          }
+        ]
+      }
+    },
+    {
+      "operation": "jobs.load",
+      "request": {
+        "jobRef": "job_process_record_state"
+      },
+      "response": {
+        "jobRef": "job_process_record_state",
+        "definitionAliases": [
+          "fixture_record_state_set_v1"
+        ],
+        "requestSchemaDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      }
+    },
+    {
+      "operation": "delegations.request",
+      "request": {
+        "taskId": "task_grok-bot_process",
+        "parentAllocationId": "allocation_grok-bot_root",
+        "childPrincipalId": "principal_grok-bot_process_child",
+        "effects": 1
+      },
+      "response": {
+        "verdict": "accepted",
+        "principalId": "principal_grok-bot_process_child",
+        "allocationId": "allocation_grok-bot_root_child",
+        "effects": 1
+      }
+    },
+    {
+      "operation": "outcomes.invoke",
+      "request": {
+        "jobRef": "job_process_record_state",
+        "requestId": "request_grok-bot_process_1",
+        "sourceRefs": {
+          "record": "opaque_process_ref"
+        },
+        "choices": {}
+      },
+      "response": {
+        "requestId": "request_grok-bot_process_1",
+        "verdict": "refused",
+        "reasonCode": "adapter-contract-pending",
+        "lifecycleState": "refused"
+      }
+    },
+    {
+      "operation": "outcomes.status",
+      "request": {
+        "requestId": "request_grok-bot_process_1"
+      },
+      "response": {
+        "requestId": "request_grok-bot_process_1",
+        "lifecycleState": "refused",
+        "pass": false,
+        "claims": {
+          "authorization": "unchecked",
+          "dispatch": "absent",
+          "providerAcknowledgment": "absent",
+          "reconciliation": "absent",
+          "topology": "unchecked",
+          "completeness": "unchecked"
+        }
+      }
+    }
+  ],
+  "providerEffect": {
+    "dispatch": "absent",
+    "receipt": "absent",
+    "reason": "adapter-contract-pending"
+  },
+  "coverage": {
+    "mode": "observed",
+    "topology": "unchecked",
+    "completeness": "unchecked",
+    "rawWriteReachability": "unknown"
+  },
+  "eventDigest": "sha256:afd01e24b894241f61343e5abaa04051da9fe6329c1f7ca4e32327736e1d9d58",
+  "status": "passed",
+  "stderr": ""
+}

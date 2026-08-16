@@ -18,11 +18,15 @@ test("authority MCP exposes a compact job catalog and loaded Outcome fallback", 
   await client.connect(clientTransport);
   const tools = (await client.listTools()).tools;
   const names = tools.map(tool => tool.name).sort();
-  assert.deepEqual(names, ["reelier_jobs_search", "reelier_job_load", "reelier_delegation_request", "reelier_delegation_status", "reelier_task_status", "reelier_outcome_invoke", "reelier_outcome_gmail_reply_send_v1", "reelier_outcome_status", "reelier_artifact_stage"].sort());
+  assert.deepEqual(names, ["reelier_adapter_contract", "reelier_jobs_search", "reelier_job_load", "reelier_delegation_request", "reelier_delegation_status", "reelier_task_status", "reelier_outcome_invoke", "reelier_outcome_gmail_reply_send_v1", "reelier_outcome_status", "reelier_artifact_stage"].sort());
   const delegation = tools.find(tool => tool.name === "reelier_delegation_request")!;
   assert.deepEqual(delegation.inputSchema.required, ["child", "effects"]);
   assert.deepEqual(Object.keys(delegation.inputSchema.properties ?? {}).sort(), ["child", "effects"]);
   assert.equal((delegation.inputSchema.properties?.effects as { minimum?: number }).minimum, 0);
+  const contract = await client.callTool({ name: "reelier_adapter_contract", arguments: {} });
+  const contractText = String(((contract as unknown as { content: Array<{ text: string }> }).content[0]).text);
+  assert.match(contractText, /reelier\.adapter-contract\/v1/);
+  assert.match(contractText, /sha256:[0-9a-f]{64}/);
   const loaded = await client.callTool({ name: "reelier_job_load", arguments: { jobId: "job_1" } });
   assert.match(String(((loaded as unknown as { content: Array<{ text: string }> }).content[0]).text), /job-loaded/);
   await client.close();

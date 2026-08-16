@@ -3,6 +3,10 @@
     "reelier": {
       "command": "npx",
       "args": ["-y", "reelier", "serve"]
+    },
+    "reelier_authority_contract_probe": {
+      "command": "node",
+      "args": ["scripts/serve-agent-adapter-contract.mjs", "--harness", "codex"]
     }
   }
 }

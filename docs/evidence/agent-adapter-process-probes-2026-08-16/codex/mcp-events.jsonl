@@ -1,0 +1,5 @@
+{"observedAt":"2026-08-16T13:18:14.740Z","operation":"jobs.search","input":{"v":"reelier.outcome-request/v1","query":"reversible record state"}}
+{"observedAt":"2026-08-16T13:18:14.743Z","operation":"jobs.load","input":{"v":"reelier.outcome-request/v1","jobId":"job_process_record_state"}}
+{"observedAt":"2026-08-16T13:18:14.745Z","operation":"delegations.request","input":{"v":"reelier.outcome-request/v1","child":{"principalId":"principal_codex_process_child"},"effects":1}}
+{"observedAt":"2026-08-16T13:18:14.746Z","operation":"outcomes.invoke","input":{"v":"reelier.outcome-request/v1","jobRef":"job_process_record_state","requestId":"request_codex_process_1","sourceRefs":{"record":"opaque_process_ref"},"choices":{}}}
+{"observedAt":"2026-08-16T13:18:14.748Z","operation":"outcomes.status","input":{"v":"reelier.outcome-request/v1","requestId":"request_codex_process_1"}}

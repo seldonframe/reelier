@@ -1,0 +1,50 @@
+[
+  {
+    "observedAt": "2026-08-16T13:18:15.453Z",
+    "operation": "jobs.search",
+    "input": {
+      "v": "reelier.outcome-request/v1",
+      "query": "reversible record state"
+    }
+  },
+  {
+    "observedAt": "2026-08-16T13:18:15.457Z",
+    "operation": "jobs.load",
+    "input": {
+      "v": "reelier.outcome-request/v1",
+      "jobId": "job_process_record_state"
+    }
+  },
+  {
+    "observedAt": "2026-08-16T13:18:15.459Z",
+    "operation": "delegations.request",
+    "input": {
+      "v": "reelier.outcome-request/v1",
+      "child": {
+        "principalId": "principal_eve_process_child"
+      },
+      "effects": 1
+    }
+  },
+  {
+    "observedAt": "2026-08-16T13:18:15.460Z",
+    "operation": "outcomes.invoke",
+    "input": {
+      "v": "reelier.outcome-request/v1",
+      "jobRef": "job_process_record_state",
+      "requestId": "request_eve_process_1",
+      "sourceRefs": {
+        "record": "opaque_process_ref"
+      },
+      "choices": {}
+    }
+  },
+  {
+    "observedAt": "2026-08-16T13:18:15.462Z",
+    "operation": "outcomes.status",
+    "input": {
+      "v": "reelier.outcome-request/v1",
+      "requestId": "request_eve_process_1"
+    }
+  }
+]

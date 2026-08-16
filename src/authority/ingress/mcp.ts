@@ -1,6 +1,7 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import type { AuthorityExecutionContextV1 } from "../types.js";
+import { AUTHORITY_ADAPTER_CONTRACT_V1 } from "../adapter-contract.js";
 
 export interface AuthorityIngressOutcome { readonly requestId: string; readonly verdict: "accepted" | "refused"; readonly reasonCode: string; readonly lifecycleState: string; readonly receiptRef?: string; }
 type AuthorityContext = { readonly tenant: string; readonly requester: string; readonly executionContext?: AuthorityExecutionContextV1 };
@@ -10,6 +11,7 @@ export interface AuthorityMcpDefinition { readonly alias: string; readonly descr
 export function buildAuthorityMcpServer(definitions: readonly AuthorityMcpDefinition[], handler: AuthorityMcpHandler, context: AuthorityContext, artifactStage?: (input: unknown, context: AuthorityContext) => Promise<unknown>): Server {
   const server = new Server({ name: "reelier-authority", version: "1.0.0" }, { capabilities: { tools: {} } });
   server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [
+    { name: "reelier_adapter_contract", description: "Return the exact frozen Adapter Contract digest and membership. Harnesses must bind this before using any other Reelier authority operation.", inputSchema: { type: "object", additionalProperties: false, properties: {} } },
     { name: "reelier_jobs_search", description: "Find deployed jobs without loading every Outcome schema.", inputSchema: { type: "object", additionalProperties: false, properties: { query: { type: "string", maxLength: 256 } } } },
     { name: "reelier_job_load", description: "Load one deployed job and its bounded Outcome.", inputSchema: { type: "object", additionalProperties: false, required: ["jobId"], properties: { jobId: { type: "string", minLength: 1, maxLength: 128 } } } },
     { name: "reelier_delegation_request", description: "Request a narrower child authority from the authenticated parent task and allocation. Fan-out is computed by the Authority Cell.", inputSchema: { type: "object", additionalProperties: false, required: ["child", "effects"], properties: { child: { type: "object" }, effects: { type: "integer", minimum: 0 } } } },
@@ -23,7 +25,8 @@ export function buildAuthorityMcpServer(definitions: readonly AuthorityMcpDefini
   server.setRequestHandler(CallToolRequestSchema, async request => {
     const name = request.params.name; const supplied = (request.params.arguments ?? {}) as Record<string, unknown>; const args = supplied.v === undefined ? { v: "reelier.outcome-request/v1", ...supplied } : supplied;
     try {
-      const value = name === "reelier_jobs_search" && handler.jobsSearch ? await handler.jobsSearch(args, context)
+      const value = name === "reelier_adapter_contract" ? AUTHORITY_ADAPTER_CONTRACT_V1
+        : name === "reelier_jobs_search" && handler.jobsSearch ? await handler.jobsSearch(args, context)
         : name === "reelier_job_load" && handler.jobLoad ? await handler.jobLoad(args, context)
         : name === "reelier_delegation_request" && handler.delegationRequest ? await handler.delegationRequest(args, context)
         : name === "reelier_delegation_status" && handler.delegationStatus ? await handler.delegationStatus(args, context)

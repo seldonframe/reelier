@@ -12,6 +12,7 @@ test("live MCP probe exercises the public authority channel and records the sema
   const result = await runLiveMcpProbe({ harnessId: "codex", adapterId: "codex" });
   assert.equal(result.report.status, "passed");
   assert.deepEqual(result.toolCalls, [
+    "reelier_adapter_contract",
     "reelier_jobs_search",
     "reelier_job_load",
     "reelier_delegation_request",
@@ -19,6 +20,7 @@ test("live MCP probe exercises the public authority channel and records the sema
     "reelier_outcome_status",
   ]);
   assert.equal(result.candidate.descriptor.agentHost, "codex");
+  assert.match(result.contract.digest, /^sha256:[0-9a-f]{64}$/);
   assert.equal(result.candidate.transcript[3].response.reasonCode, "adapter-contract-pending");
   assert.equal(result.candidate.transcript[4].response.claims.dispatch, "absent");
 });

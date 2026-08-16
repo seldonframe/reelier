@@ -94,6 +94,7 @@ export async function runLiveMcpProbe({ harnessId, adapterId = ADAPTER_IDS[harne
   const client = new Client({ name: `reelier-${harnessId}-live-probe`, version: "0.32.1" }, { capabilities: {} });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   let toolInventory;
+  let contract;
   await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
   try {
     const tools = await client.listTools();
@@ -102,6 +103,8 @@ export async function runLiveMcpProbe({ harnessId, adapterId = ADAPTER_IDS[harne
       toolCalls.push(name);
       return textResult(await client.callTool({ name, arguments: args }), name);
     };
+    contract = await call("reelier_adapter_contract", {});
+    if (contract?.v !== "reelier.adapter-contract/v1" || !/^sha256:[0-9a-f]{64}$/.test(contract.digest)) throw new TypeError("authority adapter contract is not frozen or digest-shaped");
     const searchResponse = await call("reelier_jobs_search", { query: "reversible record state" });
     const search = { operation: "jobs.search", request: { query: "reversible record state" }, response: searchResponse };
     const jobRef = searchResponse.jobs[0].jobRef;
@@ -127,5 +130,5 @@ export async function runLiveMcpProbe({ harnessId, adapterId = ADAPTER_IDS[harne
     await server.close();
   }
   const report = checkCandidate(candidate);
-  return Object.freeze({ candidate: structuredClone(candidate), report, toolInventory: Object.freeze(toolInventory ?? []), toolCalls: Object.freeze(toolCalls) });
+  return Object.freeze({ candidate: structuredClone(candidate), report, contract: Object.freeze({ ...contract }), toolInventory: Object.freeze(toolInventory ?? []), toolCalls: Object.freeze(toolCalls) });
 }

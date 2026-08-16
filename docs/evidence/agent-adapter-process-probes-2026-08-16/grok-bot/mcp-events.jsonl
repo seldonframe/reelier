@@ -1,0 +1,5 @@
+{"observedAt":"2026-08-16T13:18:16.101Z","operation":"jobs.search","input":{"v":"reelier.outcome-request/v1","query":"reversible record state"}}
+{"observedAt":"2026-08-16T13:18:16.105Z","operation":"jobs.load","input":{"v":"reelier.outcome-request/v1","jobId":"job_process_record_state"}}
+{"observedAt":"2026-08-16T13:18:16.107Z","operation":"delegations.request","input":{"v":"reelier.outcome-request/v1","child":{"principalId":"principal_grok-bot_process_child"},"effects":1}}
+{"observedAt":"2026-08-16T13:18:16.110Z","operation":"outcomes.invoke","input":{"v":"reelier.outcome-request/v1","jobRef":"job_process_record_state","requestId":"request_grok-bot_process_1","sourceRefs":{"record":"opaque_process_ref"},"choices":{}}}
+{"observedAt":"2026-08-16T13:18:16.112Z","operation":"outcomes.status","input":{"v":"reelier.outcome-request/v1","requestId":"request_grok-bot_process_1"}}

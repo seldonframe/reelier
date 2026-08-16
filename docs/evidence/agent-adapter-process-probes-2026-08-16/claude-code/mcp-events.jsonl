@@ -1,0 +1,5 @@
+{"observedAt":"2026-08-16T13:18:17.249Z","operation":"jobs.search","input":{"v":"reelier.outcome-request/v1","query":"reversible record state"}}
+{"observedAt":"2026-08-16T13:18:17.252Z","operation":"jobs.load","input":{"v":"reelier.outcome-request/v1","jobId":"job_process_record_state"}}
+{"observedAt":"2026-08-16T13:18:17.254Z","operation":"delegations.request","input":{"v":"reelier.outcome-request/v1","child":{"principalId":"principal_claude-code_process_child"},"effects":1}}
+{"observedAt":"2026-08-16T13:18:17.255Z","operation":"outcomes.invoke","input":{"v":"reelier.outcome-request/v1","jobRef":"job_process_record_state","requestId":"request_claude-code_process_1","sourceRefs":{"record":"opaque_process_ref"},"choices":{}}}
+{"observedAt":"2026-08-16T13:18:17.256Z","operation":"outcomes.status","input":{"v":"reelier.outcome-request/v1","requestId":"request_claude-code_process_1"}}
