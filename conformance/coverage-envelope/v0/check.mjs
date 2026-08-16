@@ -117,7 +117,12 @@ function failureReport() {
   return {
     v: "reelier.coverage-envelope-report/v0", status: "failed",
     harness: { id: "codex", instanceIdentityDigest: `sha256:${"1".repeat(64)}` },
-    adapter: { id: "reelier-codex-coverage", digest: `sha256:${"2".repeat(64)}` }, sources: [], inventory: [],
+    adapter: { id: "reelier-codex-coverage", digest: `sha256:${"2".repeat(64)}` },
+    sources: [{
+      kind: "host-config", sourceInstanceIdentityDigest: `sha256:${"3".repeat(64)}`,
+      contentDigest: `sha256:${"4".repeat(64)}`, evidenceStatus: "absent", reasonCodes: ["input-unavailable"],
+    }],
+    inventory: [],
     wrappedRoutes: [], unwrappedRoutes: [], directHttpRoutes: [], privateHostRoutes: [], mode: "observed",
     freshness: { status: "absent", evaluatedAt: "1970-01-01T00:00:00.000Z", oldestObservedAt: null, freshUntil: null },
     claims: { topology: { status: "absent", evidenceDigest: null }, completeness: { status: "absent", evidenceDigest: null } },
