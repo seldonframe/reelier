@@ -61,7 +61,12 @@ export async function runLiveAgentAdapterV0(resultPath, runtimeRoot, options = {
     }
     const final = await waitForBoundary(processHandle, sessionId, state.token, cursor);
     cursor = final.cursor;
-    const trace = await readJsonLines(tracePath);
+    let trace;
+    try {
+      trace = await readJsonLines(tracePath);
+    } catch (error) {
+      throw new Error(`Eve v0 adapter emitted no contract trace: ${error.message}\n${processHandle.diagnostics()}`);
+    }
     const contract = trace.find(event => event.operation === "adapter.contract")?.response;
     const semanticTrace = trace.filter(event => event.operation !== "adapter.contract");
     const operations = ["jobs.search", "jobs.load", "delegations.request", "delegations.status", "tasks.status", "outcomes.invoke", "outcomes.status"];
