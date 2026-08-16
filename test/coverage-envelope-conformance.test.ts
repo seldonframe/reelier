@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { pathToFileURL } from "node:url";
 import { resolve } from "node:path";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   BUILTIN_ROUTE_ADAPTERS,
   createClaudeCodeRouteDiscoverySnapshotV1,
@@ -83,6 +84,7 @@ function envelopeInput(harnessId: "codex" | "claude-code", routes: readonly Rout
     adapter: { id: adapter.sourceId, digest: adapter.sourceDigest },
     requestedMode: "observed",
     evaluatedAt: now.toISOString(),
+    routeEvidenceDigest: routeEvidenceDigest(routes),
     sources: [{ kind: "host-config", sourceInstanceIdentityDigest: digest("a"), contentDigest: digest("b"), evidenceStatus: "verified", reasonCodes: [] }],
     routes,
     claims: {
@@ -91,6 +93,13 @@ function envelopeInput(harnessId: "codex" | "claude-code", routes: readonly Rout
     },
     ...overrides,
   };
+}
+
+function routeEvidenceDigest(routes: readonly RouteCoverageV1[]) {
+  const evidence = [...routes]
+    .sort((left, right) => Buffer.from(left.routeId).compare(Buffer.from(right.routeId)))
+    .map((route) => [route.routeId, route.evidenceDigest]);
+  return `sha256:${createHash("sha256").update(JSON.stringify({ v: "reelier.route-evidence-commitment/v0", evidence }), "utf8").digest("hex")}`;
 }
 
 function freshSource(kind: "host-config" | "plugin-manifest", identity: string, content: string) {
@@ -153,16 +162,14 @@ test("catalog-only, stale, and unwrapped route evidence are explicit non-success
   assert.ok(unwrappedReport.reasonCodes.includes("route-uncovered"));
 });
 
-test("verified completeness cannot override bypasses or unknown routing", () => {
+test("discovery-only completeness claims cannot override bypasses or unknown routing", () => {
   const direct: RouteCoverageV1 = { ...verifiedRoute(), routeId: `route_${"2".repeat(64)}`, discoverySource: "direct-http", transport: "https", observation: "uncovered", enforcement: "absent", topologyEvidenceDigest: null, reasonCodes: ["direct-http-bypass"] };
   const report = coverage.buildCoverageEnvelope(envelopeInput("codex", [verifiedRoute(), direct], {
-    requestedMode: "enforced",
     claims: { topology: { status: "verified", evidenceDigest: digest("e") }, completeness: { status: "verified", evidenceDigest: digest("f") } },
   }));
   assert.equal(report.status, "failed");
   assert.equal(report.mode, "observed");
   assert.ok(report.reasonCodes.includes("completeness-contradicted-by-inventory"));
-  assert.ok(report.reasonCodes.includes("enforced-mode-refused"));
   assert.deepEqual(report.directHttpRoutes, [direct.routeId]);
 });
 
@@ -177,27 +184,37 @@ test("unknown, uncovered, unchecked, absent, and pending evidence never passes",
   for (const [label, input] of cases) assert.equal(coverage.buildCoverageEnvelope(input).status, "failed", label);
 });
 
-test("discovery-only input cannot retain enforced mode even when caller marks every field verified", () => {
-  const report = coverage.buildCoverageEnvelope(envelopeInput("codex", [verifiedRoute()], {
+test("the discovery-only contract rejects an enforced request and labels asserted provenance honestly", () => {
+  assert.throws(() => coverage.buildCoverageEnvelope(envelopeInput("codex", [verifiedRoute()], {
     requestedMode: "enforced",
     claims: { topology: { status: "verified", evidenceDigest: digest("e") }, completeness: { status: "verified", evidenceDigest: digest("f") } },
-  }));
+  })), /invalid|requestedMode|observed/i);
+  const report = coverage.buildCoverageEnvelope(envelopeInput("codex", [verifiedRoute()]));
   assert.equal(report.status, "failed");
   assert.equal(report.mode, "observed");
   assert.ok(report.reasonCodes.includes("discovery-is-non-authorizing"));
-  assert.ok(report.reasonCodes.includes("enforced-mode-refused"));
+  assert.ok(report.reasonCodes.includes("provenance-asserted-only"));
+  assert.deepEqual(report.provenance, {
+    status: "asserted",
+    adapter: "asserted",
+    sources: "asserted",
+    routeEvidenceDigest: routeEvidenceDigest([verifiedRoute()]),
+  });
+  assert.match(report.integrityDigest, /^sha256:[0-9a-f]{64}$/);
   assert.equal(coverage.validateCoverageEnvelopeReport(report), true);
   assert.equal(coverage.validateCoverageEnvelopeReport({ ...report, surprise: true }), false);
 });
 
-test("the input contract binds the exact built-in adapter digest and report provenance", () => {
+test("the input contract binds built-in adapter identity and adapter-produced route evidence", () => {
   assert.throws(() => coverage.buildCoverageEnvelope({ ...envelopeInput("codex", [verifiedRoute()]), surprise: true }), /invalid|additional/i);
   assert.throws(() => coverage.buildCoverageEnvelope({ ...envelopeInput("codex", [verifiedRoute()]), adapter: { id: "reelier-claude-code-coverage", digest: BUILTIN_ROUTE_ADAPTERS.claudeCode.sourceDigest } }), /identity|invalid/i);
   assert.throws(() => coverage.buildCoverageEnvelope({ ...envelopeInput("codex", [verifiedRoute()]), adapter: { id: BUILTIN_ROUTE_ADAPTERS.codex.sourceId, digest: digest("f") } }), /adapter.*digest|provenance/i);
+  assert.throws(() => coverage.buildCoverageEnvelope({ ...envelopeInput("codex", [verifiedRoute()]), routeEvidenceDigest: digest("f") }), /route.*evidence|commitment/i);
 
   const report = coverage.buildCoverageEnvelope(envelopeInput("codex", [verifiedRoute()]));
-  assert.match(report.provenanceDigest, /^sha256:[0-9a-f]{64}$/);
+  assert.match(report.integrityDigest, /^sha256:[0-9a-f]{64}$/);
   assert.equal(coverage.validateCoverageEnvelopeReport({ ...report, harness: { ...report.harness, instanceIdentityDigest: digest("8") } }), false);
+  assert.equal(coverage.validateCoverageEnvelopeReport({ ...report, inventory: [{ ...report.inventory[0], evidenceDigest: digest("f") }] }), false);
 });
 
 test("source freshness is bounded and future-dated route or source observations are rejected", () => {
@@ -213,15 +230,21 @@ test("source freshness is bounded and future-dated route or source observations 
     sources: [{ ...staleSource, observedAt: new Date(now.getTime() + 1).toISOString() }],
   })), /future|observation/i);
   assert.throws(() => coverage.buildCoverageEnvelope(envelopeInput("codex", [{ ...verifiedRoute(), observedAt: new Date(now.getTime() + 1).toISOString() }])), /future|observation/i);
+  assert.throws(() => coverage.buildCoverageEnvelope(envelopeInput("codex", [{ ...verifiedRoute(), observedAt: "2026-99-99T01:00:00.000Z" }])), /time|timestamp|observation/i);
+  assert.throws(() => coverage.buildCoverageEnvelope(envelopeInput("codex", [verifiedRoute()], { evaluatedAt: "2026-02-30T01:00:00.000Z" })), /time|timestamp|evaluated/i);
+  assert.throws(() => coverage.buildCoverageEnvelope(envelopeInput("codex", [{ ...verifiedRoute(), freshUntil: new Date(now.getTime() + 24 * 60 * 60_000 + 1).toISOString() }])), /freshness|interval|bounded/i);
 });
 
-test("report validation enforces harness, route mapping, subset, and verified-evidence invariants", () => {
+test("report validation recomputes reasons, route mappings, evidence, claims, and status invariants", () => {
   const report = coverage.buildCoverageEnvelope(envelopeInput("codex", [verifiedRoute()]));
   assert.equal(coverage.validateCoverageEnvelopeReport({ ...report, adapter: { id: "reelier-claude-code-coverage", digest: BUILTIN_ROUTE_ADAPTERS.claudeCode.sourceDigest } }), false);
   assert.equal(coverage.validateCoverageEnvelopeReport({ ...report, inventory: [{ ...report.inventory[0], hostId: "claude-code" }] }), false);
   assert.equal(coverage.validateCoverageEnvelopeReport({ ...report, wrappedRoutes: [] }), false);
   assert.equal(coverage.validateCoverageEnvelopeReport({ ...report, directHttpRoutes: [report.inventory[0].routeId] }), false);
   assert.equal(coverage.validateCoverageEnvelopeReport({ ...report, claims: { ...report.claims, topology: { status: "verified", evidenceDigest: null } } }), false);
+  assert.equal(coverage.validateCoverageEnvelopeReport({ ...report, reasonCodes: report.reasonCodes.filter((reason: string) => reason !== "source-freshness-absent") }), false);
+  assert.equal(coverage.validateCoverageEnvelopeReport({ ...report, status: "passed", mode: "enforced", reasonCodes: [] }), false);
+  assert.equal(coverage.validateCoverageEnvelopeReport({ ...report, provenance: { ...report.provenance, status: "verified" } }), false);
 });
 
 test("bypass reasons override conflicting wrapped evidence", () => {
@@ -242,4 +265,9 @@ test("CLI refusal remains a closed schema-valid non-success envelope", () => {
   assert.equal(report.harness, null);
   assert.equal(report.adapter, null);
   assert.deepEqual(report.sources, []);
+  assert.equal(report.provenance, null);
+  assert.equal(report.integrityDigest, null);
+  assert.equal(coverage.validateCoverageEnvelopeReport({ ...report, reasonCodes: ["input-unavailable"] }), false);
+  assert.equal(coverage.validateCoverageEnvelopeReport({ ...report, freshness: { ...report.freshness, evaluatedAt: "2026-99-99T00:00:00.000Z" } }), false);
+  assert.equal(coverage.validateCoverageEnvelopeReport({ ...report, claims: { ...report.claims, topology: { status: "unchecked", evidenceDigest: null } } }), false);
 });
