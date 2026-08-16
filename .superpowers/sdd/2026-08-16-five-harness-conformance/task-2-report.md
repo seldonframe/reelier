@@ -124,3 +124,54 @@ Verbatim output tail:
 Fix commit
 
 - `140b56c` — `fix: close five-harness matrix report contract`
+
+Fix round 2 evidence
+
+Findings addressed:
+
+- A matrix with `status: "passed"` now requires every top-level row to satisfy Task 1’s canonical `passingHarness` definition. The schema reuses the aggregate schema reference and preserves the normal generated report’s failed status when candidates are missing.
+- Input alternatives now reject `missing: true` combined with `candidate` or `report`.
+- Added regressions for dishonest passed rows and mutually exclusive missing evidence.
+
+Fix RED verification
+
+Command:
+
+```text
+npx tsc -p tsconfig.test.json; node --test dist-test/test/semantic-matrix-conformance.test.js
+```
+
+Verbatim output tail:
+
+```text
+✖ explicit missing evidence cannot coexist with a candidate or report (0.8641ms)
+ℹ tests 7
+ℹ pass 6
+ℹ fail 1
+```
+
+Fix GREEN verification (fail-fast compile before tests)
+
+Command:
+
+```text
+npx tsc --noEmit; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; npx tsc -p tsconfig.test.json; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; node --test dist-test/test/semantic-matrix-conformance.test.js dist-test/test/aggregate-conformance.test.js dist-test/test/agent-adapter-conformance.test.js
+```
+
+Verbatim output tail:
+
+```text
+✔ listed missing evidence must be explicit and CLI failures remain schema-valid (398.5342ms)
+✔ a passed matrix cannot contain unsupported top-level harness rows (0.5037ms)
+✔ explicit missing evidence cannot coexist with a candidate or report (0.2721ms)
+ℹ tests 25
+ℹ pass 25
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ duration_ms 2204.071
+```
+
+Fix round 2 commit
+
+- `7ba7873` — `fix: require honest passing matrix rows`
