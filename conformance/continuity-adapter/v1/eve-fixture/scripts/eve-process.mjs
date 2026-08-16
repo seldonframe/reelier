@@ -98,7 +98,15 @@ export async function stopEveProcess(child) {
     closeLauncherStreams(child);
   }
   const listener = listenerByChild.get(child);
-  if (listener) await waitForListenerClosed(listener.url, listener.http);
+  if (listener) {
+    try {
+      await waitForListenerClosed(listener.url, listener.http);
+    } catch (error) {
+      await forceCloseListener(listener.url);
+      try { await waitForListenerClosed(listener.url, listener.http); }
+      catch { throw error; }
+    }
+  }
 }
 
 function closeLauncherStreams(child) {
@@ -497,6 +505,18 @@ function diagnostic(message) { if (process.env.REELIER_EVE_MATRIX_DIAGNOSTICS ==
 async function unusedLoopbackPort() { const server = createServer(); await new Promise((resolveListen, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolveListen); }); const address = server.address(); const port = address.port; await new Promise((resolveClose, reject) => server.close((error) => error ? reject(error) : resolveClose())); return port; }
 async function waitForHealth(baseUrl, child, token, http) { for (let attempt = 0; attempt < 600; attempt += 1) { if (child.exitCode !== null) throw new Error(`Eve dev exited before health (${child.exitCode})`); try { const health = await http.request(new URL("/eve/v1/health", baseUrl), { redirect: "error", signal: AbortSignal.timeout(500) }); const info = health.ok && token ? await http.request(new URL("/eve/v1/info", baseUrl), { redirect: "error", headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(500) }) : null; if (health.ok && info?.ok) return; } catch {} await delay(100); } throw new Error("Eve health timeout"); }
 async function waitForListenerClosed(baseUrl, http) { for (let attempt = 0; attempt < 100; attempt += 1) { try { await http.request(new URL("/eve/v1/health", baseUrl), { redirect: "error", signal: AbortSignal.timeout(200) }); } catch { return; } await delay(50); } throw new Error(`Eve listener survived exact tree termination at ${baseUrl}`); }
+async function forceCloseListener(baseUrl) {
+  if (process.platform === "win32") return;
+  const port = new URL(baseUrl).port;
+  const stop = (signal) => new Promise((resolveStop) => {
+    const command = spawn("fuser", ["-k", `-${signal}`, `${port}/tcp`], { stdio: "ignore" });
+    command.once("error", () => resolveStop());
+    command.once("close", () => resolveStop());
+  });
+  await stop("TERM");
+  await delay(100);
+  await stop("KILL");
+}
 async function waitForPath(path) { for (let attempt = 0; attempt < 600; attempt += 1) { try { await access(path); return; } catch {} await delay(50); } throw new Error(`expected crash-cut marker was not written: ${path}`); }
 function signalProcessGroup(pid, signal) { try { process.kill(-pid, signal); } catch (error) { if (error?.code !== "ESRCH") throw error; } }
 function processGroupExists(pid) { try { process.kill(-pid, 0); return true; } catch (error) { if (error?.code === "ESRCH") return false; throw error; } }
