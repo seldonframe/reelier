@@ -20,12 +20,14 @@ const TOKEN_PATTERNS = Object.freeze([
   /\bxox(?:[baprs]-|-)[A-Za-z0-9_-]+\b/i,
   /\bnpm_[A-Za-z0-9_-]+\b/i,
   /\beyJ[A-Za-z0-9_-]*(?:\.[A-Za-z0-9_-]+){0,2}\b/,
-  /\b[a-z][a-z0-9+.-]*:\/\/\S+/i,
-  /\b(?:urn|file|ssh):\S+/i,
   /\bBasic\s+[A-Za-z0-9+/]+={0,2}\b/i,
   /\b(?:password|passwd|api[_ -]?key|access[_ -]?key|auth(?:orization)?|token|secret|credentials?)\s*[:=]\s*\S+/i,
   /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/,
   /\bAKIA[0-9A-Z]{16}\b/,
+]);
+const URI_PATTERNS = Object.freeze([
+  /^[A-Za-z][A-Za-z0-9+.-]*:/,
+  /^\/\//,
 ]);
 const SENSITIVE_KEY_WORDS = new Set([
   "url", "uri", "endpoint", "header", "headers", "cookie", "cookies", "auth",
@@ -113,7 +115,11 @@ function sensitiveKey(key) {
 }
 
 function containsSensitiveData(value, path = []) {
-  if (typeof value === "string") return TOKEN_PATTERNS.some((pattern) => pattern.test(value));
+  if (typeof value === "string") {
+    return sensitiveKey(value)
+      || URI_PATTERNS.some((pattern) => pattern.test(value))
+      || TOKEN_PATTERNS.some((pattern) => pattern.test(value));
+  }
   if (Array.isArray(value)) return value.some((child, index) => containsSensitiveData(child, [...path, index]));
   if (value === null || typeof value !== "object") return false;
   return Object.entries(value).some(([key, child]) => {
