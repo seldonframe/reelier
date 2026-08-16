@@ -39,6 +39,7 @@
   },
   "allOf": [
     { "if": { "properties": { "aggregate": { "type": "object", "properties": { "status": { "const": "passed" } }, "required": ["status"] } }, "required": ["aggregate"] }, "then": { "type": "object", "properties": { "status": { "const": "passed" } } } },
-    { "if": { "properties": { "aggregate": { "type": "object", "properties": { "status": { "const": "failed" } }, "required": ["status"] } }, "required": ["aggregate"] }, "then": { "type": "object", "properties": { "status": { "const": "failed" } } } }
+    { "if": { "properties": { "aggregate": { "type": "object", "properties": { "status": { "const": "failed" } }, "required": ["status"] } }, "required": ["aggregate"] }, "then": { "type": "object", "properties": { "status": { "const": "failed" } } } },
+    { "if": { "properties": { "status": { "const": "passed" } }, "required": ["status"] }, "then": { "type": "object", "properties": { "harnesses": { "type": "array", "items": { "$ref": "https://reelier.dev/contracts/aggregate-conformance/v0/report.schema.json#/$defs/passingHarness" } } } } }
   ]
 }

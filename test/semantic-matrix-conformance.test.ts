@@ -99,3 +99,22 @@ test("listed missing evidence must be explicit and CLI failures remain schema-va
     assert.ok(failure.harnesses.every((row: any) => row.reasons.length > 0));
   }
 });
+
+test("a passed matrix cannot contain unsupported top-level harness rows", () => {
+  const report = matrix.runSemanticMatrix({ v: "reelier.semantic-matrix-input/v0", candidates: [] });
+  const dishonest = {
+    ...report,
+    status: "passed",
+    aggregate: { ...report.aggregate, status: "passed" },
+  };
+  assert.equal(matrix.validateSemanticMatrixReport(dishonest), false);
+});
+
+test("explicit missing evidence cannot coexist with a candidate or report", () => {
+  for (const extra of [{ candidate: grokBuild }, { report: eveReport }]) {
+    assert.throws(() => matrix.runSemanticMatrix({
+      v: "reelier.semantic-matrix-input/v0",
+      candidates: [{ harnessId: "codex", adapterPath: "agent-adapter/v0", missing: true, ...extra }],
+    }), /invalid|oneOf/i);
+  }
+});

@@ -26,8 +26,8 @@ const validateInput = ajv.compile({
         missing: { const: true },
       },
       oneOf: [
-        { properties: { candidate: { type: "object" } }, required: ["candidate"] },
-        { properties: { report: { type: "object" } }, required: ["report"] },
+        { properties: { candidate: { type: "object" }, report: { type: "object" }, missing: { const: true } }, required: ["candidate"], not: { anyOf: [{ properties: { report: { type: "object" } }, required: ["report"] }, { properties: { missing: { const: true } }, required: ["missing"] }] } },
+        { properties: { candidate: { type: "object" }, report: { type: "object" }, missing: { const: true } }, required: ["report"], not: { anyOf: [{ properties: { candidate: { type: "object" } }, required: ["candidate"] }, { properties: { missing: { const: true } }, required: ["missing"] }] } },
         { properties: { candidate: { type: "object" }, report: { type: "object" }, missing: { const: true } }, required: ["missing"], not: { anyOf: [{ required: ["candidate"] }, { required: ["report"] }] } },
       ],
     } },
