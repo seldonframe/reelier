@@ -1,0 +1,106 @@
+{
+  "v": "reelier.five-harness-claude-code-observation-report/v0",
+  "artifactKind": "report",
+  "harnessId": "claude-code",
+  "adapterId": "claude-code",
+  "generatedAt": "2026-08-16T11:40:00.000Z",
+  "run": {
+    "branch": "codex/five-harness-conformance",
+    "commitHex": "c600b7e82325e9615aaea3b59d85ade3262094f6",
+    "platform": "win32",
+    "nodeVersion": "v24.9.0",
+    "workspaceRole": "detached verification checkout of the pinned branch"
+  },
+  "routeInventory": {
+    "sourcesInspected": 18,
+    "mcpEntriesObserved": 11,
+    "wrapped": 0,
+    "unwrapped": 11,
+    "remoteEntriesWithoutNativeWrapPath": 2,
+    "projectScopedEntries": 5,
+    "pluginRegistrations": 12,
+    "pluginsDeclaringServers": 3,
+    "serverNames": [
+      "context7",
+      "neon",
+      "playwright",
+      "posthog",
+      "reelier",
+      "seldonframe",
+      "vercel"
+    ],
+    "sessionOnlyServersObservedByHarness": 10,
+    "completeness": "unchecked"
+  },
+  "governedExecution": {
+    "status": "unsupported",
+    "boundaryCommand": "reelier authority serve",
+    "refusalName": "AuthorityCellLinuxRequiredError",
+    "refusalCode": "AUTHORITY_CELL_LINUX_REQUIRED",
+    "refusalMessage": "Authority Cell hosting requires Linux. Windows is supported as a client; run the Cell through WSL, a Linux container, or a remote Linux Authority Cell.",
+    "exitCode": 1,
+    "platformRequirement": "linux"
+  },
+  "semanticDelegationSmokeTask": {
+    "canonicalSteps": {
+      "discoverNamedJobDynamically": "unsupported",
+      "loadJobDefinition": "not-tested",
+      "requestAttenuatedChildDelegation": "not-tested",
+      "submitOutcomeRequestWithIdentityFreePayload": "not-tested",
+      "confirmAdapterContractPendingRefusal": "not-tested"
+    },
+    "reason": "The only implementation exposing catalog, delegation, task, and outcome semantics is the agent channel carried by the command named above, and it refused startup on this platform before any operation became callable.",
+    "liveCandidate": "absent"
+  },
+  "exposedToolServerBoundary": {
+    "toolCount": 5,
+    "toolNames": [
+      "reelier_diff",
+      "reelier_from_session",
+      "reelier_push",
+      "reelier_replay",
+      "reelier_scan"
+    ],
+    "agentChannelOperationsExposed": 0
+  },
+  "localConformanceChecks": {
+    "agentAdapterFixtureGrokBuild": "passed",
+    "agentAdapterFixtureGrokBot": "passed",
+    "agentAdapterFixtureEve": "passed",
+    "agentAdapterEvidenceClass": "fixture-only",
+    "continuityCoreCandidate": "passed",
+    "continuityEveProcessMatrix": "passed",
+    "continuityEveMaturity": "reproduced",
+    "eveVersion": "0.37.1",
+    "authorityContractCheck": "passed",
+    "bootstrapContractCheck": "passed",
+    "outcomeProfileContractCheck": "passed",
+    "firstPartyPackConformance": "passed",
+    "failureInjectionMatrix": "failed-by-design-non-passing",
+    "hermeticOutcomeBundle": "valid"
+  },
+  "evidenceMode": {
+    "observed": true,
+    "enforced": false,
+    "enforcedActivation": "unavailable-before-topology-verifies"
+  },
+  "lifecycle": [
+    "clean dependency install completed for the checkout and for the eve fixture",
+    "build completed from the pinned commit",
+    "read-only route probe completed and inventoried eleven entries with zero wrapped",
+    "local conformance checkers executed with recorded exit codes",
+    "governed execution startup was attempted and refused on this platform",
+    "the startable tool server was enumerated and exposed five replay tools and zero agent channel operations",
+    "this observation report was composed from those recorded results only"
+  ],
+  "nonClaims": {
+    "semanticConformance": "not-proved",
+    "governedExecution": "not-proved",
+    "routeEnforcement": "not-proved",
+    "trafficCompleteness": "not-proved",
+    "providerOutcome": "not-proved",
+    "productionSafety": "not-proved",
+    "fixturePassesRemainFixtureOnly": true,
+    "captureIsNonPassingByDesign": true
+  }
+}

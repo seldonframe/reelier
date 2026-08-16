@@ -8,11 +8,11 @@
       {
         "harnessId": "codex",
         "adapterPath": "agent-adapter/v0",
-        "evidenceMaturity": "unsupported",
-        "coverageStatus": "coverage-unknown",
+        "evidenceMaturity": "fixture-only",
+        "coverageStatus": "observed-only",
         "executionStatus": "not-tested",
         "outcomeStatus": "not-tested",
-        "overallStatus": "unsupported",
+        "overallStatus": "fixture-only",
         "nonClaims": {
           "routeEnforcement": "not-proved",
           "agentAdapterExecution": "not-proved",
@@ -21,17 +21,18 @@
           "productionSafety": "not-proved"
         },
         "reasons": [
-          "no supported conformance report was supplied"
+          "the v0 descriptor is explicitly fixture-only",
+          "the v0 report has no live governed execution evidence"
         ]
       },
       {
         "harnessId": "claude-code",
         "adapterPath": "agent-adapter/v0",
-        "evidenceMaturity": "unsupported",
-        "coverageStatus": "coverage-unknown",
+        "evidenceMaturity": "fixture-only",
+        "coverageStatus": "observed-only",
         "executionStatus": "not-tested",
         "outcomeStatus": "not-tested",
-        "overallStatus": "unsupported",
+        "overallStatus": "fixture-only",
         "nonClaims": {
           "routeEnforcement": "not-proved",
           "agentAdapterExecution": "not-proved",
@@ -40,17 +41,18 @@
           "productionSafety": "not-proved"
         },
         "reasons": [
-          "no supported conformance report was supplied"
+          "the v0 descriptor is explicitly fixture-only",
+          "the v0 report has no live governed execution evidence"
         ]
       },
       {
         "harnessId": "eve",
-        "adapterPath": "continuity-adapter/v1/eve-fixture",
-        "evidenceMaturity": "continuity-proven",
-        "coverageStatus": "coverage-unknown",
+        "adapterPath": "agent-adapter/v0",
+        "evidenceMaturity": "fixture-only",
+        "coverageStatus": "observed-only",
         "executionStatus": "not-tested",
         "outcomeStatus": "not-tested",
-        "overallStatus": "continuity-proven",
+        "overallStatus": "fixture-only",
         "nonClaims": {
           "routeEnforcement": "not-proved",
           "agentAdapterExecution": "not-proved",
@@ -59,18 +61,18 @@
           "productionSafety": "not-proved"
         },
         "reasons": [
-          "continuity checks passed",
-          "continuity evidence does not establish universal agent-adapter execution"
+          "the v0 descriptor is explicitly fixture-only",
+          "the v0 report has no live governed execution evidence"
         ]
       },
       {
         "harnessId": "grok-build",
         "adapterPath": "agent-adapter/v0",
-        "evidenceMaturity": "unsupported",
-        "coverageStatus": "coverage-unknown",
+        "evidenceMaturity": "fixture-only",
+        "coverageStatus": "observed-only",
         "executionStatus": "not-tested",
         "outcomeStatus": "not-tested",
-        "overallStatus": "unsupported",
+        "overallStatus": "fixture-only",
         "nonClaims": {
           "routeEnforcement": "not-proved",
           "agentAdapterExecution": "not-proved",
@@ -79,17 +81,18 @@
           "productionSafety": "not-proved"
         },
         "reasons": [
-          "no supported conformance report was supplied"
+          "the v0 descriptor is explicitly fixture-only",
+          "the v0 report has no live governed execution evidence"
         ]
       },
       {
         "harnessId": "grok-bot",
         "adapterPath": "agent-adapter/v0",
-        "evidenceMaturity": "unsupported",
-        "coverageStatus": "coverage-unknown",
+        "evidenceMaturity": "fixture-only",
+        "coverageStatus": "observed-only",
         "executionStatus": "not-tested",
         "outcomeStatus": "not-tested",
-        "overallStatus": "unsupported",
+        "overallStatus": "fixture-only",
         "nonClaims": {
           "routeEnforcement": "not-proved",
           "agentAdapterExecution": "not-proved",
@@ -98,7 +101,8 @@
           "productionSafety": "not-proved"
         },
         "reasons": [
-          "no supported conformance report was supplied"
+          "the v0 descriptor is explicitly fixture-only",
+          "the v0 report has no live governed execution evidence"
         ]
       }
     ]
@@ -107,11 +111,11 @@
     {
       "harnessId": "codex",
       "adapterPath": "agent-adapter/v0",
-      "evidenceMaturity": "unsupported",
-      "coverageStatus": "coverage-unknown",
+      "evidenceMaturity": "fixture-only",
+      "coverageStatus": "observed-only",
       "executionStatus": "not-tested",
       "outcomeStatus": "not-tested",
-      "overallStatus": "unsupported",
+      "overallStatus": "fixture-only",
       "nonClaims": {
         "routeEnforcement": "not-proved",
         "agentAdapterExecution": "not-proved",
@@ -120,17 +124,18 @@
         "productionSafety": "not-proved"
       },
       "reasons": [
-        "no supported conformance report was supplied"
+        "the v0 descriptor is explicitly fixture-only",
+        "the v0 report has no live governed execution evidence"
       ]
     },
     {
       "harnessId": "claude-code",
       "adapterPath": "agent-adapter/v0",
-      "evidenceMaturity": "unsupported",
-      "coverageStatus": "coverage-unknown",
+      "evidenceMaturity": "fixture-only",
+      "coverageStatus": "observed-only",
       "executionStatus": "not-tested",
       "outcomeStatus": "not-tested",
-      "overallStatus": "unsupported",
+      "overallStatus": "fixture-only",
       "nonClaims": {
         "routeEnforcement": "not-proved",
         "agentAdapterExecution": "not-proved",
@@ -139,9 +144,284 @@
         "productionSafety": "not-proved"
       },
       "reasons": [
-        "no supported conformance report was supplied"
+        "the v0 descriptor is explicitly fixture-only",
+        "the v0 report has no live governed execution evidence"
       ]
     },
+    {
+      "harnessId": "eve",
+      "adapterPath": "agent-adapter/v0",
+      "evidenceMaturity": "fixture-only",
+      "coverageStatus": "observed-only",
+      "executionStatus": "not-tested",
+      "outcomeStatus": "not-tested",
+      "overallStatus": "fixture-only",
+      "nonClaims": {
+        "routeEnforcement": "not-proved",
+        "agentAdapterExecution": "not-proved",
+        "liveHarnessExecution": "not-proved",
+        "outcomeCorrectness": "not-proved",
+        "productionSafety": "not-proved"
+      },
+      "reasons": [
+        "the v0 descriptor is explicitly fixture-only",
+        "the v0 report has no live governed execution evidence"
+      ]
+    },
+    {
+      "harnessId": "grok-build",
+      "adapterPath": "agent-adapter/v0",
+      "evidenceMaturity": "fixture-only",
+      "coverageStatus": "observed-only",
+      "executionStatus": "not-tested",
+      "outcomeStatus": "not-tested",
+      "overallStatus": "fixture-only",
+      "nonClaims": {
+        "routeEnforcement": "not-proved",
+        "agentAdapterExecution": "not-proved",
+        "liveHarnessExecution": "not-proved",
+        "outcomeCorrectness": "not-proved",
+        "productionSafety": "not-proved"
+      },
+      "reasons": [
+        "the v0 descriptor is explicitly fixture-only",
+        "the v0 report has no live governed execution evidence"
+      ]
+    },
+    {
+      "harnessId": "grok-bot",
+      "adapterPath": "agent-adapter/v0",
+      "evidenceMaturity": "fixture-only",
+      "coverageStatus": "observed-only",
+      "executionStatus": "not-tested",
+      "outcomeStatus": "not-tested",
+      "overallStatus": "fixture-only",
+      "nonClaims": {
+        "routeEnforcement": "not-proved",
+        "agentAdapterExecution": "not-proved",
+        "liveHarnessExecution": "not-proved",
+        "outcomeCorrectness": "not-proved",
+        "productionSafety": "not-proved"
+      },
+      "reasons": [
+        "the v0 descriptor is explicitly fixture-only",
+        "the v0 report has no live governed execution evidence"
+      ]
+    }
+  ],
+  "semanticChecks": [
+    {
+      "harnessId": "codex",
+      "id": "universal-operations",
+      "status": "passed",
+      "detail": "adapter exposes only the universal semantic operation set"
+    },
+    {
+      "harnessId": "codex",
+      "id": "dynamic-job-discovery",
+      "status": "passed",
+      "detail": "loaded and invoked job references originate in catalog discovery"
+    },
+    {
+      "harnessId": "codex",
+      "id": "host-bound-outcome-input",
+      "status": "passed",
+      "detail": "Outcome input contains no authenticated identity or provider authority"
+    },
+    {
+      "harnessId": "codex",
+      "id": "attenuated-child-principal",
+      "status": "passed",
+      "detail": "child principal and effect allocation are distinct and narrower"
+    },
+    {
+      "harnessId": "codex",
+      "id": "pre-freeze-no-dispatch",
+      "status": "passed",
+      "detail": "pending Adapter Contract refuses without dispatch or a passing receipt"
+    },
+    {
+      "harnessId": "codex",
+      "id": "observed-coverage-honesty",
+      "status": "passed",
+      "detail": "observed mode remains available with unchecked topology and completeness"
+    },
+    {
+      "harnessId": "codex",
+      "id": "enforced-mode-unavailable",
+      "status": "passed",
+      "detail": "enforced mode remains unavailable without verified topology"
+    },
+    {
+      "harnessId": "claude-code",
+      "id": "universal-operations",
+      "status": "passed",
+      "detail": "adapter exposes only the universal semantic operation set"
+    },
+    {
+      "harnessId": "claude-code",
+      "id": "dynamic-job-discovery",
+      "status": "passed",
+      "detail": "loaded and invoked job references originate in catalog discovery"
+    },
+    {
+      "harnessId": "claude-code",
+      "id": "host-bound-outcome-input",
+      "status": "passed",
+      "detail": "Outcome input contains no authenticated identity or provider authority"
+    },
+    {
+      "harnessId": "claude-code",
+      "id": "attenuated-child-principal",
+      "status": "passed",
+      "detail": "child principal and effect allocation are distinct and narrower"
+    },
+    {
+      "harnessId": "claude-code",
+      "id": "pre-freeze-no-dispatch",
+      "status": "passed",
+      "detail": "pending Adapter Contract refuses without dispatch or a passing receipt"
+    },
+    {
+      "harnessId": "claude-code",
+      "id": "observed-coverage-honesty",
+      "status": "passed",
+      "detail": "observed mode remains available with unchecked topology and completeness"
+    },
+    {
+      "harnessId": "claude-code",
+      "id": "enforced-mode-unavailable",
+      "status": "passed",
+      "detail": "enforced mode remains unavailable without verified topology"
+    },
+    {
+      "harnessId": "eve",
+      "id": "universal-operations",
+      "status": "passed",
+      "detail": "adapter exposes only the universal semantic operation set"
+    },
+    {
+      "harnessId": "eve",
+      "id": "dynamic-job-discovery",
+      "status": "passed",
+      "detail": "loaded and invoked job references originate in catalog discovery"
+    },
+    {
+      "harnessId": "eve",
+      "id": "host-bound-outcome-input",
+      "status": "passed",
+      "detail": "Outcome input contains no authenticated identity or provider authority"
+    },
+    {
+      "harnessId": "eve",
+      "id": "attenuated-child-principal",
+      "status": "passed",
+      "detail": "child principal and effect allocation are distinct and narrower"
+    },
+    {
+      "harnessId": "eve",
+      "id": "pre-freeze-no-dispatch",
+      "status": "passed",
+      "detail": "pending Adapter Contract refuses without dispatch or a passing receipt"
+    },
+    {
+      "harnessId": "eve",
+      "id": "observed-coverage-honesty",
+      "status": "passed",
+      "detail": "observed mode remains available with unchecked topology and completeness"
+    },
+    {
+      "harnessId": "eve",
+      "id": "enforced-mode-unavailable",
+      "status": "passed",
+      "detail": "enforced mode remains unavailable without verified topology"
+    },
+    {
+      "harnessId": "grok-build",
+      "id": "universal-operations",
+      "status": "passed",
+      "detail": "adapter exposes only the universal semantic operation set"
+    },
+    {
+      "harnessId": "grok-build",
+      "id": "dynamic-job-discovery",
+      "status": "passed",
+      "detail": "loaded and invoked job references originate in catalog discovery"
+    },
+    {
+      "harnessId": "grok-build",
+      "id": "host-bound-outcome-input",
+      "status": "passed",
+      "detail": "Outcome input contains no authenticated identity or provider authority"
+    },
+    {
+      "harnessId": "grok-build",
+      "id": "attenuated-child-principal",
+      "status": "passed",
+      "detail": "child principal and effect allocation are distinct and narrower"
+    },
+    {
+      "harnessId": "grok-build",
+      "id": "pre-freeze-no-dispatch",
+      "status": "passed",
+      "detail": "pending Adapter Contract refuses without dispatch or a passing receipt"
+    },
+    {
+      "harnessId": "grok-build",
+      "id": "observed-coverage-honesty",
+      "status": "passed",
+      "detail": "observed mode remains available with unchecked topology and completeness"
+    },
+    {
+      "harnessId": "grok-build",
+      "id": "enforced-mode-unavailable",
+      "status": "passed",
+      "detail": "enforced mode remains unavailable without verified topology"
+    },
+    {
+      "harnessId": "grok-bot",
+      "id": "universal-operations",
+      "status": "passed",
+      "detail": "adapter exposes only the universal semantic operation set"
+    },
+    {
+      "harnessId": "grok-bot",
+      "id": "dynamic-job-discovery",
+      "status": "passed",
+      "detail": "loaded and invoked job references originate in catalog discovery"
+    },
+    {
+      "harnessId": "grok-bot",
+      "id": "host-bound-outcome-input",
+      "status": "passed",
+      "detail": "Outcome input contains no authenticated identity or provider authority"
+    },
+    {
+      "harnessId": "grok-bot",
+      "id": "attenuated-child-principal",
+      "status": "passed",
+      "detail": "child principal and effect allocation are distinct and narrower"
+    },
+    {
+      "harnessId": "grok-bot",
+      "id": "pre-freeze-no-dispatch",
+      "status": "passed",
+      "detail": "pending Adapter Contract refuses without dispatch or a passing receipt"
+    },
+    {
+      "harnessId": "grok-bot",
+      "id": "observed-coverage-honesty",
+      "status": "passed",
+      "detail": "observed mode remains available with unchecked topology and completeness"
+    },
+    {
+      "harnessId": "grok-bot",
+      "id": "enforced-mode-unavailable",
+      "status": "passed",
+      "detail": "enforced mode remains unavailable without verified topology"
+    }
+  ],
+  "continuityEvidence": [
     {
       "harnessId": "eve",
       "adapterPath": "continuity-adapter/v1/eve-fixture",
@@ -161,46 +441,6 @@
         "continuity checks passed",
         "continuity evidence does not establish universal agent-adapter execution"
       ]
-    },
-    {
-      "harnessId": "grok-build",
-      "adapterPath": "agent-adapter/v0",
-      "evidenceMaturity": "unsupported",
-      "coverageStatus": "coverage-unknown",
-      "executionStatus": "not-tested",
-      "outcomeStatus": "not-tested",
-      "overallStatus": "unsupported",
-      "nonClaims": {
-        "routeEnforcement": "not-proved",
-        "agentAdapterExecution": "not-proved",
-        "liveHarnessExecution": "not-proved",
-        "outcomeCorrectness": "not-proved",
-        "productionSafety": "not-proved"
-      },
-      "reasons": [
-        "no supported conformance report was supplied"
-      ]
-    },
-    {
-      "harnessId": "grok-bot",
-      "adapterPath": "agent-adapter/v0",
-      "evidenceMaturity": "unsupported",
-      "coverageStatus": "coverage-unknown",
-      "executionStatus": "not-tested",
-      "outcomeStatus": "not-tested",
-      "overallStatus": "unsupported",
-      "nonClaims": {
-        "routeEnforcement": "not-proved",
-        "agentAdapterExecution": "not-proved",
-        "liveHarnessExecution": "not-proved",
-        "outcomeCorrectness": "not-proved",
-        "productionSafety": "not-proved"
-      },
-      "reasons": [
-        "no supported conformance report was supplied"
-      ]
     }
-  ],
-  "semanticChecks": [],
-  "continuityEvidence": []
+  ]
 }

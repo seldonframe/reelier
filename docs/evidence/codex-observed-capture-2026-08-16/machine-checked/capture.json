@@ -1,0 +1,21 @@
+{
+  "v": "reelier.candidate-capture/v0",
+  "harness": {
+    "id": "codex",
+    "instanceIdentityDigest": "sha256:09c7b17361f6fbd36f878846bd7e847a0b2f72c127350831487e995fa7790868"
+  },
+  "adapter": {
+    "id": "codex",
+    "instanceIdentityDigest": "sha256:3a6d3582164448b36e6efe10b5fe0a3691b238283711763ef81e572688ad6647"
+  },
+  "captureMode": "observed",
+  "capturedAt": "2026-08-16T13:04:30.475Z",
+  "freshUntil": "2026-08-17T13:04:30.474Z",
+  "evidenceMode": "observed",
+  "artifact": {
+    "kind": "report",
+    "rawJson": "{\n  \"v\": \"reelier.codex-observed-run/v0\",\n  \"harnessId\": \"codex\",\n  \"adapterId\": \"codex\",\n  \"instanceIdentity\": \"thread-01a001e8-b11f-7333-9717-a5cfcd8a09cf\",\n  \"status\": \"observed\",\n  \"run\": {\n    \"branch\": \"codex/named-init-slice\",\n    \"commit\": \"994785489dd6fd2b85b95e96b1ace16533094f2b\",\n    \"platform\": \"linux-container\",\n    \"nodeVersion\": \"24\",\n    \"task\": \"init-up Linux verification\"\n  },\n  \"observedResults\": {\n    \"repositorySuite\": { \"passed\": 3439, \"failed\": 0, \"skipped\": 8 },\n    \"semanticDelegationVector\": \"not-tested\",\n    \"governedReelierExecution\": \"not-tested\",\n    \"providerOutcome\": \"not-tested\"\n  },\n  \"conclusion\": \"This was a genuine Codex repository task and Linux verification run. It does not constitute a live Reelier adapter candidate because the semantic delegation vector was not exercised through Codex's own adapter boundary.\"\n}",
+    "rawDigest": "sha256:4fe0c6a0816e320903fc1013a2066a51879bdb6af821d36e65ccf51e4cf66b2b"
+  },
+  "bindingDigest": "sha256:662ac632f30ce22b1c6fc9e2665c53636d9a0c5c610a90426b063a3caea42e61"
+}

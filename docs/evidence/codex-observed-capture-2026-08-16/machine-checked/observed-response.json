@@ -1,0 +1,25 @@
+{
+  "v": "reelier.codex-observed-run/v0",
+  "harnessId": "codex",
+  "adapterId": "codex",
+  "instanceIdentity": "thread-01a001e8-b11f-7333-9717-a5cfcd8a09cf",
+  "status": "observed",
+  "run": {
+    "branch": "codex/named-init-slice",
+    "commit": "994785489dd6fd2b85b95e96b1ace16533094f2b",
+    "platform": "linux-container",
+    "nodeVersion": "24",
+    "task": "init-up Linux verification"
+  },
+  "observedResults": {
+    "repositorySuite": {
+      "passed": 3439,
+      "failed": 0,
+      "skipped": 8
+    },
+    "semanticDelegationVector": "not-tested",
+    "governedReelierExecution": "not-tested",
+    "providerOutcome": "not-tested"
+  },
+  "conclusion": "This was a genuine Codex repository task and Linux verification run. It does not constitute a live Reelier adapter candidate because the semantic delegation vector was not exercised through Codex's own adapter boundary."
+}

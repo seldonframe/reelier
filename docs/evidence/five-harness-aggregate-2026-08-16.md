@@ -9,15 +9,20 @@ that channel.
 
 | Harness | Evidence attached | Aggregate status | What is proved | What remains unproved |
 | --- | --- | --- | --- | --- |
-| Codex | Hermetic public-MCP probe plus live read-only coverage probe | `fixture-only` / `not-tested` | Public semantic vector and host-route observation | External Codex adapter execution, governed execution, completeness |
-| Claude Code | Hermetic public-MCP probe plus live read-only coverage probe | `fixture-only` / `not-tested` | Public semantic vector and host-route observation | External Claude Code adapter execution, governed execution, completeness |
+| Codex | Hermetic public-MCP probe plus genuine Codex init/up observation | `observed-only` / `not-tested` | Public semantic vector; real Codex Linux init/up run and suite result | Codex semantic adapter execution, governed execution, route completeness |
+| Claude Code | Hermetic public-MCP probe plus genuine live route/authority observation | `observed-only` / `not-tested` | Public semantic vector; real route inventory and Linux-only refusal | Claude Code semantic adapter execution, governed execution, route completeness |
 | Eve | Hermetic public-MCP probe plus detached continuity capture and report | `fixture-only` / `not-tested` | Public semantic vector, continuity matrix, and focused cleanup | External Eve adapter execution, route coverage, provider outcome |
-| Grok Build | Hermetic public-MCP probe; no targetable application/window was available | `fixture-only` / `not-tested` | Public semantic vector only | External Grok Build adapter execution, governed execution, completeness |
+| Grok Build | Hermetic public-MCP probe; Grok Build CLI not installed or targetable | `fixture-only` / `not-tested` | Public semantic vector only | External Grok Build adapter execution, governed execution, completeness |
 | Grok Bot | Hermetic public-MCP probe plus real session response and machine-checked capture | `fixture-only` / `not-tested` | Public semantic vector; external session honestly reported no local Reelier repository or adapter contract | External adapter execution, dispatch refusal, enforcement, coverage, outcome |
 
 The Grok Bot capture is classified `observed-only` and is non-passing by design. Its response says
 the session stopped without simulating evidence. The aggregate therefore preserves the distinction
 between a real observation and a successful Reelier adapter execution.
+
+The Codex and Claude Code observations are also non-passing by design. Codex performed a genuine
+repository/init-up verification but did not invoke the shared semantic adapter. Claude Code
+performed a genuine route/authority probe but the Authority Cell refused on Windows before the
+semantic channel became callable. Neither observation upgrades the live adapter gate.
 
 The disposable GitHub branch/readback/retry/protected-main test has not started. No disposable
 repository and protected-branch target were supplied, and the real Reelier repository must not be
