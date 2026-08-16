@@ -1,5 +1,6 @@
 import Ajv2020 from "ajv/dist/2020.js";
 import { readFileSync } from "node:fs";
+import { isDeepStrictEqual } from "node:util";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { checkCandidate } from "../../agent-adapter/v0/check.mjs";
 import { aggregateReports } from "../../aggregate/v0/check.mjs";
@@ -58,13 +59,8 @@ export function validateSemanticMatrixReport(value) {
   if (!validateOutput(value) || value.status !== value.aggregate.status) return false;
   const aggregateById = new Map(value.aggregate.harnesses.map((row) => [row.harnessId, row]));
   return aggregateById.size === HARNESS_IDS.length && value.harnesses.every((row) => {
-    const aggregateRow = aggregateById.get(canonicalId(row.harnessId));
-    return aggregateRow
-      && row.overallStatus === aggregateRow.overallStatus
-      && row.evidenceMaturity === aggregateRow.evidenceMaturity
-      && row.coverageStatus === aggregateRow.coverageStatus
-      && row.executionStatus === aggregateRow.executionStatus
-      && row.outcomeStatus === aggregateRow.outcomeStatus;
+    const aggregateRow = aggregateById.get(row.harnessId);
+    return aggregateRow && isDeepStrictEqual(row, aggregateRow);
   });
 }
 
@@ -117,9 +113,11 @@ export function runSemanticMatrix(input) {
       report: entry.continuityEvidence.report,
     });
   }
-  const aggregate = aggregateReports(records);
-  const aggregateById = new Map(aggregate.harnesses.map((row) => [row.harnessId, row]));
-  const harnesses = HARNESS_IDS.map((harnessId) => ({ ...aggregateById.get(canonicalId(harnessId)), harnessId }));
+  const sourceAggregate = aggregateReports(records);
+  const aggregateById = new Map(sourceAggregate.harnesses.map((row) => [row.harnessId, row]));
+  const aggregateHarnesses = Object.freeze(HARNESS_IDS.map((harnessId) => Object.freeze({ ...aggregateById.get(canonicalId(harnessId)), harnessId })));
+  const harnesses = Object.freeze(aggregateHarnesses.map((row) => Object.freeze({ ...row })));
+  const aggregate = Object.freeze({ ...sourceAggregate, harnesses: aggregateHarnesses });
   const continuityEvidence = continuityRecords.length === 0 ? [] : aggregateReports(continuityRecords).harnesses;
   for (const source of pendingChecks) {
     const aggregateRow = aggregateById.get(canonicalId(source.harnessId));
