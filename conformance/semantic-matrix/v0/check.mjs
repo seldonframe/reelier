@@ -54,7 +54,19 @@ const validateInput = ajv.compile({
   },
 });
 const validateOutput = ajv.compile(JSON.parse(readFileSync(here("./report.schema.json"), "utf8")));
-export function validateSemanticMatrixReport(value) { return validateOutput(value); }
+export function validateSemanticMatrixReport(value) {
+  if (!validateOutput(value) || value.status !== value.aggregate.status) return false;
+  const aggregateById = new Map(value.aggregate.harnesses.map((row) => [row.harnessId, row]));
+  return aggregateById.size === HARNESS_IDS.length && value.harnesses.every((row) => {
+    const aggregateRow = aggregateById.get(canonicalId(row.harnessId));
+    return aggregateRow
+      && row.overallStatus === aggregateRow.overallStatus
+      && row.evidenceMaturity === aggregateRow.evidenceMaturity
+      && row.coverageStatus === aggregateRow.coverageStatus
+      && row.executionStatus === aggregateRow.executionStatus
+      && row.outcomeStatus === aggregateRow.outcomeStatus;
+  });
+}
 
 function canonicalId(harnessId) { return ADAPTER_IDS[harnessId] ?? harnessId; }
 function candidateIdentityMatches(candidate, harnessId) {

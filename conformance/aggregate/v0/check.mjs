@@ -12,6 +12,13 @@ const validateEve = ajv.compile(JSON.parse(readFileSync(here("../../continuity-a
 const NON_CLAIMS = Object.freeze({ routeEnforcement: "not-proved", agentAdapterExecution: "not-proved", liveHarnessExecution: "not-proved", outcomeCorrectness: "not-proved", productionSafety: "not-proved" });
 
 const PASSING = new Set(["execution-proven", "enforced", "verified"]);
+const FAILURE_RECORDS = Object.freeze([
+  { harnessId: "codex", adapterPath: "agent-adapter/v0" },
+  { harnessId: "claude-code", adapterPath: "agent-adapter/v0" },
+  { harnessId: "eve", adapterPath: "continuity-adapter/v1/eve-fixture" },
+  { harnessId: "xai.grok-build", adapterPath: "agent-adapter/v0" },
+  { harnessId: "xai.grok-bot", adapterPath: "agent-adapter/v0" },
+]);
 export function isPassingStatus(status) { return PASSING.has(status); }
 
 function row(harnessId, adapterPath, values, reasons) {
@@ -74,14 +81,16 @@ export function aggregateReports(records) {
   return report;
 }
 
+function failureReport() { return aggregateReports(FAILURE_RECORDS); }
+
 function main() {
-  if (process.argv.length !== 3) { process.stdout.write(`${JSON.stringify({ v: VERSION, status: "failed", harnesses: [] })}\n`); process.exitCode = 2; return; }
+  if (process.argv.length !== 3) { process.stdout.write(`${JSON.stringify(failureReport())}\n`); process.exitCode = 2; return; }
   try {
     const result = aggregateReports(JSON.parse(readFileSync(process.argv[2], "utf8")));
     process.stdout.write(`${JSON.stringify(result)}\n`);
     process.exitCode = result.status === "passed" ? 0 : 1;
   } catch {
-    process.stdout.write(`${JSON.stringify({ v: VERSION, status: "failed", harnesses: [] })}\n`);
+    process.stdout.write(`${JSON.stringify(failureReport())}\n`);
     process.exitCode = 1;
   }
 }
