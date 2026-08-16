@@ -243,6 +243,9 @@ test("standalone report schema is failed-only and closes every classification cr
   assert.equal(validate(withReportDigest({ ...report, classification: "not-tested" })), false);
   assert.equal(validate(withReportDigest({ ...report, artifact: null })), false);
   assert.equal(validate(withReportDigest({ ...report, freshness: { ...report.freshness, status: "absent" } })), false);
+  assert.equal(validate(withReportDigest({ ...report, adapter: { ...report.adapter, id: "claude-code" } })), false);
+  assert.equal(validate(withReportDigest({ ...report, nonClaims: { ...report.nonClaims, routeEnforcement: "asserted-not-verified" } })), false);
+  assert.equal(validate(withReportDigest({ ...report, nonClaims: { ...report.nonClaims, liveHarnessExecution: "not-proved" } })), false);
 });
 
 test("CLI absence emits a closed not-tested report without a synthetic candidate", () => {
