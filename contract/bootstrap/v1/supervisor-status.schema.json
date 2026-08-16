@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema", "$id": "https://reelier.dev/contracts/bootstrap/v1/supervisor-status.schema.json",
+  "type": "object", "additionalProperties": false,
+  "$comment": "observedRoutes, partialRoutes, uncoveredRoutes, and unknownRoutes partition all route rows; replayAvailable plus replayCandidates is a subset of that total; outcomesActivated plus outcomesUnavailable equals that total; outcomesEnforced is a subset of outcomesActivated",
+  "required": ["v", "observedAt", "observedRoutes", "partialRoutes", "uncoveredRoutes", "unknownRoutes", "replayAvailable", "replayCandidates", "outcomesActivated", "outcomesUnavailable", "outcomesEnforced", "runtime", "completeness"],
+  "properties": {
+    "v": { "const": "reelier.supervisor-status/v1" }, "observedAt": { "$ref": "#/$defs/time" },
+    "observedRoutes": { "$ref": "#/$defs/count" }, "partialRoutes": { "$ref": "#/$defs/count" }, "uncoveredRoutes": { "$ref": "#/$defs/count" }, "unknownRoutes": { "$ref": "#/$defs/count" },
+    "replayAvailable": { "$ref": "#/$defs/count" }, "replayCandidates": { "$ref": "#/$defs/count" }, "outcomesActivated": { "$ref": "#/$defs/count" }, "outcomesUnavailable": { "$ref": "#/$defs/count" }, "outcomesEnforced": { "$ref": "#/$defs/count" },
+    "runtime": { "enum": ["local-process", "externally-managed"] }, "completeness": { "const": "not-proved" }
+  },
+  "$defs": { "count": { "type": "integer", "minimum": 0 }, "time": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$" } }
+}

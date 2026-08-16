@@ -1,0 +1,39 @@
+{
+  "v": "reelier.outcome-profile-contract/v1",
+  "domain": "reelier.outcome-profile-contract/v1\\0",
+  "members": [
+    {
+      "path": "profile-activation.schema.json",
+      "digest": "sha256:b022b575fa87250c91edc8ff08d9cc9f2b7fbc99af1a416ee15899fbf48a3cf4"
+    },
+    {
+      "path": "profile-authority-evidence.schema.json",
+      "digest": "sha256:5fb960e28ede67afe7ea09ba51934a238a3ad9ac85d3ca786b027f7ef8b49b17"
+    },
+    {
+      "path": "profile-conformance-report.schema.json",
+      "digest": "sha256:d425be27427796b33a8bb719d1520422a142339ca7ec5a35b0d5441ed4201a0c"
+    },
+    {
+      "path": "profile-conformance.schema.json",
+      "digest": "sha256:969c6813748fba5157bfcaa099fdcf7039c1399a49651eac6876047da396dd70"
+    },
+    {
+      "path": "profile-draft.schema.json",
+      "digest": "sha256:c8961833963d0a2cae98d9616b5fecc53ee07785695732f7c61694f5b7130cdf"
+    },
+    {
+      "path": "profile-governance-manifest.schema.json",
+      "digest": "sha256:d56b0f66d2d70e86c299a516211e36849cf436eb654325e85da5d03a83c25618"
+    },
+    {
+      "path": "profile-governed-receipt.schema.json",
+      "digest": "sha256:f66cb40f9b1cb668c627d8521aab12ec01f8daef59a3f060e1ba4a22316c4832"
+    },
+    {
+      "path": "profile-trust-pin.schema.json",
+      "digest": "sha256:644669e9589e293249055b9840a84feb9d4a8cc0bfe0fed203fcba6ca9d3d5af"
+    }
+  ],
+  "digest": "sha256:591d623ea7d0efe3e33a87bac114baa0ca66180b8bae6ad292cb0a6399ae66e2"
+}

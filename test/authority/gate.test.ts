@@ -15,13 +15,22 @@ import { createAuthorityStatePort, digestAuthorityState, type AuthorityStateBack
 import { FsAuthorityLedger } from "../../src/authority/host/fs-ledger.js";
 import { createFileGateDecisionSink } from "../../src/authority/decision.js";
 import {
-  createAuthorityGate, createReservedDispatchHandle,
+  createAuthorityGate, createReservedDispatchHandle, selectEligibleAuthorityContract,
   unwrapReservedDispatchHandle, type AuthorityGateDependencies, type GateResult,
 } from "../../src/authority/gate.js";
 import { AuthorityBoundaryError, type GateRefusalReason } from "../../src/authority/errors.js";
 import { bindableTempRoot } from "./bindable-root.js";
+import { profileGovernanceFixture } from "./profile-governance-fixture.js";
 
 const sha=(c:string)=>`sha256:${c.repeat(64)}`;
+
+test("the shared eligible-contract selector is closed and cannot be caller-directed", () => {
+  profileGovernanceFixture();
+  let getters = 0;
+  const hostile = Object.defineProperty({}, "snapshot", { enumerable: true, get() { getters += 1; throw new Error("getter invoked"); } });
+  assert.throws(() => selectEligibleAuthorityContract(hostile as never), /own data|closed|exact fields/i);
+  assert.equal(getters, 0);
+});
 const planAt="2026-01-15T00:00:29.000Z",decisionAt="2026-01-15T00:00:30.000Z";
 const limits={maxEffectsPerWindow:10,windowSeconds:3600,maxEffectsPerSourceTrigger:2,maxBodyBytes:4096};
 const grantConstraints=(connectorId="connector_1",accountId="account_1")=>({definitionAliases:["definition_1"],audiences:["requester_1"],connectorAccounts:[{connectorId,accountId}],projectionPointers:["/message"],riskClasses:["message"],limits});
@@ -40,10 +49,10 @@ const acceptedGolden=Object.freeze({
   eventDigest:"sha256:79f19c9adfc5311a53260abdc60d60c0d7ea9e60b82a1e5eb351b9ecda56afb3",
   eventCanonical:'{"at":"2026-01-15T00:00:30.000Z","decisionContextDigest":"sha256:37d279c45cce8737a8723e06541824670fe74869009466562bd26362f1fdb7f9","eventId":"event_1","reasonCode":"accepted","v":"reelier.gate-event/v1","verdict":"accepted"}',
   ingressClaimDigest:"sha256:1f8b0b0f6cca013cc966e228283056d5696aa9310aa717157958ecbd06a0d599",
-  reservationId:"sha256:706281938e06439cf0174770ab1ea730679165a9c849d52d9afe8475df731c54",
+  reservationId:"sha256:c888304bfaa6e6f135d145c3d56620b1077b825a22b5e5a35465d1a110edb723",
   signature:"oRXVlymjWoVVKGFxlYfs6oDUL+Qxk2B4aEHPubzqt/TelDqgCqvUBwYb4TVkXD4H8yXZb796fLowLSLxnJ3bAw==",
-  recordDigest:"sha256:67ccff4d845d88882f7f5fe78e91dd4a678771efb3c4a155a9d9d261d5f6f8bb",
-  recordCanonical:'{"decisionContext":{"capabilityDigest":"sha256:58142cc688a42916a0a052956a823e02de79c80a87ca1adf61d97f1a0fcd54ac","capabilityId":"capability_1","contractDigest":"sha256:c3f8363729d8723037101eb9016258432019c56c5654dc50a7dda8203eb43ed6","definitionAlias":"definition_1","effectDigest":"sha256:d1dccbb0cca6137f219afd5e2bc5e21195413052c195abee306cff6016bf0e3d","outcomeKey":"sha256:89b5aba40b436ae0e90b4e4d98d0701d63e3c270864eaeaa0cc1a548d31cab37","requestDigest":"sha256:423bc6eed7bc6a66476f79cacec6f03a565bc1713f3b839d57cbc2d50827a34a","requestId":"request_1","requestKey":"sha256:1f550633c85f3978ed06b88fd90f3548f1b5aa0bcc72894ba2e9d7ef36957487","requester":"requester_1","snapshots":{"authorityStateDigest":"sha256:c0773cd162463bbaeac4b2aac242eb3721f21f32bfef348ee63f8a60dc9af999","sourceBundleDigest":"sha256:63ef896b0537d4f22b4a813f513e8506958cdb70542857985c79a76dd2c2b9c2"},"tenant":"tenant_1","v":"reelier.decision-context/v1"},"decisionContextDigest":"sha256:37d279c45cce8737a8723e06541824670fe74869009466562bd26362f1fdb7f9","gateEvent":{"at":"2026-01-15T00:00:30.000Z","decisionContextDigest":"sha256:37d279c45cce8737a8723e06541824670fe74869009466562bd26362f1fdb7f9","eventId":"event_1","reasonCode":"accepted","v":"reelier.gate-event/v1","verdict":"accepted"},"gateEventDigest":"sha256:79f19c9adfc5311a53260abdc60d60c0d7ea9e60b82a1e5eb351b9ecda56afb3","ingressClaimDigest":"sha256:1f8b0b0f6cca013cc966e228283056d5696aa9310aa717157958ecbd06a0d599","reservationId":"sha256:706281938e06439cf0174770ab1ea730679165a9c849d52d9afe8475df731c54","role":"primary","signature":{"alg":"ed25519","sig":"oRXVlymjWoVVKGFxlYfs6oDUL+Qxk2B4aEHPubzqt/TelDqgCqvUBwYb4TVkXD4H8yXZb796fLowLSLxnJ3bAw=="},"signerId":"gate_key","v":"reelier.gate-decision-record/internal-v1"}',
+  recordDigest:"sha256:07bfc25ff3539c779c24c99c94f75474f98eec846d41bbf2b2d009a20bd15b17",
+  recordCanonical:'{"decisionContext":{"capabilityDigest":"sha256:58142cc688a42916a0a052956a823e02de79c80a87ca1adf61d97f1a0fcd54ac","capabilityId":"capability_1","contractDigest":"sha256:c3f8363729d8723037101eb9016258432019c56c5654dc50a7dda8203eb43ed6","definitionAlias":"definition_1","effectDigest":"sha256:d1dccbb0cca6137f219afd5e2bc5e21195413052c195abee306cff6016bf0e3d","outcomeKey":"sha256:89b5aba40b436ae0e90b4e4d98d0701d63e3c270864eaeaa0cc1a548d31cab37","requestDigest":"sha256:423bc6eed7bc6a66476f79cacec6f03a565bc1713f3b839d57cbc2d50827a34a","requestId":"request_1","requestKey":"sha256:1f550633c85f3978ed06b88fd90f3548f1b5aa0bcc72894ba2e9d7ef36957487","requester":"requester_1","snapshots":{"authorityStateDigest":"sha256:c0773cd162463bbaeac4b2aac242eb3721f21f32bfef348ee63f8a60dc9af999","sourceBundleDigest":"sha256:63ef896b0537d4f22b4a813f513e8506958cdb70542857985c79a76dd2c2b9c2"},"tenant":"tenant_1","v":"reelier.decision-context/v1"},"decisionContextDigest":"sha256:37d279c45cce8737a8723e06541824670fe74869009466562bd26362f1fdb7f9","gateEvent":{"at":"2026-01-15T00:00:30.000Z","decisionContextDigest":"sha256:37d279c45cce8737a8723e06541824670fe74869009466562bd26362f1fdb7f9","eventId":"event_1","reasonCode":"accepted","v":"reelier.gate-event/v1","verdict":"accepted"},"gateEventDigest":"sha256:79f19c9adfc5311a53260abdc60d60c0d7ea9e60b82a1e5eb351b9ecda56afb3","ingressClaimDigest":"sha256:1f8b0b0f6cca013cc966e228283056d5696aa9310aa717157958ecbd06a0d599","reservationId":"sha256:c888304bfaa6e6f135d145c3d56620b1077b825a22b5e5a35465d1a110edb723","role":"primary","signature":{"alg":"ed25519","sig":"oRXVlymjWoVVKGFxlYfs6oDUL+Qxk2B4aEHPubzqt/TelDqgCqvUBwYb4TVkXD4H8yXZb796fLowLSLxnJ3bAw=="},"signerId":"gate_key","v":"reelier.gate-decision-record/internal-v1"}',
   contractWindowKey:"sha256:c0139e37e09cbe466cd32aca9e0589e9ff4a41935ff8cc70cf96c84ee054ec83",
   sourceTriggerKey:"sha256:9d40508939f14559c3a737bdd9cf2b345d93f50dc73a26527c266a026e094f91",
 });
@@ -100,6 +109,20 @@ const presenceRows:readonly {reasons:readonly GateRefusalReason[];presence:reado
 test("missing resolver, connector, and account statuses are closed state commitments rather than state-digest exceptions",async()=>{const resolver=await fixture(optionsForReason("resolver-mismatch")),connector=await fixture(optionsForReason("connector-mismatch")),account=await fixture(optionsForReason("account-mismatch"));try{assert.deepEqual(sourceResolverRegistrationStatus(resolver.stateInput.sources,"tenant_1","resolver_missing"),{status:"resolver-missing",digest:authorityDigest({v:"reelier.source-resolver-registration-status/internal-v1",tenant:"tenant_1",resolverId:"resolver_missing",status:"resolver-missing"})});assert.deepEqual(connectorRegistrationStatus(connector.stateInput.connectors,"tenant_1","connector_missing","account_1"),{status:"connector-missing",digest:authorityDigest({v:"reelier.connector-registration-status/internal-v1",tenant:"tenant_1",connectorId:"connector_missing",accountId:"account_1",status:"connector-missing"})});assert.deepEqual(connectorRegistrationStatus(account.stateInput.connectors,"tenant_1","connector_1","account_missing"),{status:"account-missing",digest:authorityDigest({v:"reelier.connector-registration-status/internal-v1",tenant:"tenant_1",connectorId:"connector_1",accountId:"account_missing",status:"account-missing"})});const digests=[digestAuthorityState(resolver.stateInput).digest,digestAuthorityState(connector.stateInput).digest,digestAuthorityState(account.stateInput).digest];assert.equal(new Set(digests).size,3,"each exact missing registration identity/status changes the committed state");}finally{await resolver.cleanup();await connector.cleanup();await account.cleanup();}});
 
 test("every closed refusal is a real signed gate outcome with exact staged presence/time and zero dispatch or credential access",async()=>{for(const row of presenceRows)for(const reason of row.reasons){const f=await fixture(optionsForReason(reason));try{if(reason==="request-id-conflict"){const other=authenticateOutcomeRequest({tenant:"tenant_1",requester:"requester_1",definitionAlias:"definition_1",request:{v:"reelier.outcome-request/v1",requestId:"request_1",sourceRefs:{item:"other"},choices:{}}});assert.equal((await f.ledger.bindIngress(other)).ok,true);}const result=await f.gate.decide(f.request);assert.equal(result.kind,"refused",reason);assert.equal("handle" in result,false,reason);if(result.kind==="refused")assert.equal(result.status.reasonCode,reason);const record=reason==="request-id-conflict"?(await f.sink.lookupByEvent(`event_1`)):await f.sink.lookupPrimaryByIngress((await f.ledger.lookupIngress(authenticatedOutcomeRequestState(f.request).requestKey))!.ingressClaimDigest);assert.equal(record.ok,true,reason);if(!record.ok||record.status!=="found")continue;const context=record.record.decisionContext,[contract,state,source,outcome,capability]=row.presence;assert.equal(context.contractDigest!==null,contract,reason);assert.equal(context.snapshots.authorityStateDigest!==null,state,reason);assert.equal(context.snapshots.sourceBundleDigest!==null,source,reason);assert.equal(context.outcomeKey!==null&&context.effectDigest!==null,outcome,reason);assert.equal(context.capabilityId!==null&&context.capabilityDigest!==null,capability,reason);assert.equal(record.record.gateEvent.at,row.at,reason);assert.equal(f.counts().providerWrites,0,reason);assert.equal(f.counts().credentialReads,0,reason);}finally{await f.cleanup();}}});
+
+test("pre-reservation revalidation refusal is observed through the real gate with no reservation or downstream effect", async () => {
+  const f = await fixture({ unknownAt: "reserve" });
+  try {
+    const before = f.counts();
+    const result = await f.gate.decide(f.request);
+    assert.deepEqual(result, { kind: "unavailable", reason: "internal-integrity-unavailable" });
+    const after = f.counts();
+    assert.equal(f.trace.filter(step => step === "reserve").length, 1, "the real reservation seam was reached once and refused");
+    assert.equal(after.providerWrites - before.providerWrites, 0);
+    assert.equal(after.credentialReads - before.credentialReads, 0);
+    assert.equal("handle" in result, false);
+  } finally { await f.cleanup(); }
+});
 
 test("the decision boundary has no ambient network, environment, driver, secret, or credential dependency",async()=>{
   const originalFetch=globalThis.fetch;

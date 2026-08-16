@@ -7,12 +7,34 @@ export type LedgerState =
   | "acknowledged"
   | "definitive-failure"
   | "ambiguous"
+  | "cancelled"
   | "reconciled";
 
 export interface LimitSlotIntent {
   readonly kind: "contract-window" | "source-trigger";
   readonly key: string;
   readonly maximum: number;
+}
+
+export interface RouteAuthoritySnapshotV1 {
+  readonly v: "reelier.route-authority-snapshot/v1";
+  readonly connectorRegistrationDigest: string;
+  readonly operatorConfigurationDigest: string;
+  readonly routeDigest: string;
+  readonly providerId: string;
+  readonly connectorId: string;
+  readonly accountId: string;
+  readonly providerAccountIdentity: string;
+  readonly endpointId: string;
+  readonly credentialSlotId: string;
+  readonly slotInstanceId: string;
+  readonly slotVersion: string;
+  readonly authenticatedProviderIdentityDigest: string;
+  readonly sourceReadRouteDigest: string;
+  readonly projectionSchemaDigest: string;
+  readonly expectedMaterializedRequestDigest: string;
+  readonly authorityGeneration: string;
+  readonly authorityExpiresAt: string;
 }
 
 export interface ReservationIntent {
@@ -37,15 +59,21 @@ export interface ReservationIntent {
   readonly limitsDigest: string;
   readonly outcomeKey: string;
   readonly effectDigest: string;
+  /** Canonical transport-effect bytes retained for restart-time evidence when available. */
+  readonly effectCanonicalBase64?: string;
   readonly issuedAt: string;
   readonly expiresAt: string;
   readonly limitSlots: readonly LimitSlotIntent[];
+  /** Host-authenticated task/principal lineage; never read from OutcomeRequest. */
+  readonly executionContext?: import("./types.js").AuthorityExecutionContextV1;
+  readonly routeAuthority?: RouteAuthoritySnapshotV1;
 }
 
 export interface StoredReservationIntent extends Omit<ReservationIntent, "canonicalRequestBytes" | "capabilityBytes" | "limitSlots"> {
   readonly canonicalRequestBase64: string;
   readonly capabilityBase64: string;
   readonly limitSlots: readonly LimitSlotIntent[];
+  readonly routeAuthority?: RouteAuthoritySnapshotV1;
 }
 export interface ReservationLinkage {readonly reservationId:string;readonly state:Exclude<LedgerState,"issued">;readonly ingressClaimDigest:string;readonly capabilityId:string;readonly capabilityDigest:string;readonly authorityStateDigest:string;readonly decisionContextDigest:string;readonly updatedAt:string;readonly receiptRef?:string}
 
@@ -57,10 +85,13 @@ export interface ReservationSnapshot {
   readonly sequence: number;
   readonly updatedAt: string;
   readonly resultDigest?: string;
+  readonly sendStarted?: boolean;
 }
 
 export type TransitionEvent =
-  | Readonly<{ to: "dispatched" | "ambiguous" }>
+  | Readonly<{ to: "dispatched" }>
+  | Readonly<{ to: "ambiguous"; resultDigest?: string }>
+  | Readonly<{ to: "cancelled"; resultDigest: string }>
   | Readonly<{ to: "acknowledged" | "definitive-failure" | "reconciled"; resultDigest: string }>;
 
 export interface ReservationHistoryEntry {
@@ -136,9 +167,11 @@ export interface AuthorityLedger {
   lookupIngressClaimLinkage(requestKey:string):Promise<VerifiedIngressClaimLinkage|undefined>;
   reserve(intent: ReservationIntent): Promise<ReserveResult>;
   transition(reservationId: string, expectedState: LedgerState, event: TransitionEvent): Promise<TransitionResult>;
-  recover(): Promise<RecoverResult>;
+  recover(options?: Readonly<{ deferTerminal?: boolean }>): Promise<RecoverResult>;
   getReservation(reservationId: string): Promise<ReservationSnapshot | undefined>;
   lookupReservationLinkage(reservationId:string):Promise<ReservationLinkage|undefined>;
   getReservationHistory(reservationId: string): Promise<ReservationHistory | undefined>;
   getHighWaterMark(): Promise<Readonly<{ observedAt: string | null }>>;
+  /** Optional Path C durable commit boundary. Implementations must persist send-started before returning the lease. */
+  commitPreparedDispatch?(input: Readonly<{ reservationId: string; allocationId: string; expectedAuthorityGeneration: string; preparedDescription: import("./host/prepared-dispatch.js").PreparedDispatchDescriptionV1; absoluteDeadlineMs: number }>): Promise<import("./host/prepared-dispatch.js").DispatchCommitLease>;
 }

@@ -1,0 +1,22 @@
+primary_region = "yyz"
+
+[build]
+  dockerfile = "../../../Dockerfile"
+
+[processes]
+  app = "authority bootstrap --path /data/authority"
+
+[env]
+  REELIER_TOPOLOGY_MODE = "managed-bootstrap"
+
+[[files]]
+  guest_path = "/etc/reelier/topology-probe.json"
+  local_path = "infra/fly/authority-cell/authority-cell.topology-probe.json"
+
+[[mounts]]
+  source = "reelier_authority_data"
+  destination = "/data"
+
+# Bootstrap never exposes HTTP and cannot dispatch. Replace this manifest with
+# authority-cell.toml only after signed configuration and provider references
+# exist on the durable volume.

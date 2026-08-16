@@ -24,6 +24,8 @@ import {
   type CoverageServer,
   type CoverageView,
 } from "../src/coverage.js";
+import { translateClaudeCodeCoverage } from "../src/routes/hosts/claude-code.js";
+import type { RouteCoverageV1 } from "../src/routes/types.js";
 import { cmdCoverage } from "../src/cli.js";
 
 function captureConsole(): { lines: string[]; errors: string[]; restore: () => void } {
@@ -44,6 +46,16 @@ test("analyzeJsonMcpConfig reports an absent config as absent, with no invented 
   const source = analyzeJsonMcpConfig(undefined, MCP_JSON);
   assert.equal(source.location, "absent");
   assert.equal(source.servers.length, 0);
+});
+
+test("Claude Code route translation emits an explicit unknown row for an unreadable plugin registry", () => {
+  const rows = translateClaudeCodeCoverage({
+    view: { host: "claude-code", sources: [], plugins: [], pluginSource: "C:/private/installed_plugins.json", pluginRegistry: { location: "unreadable", detail: "invalid JSON" }, inspectedLocations: ["C:/private/installed_plugins.json"] },
+    observedAt: "2026-08-15T12:00:00.000Z", freshnessMs: 300_000, sourceDigest: `sha256:${"3".repeat(64)}`, contractIdentityDigest: `sha256:${"5".repeat(64)}`,
+    sourceInstances: [{ sourceRef: "plugin-registry", sourceInstanceIdentityDigest: `sha256:${"6".repeat(64)}`, canonicalBytes: "{invalid", fileIdentityDigest: `sha256:${"4".repeat(64)}` }], surfaces: [],
+  });
+  assert.deepEqual(rows.map((row: RouteCoverageV1) => [row.discoverySource, row.observation, row.enforcement, row.reasonCodes]), [["plugin-manifest", "unknown", "absent", ["registry-unreadable"]]]);
+  assert.match(rows[0]!.routeId, /^route_[0-9a-f]{64}$/);
 });
 
 test("analyzeJsonMcpConfig classifies a plain stdio entry as unwrapped", () => {
@@ -256,6 +268,12 @@ test("collectClaudeCodeCoverage joins installed_plugins.json with enabledPlugins
     // The source of each claim is named, so an operator can check it.
     assert.ok(pluginNamed(view, "located")?.enablement?.source.includes("settings.json"));
     assert.ok(pluginNamed(view, "mystery")?.enablement?.source);
+    const locatedManifest = pluginNamed(view, "located")?.manifestPath;
+    const evidence = view.routeEvidence.find((item: { readonly sourceRef: string }) => item.sourceRef === locatedManifest);
+    assert.match(evidence?.sourceInstanceIdentityDigest ?? "", /^sha256:[0-9a-f]{64}$/);
+    assert.match(evidence?.fileIdentityDigest ?? "", /^sha256:[0-9a-f]{64}$/);
+    assert.match(evidence?.canonicalBytes ?? "", /contentDigest/);
+    assert.doesNotMatch(evidence?.canonicalBytes ?? "", /playwright-mcp/);
   } finally {
     await rm(fx.root, { recursive: true, force: true });
   }
@@ -410,6 +428,9 @@ test("collectClaudeCodeCoverage gives every projects[<key>].mcpServers map its o
     const theirs = scoped.find((s) => s !== mine)!;
     assert.deepEqual(theirs.servers.map((s) => s.name), ["other_project_scoped"]);
     assert.match(theirs.detail ?? "", /does not rewrite/i);
+    const scopedEvidence = scoped.map(source => view.routeEvidence.find(item => item.sourceRef === source.path));
+    assert.ok(scopedEvidence.every(Boolean), "each logical project source retains static evidence");
+    assert.equal(new Set(scopedEvidence.map(item => item?.sourceInstanceIdentityDigest)).size, 2);
 
     // Never merged into the top-level count.
     const top = view.sources.find((s) => s.path === path.join(fx.home, ".claude.json"));

@@ -1,0 +1,38 @@
+{
+  "v": "reelier.topology-probe-config/v1",
+  "role": "cell",
+  "runtimeSession": "fly-machine-runtime",
+  "providerCredentialEnvNames": [
+    "REELIER_CLOUDFLARE_TOKEN",
+    "REELIER_GITHUB_TOKEN",
+    "REELIER_HUBSPOT_TOKEN",
+    "REELIER_NEON_API_KEY",
+    "REELIER_NEON_DATABASE_URL",
+    "REELIER_SLACK_TOKEN",
+    "REELIER_VERCEL_TOKEN"
+  ],
+  "allowedCredentialEnvNames": ["FLY_API_TOKEN", "REELIER_AUTHORITY_BEARER"],
+  "rawWriteRouteIds": [],
+  "readSurfaceIds": [
+    "cloudflare.resource.read",
+    "github.commit.read",
+    "github.issue.read",
+    "hubspot.ticket.read",
+    "neon.catalog.read",
+    "slack.channel.read",
+    "vercel.deployment.read"
+  ],
+  "providerEndpoints": [
+    "api.cloudflare.com",
+    "api.github.com",
+    "api.hubapi.com",
+    "api.vercel.com",
+    "console.neon.tech",
+    "slack.com"
+  ],
+  "egressProxy": {
+    "baseUrl": "env:REELIER_EGRESS_PROXY_BASE_URL",
+    "bearerEnvName": "REELIER_EGRESS_GATEWAY_BEARER"
+  },
+  "schemaDigest": "sha256:a8a9fbf0275cd6f62b6948323e568f962b3ddd01b87f8d06cb5bff7da24a2374"
+}

@@ -1,0 +1,17 @@
+primary_region = "yyz"
+
+[build]
+  dockerfile = "../../../Dockerfile"
+
+[env]
+  REELIER_TOPOLOGY_MODE = "managed-agent"
+
+[[files]]
+  guest_path = "/etc/reelier/topology-probe.json"
+  local_path = "infra/fly/authority-cell/agent-runtime.topology-probe.json"
+
+[experimental]
+  exec = ["/bin/sh", "-c", "exec tail -f /dev/null"]
+
+# This app intentionally exposes no public service and receives no provider
+# credentials. Model access must be separately declared for the real runtime.

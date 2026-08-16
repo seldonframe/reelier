@@ -1,0 +1,122 @@
+import { createStaticPackRegistry } from "../authority/pack.js";
+import { authorityCanonicalBytes, parseAuthorityWire } from "../authority/wire.js";
+import { firstPartyPacks } from "./index.js";
+import { githubIssueLabelsAlias } from "./github/manifest.js";
+import { githubIssueLabelsDefinition, parseGitHubIssueLabelsPolicy, validateGitHubIssueLabelsChoices } from "./github/compile.js";
+import { reconcileGitHubIssueLabels } from "./github/reconcile.js";
+import { slackChannelTopicAlias } from "./slack-topic/manifest.js";
+import { parseSlackChannelTopicPolicy, slackChannelTopicDefinition, validateSlackChannelTopicChoices } from "./slack-topic/compile.js";
+import { reconcileSlackChannelTopic } from "./slack-topic/reconcile.js";
+import { gmailReplySendAlias, gmailThreadLabelsAlias, gmailReplyDefinition, parseGmailReplyPolicy, compileGmailReply, reconcileGmailReply } from "./gmail/index.js";
+import { stripeRefundIssueAlias, stripeRefundDefinition, parseStripeRefundPolicy, compileStripeRefund, reconcileStripeRefund } from "./stripe/index.js";
+import { vercelDeploymentReleaseAlias, vercelDeploymentReleaseDefinition, parseVercelDeploymentReleasePolicy, compileVercelDeploymentRelease, reconcileVercelDeploymentRelease, type VercelDeploymentReleaseProjection } from "./vercel/index.js";
+import { cloudflareDnsRecordSetAlias, cloudflareDnsRecordSetDefinition, parseCloudflareDnsRecordPolicy, compileCloudflareDnsRecordSet, reconcileCloudflareDnsRecordSet, type CloudflareDnsRecordProjection } from "./cloudflare/index.js";
+import { neonDatabaseMigrationAlias, neonDatabaseMigrationDefinition, parseNeonDatabaseMigrationPolicy, compileNeonDatabaseMigration, reconcileNeonDatabaseMigration, type NeonDatabaseMigrationProjection } from "./neon/index.js";
+import { cloudflareTokenRollAlias, cloudflareTokenRollDefinition, parseCloudflareTokenRollPolicy, compileCloudflareTokenRoll, reconcileCloudflareTokenRoll, type CloudflareTokenProjection } from "./cloudflare-token/index.js";
+import { informationFlowCommitAlias, informationFlowDefinition, parseInformationFlowPolicy, compileInformationFlowCommit, reconcileInformationFlowCommit, type InformationFlowProjection } from "./information-flow/index.js";
+
+export interface FirstPartyConformanceReport {
+  readonly aliases: readonly string[];
+  readonly checks: number;
+  readonly passed: number;
+  readonly caseIds: readonly string[];
+}
+
+/** Runs the mandatory common corpus. This is intentionally offline and provider-neutral. */
+export function runFirstPartyPackConformance(): FirstPartyConformanceReport {
+  const expectedAliases = [githubIssueLabelsAlias, slackChannelTopicAlias, gmailReplySendAlias, gmailThreadLabelsAlias, stripeRefundIssueAlias, vercelDeploymentReleaseAlias, cloudflareDnsRecordSetAlias, neonDatabaseMigrationAlias, cloudflareTokenRollAlias, informationFlowCommitAlias];
+  const actualAliases = firstPartyPacks.map(pack => pack.definition.alias).sort(compareText);
+  if (actualAliases.join("\0") !== expectedAliases.slice().sort(compareText).join("\0")) throw new TypeError("first-party conformance requires the reviewed v1 packs");
+  createStaticPackRegistry(firstPartyPacks.map(pack => pack.definition));
+  let checks = 0;
+  const caseIds: string[] = [];
+  const check = (ok: boolean, message: string) => { checks += 1; if (!ok) throw new TypeError(`pack conformance failed: ${message}`); };
+
+  check(Object.keys(githubIssueLabelsDefinition).length === 14, "GitHub definition is closed");
+  check(Object.keys(slackChannelTopicDefinition).length === 14, "Slack definition is closed");
+  check(throws(() => validateGitHubIssueLabelsChoices({ desiredLabels: ["x"] })), "GitHub choices are empty");
+  check(throws(() => validateSlackChannelTopicChoices({ topic: "x" })), "Slack choices are empty");
+  check(throws(() => parseGitHubIssueLabelsPolicy({ desiredLabels: ["x"], unexpected: true })), "GitHub policy is closed");
+  check(throws(() => githubIssueLabelsDefinition.compile({ contract: {} as never, source: { projection: { owner: "octo", repo: "demo", issueNumber: 1, issueState: "closed", labels: ["bug"] } } as never, choices: {}, policy: parseGitHubIssueLabelsPolicy({ desiredLabels: ["x"] }), now: new Date(0), connectorAccount: { connectorId: "github", accountId: "installation" } })), "GitHub disallowed state refused");
+  check(throws(() => parseSlackChannelTopicPolicy({ topic: "x", unexpected: true })), "Slack policy is closed");
+
+  const ghSource = { projection: { owner: "octo", repo: "demo", issueNumber: 1, issueState: "open", labels: ["bug"] } };
+  const ghPolicy = parseGitHubIssueLabelsPolicy({ desiredLabels: ["enhancement", "bug"] });
+  const ghEffectA = githubIssueLabelsDefinition.compile({ contract: {} as never, source: ghSource as never, choices: {}, policy: ghPolicy, now: new Date(0), connectorAccount: { connectorId: "github", accountId: "installation" } });
+  const ghEffectB = githubIssueLabelsDefinition.compile({ contract: {} as never, source: ghSource as never, choices: {}, policy: ghPolicy, now: new Date(0), connectorAccount: { connectorId: "github", accountId: "installation" } });
+  check(Buffer.compare(authorityCanonicalBytes(ghEffectA), authorityCanonicalBytes(ghEffectB)) === 0, "GitHub compilation deterministic");
+  check(parseAuthorityWire("transport-effect", ghEffectA).endpointId === "github.issue.labels.replace", "GitHub effect schema closure");
+  check(Buffer.compare(authorityCanonicalBytes(ghEffectA), authorityCanonicalBytes(githubIssueLabelsDefinition.compile({ contract: {} as never, source: { projection: { ...ghSource.projection, accountId: "attacker" } } as never, choices: {}, policy: ghPolicy, now: new Date(0), connectorAccount: { connectorId: "github", accountId: "installation" } }))) === 0, "GitHub account is contract-bound");
+  check(!Object.keys((ghEffectA as { headers: Record<string, string> }).headers).some(key => ["authorization", "cookie", "host"].includes(key.toLowerCase())), "GitHub effect has no credential headers");
+  check(Buffer.from((ghEffectA as { bodyBase64: string }).bodyBase64, "base64").compare(authorityCanonicalBytes({ labels: ["bug", "enhancement"] })) === 0, "GitHub exact request bytes");
+  check(reconcileGitHubIssueLabels({ expected: { ...ghSource.projection, labels: ["bug", "enhancement"] }, response: { body: { labels: [{ name: "enhancement" }, { name: "bug" }] } } }).status === "matched", "GitHub matched reconciliation");
+  check(reconcileGitHubIssueLabels({ expected: { ...ghSource.projection, labels: ["bug", "enhancement"] }, response: { status: 503, body: {} } }).status === "unavailable", "GitHub unavailable is honest");
+  check(reconcileGitHubIssueLabels({ expected: { ...ghSource.projection, labels: ["bug", "enhancement"] }, response: { status: 404, body: {} } }).status === "not-applied", "GitHub not-applied is explicit");
+  check(reconcileGitHubIssueLabels({ expected: { ...ghSource.projection, labels: ["bug", "enhancement"] }, response: { body: { labels: [{ name: "attacker" }] } } }).status === "conflict", "GitHub conflicting state is explicit");
+
+  const slackSource = { projection: { teamId: "T1", channelId: "C1", channelName: "private-test", isPrivate: true, topic: "old" } };
+  const slackPolicy = parseSlackChannelTopicPolicy({ topic: "new" });
+  const slackEffectA = slackChannelTopicDefinition.compile({ contract: {} as never, source: slackSource as never, choices: {}, policy: slackPolicy, now: new Date(0), connectorAccount: { connectorId: "slack", accountId: "T1" } });
+  const slackEffectB = slackChannelTopicDefinition.compile({ contract: {} as never, source: slackSource as never, choices: {}, policy: slackPolicy, now: new Date(0), connectorAccount: { connectorId: "slack", accountId: "T1" } });
+  check(Buffer.compare(authorityCanonicalBytes(slackEffectA), authorityCanonicalBytes(slackEffectB)) === 0, "Slack compilation deterministic");
+  check(parseAuthorityWire("transport-effect", slackEffectA).endpointId === "slack.conversations.setTopic", "Slack effect schema closure");
+  check(Buffer.compare(authorityCanonicalBytes(slackEffectA), authorityCanonicalBytes(slackChannelTopicDefinition.compile({ contract: {} as never, source: { projection: { ...slackSource.projection, accountId: "attacker" } } as never, choices: {}, policy: slackPolicy, now: new Date(0), connectorAccount: { connectorId: "slack", accountId: "T1" } }))) === 0, "Slack account is contract-bound");
+  check(!JSON.stringify(slackEffectA).match(/(?:token|secret|password|authorization)/i), "Slack effect has no credentials");
+  check(throws(() => slackChannelTopicDefinition.compile({ contract: {} as never, source: { projection: { ...slackSource.projection, isPrivate: false } } as never, choices: {}, policy: slackPolicy, now: new Date(0), connectorAccount: { connectorId: "slack", accountId: "T1" } })), "Slack public channel refused");
+  check(reconcileSlackChannelTopic({ expected: slackSource.projection, response: { body: { channel: { topic: { value: "old" } } } } }).status === "matched", "Slack matched reconciliation");
+  check(reconcileSlackChannelTopic({ expected: slackSource.projection, response: { body: { channel: { topic: { value: "different" } } } } }).status === "conflict", "Slack conflict is honest");
+  check(reconcileSlackChannelTopic({ expected: slackSource.projection, response: { status: 503, body: {} } }).status === "unavailable", "Slack unavailable is honest");
+  check(reconcileSlackChannelTopic({ expected: slackSource.projection, response: { status: 404, body: {} } }).status === "not-applied", "Slack not-applied is explicit");
+  const gmailSource = { threadId: "thread_1", messageId: "<old@example.com>", recipient: "customer@example.com", subject: "Question", labelIds: [] };
+  const gmailEffect = gmailReplyDefinition.compile({ contract: {} as never, source: { projection: gmailSource } as never, choices: {}, policy: parseGmailReplyPolicy({ text: "Thanks" }), now: new Date(0), connectorAccount: { connectorId: "gmail", accountId: "account" } });
+  check(Buffer.compare(authorityCanonicalBytes(gmailEffect), authorityCanonicalBytes(gmailReplyDefinition.compile({ contract: {} as never, source: { projection: gmailSource } as never, choices: {}, policy: parseGmailReplyPolicy({ text: "Thanks" }), now: new Date(0), connectorAccount: { connectorId: "gmail", accountId: "account" } }))) === 0, "Gmail compilation deterministic");
+  check(parseAuthorityWire("transport-effect", gmailEffect).endpointId === "gmail.users.messages.send", "Gmail effect schema closure");
+  check(!Object.keys((gmailEffect as { headers: Record<string, string> }).headers).some(key => ["authorization", "cookie", "host"].includes(key.toLowerCase())), "Gmail effect has no credential headers");
+  check(reconcileGmailReply({ expectedMessageId: (gmailEffect as { messageId: string }).messageId, response: { body: { messageId: (gmailEffect as { messageId: string }).messageId } } }).status === "matched", "Gmail identity reconciliation");
+  const stripeSource = { chargeId: "ch_1", customerEmail: "customer@example.com", gmailSender: "customer@example.com", currency: "usd", amount: 5000, amountRefunded: 0, paid: true };
+  const stripeEffect = stripeRefundDefinition.compile({ contract: { tenant: "tenant_1" } as never, source: { projection: stripeSource } as never, choices: {}, policy: parseStripeRefundPolicy({ currency: "usd", maxRefund: 5000, maxChargeAgeSeconds: 86400 }), now: new Date("2026-08-09T00:00:00Z"), connectorAccount: { connectorId: "stripe", accountId: "account" } });
+  check(typeof (stripeEffect as { headers: Record<string, string> }).headers["Idempotency-Key"] === "string", "Stripe idempotency is present");
+  check(parseAuthorityWire("transport-effect", stripeEffect).endpointId === "stripe.refunds.create", "Stripe effect schema closure");
+  check(!Object.keys((stripeEffect as { headers: Record<string, string> }).headers).some(key => ["authorization", "cookie", "host"].includes(key.toLowerCase())), "Stripe effect has no credential headers");
+  check(reconcileStripeRefund({ chargeId: "ch_1", expectedAmount: 5000, response: { body: { charge: "ch_1", amount: 5000 } } }).status === "matched", "Stripe refund reconciliation");
+  const vercelSource: VercelDeploymentReleaseProjection = { teamId: "team_demo", projectId: "prj_demo", deploymentId: "dpl_preview", deploymentUrl: "https://preview-demo.vercel.app", commitSha: "0123456789abcdef0123456789abcdef01234567", checks: [{ name: "build", status: "passed" }], domains: ["app.example.com"], currentProductionDeploymentId: "dpl_previous" };
+  const vercelPolicy = parseVercelDeploymentReleasePolicy({ teamId: "team_demo", projectId: "prj_demo", allowedDomains: ["app.example.com"] });
+  const vercelEffect = vercelDeploymentReleaseDefinition.compile({ contract: {} as never, source: { projection: vercelSource } as never, choices: {}, policy: vercelPolicy, now: new Date(0), connectorAccount: { connectorId: "vercel", accountId: "team_demo" } });
+  check(parseAuthorityWire("transport-effect", vercelEffect).endpointId === "vercel.deployment.promote", "Vercel effect schema closure");
+  check(Buffer.compare(authorityCanonicalBytes(vercelEffect), authorityCanonicalBytes(compileVercelDeploymentRelease({ source: vercelSource, policy: vercelPolicy }))) === 0, "Vercel compilation deterministic");
+  check(throws(() => compileVercelDeploymentRelease({ source: { ...vercelSource, currentProductionDeploymentId: "dpl_preview" }, policy: vercelPolicy })), "Vercel already-current deployment refused");
+  check(reconcileVercelDeploymentRelease({ expected: vercelSource, response: { body: { id: "dpl_preview", teamId: "team_demo", projectId: "prj_demo", target: "production", commitSha: vercelSource.commitSha, domains: vercelSource.domains, currentProductionDeploymentId: "dpl_preview" } } }).status === "matched", "Vercel authoritative read-back");
+  check(reconcileVercelDeploymentRelease({ expected: vercelSource, response: { status: 200, body: { id: "dpl_other", teamId: "team_demo", projectId: "prj_demo", target: "production", commitSha: vercelSource.commitSha, domains: vercelSource.domains, currentProductionDeploymentId: "dpl_other" } } }).status === "conflict", "Vercel conflicting production is explicit");
+  const cloudflareSource: CloudflareDnsRecordProjection = { accountId: "acct_demo", zoneId: "zone_demo", recordId: "record_demo", name: "app.example.com", type: "A", content: "203.0.113.10", ttl: 300, proxied: false };
+  const cloudflarePolicy = parseCloudflareDnsRecordPolicy({ accountId: "acct_demo", zoneId: "zone_demo", name: "app.example.com", type: "A", desiredContent: "203.0.113.20", desiredTtl: 300, desiredProxied: false });
+  const cloudflareEffect = cloudflareDnsRecordSetDefinition.compile({ contract: {} as never, source: { projection: cloudflareSource } as never, choices: {}, policy: cloudflarePolicy, now: new Date(0), connectorAccount: { connectorId: "cloudflare", accountId: "acct_demo" } });
+  check(parseAuthorityWire("transport-effect", cloudflareEffect).endpointId === "cloudflare.dns.record.set", "Cloudflare effect schema closure");
+  check(Buffer.compare(authorityCanonicalBytes(cloudflareEffect), authorityCanonicalBytes(compileCloudflareDnsRecordSet({ source: cloudflareSource, policy: cloudflarePolicy }))) === 0, "Cloudflare compilation deterministic");
+  check(reconcileCloudflareDnsRecordSet({ expected: cloudflareSource, desired: { content: "203.0.113.20", ttl: 300, proxied: false }, response: { body: { result: { id: "record_demo", accountId: "acct_demo", zoneId: "zone_demo", name: "app.example.com", type: "A", content: "203.0.113.20", ttl: 300, proxied: false } } } }).status === "matched", "Cloudflare authoritative read-back");
+  check(throws(() => compileCloudflareDnsRecordSet({ source: { ...cloudflareSource, accountId: "attacker" }, policy: cloudflarePolicy })), "Cloudflare account binding");
+  const neonSource: NeonDatabaseMigrationProjection = { projectId: "prj_demo", branchId: "br_demo", databaseId: "db_demo", roleId: "role_app", schemaDigest: "sha256:1111111111111111111111111111111111111111111111111111111111111111", catalogDigest: "sha256:2222222222222222222222222222222222222222222222222222222222222222", lastMigrationId: "migration_previous" };
+  const neonPolicy = parseNeonDatabaseMigrationPolicy({ projectId: "prj_demo", branchId: "br_demo", databaseId: "db_demo", roleId: "role_app", migrationId: "migration_2026_08_10", expectedSchemaDigest: neonSource.schemaDigest, sql: "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS plan text NOT NULL;" });
+  const neonEffect = neonDatabaseMigrationDefinition.compile({ contract: {} as never, source: { projection: neonSource } as never, choices: {}, policy: neonPolicy, now: new Date(0), connectorAccount: { connectorId: "neon", accountId: "prj_demo" } });
+  check(parseAuthorityWire("transport-effect", neonEffect).endpointId === "neon.database.migration.apply", "Neon effect schema closure");
+  check(Buffer.compare(authorityCanonicalBytes(neonEffect), authorityCanonicalBytes(compileNeonDatabaseMigration({ source: neonSource, policy: neonPolicy }))) === 0, "Neon compilation deterministic");
+  check(throws(() => parseNeonDatabaseMigrationPolicy({ ...neonPolicy, sql: "DROP TABLE accounts;" })), "Neon destructive SQL refused");
+  check(reconcileNeonDatabaseMigration({ expected: neonSource, policy: neonPolicy, response: { body: { projectId: "prj_demo", branchId: "br_demo", databaseId: "db_demo", roleId: "role_app", migrationId: "migration_2026_08_10", schemaDigest: "sha256:3333333333333333333333333333333333333333333333333333333333333333", catalogDigest: "sha256:4444444444444444444444444444444444444444444444444444444444444444" } } }).status === "matched", "Neon migration read-back");
+  const tokenSource: CloudflareTokenProjection = { accountId: "acct_demo", tokenId: "token_demo", tokenName: "deploy-token", scopes: ["com.cloudflare.api.account.zone.read", "com.cloudflare.api.account.zone.write"], resources: ["com.cloudflare.api.account.zone:zone_demo"], expiresAt: "2026-12-31T00:00:00.000Z", status: "active" };
+  const tokenPolicy = parseCloudflareTokenRollPolicy({ accountId: "acct_demo", tokenId: "token_demo", tokenName: "deploy-token", scopes: tokenSource.scopes, resources: tokenSource.resources, expiresAt: "2027-01-31T00:00:00.000Z" });
+  const tokenEffect = cloudflareTokenRollDefinition.compile({ contract: {} as never, source: { projection: tokenSource } as never, choices: {}, policy: tokenPolicy, now: new Date(0), connectorAccount: { connectorId: "cloudflare", accountId: "acct_demo" } });
+  check(parseAuthorityWire("transport-effect", tokenEffect).endpointId === "cloudflare.api_token.roll", "Cloudflare token effect schema closure");
+  check(Buffer.compare(authorityCanonicalBytes(tokenEffect), authorityCanonicalBytes(compileCloudflareTokenRoll({ source: tokenSource, policy: tokenPolicy }))) === 0, "Cloudflare token compilation deterministic");
+  check(!JSON.stringify(tokenEffect).match(/secret|token-value|bearer/i), "Cloudflare token effect has no secret");
+  check(reconcileCloudflareTokenRoll({ expected: tokenSource, policy: tokenPolicy, response: { body: { result: { id: "token_demo", accountId: "acct_demo", name: "deploy-token", scopes: tokenPolicy.scopes, resources: tokenPolicy.resources, expiresAt: tokenPolicy.expiresAt, status: "active", value: "redact-me" } } } }).status === "matched", "Cloudflare token metadata read-back");
+  const flowSource: InformationFlowProjection = { hubspotAccountId: "hs_acct", ticketId: "ticket_1", contactId: "contact_1", customerEmail: "customer@example.com", subject: "Refund request", status: "open", priority: "high" };
+  const flowPolicy = parseInformationFlowPolicy({ hubspotAccountId: "hs_acct", slackTeamId: "T1", slackChannelId: "C_PRIVATE", authorizedFields: ["ticketId", "subject", "status", "priority"], transformation: "selected_fields_only", stagedText: "Ticket ticket_1: Refund request (open, high)" });
+  const flowEffect = informationFlowDefinition.compile({ contract: {} as never, source: { projection: flowSource } as never, choices: {}, policy: flowPolicy, now: new Date(0), connectorAccount: { connectorId: "slack", accountId: "T1" } });
+  check(parseAuthorityWire("transport-effect", flowEffect).endpointId === "slack.chat.postMessage", "Information-flow effect schema closure");
+  check(Buffer.compare(authorityCanonicalBytes(flowEffect), authorityCanonicalBytes(compileInformationFlowCommit({ source: flowSource, policy: flowPolicy }))) === 0, "Information-flow compilation deterministic");
+  check(reconcileInformationFlowCommit({ expected: flowSource, policy: flowPolicy, response: { body: { teamId: "T1", channelId: "C_PRIVATE", messageId: "m_1", text: flowPolicy.stagedText } } }).status === "matched", "Information-flow authoritative read-back");
+  caseIds.push("schema-closure", "exact-byte", "no-secret", "account-binding", "ambiguity", "reconciliation", "redaction");
+  return Object.freeze({ aliases: Object.freeze(actualAliases), checks, passed: checks, caseIds: Object.freeze(caseIds) });
+}
+
+function throws(fn: () => unknown): boolean { try { fn(); return false; } catch { return true; } }
+function compareText(a: string, b: string): number { return a < b ? -1 : a > b ? 1 : 0; }

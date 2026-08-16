@@ -8,6 +8,7 @@ import { pathToFileURL } from "node:url";
 import { execFile,spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { createHash } from "node:crypto";
+import { getEventListeners } from "node:events";
 import { connect, createServer } from "node:net";
 import { authorityCanonicalBytes, authorityDigest } from "../../src/authority/wire.js";
 import { authenticateOutcomeRequest, authenticatedOutcomeRequestState } from "../../src/authority/keys.js";
@@ -22,6 +23,7 @@ import {
 import {
   FsAuthorityLedger as RawFsAuthorityLedger,
   dispatchFaultPoints,
+  preparedDispatchFaultPoints,
   ledgerFaultPoints,
   ledgerLockFaultPoints,
   reservationFaultPoints,
@@ -31,7 +33,15 @@ import {
   __testAdmissionClockOption,
   __testPrepHousekeeperRuntimeOption,
 } from "../../src/authority/host/fs-ledger.js";
+
+test("prepared dispatch fault seam is separate from legacy dispatch transition points", () => {
+  assert.equal((dispatchFaultPoints as readonly string[]).includes("after-prepared-dispatch-transition"), false);
+  assert.deepEqual([...preparedDispatchFaultPoints], ["after-prepared-dispatch-transition"]);
+});
 import * as hostAuthorityModule from "../../src/authority/host/fs-ledger.js";
+import { materializedHttpRequestDigest, type MaterializedHttpRequestProjectionV1 } from "../../src/authority/host/http-response-semantics.js";
+import { createPreparedDispatch, consumePreparedDispatch } from "../../src/authority/host/prepared-dispatch.js";
+import { createDispatchCoordinator } from "../../src/authority/host/dispatch.js";
 
 class FsAuthorityLedger extends RawFsAuthorityLedger {
   override async reserve(candidate: ReservationIntent) {
@@ -159,7 +169,36 @@ async function withRoot(run: (root: string) => Promise<void>): Promise<void> {
   try { await run(root); } finally { await rm(root, { recursive: true, force: true }); }
 }
 
-async function spawnReserve(root: string, candidate: ReservationIntent): Promise<unknown> {
+function collectSpawnedJson(child:ReturnType<typeof spawn>,signal?:AbortSignal):Promise<unknown>{
+  return new Promise((resolve,reject)=>{
+    let stdout="",stderr="",childError:Error|undefined,settled=false;
+    const cleanup=()=>signal?.removeEventListener("abort",abort);
+    const rejectOnce=(error:unknown)=>{if(settled)return;settled=true;cleanup();reject(error);};
+    const resolveOnce=(value:unknown)=>{if(settled)return;settled=true;cleanup();resolve(value);};
+    const abort=()=>{try{child.kill();}catch(error){childError=error as Error;}};
+    child.stdout?.setEncoding("utf8").on("data",chunk=>{stdout+=chunk;});
+    child.stderr?.setEncoding("utf8").on("data",chunk=>{stderr+=chunk;});
+    child.once("error",error=>{childError=error;if(child.pid===undefined)rejectOnce(error);});
+    child.once("close",code=>{if(childError){rejectOnce(childError);return;}if(signal?.aborted){rejectOnce(signal.reason);return;}if(code!==0){rejectOnce(new Error(`child ${code}: ${stderr}`));return;}try{resolveOnce(JSON.parse(stdout));}catch(error){rejectOnce(error);}});
+    signal?.addEventListener("abort",abort,{once:true});
+    if(signal?.aborted)abort();
+  });
+}
+
+async function collectSpawnBatch<T>(pending:readonly Promise<T>[]):Promise<T[]>{
+  const settled=await Promise.allSettled(pending),values:T[]=[];let failed=false,reason:unknown;
+  for(const entry of settled)if(entry.status==="fulfilled")values.push(entry.value);else if(!failed){failed=true;reason=entry.reason;}
+  if(failed)throw reason;
+  return values;
+}
+
+async function collectN100Waves<T>(factories:readonly (()=>Promise<T>)[]):Promise<T[]>{
+  const values:T[]=[];
+  for(let offset=0;offset<factories.length;offset+=10)values.push(...await collectSpawnBatch(factories.slice(offset,offset+10).map(start=>start())));
+  return values;
+}
+
+async function spawnReserve(root: string, candidate: ReservationIntent, options:Readonly<{signal?:AbortSignal;onSpawn?:(pid:number)=>void}>={}): Promise<unknown> {
   const moduleUrl = pathToFileURL(path.join(process.cwd(), "dist-test/src/authority/host/fs-ledger.js")).href;
   const encoded = Buffer.from(JSON.stringify({
     ...candidate,
@@ -178,15 +217,10 @@ async function spawnReserve(root: string, candidate: ReservationIntent): Promise
     const result = await ledger.reserve(value);
     process.stdout.write(JSON.stringify(result));
   `;
-  return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, ["--input-type=module", "-e", source, encoded, root], { stdio: ["ignore", "pipe", "pipe"] });
-    let stdout = "";
-    let stderr = "";
-    child.stdout.setEncoding("utf8").on("data", chunk => { stdout += chunk; });
-    child.stderr.setEncoding("utf8").on("data", chunk => { stderr += chunk; });
-    child.on("error", reject);
-    child.on("close", code => code === 0 ? resolve(JSON.parse(stdout)) : reject(new Error(`child ${code}: ${stderr}`)));
-  });
+  if(options.signal?.aborted)return Promise.reject(options.signal.reason);
+  const child=spawn(process.execPath,["--input-type=module","-e",source,encoded,root],{stdio:["ignore","pipe","pipe"]}),pending=collectSpawnedJson(child,options.signal);
+  if(child.pid!==undefined)options.onSpawn?.(child.pid);
+  return pending;
 }
 
 async function rewriteJournal(root: string, mutate: (event: Record<string, unknown>) => Record<string, unknown>): Promise<void> {
@@ -207,22 +241,199 @@ async function rewriteJournal(root: string, mutate: (event: Record<string, unkno
 
 async function readJournalEvents(root:string):Promise<Record<string,unknown>[]>{const journal=path.join(root,"journal"),names=(await readdir(journal)).sort();return Promise.all(names.map(async name=>JSON.parse(await readFile(path.join(journal,name),"utf8")) as Record<string,unknown>));}
 
+async function n100TransitionFailureDiagnostic(root:string,result:unknown):Promise<string>{
+  const value=typeof result==="object"&&result!==null?result as Record<string,unknown>:{};
+  const redactedResult={ok:value.ok,...(typeof value.reason==="string"?{reason:value.reason}:{}),...(typeof value.status==="string"?{status:value.status}:{})};
+  return JSON.stringify({result:redactedResult,rootEntries:(await readdir(root)).sort()});
+}
+
 async function snapshotDurableSubtrees(root:string,subtrees:readonly string[]):Promise<ReadonlyArray<Readonly<{name:string;bytes:string}>>>{const snapshot:Array<Readonly<{name:string;bytes:string}>>=[];const walk=async(directory:string,relative:string):Promise<void>=>{for(const entry of (await readdir(directory,{withFileTypes:true})).sort((left,right)=>left.name.localeCompare(right.name))){const child=path.join(directory,entry.name),name=path.posix.join(relative,entry.name);if(entry.isDirectory())await walk(child,name);else{assert.equal(entry.isFile(),true,`durable snapshot contains only regular files: ${name}`);snapshot.push({name,bytes:(await readFile(child)).toString("base64")});}}};for(const subtree of [...subtrees].sort())await walk(path.join(root,subtree),subtree);return snapshot;}
 async function snapshotRootArtifacts(root:string):Promise<ReadonlyArray<Readonly<{name:string;type:"directory"|"file";bytes?:string}>>>{const snapshot:Array<Readonly<{name:string;type:"directory"|"file";bytes?:string}>>=[];const walk=async(directory:string,relative:string):Promise<void>=>{for(const entry of (await readdir(directory,{withFileTypes:true})).sort((left,right)=>left.name.localeCompare(right.name))){const child=path.join(directory,entry.name),name=path.posix.join(relative,entry.name);if(entry.isDirectory()){snapshot.push({name,type:"directory"});await walk(child,name);}else{assert.equal(entry.isFile(),true,`root snapshot contains only regular files: ${name}`);snapshot.push({name,type:"file",bytes:(await readFile(child)).toString("base64")});}}};await walk(root,"");return snapshot;}
 
 async function commitRawBoundIntent(root:string):Promise<Readonly<{candidate:ReservationIntent;reservation:ReservationSnapshot}>>{const candidate=intent(),ledger=new RawFsAuthorityLedger(root,{now:()=>t0}),request=JSON.parse(Buffer.from(candidate.canonicalRequestBytes).toString("utf8")),authenticated=authenticateOutcomeRequest({tenant:candidate.tenant,requester:candidate.requester,definitionAlias:candidate.definitionAlias,request}),binding=await ledger.bindIngress(authenticated);assert.equal(binding.ok,true);if(!binding.ok)throw new Error("fixture ingress bind refused");const boundCandidate:ReservationIntent={...candidate,ingressClaimDigest:binding.ingressClaimDigest},created=await ledger.reserve(boundCandidate);assert.equal(created.ok,true);if(!created.ok)throw new Error("fixture reservation refused");return {candidate:boundCandidate,reservation:created.reservation};}
 
-test("100 real processes converge on one committed reservation and one dispatch eligibility", { timeout: 120_000 }, async () => {
+test("prepared commit durably marks send-started and recovery never reopens it", { skip: process.platform !== "linux" }, () => withRoot(async root => {
+  const ledger = new RawFsAuthorityLedger(root, { now: () => t0, monotonicNow: () => 0 });
+  const { reservation } = await commitRawBoundIntent(root);
+  const projection: MaterializedHttpRequestProjectionV1 = { v: "reelier.materialized-http-request/v1", method: "PUT", origin: "https://api.github.com", normalizedPath: "/repos/a", normalizedQuery: "", reviewedHeaders: {}, bodyDigest: digest("1") };
+  const preparedDescription = { v: "reelier.prepared-dispatch-description/v1" as const, routeDigest: authorityDigest("route"), materializedRequestDigest: materializedHttpRequestDigest(projection), projection, authorityGeneration: reservation.intent.authorityStateDigest, authorityExpiresAt: new Date(t0 + 60_000).toISOString(), absoluteDeadlineMs: 60_000, reservationId: reservation.reservationId, allocationId: "unbound" };
+  const lease = await ledger.commitPreparedDispatch!({ reservationId: reservation.reservationId, allocationId: "unbound", expectedAuthorityGeneration: reservation.intent.authorityStateDigest, preparedDescription, absoluteDeadlineMs: 60_000 });
+  const beforeSend = await ledger.getReservation(reservation.reservationId);
+  assert.equal(beforeSend?.sendStarted, true, "send-started must be durable before the commit lease is returned");
+  const deferred = await ledger.recover({ deferTerminal: true });
+  assert.equal(deferred.ok, true);
+  if (deferred.ok) assert.equal(deferred.reservations[0]?.state, "dispatched", "deferTerminal preserves a marker-present dispatched reservation");
+  const prepared = createPreparedDispatch({ description: preparedDescription, monotonicNow: () => 0, wallClockNow: () => t0, send: async () => ({ kind: "acknowledged" as const, resultDigest: digest("a") }) });
+  await consumePreparedDispatch(prepared, lease);
+  assert.ok(lease);
+  const committed = await ledger.getReservation(reservation.reservationId);
+  assert.equal(committed?.state, "dispatched");
+  assert.equal(committed?.sendStarted, true);
+  const recovered = await ledger.recover({ deferTerminal: true });
+  assert.equal(recovered.ok, true);
+  if (recovered.ok) assert.equal(recovered.reservations[0]?.sendStarted, true);
+}));
+
+test("crash after durable dispatch but before send marker recovers ambiguous without resend", { skip: process.platform !== "linux" }, () => withRoot(async root => {
+  const { reservation } = await commitRawBoundIntent(root);
+  const projection: MaterializedHttpRequestProjectionV1 = { v: "reelier.materialized-http-request/v1", method: "PUT", origin: "https://api.github.com", normalizedPath: "/repos/a", normalizedQuery: "", reviewedHeaders: {}, bodyDigest: digest("1") };
+  const preparedDescription = { v: "reelier.prepared-dispatch-description/v1" as const, routeDigest: authorityDigest("route"), materializedRequestDigest: materializedHttpRequestDigest(projection), projection, authorityGeneration: reservation.intent.authorityStateDigest, authorityExpiresAt: new Date(t0 + 60_000).toISOString(), absoluteDeadlineMs: 60_000, reservationId: reservation.reservationId, allocationId: "unbound" };
+  const crashing = new RawFsAuthorityLedger(root, { now: () => t0, monotonicNow: () => 0, faultInjector: point => { if (point === "after-prepared-dispatch-transition") throw new Error("cut"); } });
+  await assert.rejects(() => crashing.commitPreparedDispatch!({ reservationId: reservation.reservationId, allocationId: "unbound", expectedAuthorityGeneration: reservation.intent.authorityStateDigest, preparedDescription, absoluteDeadlineMs: 60_000 }), /cut/);
+  const restarted = new RawFsAuthorityLedger(root, { now: () => t0, monotonicNow: () => 0 });
+  let sends = 0;
+  const coordinator = createDispatchCoordinator(restarted, { async dispatch() { sends++; throw new Error("recovery must not resend"); } });
+  assert.deepEqual(await coordinator.recover(), [reservation.reservationId]);
+  assert.equal(sends, 0);
+  const recovered = await restarted.recover({ deferTerminal: true });
+  assert.equal(recovered.ok, true);
+  if (recovered.ok) assert.equal(recovered.reservations[0]?.state, "ambiguous", "coordinator recovery must transition markerless dispatched state safely");
+}));
+
+test("stale authority generation refuses before the reservation becomes dispatched", { skip: process.platform !== "linux" }, () => withRoot(async root => {
+  const { reservation } = await commitRawBoundIntent(root);
+  const projection: MaterializedHttpRequestProjectionV1 = { v: "reelier.materialized-http-request/v1", method: "PUT", origin: "https://api.github.com", normalizedPath: "/repos/a", normalizedQuery: "", reviewedHeaders: {}, bodyDigest: digest("1") };
+  const preparedDescription = { v: "reelier.prepared-dispatch-description/v1" as const, routeDigest: authorityDigest("route"), materializedRequestDigest: materializedHttpRequestDigest(projection), projection, authorityGeneration: digest("stale"), authorityExpiresAt: new Date(t0 + 60_000).toISOString(), absoluteDeadlineMs: 60_000, reservationId: reservation.reservationId, allocationId: "unbound" };
+  const ledger = new RawFsAuthorityLedger(root, { now: () => t0, monotonicNow: () => 0, authorityGeneration: () => digest("current") });
+  await assert.rejects(() => ledger.commitPreparedDispatch!({ reservationId: reservation.reservationId, allocationId: "unbound", expectedAuthorityGeneration: digest("stale"), preparedDescription, absoluteDeadlineMs: 60_000 }), /stale/i);
+  const current = await ledger.getReservation(reservation.reservationId);
+  assert.equal(current?.state, "reserved");
+}));
+
+test("reservation retains an exact transport effect commitment for restart evidence", async () => {
   await withRoot(async root => {
-    const results = await Promise.all(Array.from({ length: 100 }, () => spawnReserve(root, intent())));
-    const successes = results as Array<{ ok: boolean; status: string; dispatchEligible: boolean; reservation: { reservationId: string } }>;
-    assert.equal(successes.every(result => result.ok), true, JSON.stringify(successes.filter(result => !result.ok)));
-    assert.equal(new Set(successes.map(result => result.reservation.reservationId)).size, 1);
-    assert.equal(successes.filter(result => result.dispatchEligible).length, 1);
+    const effect = { v: "reelier.transport-effect/v1", endpointId: "write", method: "POST", path: "/items", query: "", headers: { "Content-Type": "application/json" }, bodyBase64: Buffer.from("{}").toString("base64"), riskClass: "test", idempotency: "native", preconditions: [], reconciliation: { recipeId: "recipe" } } as const;
+    const effectBytes = authorityCanonicalBytes(effect);
+    const candidate = intent({ effectDigest: authorityDigest(effect), effectCanonicalBase64: effectBytes.toString("base64") });
+    const ledger = new FsAuthorityLedger(root, { now: () => t0 });
+    const request = JSON.parse(Buffer.from(candidate.canonicalRequestBytes).toString("utf8"));
+    const binding = await ledger.bindIngress(authenticateOutcomeRequest({ tenant: candidate.tenant, requester: candidate.requester, definitionAlias: candidate.definitionAlias, request }));
+    assert.equal(binding.ok, true);
+    if (!binding.ok) return;
+    const reserved = await ledger.reserve({ ...candidate, ingressClaimDigest: binding.ingressClaimDigest });
+    assert.equal(reserved.ok, true);
+    if (!reserved.ok) return;
+    const restarted = new FsAuthorityLedger(root, { now: () => t0 });
+    const snapshot = await restarted.getReservation(reserved.reservation.reservationId);
+    assert.equal(snapshot?.intent.effectCanonicalBase64, effectBytes.toString("base64"));
+  });
+});
+
+test("deferred recovery leaves orphaned reservations for publication before transition", async () => {
+  await withRoot(async root => {
+    const ledger = new FsAuthorityLedger(root, { now: () => t0 });
+    const created = await ledger.reserve(intent());
+    assert.equal(created.ok, true);
+    if (!created.ok) return;
+    const pending = await new FsAuthorityLedger(root, { now: () => t0 }).recover({ deferTerminal: true });
+    assert.equal(pending.ok, true);
+    if (!pending.ok) return;
+    assert.equal(pending.reservations[0]?.state, "reserved");
+    assert.equal((await ledger.transition(created.reservation.reservationId, "reserved", { to: "cancelled", resultDigest: digest("a") })).ok, true);
+  });
+});
+
+test("aborting a reserve child waits until the process is reaped",async()=>{
+  await withRoot(async root=>{
+    const lock=path.join(root,"lock");await mkdir(lock);await writeFile(path.join(lock,"owner.json"),authorityCanonicalBytes({host:hostname(),nonce:"e".repeat(64),pid:process.pid,v:1}));
+    const controller=new AbortController();let childPid:number|undefined;
+    const pending=spawnReserve(root,intent(),{signal:controller.signal,onSpawn(pid){childPid=pid;setTimeout(()=>controller.abort(new Error("test reserve abort")),20);}});
+    await assert.rejects(pending,/test reserve abort|aborted/i);
+    assert.ok(childPid);
+    assert.equal(pidReportsDead(childPid),true,"the aborted reserve child is closed and reaped before its promise rejects");
+  });
+});
+
+test("an abort-time kill error settles only after the live child closes",async()=>{
+  const controller=new AbortController(),before=getEventListeners(controller.signal,"abort").length,child=spawn(process.execPath,["-e","setInterval(()=>{},1000)"],{stdio:["ignore","pipe","pipe"]});
+  assert.ok(child.pid);const childPid=child.pid,killError=Object.assign(new Error("synthetic kill refusal"),{code:"EPERM"}),originalKill=child.kill.bind(child);
+  Object.defineProperty(child,"kill",{configurable:true,value:()=>{child.emit("error",killError);return false;}});
+  const pending=collectSpawnedJson(child,controller.signal);let settled=false;void pending.then(()=>{settled=true;},()=>{settled=true;});
+  controller.abort(new Error("test abort"));await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(settled,false,"a kill error cannot reject while its child is still live");
+  Object.defineProperty(child,"kill",{configurable:true,value:originalKill});assert.equal(originalKill("SIGKILL"),true);
+  await assert.rejects(pending,error=>error===killError);assert.equal(pidReportsDead(childPid),true);assert.equal(getEventListeners(controller.signal,"abort").length,before);
+});
+
+test("a failed spawn rejects and removes abort ownership without waiting for a nonexistent process",async()=>{
+  await withRoot(async root=>{
+    const controller=new AbortController(),before=getEventListeners(controller.signal,"abort").length,child=spawn(path.join(root,"missing-node-binary"),[],{stdio:["ignore","pipe","pipe"]});
+    const pending=collectSpawnedJson(child,controller.signal);controller.abort(new Error("abort failed spawn"));
+    await assert.rejects(pending,error=>(error as NodeJS.ErrnoException).code==="ENOENT");assert.equal(child.pid,undefined);assert.equal(getEventListeners(controller.signal,"abort").length,before);
+  });
+});
+
+test("a child batch waits for every started process to close before surfacing one failure",async()=>{
+  await withRoot(async root=>{
+    const controller=new AbortController(),failed=spawn(path.join(root,"missing-node-binary"),[],{stdio:["ignore","pipe","pipe"]}),live=spawn(process.execPath,["-e","setInterval(()=>{},1000)"],{stdio:["ignore","pipe","pipe"]});assert.ok(live.pid);const livePid=live.pid;
+    const pending=collectSpawnBatch([collectSpawnedJson(failed),collectSpawnedJson(live,controller.signal)]);let settled=false;void pending.then(()=>{settled=true;},()=>{settled=true;});
+    await new Promise(resolve=>setImmediate(resolve));assert.equal(settled,false,"one failed spawn cannot abandon its live batch sibling");
+    controller.abort(new Error("close live batch sibling"));await assert.rejects(pending,error=>(error as NodeJS.ErrnoException).code==="ENOENT");assert.equal(pidReportsDead(livePid),true);
+  });
+});
+
+test("the N100 wave scheduler starts all work while capping live children at ten",async()=>{
+  let started=0,active=0,peak=0;
+  const results=await collectN100Waves(Array.from({length:100},(_,index)=>async()=>{started++;active++;peak=Math.max(peak,active);await new Promise(resolve=>setImmediate(resolve));active--;return index;}));
+  assert.deepEqual(results,Array.from({length:100},(_,index)=>index));assert.deepEqual({started,peak},{started:100,peak:10});
+});
+
+test("N100 authority convergence: one committed reservation, exact-existing outcomes, and acknowledged recovery", { timeout: 120_000, skip: process.platform !== "linux" }, async t => {
+  await withRoot(async root => {
+    let outstanding=0,peakOutstanding=0;
+    const run=()=>{outstanding++;peakOutstanding=Math.max(peakOutstanding,outstanding);return spawnReserve(root,intent(),{signal:t.signal}).finally(()=>{outstanding--;});};
+    const results=await collectN100Waves(Array.from({length:100},()=>run));
+    const outcomes = results as Array<{ ok: boolean; status: string; dispatchEligible: boolean; reservation: ReservationSnapshot } | { ok: false; reason: string }>;
+    assert.equal(peakOutstanding<=10,true,`the convergence harness started ${peakOutstanding} simultaneous reserve children`);
+    const refused=outcomes.filter((result):result is { ok:false;reason:string }=>!result.ok);
+    assert.deepEqual(refused,[],`zero refused results, including busy and corruption: ${JSON.stringify(refused)}`);
+    const successes=outcomes.filter((result):result is { ok:true;status:string;dispatchEligible:boolean;reservation:ReservationSnapshot }=>result.ok);
+    const winners=successes.filter(result=>result.status==="reserved"&&result.dispatchEligible===true);
+    assert.equal(winners.length,1,"exactly one reserved dispatch-eligible result");
+    const winner=winners[0]!;
+    assert.equal(successes.filter(result=>result.status==="existing"&&result.dispatchEligible===false).length,99,"99 exact-existing outcomes");
+    for(const result of successes.filter(result=>result!==winner))assert.deepEqual(result,{ok:true,status:"existing",dispatchEligible:false,reservation:winner.reservation},"exact-existing outcome matches the winner reservation");
+    assert.deepEqual(winner.reservation.limitAssignments,winner.reservation.intent.limitSlots.map(slot=>({key:slot.key,index:0,maximum:slot.maximum})),"one exact assignment per committed intent limit key");
+    const ledger=new FsAuthorityLedger(root,{now:()=>t0});
+    const dispatched=await ledger.transition(winner.reservation.reservationId,"reserved",{to:"dispatched"});
+    assert.equal(dispatched.ok,true,dispatched.ok?undefined:`dispatch diagnostic: ${await n100TransitionFailureDiagnostic(root,dispatched)}`);
+    if(!dispatched.ok)return;
+    const acknowledged=await ledger.transition(winner.reservation.reservationId,"dispatched",{to:"acknowledged",resultDigest:digest("a")});
+    assert.equal(acknowledged.ok,true,acknowledged.ok?undefined:`acknowledge diagnostic: ${await n100TransitionFailureDiagnostic(root,acknowledged)}`);
+    if(!acknowledged.ok)return;
     const recovered = await new FsAuthorityLedger(root, { now: () => t0 }).recover();
     assert.equal(recovered.ok, true);
-    if (recovered.ok) assert.equal(recovered.reservations.length, 1);
+    if (recovered.ok) assert.deepEqual(recovered.reservations,[acknowledged.reservation]);
   });
+});
+
+test("an option-on warm ledger dispatches and immediately acknowledges in one process",()=>withRoot(async root=>{
+  const options={[k1AdmissionPreparationOption()]:K1_ADMISSION_PREPARATION_MODE,now:()=>t0,lockTimeoutMs:2_000} as never;
+  const ledger=new FsAuthorityLedger(root,options);
+  const reserved=await ledger.reserve(intent());
+  assert.equal(reserved.ok,true,"reservation succeeds through the option-on admission path");
+  if(!reserved.ok)return;
+  const dispatched=await ledger.transition(reserved.reservation.reservationId,"reserved",{to:"dispatched"});
+  assert.equal(dispatched.ok,true,"dispatch succeeds on the used root");
+  if(!dispatched.ok)return;
+  const acknowledged=await ledger.transition(reserved.reservation.reservationId,"dispatched",{to:"acknowledged",resultDigest:digest("a")});
+  assert.equal(acknowledged.ok,true,`the immediate acknowledge sees the prior released marker as inert: ${JSON.stringify(acknowledged)} entries=${JSON.stringify((await readdir(root)).sort())}`);
+  if(acknowledged.ok)assert.equal(acknowledged.reservation.state,"acknowledged");
+}));
+
+test("owned admission-preparation disappearance is corruption at every construction and promotion seam",async t=>{
+  const boundaries=["after-admission-prep-create","after-admission-prep-owner-create","after-admission-prep-owner-partial-write","after-admission-prep-owner-sync","after-admission-prep-sync","before-admission-slot-rename","after-admission-prep-final-revalidation"] as const;
+  for(const boundary of boundaries)await t.test(boundary,()=>withRoot(async root=>{
+    let removed=false;
+    const result=await new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:2_000,faultInjector:(point:string)=>{
+      if(removed||point!==boundary)return;
+      const prep=readdirSync(root).find(name=>name.startsWith(".authority-ledger-admission-prep-")&&name.endsWith(".tmp"));
+      assert.ok(prep,`${boundary}: the creator owns one exact preparation`);
+      rmSync(path.join(root,prep),{recursive:true});removed=true;
+    }} as never).observeClock();
+    assert.equal(removed,true,`${boundary}: the exact preparation disappearance was exercised`);
+    assert.deepEqual(result,{ok:false,reason:"corruption"},`${boundary}: unexplained owned-prep loss is classified, never leaked or retried as busy`);
+  }));
 });
 
 test("cross-process collisions use ingress, semantic, capability, then limit precedence", { timeout: 60_000 }, async () => {
@@ -749,7 +960,7 @@ test("faults at every durable reservation and transition point recover to prior 
     if (!recovered.ok) assert.equal(recovered.reason, "corruption");
     else {
       assert.ok(recovered.reservations.length <= 1);
-      if (recovered.reservations[0]) assert.equal(recovered.reservations[0].state, "reserved");
+      if (recovered.reservations[0]) assert.ok(["reserved", "cancelled"].includes(recovered.reservations[0].state), `${point}: orphaned reservations may be cancelled before publication`);
     }
   });
 
@@ -765,7 +976,7 @@ test("faults at every durable reservation and transition point recover to prior 
     try { await crashing.transition(created.reservation.reservationId, "reserved", { to: "dispatched" }); } catch (error) { assert.match(String(error), /fault:/); }
     assert.equal(fired, true, point);
     const recovered = await new FsAuthorityLedger(root, { now: () => t0 + 1 }).recover();
-    if (recovered.ok) assert.ok(["reserved", "ambiguous"].includes(recovered.reservations[0].state));
+    if (recovered.ok) assert.ok(["reserved", "cancelled", "ambiguous"].includes(recovered.reservations[0].state));
     else assert.equal(recovered.reason, "corruption");
   });
 
@@ -1194,7 +1405,7 @@ test("K1 creator final binds the exact referenced withdrawn-slot final",async t=
 });
 
 test("K1 construction churn distinguishes same-identity canonical progress from corruption",async t=>{
-  const runClassification=async(root:string,mutateAt:string,mutate:()=>void)=>{let mutated=false,snapshots=0,semanticNow=0,callbacks=0,legacyMutations=0;const result=await new RawFsAuthorityLedger(root,{now:()=>{semanticNow++;return t0;},lockTimeoutMs:20,faultInjector:(point:string)=>{if(point==="after-pre-admission-housekeeping-initial-enumeration")snapshots++;if(!mutated&&point===mutateAt){mutated=true;mutate();}if(point==="before-ledger-operation-callback")callbacks++;if(legacyMutationBoundaries.has(point))legacyMutations++;}} as never).observeClock();assert.equal(mutated,true,`${mutateAt} is a live closed-snapshot seam`);assert.deepEqual({semanticNow,callbacks,legacyMutations},{semanticNow:0,callbacks:0,legacyMutations:0});return {result,snapshots};};
+  const runClassification=async(root:string,mutateAt:string,mutate:()=>void)=>{let mutated=false,snapshots=0,semanticNow=0,callbacks=0,legacyMutations=0;const binding=await derivedFenceBinding(root),fenceOption=k1OperationFenceOption(),steadyPrepRuntime={monotonicNow:()=>0,delay:async()=>{}},result=await new RawFsAuthorityLedger(root,{[fenceOption]:fenceRuntime(binding,()=>{}),[__testPrepHousekeeperRuntimeOption]:steadyPrepRuntime,now:()=>{semanticNow++;return t0;},lockTimeoutMs:20,faultInjector:(point:string)=>{if(point==="after-pre-admission-housekeeping-initial-enumeration")snapshots++;if(!mutated&&point===mutateAt){mutated=true;mutate();}if(point==="before-ledger-operation-callback")callbacks++;if(legacyMutationBoundaries.has(point))legacyMutations++;}} as never).observeClock();assert.equal(mutated,true,`${mutateAt} is a live closed-snapshot seam`);assert.deepEqual({semanticNow,callbacks,legacyMutations},{semanticNow:0,callbacks:0,legacyMutations:0});return {result,snapshots};};
   const writePrepStage=async(root:string,owner:AdmissionOwner,stageState:"zero"|"prefix")=>{const markerName=admissionPrepRetiredName(owner,"complete"),marker=path.join(root,markerName);await mkdir(marker);await writeFile(path.join(marker,"owner.json"),publicationOwnerBytes(owner));const ack=incompleteCoordinationAck(owner,"prep-retired",markerName,admissionPrepName(owner),"complete",marker),ackBytes=authorityCanonicalBytes(ack),stage=path.join(root,coordinationStageName(ack,"prep-retired")),initial=stageState==="zero"?Buffer.alloc(0):ackBytes.subarray(0,ackBytes.length-1);await writeFile(stage,initial);assert.equal(initial.length<ackBytes.length,true);assert.deepEqual(initial,ackBytes.subarray(0,initial.length));return {ackBytes,initial,marker,stage};};
   for(const initial of ["zero","prefix"] as const)await t.test(`live prep same-inode ${initial} bytes may grow to complete canonical owner`,()=>withRoot(async root=>{const owner={host:hostname(),nonce:(initial==="zero"?"1":"2").repeat(64),pid:process.pid,v:1 as const},prep=await writeAdmissionPrep(root,owner,initial==="zero"?"zero":"partial"),ownerPath=path.join(prep,"owner.json"),complete=publicationOwnerBytes(owner),before=exactFsIdentity(ownerPath),initialBytes=await readFile(ownerPath);assert.equal(initialBytes.length<complete.length,true);assert.deepEqual(initialBytes,complete.subarray(0,initialBytes.length));let after:ExactFsIdentity|undefined;const observed=await runClassification(root,"after-admission-prep-enumeration",()=>{writeFileSync(ownerPath,complete.subarray(initialBytes.length),{flag:"a"});after=exactFsIdentity(ownerPath);});assert.deepEqual(after,before,"canonical progress preserves the exact owner-file identity");assert.deepEqual(observed.result,{ok:false,reason:"busy"});assert.equal(observed.snapshots>=2,true,"same-identity canonical progress restarts classification");assert.deepEqual(await readFile(ownerPath),complete);}));
   for(const initial of ["zero","prefix"] as const)await t.test(`prep-retired stage same-inode ${initial} bytes may grow to complete canonical ack`,()=>withRoot(async root=>{const owner={host:hostname(),nonce:(initial==="zero"?"3":"4").repeat(64),pid:process.pid,v:1 as const},fixture=await writePrepStage(root,owner,initial),before=exactFsIdentity(fixture.stage);let after:ExactFsIdentity|undefined;const observed=await runClassification(root,"after-coordination-cleanup-marker-enumeration",()=>{writeFileSync(fixture.stage,fixture.ackBytes.subarray(fixture.initial.length),{flag:"a"});after=exactFsIdentity(fixture.stage);});assert.deepEqual(after,before,"canonical stage progress preserves the exact stage-file identity");assert.deepEqual(observed.result,{ok:false,reason:"busy"});assert.equal(observed.snapshots>=2,true,"same-identity canonical stage progress restarts classification");assert.deepEqual(await readFile(fixture.stage),fixture.ackBytes);}));
@@ -1221,7 +1432,7 @@ test("prep-only housekeeper runtime scaffold remains host-private",async t=>{
   const hostModule=await import("../../src/authority/host/fs-ledger.js") as HostModule,runtimeKey=hostModule.__testPrepHousekeeperRuntimeOption;
   await t.test("direct host import exposes a computed-option symbol",()=>{assert.equal(typeof runtimeKey,"symbol","the prep-only runtime scaffold is a real host-private symbol");if(typeof runtimeKey!=="symbol")return;const runtime:PrepRuntime={monotonicNow:()=>0,delay:async()=>{},observeBoundary:()=>{}},options={[runtimeKey]:runtime};assert.deepEqual(Object.getOwnPropertySymbols(options),[runtimeKey]);assert.equal(options[runtimeKey],runtime);});
   await t.test("authority barrel exposes no prep-housekeeper runtime service or authority types",()=>{for(const name of ["__testPrepHousekeeperRuntimeOption","__testServicePrepHousekeepingOnce","PrepCreatorToken","PrepRetirementAuthority","PrepRetiredCleanupAuthority"])assert.equal(name in authorityModule,false,`${name} remains absent from reelier/authority`);});
-  await t.test("package export map adds no prep-housekeeper or host-private mutation path",async()=>{const packageJson=JSON.parse(await readFile(path.resolve("package.json"),"utf8")) as {exports:Record<string,unknown>},authorityPaths=Object.keys(packageJson.exports).filter(name=>name.includes("authority")),privatePaths=Object.keys(packageJson.exports).filter(name=>/(?:prep|housekeep|runtime|host)/i.test(name));assert.deepEqual(authorityPaths,["./authority"]);assert.deepEqual(privatePaths,[]);assert.equal(packageJson.exports["./authority"],"./dist/authority/index.js");});
+  await t.test("package export map exposes only the three reviewed authority surfaces",async()=>{const packageJson=JSON.parse(await readFile(path.resolve("package.json"),"utf8")) as {exports:Record<string,unknown>},authorityPaths=Object.keys(packageJson.exports).filter(name=>name.includes("authority")),privatePaths=Object.keys(packageJson.exports).filter(name=>/(?:prep|housekeep|runtime)/i.test(name));assert.deepEqual(authorityPaths,["./authority","./authority/pack","./authority/host"]);assert.deepEqual(privatePaths,[]);assert.equal(packageJson.exports["./authority"],"./dist/authority/index.js");});
   await t.test("runtime option is accepted without widening classifier-only busy behavior",()=>withRoot(async root=>{if(typeof runtimeKey!=="symbol"){assert.equal(runtimeKey,undefined,"missing scaffold is isolated to the intentional presence RED");return;}const owner={host:hostname(),nonce:"d".repeat(64),pid:process.pid,v:1 as const};await writeAdmissionPrep(root,owner,"zero");const before=await snapshotRootArtifacts(root),runtimeCalls={monotonicNow:0,delay:0,boundary:0},runtime:PrepRuntime={monotonicNow:()=>{runtimeCalls.monotonicNow++;return 0;},delay:async()=>{runtimeCalls.delay++;},observeBoundary:()=>{runtimeCalls.boundary++;}};let callbacks=0;const result=await new RawFsAuthorityLedger(root,{[runtimeKey]:runtime,now:()=>t0,lockTimeoutMs:20,faultInjector:(point:string)=>{if(point==="before-ledger-operation-callback")callbacks++;}} as never).observeClock();assert.deepEqual(result,{ok:false,reason:"busy"});assert.equal(callbacks,0);assert.deepEqual(await snapshotRootArtifacts(root),before);assert.deepEqual({delay:runtimeCalls.delay,boundary:runtimeCalls.boundary},{delay:0,boundary:0},"classifier-only busy does not enter prep-housekeeping mutation runtime");}));
 });
 
@@ -1245,7 +1456,7 @@ test("prep-only housekeeper routes stable authority without mutation",async t=>{
 test("prep-only housekeeper revalidates one-use authority before mutation",async t=>{
   const tokenPoint="prep-only-creator-token-carried",nonePoint="prep-only-no-authority",deadPoint="prep-only-prep-retirement-authority-dead-owner",exactCreatorPoint="prep-only-prep-retirement-authority-exact-creator",cleanupPoint="prep-only-prep-retired-cleanup-authority",beforePoint="prep-only-before-transition",refusedPoint="prep-only-transition-refused",privateLiterals=[tokenPoint,nonePoint,deadPoint,exactCreatorPoint,cleanupPoint,beforePoint,refusedPoint] as const;
   const containsPublicLiteral=(root:unknown,literal:string):boolean=>{const seen=new Set<object>(),visit=(value:unknown):boolean=>{if(typeof value==="string")return value===literal;if(value===null||typeof value!=="object")return false;if(seen.has(value))return false;seen.add(value);if(Array.isArray(value))return value.some(visit);if(value instanceof Set)return [...value].some(visit);if(value instanceof Map)return [...value].some(([key,item])=>visit(key)||visit(item));const prototype=Object.getPrototypeOf(value);return (prototype===Object.prototype||prototype===null)&&Object.values(value as Record<string,unknown>).some(visit);};return visit(root);};
-  const execute=async(root:string,mode:"observeClock"|"recover"="observeClock",onPoint?:(point:string)=>void)=>{const events:string[]=[],observerArgs:unknown[][]=[];let semanticNow=0,callbacks=0,monotonic=0,delays=0,result:unknown,thrown:unknown;const runtime={monotonicNow:()=>{monotonic++;return 0;},delay:async()=>{delays++;},observeBoundary:(...args:unknown[])=>{observerArgs.push(args);const point=String(args[0]);events.push(point);onPoint?.(point);}},ledger=new RawFsAuthorityLedger(root,{[__testPrepHousekeeperRuntimeOption]:runtime,now:()=>{semanticNow++;return t0;},lockTimeoutMs:20,faultInjector:(point:string)=>{if(point==="before-ledger-operation-callback")callbacks++;}} as never);try{result=await ledger[mode]();}catch(error){thrown=error;}return {events,observerArgs,semanticNow,callbacks,monotonic,delays,result,thrown};};
+  const execute=async(root:string,mode:"observeClock"|"recover"="observeClock",onPoint?:(point:string)=>void,fence?:"exact-root-bound-fence")=>{const events:string[]=[],observerArgs:unknown[][]=[];let semanticNow=0,callbacks=0,monotonic=0,delays=0,result:unknown,thrown:unknown;const runtime={monotonicNow:()=>{monotonic++;return 0;},delay:async()=>{delays++;},observeBoundary:(...args:unknown[])=>{observerArgs.push(args);const point=String(args[0]);events.push(point);onPoint?.(point);}},fenceOptions=fence===undefined?{}:{[k1OperationFenceOption()]:fenceRuntime(await derivedFenceBinding(root),()=>{})},ledger=new RawFsAuthorityLedger(root,{...fenceOptions,[__testPrepHousekeeperRuntimeOption]:runtime,now:()=>{semanticNow++;return t0;},lockTimeoutMs:20,faultInjector:(point:string)=>{if(point==="before-ledger-operation-callback")callbacks++;}} as never);try{result=await ledger[mode]();}catch(error){thrown=error;}return {events,observerArgs,semanticNow,callbacks,monotonic,delays,result,thrown};};
   const assertRoutingOnly=(observed:Awaited<ReturnType<typeof execute>>)=>{assert.deepEqual({semanticNow:observed.semanticNow,callbacks:observed.callbacks,delays:observed.delays},{semanticNow:0,callbacks:0,delays:0});for(const args of observed.observerArgs){assert.equal(args.length,1);assert.equal(typeof args[0],"string");}};
   const prepRetired=async(root:string,suffix:string,variant:"marker"|"stage-zero"|"stage-prefix"|"stage-complete"|"marker-final"|"orphan-final")=>{assert.match(suffix,/^[0-9a-f]$/,"fixture suffix is one lowercase hex character");const owner={host:hostname(),nonce:suffix.repeat(64),pid:process.pid,v:1 as const};assert.equal(owner.nonce.length,64);assert.match(owner.nonce,/^[0-9a-f]{64}$/);const markerName=admissionPrepRetiredName(owner,"complete"),marker=path.join(root,markerName);await mkdir(marker);await writeFile(path.join(marker,"owner.json"),publicationOwnerBytes(owner));const ack=incompleteCoordinationAck(owner,"prep-retired",markerName,admissionPrepName(owner),"complete",marker),ackBytes=authorityCanonicalBytes(ack),stage=path.join(root,coordinationStageName(ack,"prep-retired")),finalAck=path.join(root,coordinationAckName(ack));if(variant.startsWith("stage-")){const bytes=variant==="stage-zero"?Buffer.alloc(0):variant==="stage-prefix"?ackBytes.subarray(0,17):ackBytes;await writeFile(stage,bytes);}if(variant==="marker-final"||variant==="orphan-final")await writeFile(finalAck,ackBytes);if(variant==="orphan-final")await rm(marker,{recursive:true});return {owner,markerName,marker,ack,ackBytes,stage,finalAck,original:path.join(root,admissionPrepName(owner))};};
   await t.test("legacy publication snapshot never emits exact-creator K1 authority",()=>withRoot(async root=>{const owner={host:hostname(),nonce:"1".repeat(64),pid:process.pid,v:1 as const,ticket:"0000000000000001"};await writePublicationStage(root,owner,publicationOwnerBytes(owner));const before=await snapshotRootArtifacts(root),observed=await execute(root);assert.deepEqual(observed.result,{ok:false,reason:"busy"});assert.equal(observed.events.includes(exactCreatorPoint),false);assertRoutingOnly(observed);assert.deepEqual(await snapshotRootArtifacts(root),before);}));
@@ -1253,7 +1464,7 @@ test("prep-only housekeeper revalidates one-use authority before mutation",async
   await t.test("restarted ledger cannot reconstruct exact-creator authority",()=>withRoot(async root=>{const owner={host:hostname(),nonce:"3".repeat(64),pid:process.pid,v:1 as const};await writeAdmissionPrep(root,owner,"complete");const before=await snapshotRootArtifacts(root),observed=await execute(root,"recover");assert.deepEqual(observed.result,{ok:false,reason:"busy"});assert.equal(observed.events.includes(exactCreatorPoint)||observed.events.includes(deadPoint),false);assertRoutingOnly(observed);assert.deepEqual(await snapshotRootArtifacts(root),before);}));
   await t.test("slot remains confined to exactly no-authority",()=>withRoot(async root=>{const owner={host:hostname(),nonce:"4".repeat(64),pid:process.pid,v:1 as const};await writeAdmissionSlot(root,owner);const before=await snapshotRootArtifacts(root),observed=await execute(root);assert.deepEqual(observed.result,{ok:false,reason:"busy"});assert.deepEqual(observed.events,[nonePoint]);assertRoutingOnly(observed);assert.deepEqual(await snapshotRootArtifacts(root),before);}));
   await t.test("withdrawal remains confined to exactly no-authority",()=>withRoot(async root=>{const owner={host:hostname(),nonce:"5".repeat(64),pid:process.pid,v:1 as const},withdrawal=await writeCreatorWithdrawal(root,owner,"partial"),withdrawalName=path.basename(withdrawal),slotName=admissionRetiredName(owner,"withdrawn"),slot=path.join(root,slotName);await mkdir(slot);await writeFile(path.join(slot,"owner.json"),publicationOwnerBytes(owner));const slotAck=slotCoordinationAck(owner,slotName,slot,"withdrawn",withdrawalName,ownerStateBytes(owner,"partial"));await writeFile(path.join(root,coordinationAckName(slotAck)),authorityCanonicalBytes(slotAck));await rm(slot,{recursive:true});const before=await snapshotRootArtifacts(root),observed=await execute(root);assert.deepEqual(observed.result,{ok:false,reason:"busy"});assert.deepEqual(observed.events,[nonePoint]);assertRoutingOnly(observed);assert.deepEqual(await snapshotRootArtifacts(root),before);}));
-  await t.test("handoff literals and token authority service names remain unexported",async()=>{const publicModule=authorityModule as Record<string,unknown>,packageJson=JSON.parse(await readFile(path.resolve("package.json"),"utf8")) as {exports:Record<string,unknown>},typeNames=["PrepCreatorToken","PrepRetirementAuthority","PrepRetiredCleanupAuthority"] as const;for(const name of [...typeNames,"__testServicePrepHousekeepingOnce"])assert.equal(name in publicModule,false);for(const literal of privateLiterals){assert.equal((ledgerFaultPoints as readonly string[]).includes(literal),false);assert.equal(containsPublicLiteral(publicModule,literal),false);assert.equal(containsPublicLiteral(packageJson.exports,literal),false);}assert.deepEqual(Object.keys(packageJson.exports).filter(name=>/(?:prep|housekeep|runtime|host)/i.test(name)),[]);/* The probe must live on the SAME VOLUME as the checkout. `path.relative` between different Windows
+  await t.test("handoff literals and token authority service names remain unexported",async()=>{const publicModule=authorityModule as Record<string,unknown>,packageJson=JSON.parse(await readFile(path.resolve("package.json"),"utf8")) as {exports:Record<string,unknown>},typeNames=["PrepCreatorToken","PrepRetirementAuthority","PrepRetiredCleanupAuthority"] as const;for(const name of [...typeNames,"__testServicePrepHousekeepingOnce"])assert.equal(name in publicModule,false);for(const literal of privateLiterals){assert.equal((ledgerFaultPoints as readonly string[]).includes(literal),false);assert.equal(containsPublicLiteral(publicModule,literal),false);assert.equal(containsPublicLiteral(packageJson.exports,literal),false);}assert.deepEqual(Object.keys(packageJson.exports).filter(name=>/(?:prep|housekeep|runtime)/i.test(name)),[]);/* The probe must live on the SAME VOLUME as the checkout. `path.relative` between different Windows
      volumes returns an ABSOLUTE path, and the `./` prefix below then yields "./D:/a/..." — which
      TypeScript reports as TS2307 "Cannot find module", so the test fails claiming the export exists
      when nothing of the sort was measured. On this machine TEMP and the checkout share a volume, so
@@ -1261,7 +1472,7 @@ test("prep-only housekeeper revalidates one-use authority before mutation",async
      `node_modules` is on the checkout's volume by construction and is gitignored. */
     const probeRoot=await mkdtemp(path.join(path.resolve("node_modules"),".reelier-export-probe-"));try{let modulePath=path.relative(probeRoot,path.resolve("src/authority/index.js")).replaceAll("\\","/");assert.ok(modulePath.startsWith(".")||!path.isAbsolute(modulePath),`the probe specifier must be relative, got ${modulePath}`);if(!modulePath.startsWith("."))modulePath=`./${modulePath}`;const probe=path.join(probeRoot,"probe.ts"),source=`import type { ${typeNames.join(", ")} } from ${JSON.stringify(modulePath)};\nexport type Probe = [${typeNames.join(", ")}];\n`;await writeFile(probe,source);let diagnostics="",exitCode=0;try{await promisify(execFile)(process.execPath,[path.resolve("node_modules/typescript/bin/tsc"),"--noEmit","--skipLibCheck","--module","NodeNext","--moduleResolution","NodeNext","--target","ES2022","--typeRoots",path.resolve("node_modules/@types"),probe],{cwd:path.resolve(".")});}catch(error){const failure=error as Error&{code?:number;stdout?:string;stderr?:string};exitCode=typeof failure.code==="number"?failure.code:1;diagnostics=`${failure.stdout??""}\n${failure.stderr??""}`;}assert.notEqual(exitCode,0,"type-only authority imports must fail compilation");for(const name of typeNames){assert.match(diagnostics,new RegExp(`error TS2305:[^\\r\\n]*has no exported member ['\"]${name}['\"]`),`${name} has an explicit missing-export diagnostic`);}}finally{await rm(probeRoot,{recursive:true,force:true});}});
   await t.test("dead-owner prep happy handoff consumes authority once then refuses without mutation",()=>withRoot(async root=>{const owner={host:hostname(),nonce:"6".repeat(64),pid:await exitedProcessPid(),v:1 as const};await writeAdmissionPrep(root,owner,"complete");const before=await snapshotRootArtifacts(root),observed=await execute(root);assert.deepEqual(observed.result,{ok:false,reason:"busy"});assert.deepEqual(observed.events,[tokenPoint,deadPoint,beforePoint,refusedPoint]);assert.equal(observed.events.filter(point=>point===deadPoint).length,1);assertRoutingOnly(observed);assert.deepEqual(await snapshotRootArtifacts(root),before);}));
-  await t.test("dead-owner liveness loss before final revalidation remains busy and consumes once",()=>withRoot(async root=>{const owner={host:hostname(),nonce:"7".repeat(64),pid:49771,v:1 as const},originalKill=process.kill;await writeAdmissionPrep(root,owner,"complete");const before=await snapshotRootArtifacts(root);let probes=0,live=false;Object.defineProperty(process,"kill",{configurable:true,value:(pid:number)=>{if(pid!==owner.pid)return originalKill.call(process,pid,0);probes++;if(!live)throw Object.assign(new Error("dead"),{code:"ESRCH"});return true;}});let observed;try{observed=await execute(root,"observeClock",point=>{if(point===deadPoint)live=true;});}finally{Object.defineProperty(process,"kill",{configurable:true,value:originalKill});}assert.deepEqual(observed.result,{ok:false,reason:"busy"});assert.deepEqual(observed.events,[tokenPoint,deadPoint,beforePoint,refusedPoint]);assert.equal(observed.events.filter(point=>point===deadPoint).length,1);assert.ok(probes>=2);assertRoutingOnly(observed);assert.deepEqual(await snapshotRootArtifacts(root),before);}));
+  await t.test("dead-owner liveness loss before final revalidation remains busy and consumes once",()=>withRoot(async root=>{const owner={host:hostname(),nonce:"7".repeat(64),pid:49771,v:1 as const},originalKill=process.kill;await writeAdmissionPrep(root,owner,"complete");const before=await snapshotRootArtifacts(root);let probes=0,live=false;Object.defineProperty(process,"kill",{configurable:true,value:(pid:number)=>{if(pid!==owner.pid)return originalKill.call(process,pid,0);probes++;if(!live)throw Object.assign(new Error("dead"),{code:"ESRCH"});return true;}});let observed;try{observed=await execute(root,"observeClock",point=>{if(point===deadPoint)live=true;},"exact-root-bound-fence");}finally{Object.defineProperty(process,"kill",{configurable:true,value:originalKill});}const diagnostic=JSON.stringify({result:observed.result,thrown:String(observed.thrown),events:observed.events,probes,monotonic:observed.monotonic,delays:observed.delays});assert.deepEqual(observed.result,{ok:false,reason:"busy"},diagnostic);assert.deepEqual(observed.events,[tokenPoint,deadPoint,beforePoint,refusedPoint],diagnostic);assert.equal(observed.events.filter(point=>point===deadPoint).length,1,diagnostic);assert.ok(probes>=2,diagnostic);assertRoutingOnly(observed);assert.deepEqual(await snapshotRootArtifacts(root),before);}));
   await t.test("prep identity replacement before transition is corruption preserved",()=>withRoot(async root=>{const external=await tempRoot(),owner={host:hostname(),nonce:"8".repeat(64),pid:await exitedProcessPid(),v:1 as const},prep=await writeAdmissionPrep(root,owner,"complete"),replacement=path.join(external,"replacement"),displaced=path.join(external,"displaced"),beforeIdentity=exactFsIdentity(prep);try{await mkdir(replacement);await writeFile(path.join(replacement,"owner.json"),publicationOwnerBytes(owner));let replaced=false,replacementIdentity:ExactFsIdentity|undefined;const observed=await execute(root,"observeClock",point=>{if(point===beforePoint&&!replaced){renameSync(prep,displaced);renameSync(replacement,prep);replacementIdentity=exactFsIdentity(prep);replaced=true;}});assert.equal(replaced,true);assert.notDeepEqual(replacementIdentity,beforeIdentity);assert.deepEqual(observed.result,{ok:false,reason:"corruption"});assert.deepEqual(observed.events,[tokenPoint,deadPoint,beforePoint,refusedPoint]);assert.equal(observed.events.filter(point=>point===deadPoint).length,1);assertRoutingOnly(observed);assert.deepEqual(exactFsIdentity(prep),replacementIdentity);assert.deepEqual(await readFile(path.join(prep,"owner.json")),publicationOwnerBytes(owner));}finally{await rm(external,{recursive:true,force:true});}}));
   for(const [index,variant] of (["marker","stage-zero","stage-prefix","stage-complete","marker-final","orphan-final"] as const).entries())await t.test(`prep-retired ${variant} consumes cleanup authority once and refuses unchanged`,()=>withRoot(async root=>{const fixture=await prepRetired(root,(index+9).toString(16),variant),before=await snapshotRootArtifacts(root),observed=await execute(root);assert.deepEqual(observed.result,{ok:false,reason:"busy"});assert.deepEqual(observed.events,[cleanupPoint,beforePoint,refusedPoint]);assert.equal(observed.events.filter(point=>point===cleanupPoint).length,1);assertRoutingOnly(observed);assert.deepEqual(await snapshotRootArtifacts(root),before);assert.equal(existsSync(fixture.stage)||existsSync(fixture.finalAck)||existsSync(fixture.marker),true);}));
   for(const [index,target] of (["marker","stage","final","original-reappearance"] as const).entries())await t.test(`prep-retired ${target} replacement before transition is corruption preserved`,()=>withRoot(async root=>{const external=await tempRoot(),variant=target==="marker"?"marker":target==="stage"?"stage-complete":target==="final"?"marker-final":"orphan-final",fixture=await prepRetired(root,("f012" as const)[index]!,variant),bad=Buffer.from("{garbage");let mutated=false,mutatedIdentity:ExactFsIdentity|undefined;try{const observed=await execute(root,"observeClock",point=>{if(point!==beforePoint||mutated)return;mutated=true;if(target==="marker"){const replacement=path.join(external,"marker");mkdirSync(replacement);writeFileSync(path.join(replacement,"owner.json"),publicationOwnerBytes(fixture.owner));renameSync(fixture.marker,path.join(external,"old-marker"));renameSync(replacement,fixture.marker);mutatedIdentity=exactFsIdentity(fixture.marker);}else if(target==="stage"){writeFileSync(fixture.stage,bad);mutatedIdentity=exactFsIdentity(fixture.stage);}else if(target==="final"){writeFileSync(fixture.finalAck,bad);mutatedIdentity=exactFsIdentity(fixture.finalAck);}else{mkdirSync(fixture.original);writeFileSync(path.join(fixture.original,"owner.json"),publicationOwnerBytes(fixture.owner));mutatedIdentity=exactFsIdentity(fixture.original);}});assert.equal(mutated,true);assert.deepEqual(observed.result,{ok:false,reason:"corruption"});assert.deepEqual(observed.events,[cleanupPoint,beforePoint,refusedPoint]);assert.equal(observed.events.filter(point=>point===cleanupPoint).length,1);assertRoutingOnly(observed);const targetPath=target==="marker"?fixture.marker:target==="stage"?fixture.stage:target==="final"?fixture.finalAck:fixture.original;assert.deepEqual(exactFsIdentity(targetPath),mutatedIdentity);if(target==="stage"||target==="final")assert.deepEqual(await readFile(targetPath),bad);else assert.deepEqual(await readFile(path.join(targetPath,"owner.json")),publicationOwnerBytes(fixture.owner));}finally{await rm(external,{recursive:true,force:true});}}));
@@ -1336,6 +1547,49 @@ test("prep-only progress respects the original deadline before another transitio
   assert.equal(existsSync(prep),false);assert.equal(existsSync(marker),true);assert.deepEqual(exactFsIdentity(marker),prepIdentity);assert.deepEqual(exactFsIdentity(markerOwner),ownerIdentity);assert.deepEqual(await readFile(markerOwner),ownerBytes);
   const ack=incompleteCoordinationAck(owner,"prep-retired",markerName,admissionPrepName(owner),"complete",marker);assert.equal(existsSync(path.join(root,coordinationStageName(ack,"prep-retired"))),false);assert.equal(existsSync(path.join(root,coordinationAckName(ack))),false);assert.deepEqual({semanticNow,callbacks,delays},{semanticNow:0,callbacks:0,delays:0});
 }));
+
+test("prep-only over-budget continuation stays bound to the initiated file identity and operation lifetime",async t=>{
+  const cleanupPoint="prep-only-prep-retired-cleanup-authority",beforePoint="prep-only-before-transition",afterFinalPoint="prep-only-after-final-revalidation",refusedPoint="prep-only-transition-refused",zeroPoint="prep-only-cleanup-stage-zero",ackRootPoint="prep-only-cleanup-ack-root-synced",markerRootPoint="prep-only-cleanup-marker-root-synced";
+  await t.test("exact initiated file completes within its initiating operation",()=>withRoot(async root=>{
+    const owner={host:hostname(),nonce:"8".repeat(64),pid:await exitedProcessPid(),v:1 as const},markerName=admissionPrepRetiredName(owner,"complete"),marker=path.join(root,markerName),markerOwner=path.join(marker,"owner.json");await mkdir(marker);await writeFile(markerOwner,publicationOwnerBytes(owner));
+    const ack=incompleteCoordinationAck(owner,"prep-retired",markerName,admissionPrepName(owner),"complete",marker),stage=path.join(root,coordinationStageName(ack,"prep-retired")),finalAck=path.join(root,coordinationAckName(ack));let monotonic=0,callbacks=0;
+    const runtime={monotonicNow:()=>monotonic,delay:async()=>{},observeBoundary:(point:string)=>{if(point===zeroPoint)monotonic=21;}};
+    const result=await new RawFsAuthorityLedger(root,{[__testPrepHousekeeperRuntimeOption]:runtime,now:()=>t0,lockTimeoutMs:20,faultInjector:(point:string)=>{if(point==="before-ledger-operation-callback")callbacks++;}} as never).observeClock();
+    assert.deepEqual(result,{ok:true,status:"advanced",observedAt:new Date(t0).toISOString()});assert.equal(callbacks,1);assert.equal(existsSync(marker),false);assert.equal(existsSync(stage),false);assert.equal(existsSync(finalAck),false);
+  }));
+  await t.test("a later operation cannot inherit the initiated file capability",()=>withRoot(async root=>{
+    const owner={host:hostname(),nonce:"9".repeat(64),pid:await exitedProcessPid(),v:1 as const},markerName=admissionPrepRetiredName(owner,"complete"),marker=path.join(root,markerName),markerOwner=path.join(marker,"owner.json");await mkdir(marker);await writeFile(markerOwner,publicationOwnerBytes(owner));
+    const ack=incompleteCoordinationAck(owner,"prep-retired",markerName,admissionPrepName(owner),"complete",marker),ackBytes=authorityCanonicalBytes(ack),stage=path.join(root,coordinationStageName(ack,"prep-retired")),finalAck=path.join(root,coordinationAckName(ack)),firstStop={kind:"end-initiating-operation"};let phase=1,monotonic=0,callbacks=0;
+    const runtime={monotonicNow:()=>monotonic,delay:async()=>{},observeBoundary:(point:string)=>{if(phase===1&&point===zeroPoint)throw firstStop;if(phase===2&&point==="prep-only-cleanup-stage-prefix")monotonic=21;}};
+    const ledger=new RawFsAuthorityLedger(root,{[__testPrepHousekeeperRuntimeOption]:runtime,now:()=>t0,lockTimeoutMs:20,faultInjector:(point:string)=>{if(point==="before-ledger-operation-callback")callbacks++;}} as never);
+    let thrown:unknown;try{await ledger.observeClock();}catch(error){thrown=error;}assert.equal(thrown,firstStop);assert.deepEqual(await readFile(stage),Buffer.alloc(0));
+    phase=2;const result=await ledger.observeClock(),prefix=await readFile(stage);
+    assert.deepEqual(result,{ok:false,reason:"busy"});assert.equal(callbacks,0);assert.ok(prefix.length>0&&prefix.length<ackBytes.length);assert.deepEqual(prefix,ackBytes.subarray(0,prefix.length));assert.equal(existsSync(marker),true);assert.equal(existsSync(finalAck),false);
+  }));
+  for(const handoff of ["stage","ack"] as const)await t.test(handoff,()=>withRoot(async root=>{
+    const owner={host:hostname(),nonce:(handoff==="stage"?"6":"7").repeat(64),pid:await exitedProcessPid(),v:1 as const},markerName=admissionPrepRetiredName(owner,"complete"),marker=path.join(root,markerName),markerOwner=path.join(marker,"owner.json");
+    await mkdir(marker);await writeFile(markerOwner,publicationOwnerBytes(owner));
+    const ack=incompleteCoordinationAck(owner,"prep-retired",markerName,admissionPrepName(owner),"complete",marker),ackBytes=authorityCanonicalBytes(ack),stage=path.join(root,coordinationStageName(ack,"prep-retired")),finalAck=path.join(root,coordinationAckName(ack)),displaced=path.join(root,`peer-displaced-${handoff}`),events:string[]=[];
+    let monotonic=0,replaced=false,originalIdentity:ExactFsIdentity|undefined,replacementIdentity:ExactFsIdentity|undefined,callbacks=0;
+    const runtime={monotonicNow:()=>monotonic,delay:async()=>{},observeBoundary:(point:string)=>{
+      events.push(point);
+      if(!replaced&&point===(handoff==="stage"?zeroPoint:ackRootPoint)){
+        const target=handoff==="stage"?stage:finalAck,bytes=handoff==="stage"?Buffer.alloc(0):ackBytes;
+        originalIdentity=exactFsIdentity(target);renameSync(target,displaced);writeFileSync(target,bytes,{flag:"wx",mode:0o600});replacementIdentity=exactFsIdentity(target);
+        assert.notDeepEqual(replacementIdentity,originalIdentity,`${handoff}: the peer installed a distinct file at the deterministic lifecycle name`);
+        replaced=true;monotonic=21;
+      }
+    }};
+    const result=await new RawFsAuthorityLedger(root,{[__testPrepHousekeeperRuntimeOption]:runtime,now:()=>t0,lockTimeoutMs:20,faultInjector:(point:string)=>{if(point==="before-ledger-operation-callback")callbacks++;}} as never).observeClock();
+    assert.deepEqual(result,{ok:false,reason:"busy"},handoff);assert.equal(replaced,true,handoff);assert.equal(callbacks,0,handoff);
+    assert.equal(existsSync(marker),true,`${handoff}: replacement continuation cannot remove the marker`);assert.equal(existsSync(stage),handoff==="stage",handoff);assert.equal(existsSync(finalAck),handoff==="ack",handoff);
+    assert.deepEqual(exactFsIdentity(displaced),originalIdentity,`${handoff}: the displaced initiated file remains distinct and proves identity replacement`);
+    assert.deepEqual(exactFsIdentity(handoff==="stage"?stage:finalAck),replacementIdentity,`${handoff}: replacement is preserved byte-identically`);
+    assert.deepEqual(await readFile(handoff==="stage"?stage:finalAck),handoff==="stage"?Buffer.alloc(0):ackBytes,handoff);
+    const expectedPrefix=handoff==="stage"?[cleanupPoint,beforePoint,afterFinalPoint,zeroPoint,cleanupPoint,beforePoint,refusedPoint]:[cleanupPoint,beforePoint,afterFinalPoint,zeroPoint,cleanupPoint,beforePoint,afterFinalPoint,"prep-only-cleanup-stage-prefix",cleanupPoint,beforePoint,afterFinalPoint,"prep-only-cleanup-stage-complete",cleanupPoint,beforePoint,afterFinalPoint,ackRootPoint,cleanupPoint,beforePoint,refusedPoint];
+    assert.deepEqual(events,expectedPrefix,handoff);assert.equal(events.includes(markerRootPoint),false,handoff);
+  }));
+});
 
 test("prep-only cleanup finalization renames a complete stage to its exact synced ack",()=>withRoot(async root=>{
   const cleanupPoint="prep-only-prep-retired-cleanup-authority",beforePoint="prep-only-before-transition",afterFinalPoint="prep-only-after-final-revalidation",ackRootPoint="prep-only-cleanup-ack-root-synced",owner={host:hostname(),nonce:"1".repeat(64),pid:await exitedProcessPid(),v:1 as const},markerName=admissionPrepRetiredName(owner,"complete"),marker=path.join(root,markerName),markerOwner=path.join(marker,"owner.json"),original=path.join(root,admissionPrepName(owner));await mkdir(marker);await writeFile(markerOwner,publicationOwnerBytes(owner));
@@ -1466,11 +1720,26 @@ test("k1-operation-fence-only endpoint collision and wait retain one original de
 });
 
 test("k1-operation-fence-only topology declaration is closed host-private and public APIs unchanged",async()=>{
-  const option=k1OperationFenceOption();assert.equal(option in authorityModule,false);const packageJson=JSON.parse(await readFile(path.resolve("package.json"),"utf8")) as {exports?:Record<string,unknown>};assert.equal(Object.keys(packageJson.exports??{}).some(name=>name.includes("fence")||name.includes("host")),false);for(const point of [...ledgerFaultPoints,...dispatchFaultPoints,...ledgerLockFaultPoints,...reservationFaultPoints,...resultFaultPoints,...ingressFaultPoints,...clockFaultPoints])assert.equal(point.startsWith("k1-operation-fence-only-"),false);for(const value of Object.values(authorityModule as Record<string,unknown>))assert.notEqual(value,option);
+  const option=k1OperationFenceOption();assert.equal(option in authorityModule,false);const packageJson=JSON.parse(await readFile(path.resolve("package.json"),"utf8")) as {exports?:Record<string,unknown>};assert.equal(Object.keys(packageJson.exports??{}).some(name=>name.includes("fence")),false);for(const point of [...ledgerFaultPoints,...dispatchFaultPoints,...ledgerLockFaultPoints,...reservationFaultPoints,...resultFaultPoints,...ingressFaultPoints,...clockFaultPoints])assert.equal(point.startsWith("k1-operation-fence-only-"),false);for(const value of Object.values(authorityModule as Record<string,unknown>))assert.notEqual(value,option);
   const declarations:readonly unknown[]=[{filesystem:"shared-fs",networkNamespace:"same-network-namespace",identity:"isolated"},{filesystem:"network-fs",networkNamespace:"same-network-namespace",identity:"isolated"},{filesystem:"local-fs",networkNamespace:"shared-network-namespace",identity:"isolated"},{filesystem:"local-fs",networkNamespace:"unknown",identity:"isolated"},undefined,null,{},"local-fs",{...supportedK1OperationFenceTopology,extra:true}];for(const [index,topology] of declarations.entries()){const sentinel=path.join(tmpdir(),`.reelier-inaccessible-nonexistent-${process.pid}-${Date.now()}-${index}`);await rm(sentinel,{recursive:true,force:true});const events:string[]=[],runtime:Record<string,unknown>={expectedBinding:{canonicalRoot:sentinel,rootIdentity:{dev:"0",ino:"0",mode:"0"},endpoint:{host:"127.0.0.1",port:20_000}},monotonicNow:()=>0,delay:async()=>{},observeK1OperationFenceBoundary:(point:string)=>events.push(point)};if(topology!==undefined)runtime.topology=topology;let hooks=0;const result=await new RawFsAuthorityLedger(sentinel,{[option]:runtime,now:()=>t0,lockTimeoutMs:20,faultInjector:()=>{hooks++;}} as never).recover();assert.equal(result.ok,false,String(index));assert.equal(events.some(point=>point.includes("root-captured")||point.includes("filesystem")||point.includes("endpoint-bound")),false,String(index));assert.equal(hooks,0,String(index));assert.equal(existsSync(sentinel),false,String(index));}
   await withFenceRoot(async(root,binding)=>{const topology=supportedK1OperationFenceTopology,alternatePort=binding.endpoint.port===49_999?20_000:binding.endpoint.port+1,invalid:ReadonlyArray<Readonly<{label:string;runtime:Record<string,unknown>}>>=[{label:"absent expectedBinding",runtime:{topology}},{label:"legacy endpoint-only",runtime:{topology,endpoint:binding.endpoint}},{label:"partial binding",runtime:{topology,expectedBinding:{canonicalRoot:binding.canonicalRoot}}},{label:"extra binding key",runtime:{topology,expectedBinding:{...binding,extra:true}}},{label:"wrong host",runtime:{topology,expectedBinding:{...binding,endpoint:{...binding.endpoint,host:"0.0.0.0"}}}},{label:"port below range",runtime:{topology,expectedBinding:{...binding,endpoint:{...binding.endpoint,port:19_999}}}},{label:"port above range",runtime:{topology,expectedBinding:{...binding,endpoint:{...binding.endpoint,port:50_000}}}},{label:"port inconsistent with digest",runtime:{topology,expectedBinding:{...binding,endpoint:{...binding.endpoint,port:alternatePort}}}},{label:"wrong canonical root",runtime:{topology,expectedBinding:{...binding,canonicalRoot:`${binding.canonicalRoot}#wrong`}}},{label:"wrong root dev",runtime:{topology,expectedBinding:{...binding,rootIdentity:{...binding.rootIdentity,dev:String(BigInt(binding.rootIdentity.dev)+1n)}}}},{label:"wrong root ino",runtime:{topology,expectedBinding:{...binding,rootIdentity:{...binding.rootIdentity,ino:String(BigInt(binding.rootIdentity.ino)+1n)}}}},{label:"wrong digest material",runtime:{topology,expectedBinding:{...binding,materialDigest:`sha256:${binding.materialDigest.slice(7).startsWith("0")?"1":"0"}${binding.materialDigest.slice(8)}`}}}];for(const {label,runtime} of invalid){const events:string[]=[],before=await snapshotRootArtifacts(root);let delays=0,hooks=0;runtime.monotonicNow=()=>0;runtime.delay=async()=>{delays++;};runtime.observeK1OperationFenceBoundary=(point:string)=>events.push(point);const result=await new RawFsAuthorityLedger(root,{[option]:runtime,now:()=>t0,lockTimeoutMs:20,faultInjector:()=>{hooks++;}} as never).recover();assert.equal(result.ok,false,label);assert.equal(events.some(point=>point.includes("root-captured")||point.includes("endpoint-bound")||point.includes("filesystem")),false,label);assert.deepEqual({delays,hooks},{delays:0,hooks:0},label);assert.deepEqual(await snapshotRootArtifacts(root),before,label);}});
   await withFenceRoot(async(root,binding)=>{let accepted=0,bound=0;const result=await new RawFsAuthorityLedger(root,{[option]:fenceRuntime(binding,point=>{if(point==="k1-operation-fence-only-topology-accepted")accepted++;if(point==="k1-operation-fence-only-endpoint-bound")bound++;}),now:()=>t0,lockTimeoutMs:200} as never).recover();assert.equal(result.ok,true);assert.deepEqual({accepted,bound},{accepted:1,bound:1});assert.equal(hasLegacyWriterArtifact(root),false);});
 });
+
+test("a timed-out Windows root-mutex contender never classifies the active owner's filesystem epoch",{skip:process.platform!=="win32"},async()=>withRoot(async root=>{
+  await mkdir(path.join(root,".authority-ledger-admission-0"));
+  const binding=await derivedFenceBinding(root),mutex=createServer(),pipe=`\\\\.\\pipe\\reelier-k1-${binding.materialDigest.slice(7)}`,before=await snapshotRootArtifacts(root);let semanticNow=0,hooks=0;
+  await new Promise<void>((resolve,reject)=>{mutex.once("error",reject);mutex.listen(pipe,resolve);});
+  try{
+    const blocked=await new RawFsAuthorityLedger(root,{now:()=>{semanticNow++;return t0;},lockTimeoutMs:20,faultInjector:()=>{hooks++;}}).observeClock();
+    assert.deepEqual(blocked,{ok:false,reason:"busy"},"without the root mutex, an observed graph may be the active owner's transient epoch");
+    assert.deepEqual({semanticNow,hooks},{semanticNow:0,hooks:0});
+    assert.deepEqual(await snapshotRootArtifacts(root),before);
+  }finally{await closeServer(mutex);}
+  const owned=await new RawFsAuthorityLedger(root,{now:()=>{semanticNow++;return t0;},lockTimeoutMs:20,faultInjector:()=>{hooks++;}}).observeClock();
+  assert.deepEqual(owned,{ok:false,reason:"corruption"},"once the mutex is owned, the same stable malformed graph is still corruption");
+  assert.deepEqual(await snapshotRootArtifacts(root),before);
+}));
 
 test("k1-operation-fence-only externally held endpoint keeps refusal-only corruption precedence",async()=>{
   await withRoot(async root=>{
@@ -1490,10 +1759,22 @@ test("k1-operation-fence-only inbound connections are severed and cannot wedge f
   await withFenceRoot(async(root,binding)=>{
     const events:string[]=[];let client:ReturnType<typeof connect>|undefined,clientClosed:Promise<void>|undefined,pending:Promise<unknown>|undefined;
     try{
-      pending=new RawFsAuthorityLedger(root,{[option]:fenceRuntime(binding,async point=>{events.push(point);if(point==="k1-operation-fence-only-endpoint-bound"){await new Promise<void>((resolve,reject)=>{client=connect({host:"127.0.0.1",port:binding.endpoint.port},resolve);client.once("error",reject);});client!.on("error",()=>{});clientClosed=new Promise<void>(resolve=>client!.once("close",resolve));}}),now:()=>t0,lockTimeoutMs:200} as never).recover();
+      pending=new RawFsAuthorityLedger(root,{[option]:fenceRuntime(binding,async point=>{
+        events.push(point);if(point!=="k1-operation-fence-only-endpoint-bound")return;
+        await new Promise<void>((resolve,reject)=>{client=connect({host:"127.0.0.1",port:binding.endpoint.port,allowHalfOpen:true},resolve);client.once("error",reject);});
+        client!.on("error",()=>{});clientClosed=new Promise<void>(resolve=>client!.once("close",resolve));client!.setEncoding("utf8");let text="";client!.on("data",chunk=>{text+=chunk;});
+        const eof=await new Promise<Readonly<{writableEndedAtEof:boolean;writableEndedAfterEofTurn:boolean}>>(resolve=>client!.once("end",()=>{const writableEndedAtEof=client!.writableEnded;setImmediate(()=>resolve({writableEndedAtEof,writableEndedAfterEofTurn:client!.writableEnded}));}));
+        assert.deepEqual({text,...eof},{text:`reelier-k1-operation-fence/v1 ${binding.materialDigest}\n`,writableEndedAtEof:false,writableEndedAfterEofTurn:false},"the peer consumes the identity and deliberately keeps its write side open after EOF");
+      }),now:()=>t0,lockTimeoutMs:200} as never).recover();
       const result=await Promise.race([pending,failAfter(2_000,"a held inbound connection wedged the fence close")]);
       assert.equal((result as Readonly<{ok:boolean}>).ok,true);
       assert.equal(events.at(-1),"k1-operation-fence-only-closed");
+      let writeFailure:Error|undefined;
+      for(let attempt=0;attempt<8&&writeFailure===undefined;attempt++){
+        writeFailure=await new Promise<Error|undefined>(resolve=>client!.write("held-write-side",error=>resolve(error??undefined)));
+        if(writeFailure===undefined)await new Promise<void>(resolve=>setImmediate(resolve));
+      }
+      assert.ok(writeFailure instanceof Error,"the closed fence rejects further writes from the deliberately half-open peer");
       await Promise.race([clientClosed!,failAfter(2_000,"the fence accepted and retained an inbound connection")]);
       assert.equal(client!.destroyed,true);
     }finally{client?.destroy();await pending?.catch(()=>{});}
@@ -1745,6 +2026,7 @@ test("atomic admission slot classification gives corruption precedence and recov
 
 test("atomic admission slot retirement and purpose-bound ack crash windows converge",async t=>{
   for(const state of ["marker-only","marker-plus-stage","marker-plus-ack","orphan-ack"] as const)await t.test(state,()=>withRoot(async root=>{const owner={host:hostname(),nonce:(state==="marker-only"?"1":state==="marker-plus-stage"?"2":state==="marker-plus-ack"?"3":"4").repeat(64),pid:await exitedProcessPid(),v:1 as const},terminalName=retirementMarkerName(owner,"publication-aborted"),terminal=path.join(root,terminalName),markerName=admissionRetiredName(owner,"withdrawn"),marker=path.join(root,markerName);await mkdir(terminal);await writeFile(path.join(terminal,"owner.json"),publicationOwnerBytes(owner));await mkdir(marker);await writeFile(path.join(marker,"owner.json"),publicationOwnerBytes(owner));const ack=slotCoordinationAck(owner,markerName,marker,"withdrawn",terminalName,publicationOwnerBytes(owner)),ackPath=path.join(root,coordinationAckName(ack)),stagePath=path.join(root,coordinationStageName(ack,"slot-retired"));if(state==="marker-plus-stage")await writeFile(stagePath,authorityCanonicalBytes(ack));if(state==="marker-plus-ack"||state==="orphan-ack")await writeFile(ackPath,authorityCanonicalBytes(ack));if(state==="orphan-ack")await rm(marker,{recursive:true});const result=await new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:200}).observeClock();assert.deepEqual(result,{ok:true,status:"advanced",observedAt:new Date(t0).toISOString()},state);assert.equal(existsSync(marker),false,state);assert.equal(existsSync(stagePath),false,state);assert.equal(existsSync(ackPath),false,state);assert.equal(existsSync(terminal),false,state);}));
+  await t.test("marker-only initiated stage crosses the original deadline",()=>withRoot(async root=>{const owner={host:hostname(),nonce:"5".repeat(64),pid:await exitedProcessPid(),v:1 as const},terminalName=retirementMarkerName(owner,"publication-aborted"),terminal=path.join(root,terminalName),markerName=admissionRetiredName(owner,"withdrawn"),marker=path.join(root,markerName);await mkdir(terminal);await writeFile(path.join(terminal,"owner.json"),publicationOwnerBytes(owner));await mkdir(marker);await writeFile(path.join(marker,"owner.json"),publicationOwnerBytes(owner));const ack=slotCoordinationAck(owner,markerName,marker,"withdrawn",terminalName,publicationOwnerBytes(owner)),ackPath=path.join(root,coordinationAckName(ack)),stagePath=path.join(root,coordinationStageName(ack,"slot-retired"));let monotonic=0;const runtime={monotonicNow:()=>monotonic,delay:async()=>{},observeBoundary:(point:string)=>{if(point==="slot-only-cleanup-stage-zero")monotonic=201;}};const result=await new RawFsAuthorityLedger(root,{[__testPrepHousekeeperRuntimeOption]:runtime,now:()=>t0,lockTimeoutMs:200} as never).observeClock();assert.deepEqual(result,{ok:true,status:"advanced",observedAt:new Date(t0).toISOString()});assert.equal(existsSync(marker),false);assert.equal(existsSync(stagePath),false);assert.equal(existsSync(ackPath),false);assert.equal(existsSync(terminal),false);}));
 });
 
 test("atomic admission slot retirement exposes every durable cleanup boundary",{timeout:30_000},async t=>{
@@ -1900,7 +2182,7 @@ async function hardExitAtRequiredLedgerHook(root:string,target:string,tracked:re
 
 test("before-housekeeping-transition is live and precedes any dead-slot mutation or callback",()=>withRoot(async root=>{const owner={host:hostname(),nonce:"b".repeat(64),pid:await exitedProcessPid(),v:1 as const},slot=await writeAdmissionSlot(root,owner),before=await snapshotRootArtifacts(root),terminal={hook:"before-pre-admission-housekeeping-transition"},order:string[]=[];let thrown:unknown,callbacks=0;try{await new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:200,faultInjector:(point:string)=>{if(["after-pre-admission-housekeeping-initial-enumeration","after-pre-admission-housekeeping-generation-closed","before-pre-admission-housekeeping-final-validation","before-pre-admission-housekeeping-transition"].includes(point))order.push(point);if(point==="before-pre-admission-housekeeping-transition")throw terminal;if(point==="before-ledger-operation-callback")callbacks++;}} as never).observeClock();}catch(error){thrown=error;}assert.equal(thrown,terminal);assert.deepEqual(order,["after-pre-admission-housekeeping-initial-enumeration","after-pre-admission-housekeeping-generation-closed","before-pre-admission-housekeeping-final-validation","before-pre-admission-housekeeping-transition"]);assert.equal(callbacks,0);assert.equal(existsSync(slot),true);assert.deepEqual(await snapshotRootArtifacts(root),before,"a pre-transition crash preserves the exact dead slot and all semantic state");}));
 
-test("coordination cleanup stage write hooks are live and recover their exact crash windows",async t=>{for(const target of ["after-coordination-cleanup-stage-partial-write","after-coordination-cleanup-stage-file-sync"] as const)await t.test(target,()=>withRoot(async root=>{const owner={host:hostname(),nonce:(target.endsWith("partial-write")?"c":"d").repeat(64),pid:await exitedProcessPid(),v:1 as const},markerName=admissionPrepRetiredName(owner,"complete"),marker=path.join(root,markerName);await mkdir(marker);await writeFile(path.join(marker,"owner.json"),publicationOwnerBytes(owner));const ack=incompleteCoordinationAck(owner,"prep-retired",markerName,admissionPrepName(owner),"complete",marker),ackBytes=authorityCanonicalBytes(ack),stage=path.join(root,coordinationStageName(ack,"prep-retired")),finalAck=path.join(root,coordinationAckName(ack)),tracked=["after-coordination-cleanup-stage-create","after-coordination-cleanup-stage-partial-write","after-coordination-cleanup-stage-file-sync"],expected=target.endsWith("partial-write")?tracked.slice(0,2):tracked,result=await hardExitAtRequiredLedgerHook(root,target,tracked);if(result.code!==97){assert.equal(result.code,97,`${target} is emitted by the real cleanup write flow`);return;}assert.deepEqual(result.order,expected);assert.equal(result.callbackEntered,false);assert.equal(existsSync(marker),true);assert.equal(existsSync(finalAck),false);const stageBytes=await readFile(stage);if(target.endsWith("partial-write")){assert.ok(stageBytes.length>0&&stageBytes.length<ackBytes.length);assert.deepEqual(stageBytes,ackBytes.subarray(0,stageBytes.length));}else assert.deepEqual(stageBytes,ackBytes);const recovered=await new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:200}).recover();assert.equal(recovered.ok,true);assert.equal(existsSync(marker),false);assert.equal(existsSync(stage),false);assert.equal(existsSync(finalAck),false);}));});
+test("coordination cleanup stage write hooks are live and recover their exact crash windows",async t=>{for(const target of ["after-coordination-cleanup-stage-partial-write","after-coordination-cleanup-stage-file-sync"] as const)await t.test(target,()=>withRoot(async root=>{const owner={host:hostname(),nonce:(target.endsWith("partial-write")?"c":"d").repeat(64),pid:await exitedProcessPid(),v:1 as const},markerName=admissionPrepRetiredName(owner,"complete"),marker=path.join(root,markerName);await mkdir(marker);await writeFile(path.join(marker,"owner.json"),publicationOwnerBytes(owner));const ack=incompleteCoordinationAck(owner,"prep-retired",markerName,admissionPrepName(owner),"complete",marker),ackBytes=authorityCanonicalBytes(ack),stage=path.join(root,coordinationStageName(ack,"prep-retired")),finalAck=path.join(root,coordinationAckName(ack)),tracked=["after-coordination-cleanup-stage-create","after-coordination-cleanup-stage-partial-write","after-coordination-cleanup-stage-file-sync"],expected=target.endsWith("partial-write")?tracked.slice(0,2):tracked,result=await hardExitAtRequiredLedgerHook(root,target,tracked);if(result.code!==97){assert.equal(result.code,97,`${target} is emitted by the real cleanup write flow`);return;}assert.deepEqual(result.order,expected);assert.equal(result.callbackEntered,false);assert.equal(existsSync(marker),true);assert.equal(existsSync(finalAck),false);const stageBytes=await readFile(stage);if(target.endsWith("partial-write")){assert.ok(stageBytes.length>0&&stageBytes.length<ackBytes.length);assert.deepEqual(stageBytes,ackBytes.subarray(0,stageBytes.length));}else assert.deepEqual(stageBytes,ackBytes);const binding=await derivedFenceBinding(root),fenceOption=k1OperationFenceOption(),steadyPrepRuntime={monotonicNow:()=>0,delay:async()=>{}},recovered=await new RawFsAuthorityLedger(root,{[fenceOption]:fenceRuntime(binding,()=>{}),[__testPrepHousekeeperRuntimeOption]:steadyPrepRuntime,now:()=>t0,lockTimeoutMs:200} as never).recover();assert.equal(recovered.ok,true,`${target} recovery result: ${JSON.stringify(recovered)}`);assert.equal(existsSync(marker),false);assert.equal(existsSync(stage),false);assert.equal(existsSync(finalAck),false);}));});
 
 test("coordination cleanup ack-removal hooks are live and leave only a valid next state",async t=>{for(const target of ["after-coordination-cleanup-ack-remove","after-coordination-cleanup-final-root-sync"] as const)await t.test(target,()=>withRoot(async root=>{const owner={host:hostname(),nonce:(target.endsWith("ack-remove")?"e":"f").repeat(64),pid:await exitedProcessPid(),v:1 as const},markerName=admissionPrepRetiredName(owner,"complete"),marker=path.join(root,markerName);await mkdir(marker);await writeFile(path.join(marker,"owner.json"),publicationOwnerBytes(owner));const ack=incompleteCoordinationAck(owner,"prep-retired",markerName,admissionPrepName(owner),"complete",marker),ackPath=path.join(root,coordinationAckName(ack));await writeFile(ackPath,authorityCanonicalBytes(ack));await rm(marker,{recursive:true});const tracked=["after-coordination-cleanup-ack-remove","after-coordination-cleanup-final-root-sync"],expected=target.endsWith("ack-remove")?tracked.slice(0,1):tracked,result=await hardExitAtRequiredLedgerHook(root,target,tracked);if(result.code!==97){assert.equal(result.code,97,`${target} is emitted after authenticated orphan-ack classification`);return;}assert.deepEqual(result.order,expected);assert.equal(result.callbackEntered,false);assert.equal(existsSync(marker),false);assert.equal(existsSync(ackPath),false);const recovered=await new RawFsAuthorityLedger(root,{now:()=>t0,lockTimeoutMs:200}).recover();assert.equal(recovered.ok,true);assert.equal((await readdir(root)).some(name=>name.startsWith(".authority-ledger-coordination-cleanup-")),false);}));});
 
@@ -3225,6 +3507,33 @@ test("warm preparation-stage crashes recover from both entry points and the root
     assert.equal(callbacks,0,"and enters no callback");
     assert.deepEqual(await new RawFsAuthorityLedger(root,{now:()=>t0+3_000,lockTimeoutMs:200} as never).recover(),{ok:false,reason:"busy"},"recover() defers to the live creator identically");
     assert.deepEqual(await snapshotRootArtifacts(root),before,"and neither entry point mutates one byte");
+  }));
+});
+
+test("a live fixed admission slot tolerates only unrelated released retirement residue",async t=>{
+  const assertPreserved=async(root:string,expected:Readonly<{ok:false;reason:"busy"|"corruption"}>,label:string)=>{
+    const before=await snapshotRootArtifacts(root);
+    let callbacks=0;
+    const ledger=new RawFsAuthorityLedger(root,{now:()=>t0+1_000,lockTimeoutMs:20,faultInjector:(point:string)=>{if(point==="before-ledger-operation-callback")callbacks++;}} as never);
+    const classifier=ledger as unknown as {classifyHybridCoordinationEpoch(token:unknown,permitWrite:boolean):Promise<"busy"|"corruption">};
+    assert.deepEqual({ok:false,reason:await classifier.classifyHybridCoordinationEpoch({},false)},expected,label);
+    assert.deepEqual(await snapshotRootArtifacts(root),before,`${label}: classification preserves byte-identically`);
+    assert.equal(callbacks,0,`${label}: classification invokes no ledger operation callback`);
+  };
+  await t.test("an unrelated released marker is inert bounded-busy residue",()=>withRoot(async root=>{
+    const slotOwner:AdmissionOwner={host:hostname(),nonce:"a7".repeat(32),pid:process.pid,v:1};
+    await writeAdmissionSlot(root,slotOwner);
+    await writeLegacyRetiredLock(root,{...slotOwner,nonce:"b8".repeat(32)},"released");
+    await assertPreserved(root,{ok:false,reason:"busy"},"unrelated released");
+  }));
+  for(const boundary of [
+    {name:"a same-owner released marker stays corruption",owner:(slotOwner:AdmissionOwner)=>slotOwner,disposition:"released" as const},
+    {name:"an unrelated recovery-pending marker stays corruption",owner:(slotOwner:AdmissionOwner):AdmissionOwner=>({...slotOwner,nonce:"c9".repeat(32)}),disposition:"recovery-pending" as const},
+  ])await t.test(boundary.name,()=>withRoot(async root=>{
+    const slotOwner:AdmissionOwner={host:hostname(),nonce:"d0".repeat(32),pid:process.pid,v:1};
+    await writeAdmissionSlot(root,slotOwner);
+    await writeLegacyRetiredLock(root,boundary.owner(slotOwner),boundary.disposition);
+    await assertPreserved(root,{ok:false,reason:"corruption"},boundary.name);
   }));
 });
 

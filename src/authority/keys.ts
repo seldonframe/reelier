@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { OutcomeRequest } from "./types.js";
+import type { AuthorityExecutionContextV1, OutcomeRequest } from "./types.js";
 import { authorityCanonicalBytes, authorityDigest, parseAuthorityWire } from "./wire.js";
 
 const SHA = /^sha256:[0-9a-f]{64}$/;
@@ -16,6 +16,7 @@ export interface AuthenticatedOutcomeRequestState {
   readonly canonicalRequestBase64: string;
   readonly requestDigest: string;
   readonly requestKey: string;
+  readonly executionContext?: AuthorityExecutionContextV1;
 }
 
 const authenticatedStates = new WeakMap<object, AuthenticatedOutcomeRequestState>();
@@ -31,9 +32,10 @@ export function deriveAuthorityRequestKey(input: Readonly<{ tenant:string;reques
   ]);
 }
 
-export function authenticateOutcomeRequest(input: Readonly<{ tenant:string;requester:string;definitionAlias:string;request:unknown }>): AuthenticatedOutcomeRequest {
+export function authenticateOutcomeRequest(input: Readonly<{ tenant:string;requester:string;definitionAlias:string;request:unknown;executionContext?: AuthorityExecutionContextV1 }>): AuthenticatedOutcomeRequest {
   assertFields(input, ["tenant", "requester", "definitionAlias"]);
   const request = deepFreeze(parseAuthorityWire("outcome-request", input.request));
+  const executionContext = input.executionContext === undefined ? undefined : validateExecutionContext(input.executionContext, input.tenant, input.requester);
   const canonicalRequestBytes = authorityCanonicalBytes(request);
   const state = deepFreeze({
     tenant: input.tenant,
@@ -43,10 +45,25 @@ export function authenticateOutcomeRequest(input: Readonly<{ tenant:string;reque
     canonicalRequestBase64: canonicalRequestBytes.toString("base64"),
     requestDigest: authorityDigest(request),
     requestKey: deriveAuthorityRequestKey({ tenant: input.tenant, requester: input.requester, requestId: request.requestId }),
+    ...(executionContext ? { executionContext } : {}),
   });
   const branded = Object.freeze(Object.create(null)) as AuthenticatedOutcomeRequest;
   authenticatedStates.set(branded, state);
   return branded;
+}
+
+function validateExecutionContext(value: AuthorityExecutionContextV1, tenant: string, requester: string): AuthorityExecutionContextV1 {
+  if (!value || value.v !== "reelier.authority-execution-context/v1") throw new TypeError("invalid execution context version");
+  for (const [name, item] of Object.entries(value)) {
+    if (name === "v") continue;
+    if (typeof item !== "string" || item.length === 0 || item.length > 128 || !/^[A-Za-z0-9][A-Za-z0-9._~:-]*$/.test(item)) throw new TypeError(`invalid execution context ${name}`);
+  }
+  if (value.principalId !== requester) throw new TypeError("execution context principal mismatch");
+  if (tenant.length === 0) throw new TypeError("tenant is required");
+  if (!/^sha256:[0-9a-f]{64}$/.test(value.grantDigest)) throw new TypeError("invalid execution context grant digest");
+  const expected = ["v", "taskId", "principalId", "grantId", "grantDigest", "allocationId", "runtimeSessionId", "jobId", "authorityCellId"];
+  if (Object.keys(value).sort().join(",") !== expected.sort().join(",")) throw new TypeError("execution context is not closed");
+  return deepFreeze({ ...value });
 }
 
 export function authenticatedOutcomeRequestState(value: AuthenticatedOutcomeRequest): AuthenticatedOutcomeRequestState {

@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "reelier.authority/certification-runner-manifest/v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["v", "scenarioId", "runnerId", "endpointManifestDigest", "implementationDigest", "operations"],
+  "properties": {
+    "v": { "const": "reelier.certification-runner-manifest/v1" },
+    "scenarioId": { "enum": ["cloudflare-dns", "cloudflare-vercel-secret", "codex-ten-principal", "fly-topology", "github-issue-labels", "neon-migration", "slack-topic", "vercel-promotion"] },
+    "runnerId": { "type": "string", "pattern": "^[a-z][a-z0-9_]{2,127}$" },
+    "endpointManifestDigest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "implementationDigest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "operations": { "const": ["prepare", "authoritative-read", "compile", "reserve", "reread", "dispatch", "reconcile", "receipt", "cleanup"] }
+  }
+}

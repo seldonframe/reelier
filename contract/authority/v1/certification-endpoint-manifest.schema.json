@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "reelier.authority/certification-endpoint-manifest/v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["v", "scenarioId", "provider", "resourceDigest", "credentialSlots", "endpoints", "completeness"],
+  "properties": {
+    "v": { "const": "reelier.certification-endpoint-manifest/v1" },
+    "scenarioId": { "enum": ["cloudflare-dns", "cloudflare-vercel-secret", "codex-ten-principal", "fly-topology", "github-issue-labels", "neon-migration", "slack-topic", "vercel-promotion"] },
+    "provider": { "enum": ["cloudflare", "codex", "fly", "github", "neon", "slack", "vercel"] },
+    "resourceDigest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "credentialSlots": { "type": "array", "uniqueItems": true, "items": { "enum": ["cloudflareCredential", "flyApiCredential", "githubCredential", "neonApiCredential", "neonDatabaseUrl", "slackCredential", "vercelCredential"] } },
+    "endpoints": {
+      "type": "array", "minItems": 1, "maxItems": 16,
+      "items": { "type": "object", "additionalProperties": false, "required": ["endpointId", "direction", "method"], "properties": {
+        "endpointId": { "type": "string", "pattern": "^[a-z][a-z0-9_.-]{2,127}$" },
+        "direction": { "enum": ["read", "write"] },
+        "method": { "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"] }
+      } }
+    },
+    "completeness": { "const": "unchecked" }
+  }
+}

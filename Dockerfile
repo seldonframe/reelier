@@ -7,7 +7,10 @@ COPY package.json package-lock.json tsconfig.json ./
 RUN npm ci
 COPY src ./src
 COPY scripts/build-authority-contract.mjs ./scripts/build-authority-contract.mjs
+COPY scripts/build-bootstrap-contract.mjs ./scripts/build-bootstrap-contract.mjs
+COPY scripts/build-packs.mjs ./scripts/build-packs.mjs
 COPY contract/authority/v1 ./contract/authority/v1
+COPY contract/bootstrap/v1 ./contract/bootstrap/v1
 RUN npm run build
 
 # --- runtime stage: prod deps + compiled dist only (small image) ---

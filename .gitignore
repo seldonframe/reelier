@@ -1,6 +1,11 @@
 node_modules/
 dist/
 dist-test/
+native/bootstrap-helper/target/
+native/bootstrap-helper/evidence/
+native/bootstrap-helper/manifest.json
+native/bootstrap-helper/linux-x64/
+native/bootstrap-helper/win32-x64/
 coverage/
 # Written by ci.yml's "Run tests" step (`npm test 2>&1 | tee test-output.txt`)
 # for the badge-check step to read. Reproducing that command locally
@@ -38,3 +43,15 @@ reports/
 .screenshots-tmp/
 .house-tenant-key.local
 .superpowers/
+
+# Local live-certification bindings and credential files. The example and
+# signed/redacted evidence remain trackable; operator resource IDs and secret
+# material do not.
+authority/certification.local.json
+authority/secrets/
+
+# Isolated Eve continuity conformance fixture output.
+conformance/continuity-adapter/v1/eve-fixture/.eve/
+conformance/continuity-adapter/v1/eve-fixture/.output/
+conformance/continuity-adapter/v1/eve-fixture/dist/
+conformance/continuity-adapter/v1/eve-fixture/node_modules/

@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "reelier.authority/certification-runner-manifest/v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["v", "scenarioId", "runnerId", "endpointManifestDigest", "metadataDigest", "registryDigest", "operations", "executionReady", "dispatchable"],
+  "properties": {
+    "v": { "const": "reelier.certification-runner-manifest/v2" },
+    "scenarioId": { "enum": ["cloudflare-dns", "cloudflare-vercel-secret", "github-issue-labels", "neon-migration", "slack-topic", "vercel-promotion"] },
+    "runnerId": { "type": "string", "pattern": "^[a-z][a-z0-9_]{2,127}$" },
+    "endpointManifestDigest": { "$ref": "#/$defs/digest" },
+    "metadataDigest": { "$ref": "#/$defs/digest" },
+    "registryDigest": { "const": "sha256:247f46c943ddd64c638c7577347eb44d0b80eaada24876168ba717866721ce1c" },
+    "operations": { "const": ["prepare", "authoritative-read", "compile", "reserve", "authoritative-reread", "recompile", "dispatch", "controlled-cut", "reconcile", "receipt", "cleanup", "export", "offline-verify"] },
+    "executionReady": { "const": false },
+    "dispatchable": { "const": false }
+  },
+  "allOf": [
+    { "if": { "properties": { "scenarioId": { "const": "cloudflare-dns" } } }, "then": { "properties": { "runnerId": { "const": "builtin_cloudflare_dns_v2" }, "metadataDigest": { "const": "sha256:af4917696dce40ee6d6fbf98527697f82a938ffd67edcea0e8321f6030b87a83" } } } },
+    { "if": { "properties": { "scenarioId": { "const": "cloudflare-vercel-secret" } } }, "then": { "properties": { "runnerId": { "const": "builtin_cloudflare_vercel_secret_v2" }, "metadataDigest": { "const": "sha256:9b13b9f782bc9f36b2dc05a2348333ae348572860598d5185269ff9ebe666ecf" } } } },
+    { "if": { "properties": { "scenarioId": { "const": "github-issue-labels" } } }, "then": { "properties": { "runnerId": { "const": "builtin_github_issue_labels_v2" }, "metadataDigest": { "const": "sha256:94b2afe8993695c1acf61a7bdbd90363e9937b06dcd7e9d12435e7b00974acd2" } } } },
+    { "if": { "properties": { "scenarioId": { "const": "neon-migration" } } }, "then": { "properties": { "runnerId": { "const": "builtin_neon_migration_v2" }, "metadataDigest": { "const": "sha256:8f64ed8ae5c50744e3435d99015b7e67e7df40e1eced19a759e41fbd8e71d35b" } } } },
+    { "if": { "properties": { "scenarioId": { "const": "slack-topic" } } }, "then": { "properties": { "runnerId": { "const": "builtin_slack_topic_v2" }, "metadataDigest": { "const": "sha256:8dc4a08e37cdaf30b6ac372285fbeb1e4bfd8069a9b8a3c40261f777fde4da14" } } } },
+    { "if": { "properties": { "scenarioId": { "const": "vercel-promotion" } } }, "then": { "properties": { "runnerId": { "const": "builtin_vercel_promotion_v2" }, "metadataDigest": { "const": "sha256:c8b7488dc37aeb8a963872470e0e91d3d5c385c23c0238bf0a7ac2da312a2cb8" } } } }
+  ],
+  "$defs": { "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" } }
+}

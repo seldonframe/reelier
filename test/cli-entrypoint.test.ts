@@ -1,11 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
+import { watch } from "node:fs";
 import { promisify } from "node:util";
-import { mkdtemp, symlink, rm } from "node:fs/promises";
+import { access, mkdtemp, mkdir, readFile, readdir, symlink, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { parseArgv } from "../src/cli.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -56,4 +58,57 @@ test("cli.ts's entrypoint guard still runs main() when invoked through a symlink
   } finally {
     await rm(workDir, { recursive: true, force: true });
   }
+});
+
+test("root parser retains authority connection values required by the existing connection contract", () => {
+  const parsed = parseArgv(["--endpoint", "https://cell.example", "--token-ref", "env:CELL_TOKEN", "--cell-id", "cell_1", "--adapter-contract-digest", `sha256:${"a".repeat(64)}`]);
+  assert.deepEqual(parsed.opts, {
+    endpoint: "https://cell.example", "token-ref": "env:CELL_TOKEN", "cell-id": "cell_1", "adapter-contract-digest": `sha256:${"a".repeat(64)}`,
+  });
+});
+
+test("real CLI restart recovers an interrupted exact plan and refuses later identity drift", async t => {
+  try { await access(path.resolve(CLI_DIR, "../../native/bootstrap-helper/manifest.json")); }
+  catch { t.skip("certified native bootstrap artifacts are unavailable on this checkout"); return; }
+  const root = await mkdtemp(path.join(tmpdir(), "reelier-cli-restart-"));
+  const project = path.join(root, "project");
+  await mkdir(project);
+    // Use the shipped build for the child process so its package root is the
+    // checkout root that contains the certified native helper. The test
+    // source remains compiled from dist-test, but a real CLI restart must
+    // exercise the same package layout users receive.
+  const cliPath = path.resolve(CLI_DIR, "../../dist/cli.js");
+  const transactionPath = path.join(project, ".reelier", "bootstrap", "transaction.json");
+  try {
+    const bootstrap = path.join(project, ".reelier", "bootstrap");
+    await mkdir(bootstrap, { recursive: true });
+    let child: ReturnType<typeof spawn>;
+    const interrupted = new Promise<void>((resolve, reject) => {
+      const watcher = watch(bootstrap, async (_event, file) => {
+        if (file !== "transaction.json") return;
+        try {
+          const state = JSON.parse(await readFile(transactionPath, "utf8")).state;
+          if (state === "complete") return;
+          watcher.close();
+          child.kill("SIGKILL");
+          child.once("exit", () => resolve());
+        } catch {}
+      });
+      setTimeout(() => { watcher.close(); reject(new Error("timed out waiting for an incomplete durable CLI state")); }, 20_000).unref();
+    });
+    child = spawn(process.execPath, [cliPath, "init", "restart-agent"], { cwd: project, stdio: "ignore" });
+    await interrupted;
+    assert.notEqual(JSON.parse(await readFile(transactionPath, "utf8")).state, "complete");
+
+    const restarted = await execFileAsync(process.execPath, [cliPath, "init", "restart-agent"], { cwd: project });
+    assert.match(restarted.stdout, /npx reelier@0\.32\.1 up/);
+    const pointer = JSON.parse(await readFile(path.join(bootstrap, "current.json"), "utf8"));
+    assert.deepEqual((await readdir(path.join(bootstrap, "generations", pointer.generation))).sort(), ["checkpoint.json", "project.json", "recovery-command.txt", "report.json"]);
+
+    const journal = JSON.parse(await readFile(transactionPath, "utf8"));
+    await writeFile(transactionPath, `${JSON.stringify({ ...journal, planDigest: `sha256:${"f".repeat(64)}` }, null, 2)}\n`);
+    const before = await readFile(path.join(bootstrap, "current.json"), "utf8");
+    await assert.rejects(execFileAsync(process.execPath, [cliPath, "init", "restart-agent"], { cwd: project }));
+    assert.equal(await readFile(path.join(bootstrap, "current.json"), "utf8"), before);
+  } finally { await rm(root, { recursive: true, force: true }); }
 });

@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import { generateKeyPairSync } from "node:crypto";
 import { signAuthorityDigest } from "../../src/authority/crypto.js";
 import { authorityDigest } from "../../src/authority/wire.js";
-import { createTrustRoots, verifyTrustedAuthority } from "../../src/authority/trust.js";
+import { createCurrentAuthorityTrustView, createTrustRoots, verifyTrustedAuthority } from "../../src/authority/trust.js";
+import { profileGovernanceFixture } from "./profile-governance-fixture.js";
 
 const grant = {
   v: "reelier.delegation-grant/v1" as const, tenant: "tenant_1", grantId: "grant_1", parentDigest: null,
@@ -53,4 +54,10 @@ test("trust roots are opaque snapshots, not mutable Map wrappers", () => {
   const digest = authorityDigest(grant);
   const verified = verifyTrustedAuthority(roots, { tenant: "tenant_1", signerId: "key_1", purpose: "delegation-grant", advertisedDigest: digest, value: grant, signature: signAuthorityDigest(trusted.privateKey, "delegation-grant", digest) });
   assert.equal(verified.principalId, "operator_1");
+});
+
+test("current Authority trust views cannot be forged from receipt-carried roots", () => {
+  profileGovernanceFixture();
+  assert.throws(() => createCurrentAuthorityTrustView({ tenant: "tenant_1", authorityCellId: "cell_1", taskId: "task_1", observedAt: new Date("2026-08-14T12:00:00.000Z"), jobCardTrustPin: Object.freeze({}) } as never), /job card trust|readiness|closed/i);
+  for (const forged of [{}, Object.freeze({}), new Proxy({}, {})]) assert.throws(() => createCurrentAuthorityTrustView(forged as never), /closed|trust|pin/i);
 });

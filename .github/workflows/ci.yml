@@ -36,7 +36,139 @@ on:
   workflow_dispatch:
 
 jobs:
+  build-bootstrap-native:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: linux-x64
+          - os: windows-latest
+            target: win32-x64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.97.1 --profile minimal
+      - name: Build, test, and probe matching-host helper
+        run: node scripts/build-bootstrap-native.mjs --target ${{ matrix.target }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-bootstrap-${{ matrix.target }}
+          path: |
+            native/bootstrap-helper/${{ matrix.target }}/reelier-bootstrap-helper*
+            native/bootstrap-helper/evidence/${{ matrix.target }}.json
+          if-no-files-found: error
+
+  assemble-bootstrap-native:
+    needs: build-bootstrap-native
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: native-bootstrap-*
+          path: native/bootstrap-helper
+          merge-multiple: true
+      - name: Restore Linux helper executable bit
+        run: chmod +x native/bootstrap-helper/linux-x64/reelier-bootstrap-helper
+      - name: Assemble exact universal manifest
+        run: node scripts/assemble-bootstrap-native-artifacts.mjs
+      - name: Verify both artifacts and current-host probe
+        run: node scripts/verify-bootstrap-native-artifacts.mjs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-bootstrap-universal
+          path: |
+            native/bootstrap-helper/manifest.json
+            native/bootstrap-helper/linux-x64/reelier-bootstrap-helper
+            native/bootstrap-helper/win32-x64/reelier-bootstrap-helper.exe
+          if-no-files-found: error
+
+  pack-authority-host-boundary:
+    needs: assemble-bootstrap-native
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - uses: actions/download-artifact@v4
+        with:
+          name: native-bootstrap-universal
+          path: native/bootstrap-helper
+      - name: Restore Linux helper executable bit
+        run: chmod +x native/bootstrap-helper/linux-x64/reelier-bootstrap-helper
+      - run: npm run build
+      - run: node scripts/verify-bootstrap-native-artifacts.mjs
+      - run: npm run check:authority-contract
+      - name: Pack authority host boundary once
+        shell: bash
+        run: |
+          set -euo pipefail
+          tarball="$(node -e 'const x=require("child_process").execFileSync("npm",["pack","--ignore-scripts","--json"],{encoding:"utf8"}); const packed=JSON.parse(x)[0], names=packed.files.map(x=>x.path); if(names.some(x=>/^(native\/windows-k1-helper\/|dist\/authority\/host\/windows-k1|.*fifo)/i.test(x))) throw new Error("obsolete Windows FIFO/native helper was packed"); process.stdout.write(packed.filename)')"
+          sha256sum "$tarball" | awk '{print $1}' > authority-host-boundary.sha256
+          node --input-type=module -e 'import { AUTHORITY_ADAPTER_CONTRACT_V1_DIGEST } from "./dist/authority/index.js"; console.log(AUTHORITY_ADAPTER_CONTRACT_V1_DIGEST)' > authority-adapter-contract.digest
+          printf '%s\n' '${{ github.sha }}' > authority-workflow-source.sha
+      - uses: actions/upload-artifact@v4
+        with:
+          name: authority-host-boundary-pack
+          path: |
+            *.tgz
+            authority-host-boundary.sha256
+            authority-adapter-contract.digest
+            authority-workflow-source.sha
+  produce-authority-factory-evidence:
+    needs: pack-authority-host-boundary
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - uses: actions/download-artifact@v4
+        with:
+          name: authority-host-boundary-pack
+          path: authority-host-boundary-pack
+      - name: Verify packed provenance and produce public factory evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(cat authority-host-boundary-pack/authority-workflow-source.sha)" = '${{ github.sha }}'
+          test "$(sha256sum authority-host-boundary-pack/*.tgz | awk '{print $1}')" = "$(cat authority-host-boundary-pack/authority-host-boundary.sha256)"
+          test "$(node --input-type=module -e 'import { AUTHORITY_ADAPTER_CONTRACT_V1_DIGEST } from "./dist/authority/index.js"; console.log(AUTHORITY_ADAPTER_CONTRACT_V1_DIGEST)')" = "$(cat authority-host-boundary-pack/authority-adapter-contract.digest)"
+          node test/packed/authority-factory-journey.mjs --tarball "$(pwd)/authority-host-boundary-pack/$(basename authority-host-boundary-pack/*.tgz)" --out "$(pwd)/factory-evidence"
+          node --input-type=module -e 'import { createHash } from "node:crypto"; import { readFileSync, writeFileSync } from "node:fs"; const d=p=>"sha256:"+createHash("sha256").update(readFileSync(p)).digest("hex"), files=["authority-host-boundary-pack/"+process.argv[1],"factory-evidence/graph.json","factory-evidence/trust-pin.json","factory-evidence/factory-journey-summary.json"], secretCanary=Buffer.from("REELIER_FACTORY_SECRET_CANARY_V1_6F4E91C28A73","utf8"); if(files.some(file=>readFileSync(file).includes(secretCanary))) throw new Error("secret canary failed"); const metadata={v:"reelier.factory-evidence-metadata/v1",workflowSourceSha:"${{ github.sha }}",tarballSha256:readFileSync("authority-host-boundary-pack/authority-host-boundary.sha256","utf8").trim(),adapterContractDigest:readFileSync("authority-host-boundary-pack/authority-adapter-contract.digest","utf8").trim(),graphDigest:d(files[1]),trustPinDigest:d(files[2]),summaryDigest:d(files[3]),secretCanaryResult:"empty"}; if(JSON.stringify(Object.keys(metadata).sort())!==JSON.stringify(["adapterContractDigest","graphDigest","secretCanaryResult","summaryDigest","tarballSha256","trustPinDigest","v","workflowSourceSha"])) throw new Error("closed metadata mismatch"); writeFileSync("factory-evidence/factory-evidence-metadata.json", JSON.stringify(metadata)+"\n")' "$(basename authority-host-boundary-pack/*.tgz)"
+          test "$(find factory-evidence -maxdepth 1 -type f | wc -l)" -eq 4
+          test "$(find factory-evidence -maxdepth 1 -type f -printf '%f\n' | sort | paste -sd, -)" = 'factory-evidence-metadata.json,factory-journey-summary.json,graph.json,trust-pin.json'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: authority-factory-public-evidence
+          path: factory-evidence
   test:
+    name: test (${{ matrix.os }})
+    needs: [pack-authority-host-boundary, produce-authority-factory-evidence]
+    # `always()` keeps both required contexts visible on pack failure; the first
+    # failing step below prevents visible-but-skipped contexts from going green.
+    if: ${{ always() }}
     # Cross-platform: reelier ships to npm and runs on contributors' machines,
     # so a Windows-only bug (e.g. the CRLF line-ending trap) must fail HERE, in
     # the PR, not as a surprise red badge on main. fail-fast:false so one OS's
@@ -44,15 +176,39 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        include:
+          - os: ubuntu-latest
+            node: 24
+          - os: windows-latest
+            node: 22
     runs-on: ${{ matrix.os }}
     steps:
+      - name: Enforce authority pack and factory evidence prerequisites
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          if [ '${{ needs.pack-authority-host-boundary.result }}' != 'success' ] || [ '${{ needs.produce-authority-factory-evidence.result }}' != 'success' ]; then exit 1; fi
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+        if: ${{ needs.pack-authority-host-boundary.result == 'success' && needs.produce-authority-factory-evidence.result == 'success' }}
         with:
-          node-version: 22
+          ref: ${{ github.sha }}
+      - uses: actions/setup-node@v4
+        if: ${{ needs.pack-authority-host-boundary.result == 'success' && needs.produce-authority-factory-evidence.result == 'success' }}
+        with:
+          node-version: ${{ matrix.node }}
           cache: npm
       - run: npm ci
+        if: ${{ needs.pack-authority-host-boundary.result == 'success' && needs.produce-authority-factory-evidence.result == 'success' }}
+      - uses: actions/download-artifact@v4
+        if: ${{ needs.pack-authority-host-boundary.result == 'success' && needs.produce-authority-factory-evidence.result == 'success' }}
+        with:
+          name: native-bootstrap-universal
+          path: native/bootstrap-helper
+      - name: Restore Linux helper executable bit
+        if: ${{ needs.pack-authority-host-boundary.result == 'success' && needs.produce-authority-factory-evidence.result == 'success' }}
+        shell: bash
+        run: |
+          if [ '${{ matrix.os }}' = 'ubuntu-latest' ]; then chmod +x native/bootstrap-helper/linux-x64/reelier-bootstrap-helper; fi
       # Belt-and-suspenders, not a fix for anything seen on this runner:
       # actions/checkout@v4 always starts from an empty workspace and
       # nothing here caches dist/dist-test, so there is nothing to clean
@@ -62,19 +218,76 @@ jobs:
       # is exactly the kind of thing an future "speed up CI" cache on these
       # directories would reintroduce silently. Cheap now, guards later.
       - name: Clean build output
+        if: ${{ needs.pack-authority-host-boundary.result == 'success' && needs.produce-authority-factory-evidence.result == 'success' }}
         shell: bash
         run: rm -rf dist dist-test
       - run: npm run build
+        if: ${{ needs.pack-authority-host-boundary.result == 'success' && needs.produce-authority-factory-evidence.result == 'success' }}
+      - name: Compile test checkout
+        if: ${{ needs.pack-authority-host-boundary.result == 'success' && needs.produce-authority-factory-evidence.result == 'success' }}
+        run: npx tsc -p tsconfig.test.json --pretty false
+      - uses: actions/download-artifact@v4
+        if: ${{ needs.pack-authority-host-boundary.result == 'success' && needs.produce-authority-factory-evidence.result == 'success' }}
+        with:
+          name: authority-host-boundary-pack
+          path: authority-host-boundary-pack
+      - uses: actions/download-artifact@v4
+        if: ${{ needs.pack-authority-host-boundary.result == 'success' && needs.produce-authority-factory-evidence.result == 'success' }}
+        with:
+          name: authority-factory-public-evidence
+          path: authority-factory-public-evidence
+      - name: Verify public factory evidence offline
+        if: ${{ needs.pack-authority-host-boundary.result == 'success' && needs.produce-authority-factory-evidence.result == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          node -e 'const f=require("node:fs"),m=JSON.parse(f.readFileSync("authority-factory-public-evidence/factory-evidence-metadata.json")); if(m.workflowSourceSha!=="${{ github.sha }}"||m.tarballSha256!==f.readFileSync("authority-host-boundary-pack/authority-host-boundary.sha256","utf8").trim()||m.adapterContractDigest!==f.readFileSync("authority-host-boundary-pack/authority-adapter-contract.digest","utf8").trim()) throw new Error("factory evidence provenance mismatch")'
+          node test/packed/authority-factory-journey.mjs --tarball "$(pwd)/authority-host-boundary-pack/$(basename authority-host-boundary-pack/*.tgz)" --verify-evidence "$(pwd)/authority-factory-public-evidence"
+      - name: Verify downloaded authority pack provenance
+        if: ${{ needs.pack-authority-host-boundary.result == 'success' && needs.produce-authority-factory-evidence.result == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(cat authority-host-boundary-pack/authority-workflow-source.sha)" = '${{ github.sha }}'
+          test "$(sha256sum authority-host-boundary-pack/*.tgz | awk '{print $1}')" = "$(cat authority-host-boundary-pack/authority-host-boundary.sha256)"
+          test "$(node --input-type=module -e 'import { AUTHORITY_ADAPTER_CONTRACT_V1_DIGEST } from "./dist/authority/index.js"; console.log(AUTHORITY_ADAPTER_CONTRACT_V1_DIGEST)')" = "$(cat authority-host-boundary-pack/authority-adapter-contract.digest)"
+      - name: Verify downloaded package boundary on native OS
+        if: ${{ needs.pack-authority-host-boundary.result == 'success' && needs.produce-authority-factory-evidence.result == 'success' }}
+        shell: bash
+        run: |
+          if [ '${{ matrix.os }}' = 'ubuntu-latest' ]; then node test/packed/authority-host-boundary.mjs --tarball "$(pwd)/authority-host-boundary-pack/$(basename authority-host-boundary-pack/*.tgz)" --mode surface; else node test/packed/authority-host-boundary.mjs --tarball "$(pwd)/authority-host-boundary-pack/$(basename authority-host-boundary-pack/*.tgz)" --mode windows-native; fi
+      - name: Verify packed native GitHub label baseline claims
+        if: ${{ needs.pack-authority-host-boundary.result == 'success' && needs.produce-authority-factory-evidence.result == 'success' }}
+        shell: bash
+        run: node test/packed/native-github-labels.mjs "$(pwd)/authority-host-boundary-pack/$(basename authority-host-boundary-pack/*.tgz)"
+      - name: Run native authority platform evidence
+        if: ${{ needs.pack-authority-host-boundary.result == 'success' && needs.produce-authority-factory-evidence.result == 'success' }}
+        shell: bash
+        run: |
+          if [ '${{ matrix.os }}' = 'ubuntu-latest' ]; then node --test --test-concurrency=1 --test-name-pattern='^N100 authority convergence:' dist-test/test/authority/ledger.test.js; else node --test --test-concurrency=1 dist-test/test/authority/linux-authority-cell.test.js dist-test/test/authority/authority-cell-connection.test.js dist-test/test/authority/certification-portable-evidence.test.js; fi
+      - name: Install Eve continuity fixture dependencies
+        if: ${{ needs.pack-authority-host-boundary.result == 'success' && needs.produce-authority-factory-evidence.result == 'success' }}
+        shell: bash
+        run: if [ '${{ matrix.os }}' = 'ubuntu-latest' ]; then npm --prefix conformance/continuity-adapter/v1/eve-fixture ci --ignore-scripts; fi
       # `shell: bash` is explicit (not just the Linux default) because it
       # also runs on windows-latest via the runner's bundled Git Bash — the
       # `tee`/`pipefail` combo below needs one shell that behaves the same
       # on both matrix legs so the captured output and the exit code stay
       # trustworthy on Windows too.
-      - name: Run tests
+      - name: Run supported tests
+        if: ${{ needs.pack-authority-host-boundary.result == 'success' && needs.produce-authority-factory-evidence.result == 'success' }}
+        timeout-minutes: 25
         shell: bash
         run: |
           set -o pipefail
-          npm test 2>&1 | tee test-output.txt
+          if [ '${{ matrix.os }}' = 'ubuntu-latest' ]; then REELIER_EVE_MATRIX_DIAGNOSTICS=1 timeout --signal=TERM --kill-after=30s 20m npm test 2>&1 | tee test-output.txt; else node --test --test-concurrency=1 dist-test/test/authority/package.test.js dist-test/test/authority/linux-authority-cell.test.js dist-test/test/authority/authority-cell-connection.test.js dist-test/test/authority/certification-portable-evidence.test.js; fi
+      - name: Upload Ubuntu test output
+        if: ${{ always() && matrix.os == 'ubuntu-latest' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ubuntu-test-output-${{ github.sha }}
+          path: test-output.txt
+          if-no-files-found: warn
       # The badge is OS-independent, so this only needs to run once. It
       # reads the output captured by the step above rather than re-running
       # `npm test`, so the badge-vs-suite check (scripts/check-badge.mjs,
@@ -86,5 +299,6 @@ jobs:
       # badge-check.mjs's CANONICAL_PLATFORM; test/action-version-pin.test.ts
       # -style, test/badge-check.test.ts asserts the two can't drift apart.
       - name: Check README tests badge
-        if: runner.os == 'Linux'
-        run: node scripts/check-badge.mjs test-output.txt
+        if: ${{ needs.pack-authority-host-boundary.result == 'success' && needs.produce-authority-factory-evidence.result == 'success' && runner.os == 'Linux' }}
+        shell: bash
+        run: if [ '${{ runner.os }}' = 'Linux' ]; then node scripts/check-badge.mjs test-output.txt; fi

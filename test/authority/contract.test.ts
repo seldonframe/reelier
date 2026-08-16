@@ -1,11 +1,16 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { generateKeyPairSync } from "node:crypto";
+import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { execFileSync } from "node:child_process";
 import { signAuthorityDigest } from "../../src/authority/crypto.js";
 import { authorityCanonicalBytes, authorityDigest } from "../../src/authority/wire.js";
 import { createTrustRoots } from "../../src/authority/trust.js";
 import { validateDelegationChain } from "../../src/authority/delegation.js";
 import { validateStoredContract, isValidatedContract, verifyStoredContract, validateVerifiedContractEligibility, type ContractStateEvent } from "../../src/authority/contract.js";
+import { AUTHORITY_ADAPTER_CONTRACT_V1, verifyAuthorityAdapterContractV1 } from "../../src/authority/adapter-contract.js";
 
 function fixture() {
   const operator = generateKeyPairSync("ed25519");
@@ -87,4 +92,80 @@ test("trusted contract digest is staged before mutable eligibility checks", () =
   assert.throws(() => verifyStoredContract({ stored: { ...f.stored, contract: { ...f.contract, unexpected: true } }, trustRoots: f.roots, tenant: "tenant_1" }), /wire|advertised digest|additional/i);
   assert.throws(() => verifyStoredContract({ stored: { ...f.stored, signature: { ...f.stored.signature, sig: "AA==" } }, trustRoots: f.roots, tenant: "tenant_1" }), /signature/i);
   assert.throws(() => verifyStoredContract({ stored: f.stored, trustRoots: f.roots, tenant: "tenant_2" }), /tenant|trust/i);
+});
+
+test("adapter contract v1 is a closed, canonical manifest and refuses stale copied output", () => {
+  const contractDirectory = join(process.cwd(), "contract", "authority", "v1");
+  const descriptorPath = join(contractDirectory, "adapter-contract-v1.json");
+  assert.equal(existsSync(descriptorPath), true, "adapter contract descriptor must be generated");
+  const output = JSON.parse(readFileSync(descriptorPath, "utf8")) as {
+    v: string;
+    domain: string;
+    members: readonly { path: string; digest: string }[];
+    goldenVectorsDigest: string;
+    digest: string;
+  };
+  assert.equal(output.v, "reelier.adapter-contract/v1");
+  assert.equal(output.domain, "reelier.adapter-contract/v1\\0");
+  assert.match(output.digest, /^sha256:(?!0{64}$)[0-9a-f]{64}$/);
+  assert.match(output.goldenVectorsDigest, /^sha256:[0-9a-f]{64}$/);
+  assert.deepEqual(output.members.map(member => member.path), [...output.members.map(member => member.path)].sort());
+  assert.equal(new Set(output.members.map(member => member.path)).size, output.members.length);
+  assert.equal(output.members.some(member => member.path === "adapter-contract-v1.json"), false);
+  const files = new Map(output.members.map(member => [member.path, readFileSync(join(contractDirectory, member.path))]));
+  assert.doesNotThrow(() => verifyAuthorityAdapterContractV1(output, files));
+  const plainUint8Files = new Map(output.members.map(member => [member.path, new Uint8Array(readFileSync(join(contractDirectory, member.path)))]));
+  assert.doesNotThrow(() => verifyAuthorityAdapterContractV1(output, plainUint8Files));
+  const mutatedFiles = new Map(files);
+  mutatedFiles.set(output.members[0].path, Buffer.from("tampered"));
+  assert.throws(() => verifyAuthorityAdapterContractV1(output, mutatedFiles), /member digest/i);
+  const omittedFiles = new Map(files);
+  omittedFiles.delete(output.members[0].path);
+  assert.throws(() => verifyAuthorityAdapterContractV1(output, omittedFiles), /member digest/i);
+  assert.equal(Object.isFrozen(AUTHORITY_ADAPTER_CONTRACT_V1), true);
+  assert.equal(Object.isFrozen(AUTHORITY_ADAPTER_CONTRACT_V1.members), true);
+  assert.equal(Object.isFrozen(AUTHORITY_ADAPTER_CONTRACT_V1.members[0]), true);
+  assert.throws(() => { (AUTHORITY_ADAPTER_CONTRACT_V1.members as unknown as { path: string }[]).push({ path: "x" }); }, /extensible|read only/i);
+  assert.throws(() => { (AUTHORITY_ADAPTER_CONTRACT_V1.members[0] as { digest: string }).digest = "sha256:" + "0".repeat(64); }, /read only/i);
+  assert.throws(() => verifyAuthorityAdapterContractV1({ ...output, members: output.members.slice(1) }, files), /closed membership/i);
+  assert.throws(() => verifyAuthorityAdapterContractV1({ ...output, members: [...output.members, output.members[0]] }, files), /member paths/i);
+  assert.throws(() => verifyAuthorityAdapterContractV1({ ...output, members: [...output.members].reverse() }, files), /member paths/i);
+  assert.throws(() => verifyAuthorityAdapterContractV1({ ...output, members: [{ ...output.members[0], path: "../escape.json" }, ...output.members.slice(1)] }, files), /member paths/i);
+  assert.throws(() => verifyAuthorityAdapterContractV1({ ...output, members: [{ ...output.members[0], path: "adapter-contract-v1.json" }, ...output.members.slice(1)] }, files), /member paths/i);
+
+  const copiedRoot = mkdtempSync(join(tmpdir(), "reelier-adapter-contract-"));
+  try {
+    const copiedDirectory = join(copiedRoot, "v1");
+    cpSync(contractDirectory, copiedDirectory, { recursive: true });
+    const copiedSource = join(copiedRoot, "adapter-contract.ts");
+    writeFileSync(copiedSource, readFileSync(join(process.cwd(), "src", "authority", "adapter-contract.ts"), "utf8"), "utf8");
+    execFileSync(process.execPath, ["scripts/build-authority-contract.mjs", "--directory", copiedDirectory, "--source", copiedSource], { cwd: process.cwd(), stdio: "pipe" });
+    writeFileSync(copiedSource, readFileSync(copiedSource, "utf8").replace(/\r?\n/g, "\r\n"), "utf8");
+    for (const member of output.members) writeFileSync(join(copiedDirectory, member.path), readFileSync(join(copiedDirectory, member.path), "utf8").replace(/\r?\n/g, "\r\n"), "utf8");
+    assert.doesNotThrow(() => execFileSync(process.execPath, ["scripts/build-authority-contract.mjs", "--directory", copiedDirectory, "--source", copiedSource, "--check"], { cwd: process.cwd(), stdio: "pipe" }));
+    writeFileSync(copiedSource, "stale source\n", "utf8");
+    assert.throws(
+      () => execFileSync(process.execPath, ["scripts/build-authority-contract.mjs", "--directory", copiedDirectory, "--source", copiedSource, "--check"], { cwd: process.cwd(), stdio: "pipe" }),
+      /adapter contract source drift/i,
+    );
+    writeFileSync(join(copiedDirectory, "golden-vectors.json"), "{}\n", "utf8");
+    assert.throws(
+      () => execFileSync(process.execPath, ["scripts/build-authority-contract.mjs", "--directory", copiedDirectory, "--check"], { cwd: process.cwd(), stdio: "pipe" }),
+      /authority (golden vectors|adapter contract) drift/i,
+    );
+  } finally {
+    rmSync(copiedRoot, { recursive: true, force: true });
+  }
+
+  const sourcePath = join(process.cwd(), "src", "authority", "adapter-contract.ts");
+  const source = readFileSync(sourcePath, "utf8");
+  try {
+    writeFileSync(sourcePath, `${source}\n// stale package build input\n`, "utf8");
+    assert.throws(
+      () => execFileSync(process.platform === "win32" ? (process.env.ComSpec ?? "cmd.exe") : "npm", process.platform === "win32" ? ["/d", "/s", "/c", "npm run build"] : ["run", "build"], { cwd: process.cwd(), stdio: "pipe" }),
+      /adapter contract source drift/i,
+    );
+  } finally {
+    writeFileSync(sourcePath, source, "utf8");
+  }
 });

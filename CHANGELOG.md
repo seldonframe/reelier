@@ -2,9 +2,25 @@
 
 All notable changes to `reelier`. Dates are release dates.
 
-## Unreleased
+## 0.32.0 — 2026-08-10
+
+### Published
+
+- Authority ABI, durable dispatch, signed jobs, delegation, budgets, secret-handle primitives, and founder-stack pack prototypes.
+
+### Post-publication branch work
+
+- This branch adds guarded certification contracts, Fly/Codex orchestration, release-evidence verification, and runbooks. Those additions are not in the immutable npm `0.32.0` tarball.
+- Hermetic certification fixtures pass. Live provider certification and the real ten-agent Codex run remain unchecked until isolated resources, registered live adapters, and a pinned runtime produce signed evidence.
+
+## 0.32.1 — Unreleased
+
+- Correct the post-`0.32.0` secret lifecycle prototype so Cloudflare, not Reelier, generates the account-owned API token. The Authority Cell captures the one-time value into a non-serializable transfer, injects it into a Vercel sensitive environment variable, binds the route and exact secret-bearing body digest into evidence without persisting the body, reconciles metadata only, and zeroes owned response/materialization buffers. Guarded live evidence remains required.
+- Superseded: native Windows Authority Cell hosting is unsupported and refuses before dependency access. Windows remains a client/offline-verifier platform; the low-level host-barrel ledger export is removed. The physical implementation remains package-internal but shipped; consumers migrate to one of the eight supported Linux construction roots.
 
 ### Added
+
+- `reelier authority certify factory-journey --out <absolute-output-directory>` creates a Linux Authority Cell certification packet with a portable signed graph, offline trust pin, and non-authorizing factory-journey summary. Installed `reelier/authority` now exposes `verifyCertificationTaskReceiptGraph` for offline verification.
 
 - **`reelier coverage --host claude-code` — the same read-only inventory, for
   the Claude Code CLI.** Group A is the surface `install` can reach

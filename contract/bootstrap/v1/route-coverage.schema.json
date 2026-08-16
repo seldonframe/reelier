@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://reelier.dev/contracts/bootstrap/v1/route-coverage.schema.json",
+  "type": "object", "additionalProperties": false,
+  "required": ["v", "routeId", "hostId", "discoverySource", "transport", "observation", "replay", "outcome", "enforcement", "observedAt", "freshUntil", "evidenceDigest", "topologyEvidenceDigest", "evidenceRefs", "reasonCodes"],
+  "properties": {
+    "v": { "const": "reelier.route-coverage/v1" }, "routeId": { "$ref": "#/$defs/id" }, "hostId": { "$ref": "#/$defs/id" },
+    "discoverySource": { "enum": ["host-config", "plugin-manifest", "composio", "native-config", "openapi", "host-private", "direct-http", "writable-browser", "unknown"] },
+    "transport": { "enum": ["mcp-stdio", "mcp-http", "https", "opaque-host", "browser", "unknown"] },
+    "observation": { "enum": ["observed", "partially-observed", "uncovered", "unknown"] },
+    "replay": { "enum": ["available", "candidate", "unavailable", "unknown"] },
+    "outcome": { "enum": ["activated", "outcome-capable", "shadow-only", "unsupported", "unknown"] },
+    "enforcement": { "enum": ["verified", "failed", "unchecked", "absent"] },
+    "observedAt": { "$ref": "#/$defs/time" }, "freshUntil": { "$ref": "#/$defs/time" },
+    "evidenceDigest": { "$ref": "#/$defs/digest" }, "topologyEvidenceDigest": { "anyOf": [{ "$ref": "#/$defs/digest" }, { "type": "null" }] },
+    "evidenceRefs": { "type": "array", "items": { "$ref": "#/$defs/ref" }, "uniqueItems": true, "maxItems": 128 },
+    "reasonCodes": { "type": "array", "items": { "$ref": "#/$defs/id" }, "uniqueItems": true, "maxItems": 128 }
+  },
+  "$defs": {
+    "id": { "type": "string", "pattern": "^[A-Za-z0-9._~-]{1,128}$" }, "ref": { "type": "string", "pattern": "^(?!.*://)[A-Za-z0-9._~:/-]{1,256}$" },
+    "time": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$" },
+    "digest": { "type": "string", "pattern": "^sha256:(?!0{64}$)[0-9a-f]{64}$" }
+  }
+}

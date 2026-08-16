@@ -1,0 +1,166 @@
+import { CERTIFICATION_SCENARIOS, CERTIFICATION_SCENARIO_IDS, type CertificationScenarioId, type CertificationSecretSlot } from "./scenarios.js";
+import { authorityDigest } from "../wire.js";
+import { CERTIFICATION_RUNNER_OPERATIONS, certificationPolicyCommitments, certificationRunnerRegistryDigest, getCertificationRunnerRegistryEntry, type CertificationProvider } from "./runner-registry.js";
+import { inertArray, inertRecord } from "./inert.js";
+import type { CertificationOperatorConfigV3 } from "./config.js";
+import { certificationScenarioPlanBindings } from "./scenario-bindings.js";
+
+const DIGEST = /^sha256:[0-9a-f]{64}$/;
+const ID = /^[a-z][a-z0-9_]{2,127}$/;
+const TEXT = /^[A-Za-z0-9][A-Za-z0-9._~:/#-]{0,511}$/;
+const RUNNER_OPERATIONS_V1 = Object.freeze(["prepare", "authoritative-read", "compile", "reserve", "reread", "dispatch", "reconcile", "receipt", "cleanup"] as const);
+const TEST_CASES = Object.freeze(["account-binding", "ambiguity", "cleanup", "normal", "redaction", "stale-state"] as const);
+
+export interface CertificationRunnerManifestV1 {
+  readonly v: "reelier.certification-runner-manifest/v1";
+  readonly scenarioId: CertificationScenarioId;
+  readonly runnerId: string;
+  readonly endpointManifestDigest: string;
+  readonly implementationDigest: string;
+  readonly operations: typeof RUNNER_OPERATIONS_V1;
+  readonly executionReady: false;
+  readonly dispatchable: false;
+}
+export interface CertificationRunnerManifestV2 {
+  readonly v: "reelier.certification-runner-manifest/v2";
+  readonly scenarioId: CertificationScenarioId;
+  readonly runnerId: string;
+  readonly endpointManifestDigest: string;
+  readonly metadataDigest: string;
+  readonly registryDigest: string;
+  readonly operations: typeof CERTIFICATION_RUNNER_OPERATIONS;
+  readonly executionReady: false;
+  readonly dispatchable: false;
+}
+export type CertificationRunnerManifest = CertificationRunnerManifestV1 | CertificationRunnerManifestV2;
+
+export interface CertificationTestManifestV1 {
+  readonly v: "reelier.certification-test-manifest/v1";
+  readonly scenarioId: CertificationScenarioId;
+  readonly suiteId: string;
+  readonly runnerManifestDigest: string;
+  readonly cases: typeof TEST_CASES;
+}
+
+type Method = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
+export interface CertificationEndpointV2 { readonly endpointId: string; readonly provider: CertificationProvider; readonly credentialSlot: CertificationSecretSlot; readonly accountCommitment: string; readonly resourceCommitment: string; readonly direction: "read" | "write"; readonly method: Method }
+export interface CertificationEndpointManifestV1 {
+  readonly v: "reelier.certification-endpoint-manifest/v1";
+  readonly scenarioId: CertificationScenarioId;
+  readonly provider: "cloudflare" | "codex" | "fly" | "github" | "neon" | "slack" | "vercel";
+  readonly resourceDigest: string;
+  readonly credentialSlots: readonly (CertificationSecretSlot | "cloudflareCredential")[];
+  readonly endpoints: readonly Readonly<{ endpointId: string; direction: "read" | "write"; method: Method }>[];
+  readonly completeness: "unchecked";
+  readonly dispatchable: false;
+}
+export interface CertificationEndpointManifestV2 {
+  readonly v: "reelier.certification-endpoint-manifest/v2";
+  readonly scenarioId: CertificationScenarioId;
+  readonly definitionAliases: readonly string[];
+  readonly endpoints: readonly CertificationEndpointV2[];
+  readonly completeness: "unchecked";
+  readonly dispatchable: false;
+}
+export type CertificationEndpointManifest = CertificationEndpointManifestV1 | CertificationEndpointManifestV2;
+
+export interface CertificationScenarioPlanV1 {
+  readonly v: "reelier.certification-scenario-plan/v1";
+  readonly scenarioId: CertificationScenarioId;
+  readonly definitionAliases: readonly string[];
+  readonly sourceRefs: Readonly<Record<string, string>>;
+  readonly resourceDigest: string;
+  readonly accountCommitments: readonly Readonly<{ provider: CertificationProvider; digest: string }>[];
+  readonly desiredStateDigest: string;
+  readonly policyCommitments: readonly Readonly<{ schemaId: string; digest: string }>[];
+  readonly cleanup: Readonly<{ recipeIds: readonly string[]; beforeState: "pending" }>;
+  readonly controlledCut: Readonly<{ case: "ambiguous-after-dispatch" }>;
+  readonly runnerManifestDigest: string;
+  readonly testManifestDigest: string;
+  readonly endpointManifestDigest: string;
+  readonly runnerRegistryDigest: string;
+}
+
+export function parseCertificationEndpointManifest(value: unknown, expectedScenario?: CertificationScenarioId): CertificationEndpointManifest {
+  const raw = object(value, "certification endpoint manifest");
+  if (raw.v === "reelier.certification-endpoint-manifest/v1") return parseEndpointV1(raw, expectedScenario);
+  closed(raw, ["v", "scenarioId", "definitionAliases", "endpoints", "completeness", "dispatchable"], "certification endpoint manifest v2");
+  const scenarioId = scenario(raw.scenarioId);
+  if (expectedScenario !== undefined && scenarioId !== expectedScenario) throw new TypeError("certification endpoint manifest scenario is invalid");
+  const registry = getCertificationRunnerRegistryEntry(scenarioId);
+  const endpointValues = inertArray(raw.endpoints, "certification endpoint list");
+  if (!exactList(raw.definitionAliases, registry.definitionAliases) || raw.completeness !== "unchecked" || raw.dispatchable !== registry.dispatchable || endpointValues.length !== registry.endpoints.length) throw new TypeError("certification endpoint manifest v2 is invalid");
+  const endpoints = endpointValues.map((value: unknown, index: number) => {
+    const endpoint = object(value, "certification endpoint v2");
+    closed(endpoint, ["endpointId", "provider", "credentialSlot", "accountCommitment", "resourceCommitment", "direction", "method"], "certification endpoint v2");
+    const expected = registry.endpoints[index]!;
+    if (endpoint.endpointId !== expected.endpointId || endpoint.provider !== expected.provider || endpoint.credentialSlot !== expected.credentialSlot || endpoint.direction !== expected.direction || endpoint.method !== expected.method || !digest(endpoint.accountCommitment) || !digest(endpoint.resourceCommitment)) throw new TypeError("certification endpoint does not match reviewed static pack registration");
+    return Object.freeze({ endpointId: expected.endpointId, provider: expected.provider, credentialSlot: expected.credentialSlot, accountCommitment: endpoint.accountCommitment, resourceCommitment: endpoint.resourceCommitment, direction: expected.direction, method: expected.method });
+  });
+  return Object.freeze({ v: "reelier.certification-endpoint-manifest/v2", scenarioId, definitionAliases: registry.definitionAliases, endpoints: Object.freeze(endpoints), completeness: "unchecked", dispatchable: false });
+}
+
+function parseEndpointV1(raw: Record<string, any>, expectedScenario?: CertificationScenarioId): CertificationEndpointManifestV1 {
+  closed(raw, ["v", "scenarioId", "provider", "resourceDigest", "credentialSlots", "endpoints", "completeness"], "certification endpoint manifest v1");
+  const scenarioId = scenario(raw.scenarioId);
+  const providers = ["cloudflare", "codex", "fly", "github", "neon", "slack", "vercel"] as const;
+  const expectedProvider = scenarioId.startsWith("cloudflare-") ? "cloudflare" : scenarioId.startsWith("codex-") ? "codex" : scenarioId.startsWith("fly-") ? "fly" : scenarioId.startsWith("github-") ? "github" : scenarioId.startsWith("neon-") ? "neon" : scenarioId.startsWith("slack-") ? "slack" : "vercel";
+  const expectedSlots = CERTIFICATION_SCENARIOS[scenarioId].secretSlots.map(slot => slot === "cloudflareDnsCredential" || slot === "cloudflareBootstrapCredential" ? "cloudflareCredential" : slot);
+  const endpointValues = inertArray(raw.endpoints, "certification endpoint list");
+  if ((expectedScenario !== undefined && scenarioId !== expectedScenario) || typeof raw.provider !== "string" || !providers.includes(raw.provider as typeof providers[number]) || raw.provider !== expectedProvider || !digest(raw.resourceDigest) || !exactList(raw.credentialSlots, expectedSlots) || raw.completeness !== "unchecked" || endpointValues.length === 0) throw new TypeError("certification endpoint manifest v1 is invalid");
+  const endpoints = endpointValues.map((value: unknown) => { const endpoint = object(value, "certification endpoint"); closed(endpoint, ["endpointId", "direction", "method"], "certification endpoint"); if (typeof endpoint.endpointId !== "string" || !/^[a-z][a-z0-9_.-]{2,127}$/.test(endpoint.endpointId) || (endpoint.direction !== "read" && endpoint.direction !== "write") || !["GET", "POST", "PUT", "PATCH", "DELETE"].includes(String(endpoint.method))) throw new TypeError("certification endpoint is invalid"); return Object.freeze({ endpointId: endpoint.endpointId, direction: endpoint.direction, method: endpoint.method as Method }); });
+  const identities = endpoints.map(endpoint => endpoint.endpointId); if (new Set(identities).size !== identities.length || identities.some((item, index) => index > 0 && identities[index - 1]! >= item)) throw new TypeError("certification endpoints must be unique and sorted");
+  return Object.freeze({ v: "reelier.certification-endpoint-manifest/v1", scenarioId, provider: raw.provider, resourceDigest: raw.resourceDigest, credentialSlots: Object.freeze([...expectedSlots]), endpoints: Object.freeze(endpoints), completeness: "unchecked", dispatchable: false });
+}
+
+export function parseCertificationRunnerManifest(value: unknown, expectedScenario?: CertificationScenarioId): CertificationRunnerManifest {
+  const raw = object(value, "certification runner manifest");
+  if (raw.v === "reelier.certification-runner-manifest/v1") {
+    closed(raw, ["v", "scenarioId", "runnerId", "endpointManifestDigest", "implementationDigest", "operations"], "certification runner manifest v1");
+    const scenarioId = scenario(raw.scenarioId);
+    if ((expectedScenario !== undefined && scenarioId !== expectedScenario) || typeof raw.runnerId !== "string" || !ID.test(raw.runnerId) || !digest(raw.endpointManifestDigest) || !digest(raw.implementationDigest) || !exactList(raw.operations, RUNNER_OPERATIONS_V1)) throw new TypeError("certification runner manifest v1 is invalid");
+    return Object.freeze({ v: "reelier.certification-runner-manifest/v1", scenarioId, runnerId: raw.runnerId, endpointManifestDigest: raw.endpointManifestDigest, implementationDigest: raw.implementationDigest, operations: RUNNER_OPERATIONS_V1, executionReady: false, dispatchable: false });
+  }
+  closed(raw, ["v", "scenarioId", "runnerId", "endpointManifestDigest", "metadataDigest", "registryDigest", "operations", "executionReady", "dispatchable"], "certification runner manifest v2");
+  const scenarioId = scenario(raw.scenarioId);
+  const registry = getCertificationRunnerRegistryEntry(scenarioId);
+  if (raw.v !== "reelier.certification-runner-manifest/v2" || (expectedScenario !== undefined && scenarioId !== expectedScenario) || raw.runnerId !== registry.runnerId || !digest(raw.endpointManifestDigest) || raw.metadataDigest !== registry.metadataDigest || raw.registryDigest !== certificationRunnerRegistryDigest || !exactList(raw.operations, CERTIFICATION_RUNNER_OPERATIONS) || raw.executionReady !== false || raw.dispatchable !== false) throw new TypeError("certification runner manifest v2 does not match built-in registry metadata");
+  return Object.freeze({ v: "reelier.certification-runner-manifest/v2", scenarioId, runnerId: registry.runnerId, endpointManifestDigest: raw.endpointManifestDigest, metadataDigest: registry.metadataDigest, registryDigest: certificationRunnerRegistryDigest, operations: CERTIFICATION_RUNNER_OPERATIONS, executionReady: false, dispatchable: false });
+}
+
+export function parseCertificationTestManifest(value: unknown, expectedScenario?: CertificationScenarioId, expectedRunnerDigest?: string): CertificationTestManifestV1 {
+  const raw = object(value, "certification test manifest"); closed(raw, ["v", "scenarioId", "suiteId", "runnerManifestDigest", "cases"], "certification test manifest"); const scenarioId = scenario(raw.scenarioId);
+  if (raw.v !== "reelier.certification-test-manifest/v1" || (expectedScenario !== undefined && scenarioId !== expectedScenario) || typeof raw.suiteId !== "string" || !ID.test(raw.suiteId) || !digest(raw.runnerManifestDigest) || (expectedRunnerDigest !== undefined && raw.runnerManifestDigest !== expectedRunnerDigest) || !exactList(raw.cases, TEST_CASES)) throw new TypeError("certification test manifest is invalid");
+  return Object.freeze({ v: raw.v, scenarioId, suiteId: raw.suiteId, runnerManifestDigest: raw.runnerManifestDigest, cases: TEST_CASES });
+}
+
+export function parseCertificationScenarioPlan(value: unknown, config: CertificationOperatorConfigV3, selectedScenarios: readonly CertificationScenarioId[] = config.scenarios): CertificationScenarioPlanV1 {
+  const raw = object(value, "certification scenario plan");
+  closed(raw, ["v", "scenarioId", "definitionAliases", "sourceRefs", "resourceDigest", "accountCommitments", "desiredStateDigest", "policyCommitments", "cleanup", "controlledCut", "runnerManifestDigest", "testManifestDigest", "endpointManifestDigest", "runnerRegistryDigest"], "certification scenario plan");
+  const scenarioId = scenario(raw.scenarioId);
+  const selected = inertArray(selectedScenarios, "certification selected plan scenarios");
+  if (selected.some(item => typeof item !== "string" || !(CERTIFICATION_SCENARIO_IDS as readonly string[]).includes(item)) || new Set(selected).size !== selected.length) throw new TypeError("certification selected plan scenarios are invalid");
+  if (raw.v !== "reelier.certification-scenario-plan/v1" || !selected.includes(scenarioId)) throw new TypeError("certification scenario plan is not selected");
+  const registry = getCertificationRunnerRegistryEntry(scenarioId);
+  if (!exactList(raw.definitionAliases, registry.definitionAliases) || raw.runnerRegistryDigest !== certificationRunnerRegistryDigest) throw new TypeError("certification scenario plan registry or definition alias is invalid");
+  const bindings = certificationScenarioPlanBindings(config, scenarioId);
+  const sourceRefs = stringRecord(raw.sourceRefs, "scenario source refs");
+  if (authorityDigest(sourceRefs) !== authorityDigest(bindings.sourceRefs) || raw.resourceDigest !== bindings.resourceDigest || raw.desiredStateDigest !== bindings.desiredStateDigest) throw new TypeError("certification scenario plan resource or desired-state authority does not match config");
+  const accountValues = inertArray(raw.accountCommitments, "certification account commitments");
+  const accountCommitments = accountValues.map(value => { const item = object(value, "certification account commitment"); closed(item, ["provider", "digest"], "certification account commitment"); if (typeof item.provider !== "string" || !digest(item.digest)) throw new TypeError("certification account commitment is invalid"); return Object.freeze({ provider: item.provider as CertificationProvider, digest: item.digest }); });
+  if (authorityDigest(accountCommitments) !== authorityDigest(bindings.accountCommitments)) throw new TypeError("certification scenario plan account authority does not match config");
+  const policyValues = inertArray(raw.policyCommitments, "certification policy commitments");
+  if (policyValues.length !== registry.policySchemaIds.length || policyValues.length > 8) throw new TypeError("certification policy commitments are invalid");
+  const policyCommitments = policyValues.map(value => { const item = object(value, "certification policy commitment"); closed(item, ["schemaId", "digest"], "certification policy commitment"); if (typeof item.schemaId !== "string" || !ID.test(item.schemaId) || !digest(item.digest)) throw new TypeError("certification policy commitment is invalid"); return Object.freeze({ schemaId: item.schemaId, digest: item.digest }); });
+  if (authorityDigest(policyCommitments) !== authorityDigest(certificationPolicyCommitments(scenarioId))) throw new TypeError("certification policy commitments do not match reviewed pack schemas");
+  const cleanup = object(raw.cleanup, "certification cleanup recipe"); closed(cleanup, ["recipeIds", "beforeState"], "certification cleanup recipe"); if (!exactList(cleanup.recipeIds, bindings.cleanupRecipeIds) || cleanup.beforeState !== "pending") throw new TypeError("certification cleanup recipe before state must remain pending until provider read");
+  const controlledCut = object(raw.controlledCut, "certification controlled cut"); closed(controlledCut, ["case"], "certification controlled cut"); if (controlledCut.case !== "ambiguous-after-dispatch") throw new TypeError("certification controlled-cut case is invalid");
+  for (const [name, value] of [["runner", raw.runnerManifestDigest], ["test", raw.testManifestDigest], ["endpoint", raw.endpointManifestDigest]] as const) if (!digest(value)) throw new TypeError(`certification ${name} manifest digest is invalid`);
+  return Object.freeze({ v: "reelier.certification-scenario-plan/v1", scenarioId, definitionAliases: registry.definitionAliases, sourceRefs, resourceDigest: bindings.resourceDigest, accountCommitments: Object.freeze(accountCommitments), desiredStateDigest: bindings.desiredStateDigest, policyCommitments: certificationPolicyCommitments(scenarioId), cleanup: Object.freeze({ recipeIds: bindings.cleanupRecipeIds, beforeState: "pending" as const }), controlledCut: Object.freeze({ case: "ambiguous-after-dispatch" }), runnerManifestDigest: raw.runnerManifestDigest, testManifestDigest: raw.testManifestDigest, endpointManifestDigest: raw.endpointManifestDigest, runnerRegistryDigest: certificationRunnerRegistryDigest });
+}
+function stringRecord(value: unknown, label: string): Readonly<Record<string, string>> { const raw = object(value, label); if (Object.keys(raw).length === 0) throw new TypeError(`${label} is invalid`); const result: Record<string, string> = {}; for (const key of Object.keys(raw).sort()) { if (!ID.test(key) || typeof raw[key] !== "string" || !TEXT.test(raw[key]) || /bearer|secret|token|password/i.test(raw[key])) throw new TypeError(`${label} contains secret-shaped or invalid data`); result[key] = raw[key]; } return Object.freeze(result); }
+function exactList(value: unknown, expected: readonly string[]): boolean { const list = inertArray(value, "certification exact list"); return list.length === expected.length && list.every((item, index) => item === expected[index]); }
+function digest(value: unknown): value is string { return typeof value === "string" && DIGEST.test(value); }
+function scenario(value: unknown): CertificationScenarioId { if (typeof value !== "string" || !(CERTIFICATION_SCENARIO_IDS as readonly string[]).includes(value)) throw new TypeError("certification manifest scenario is invalid"); return value as CertificationScenarioId; }
+function object(value: unknown, label: string): Record<string, any> { return inertRecord(value, label) as Record<string, any>; }
+function closed(raw: Record<string, unknown>, keys: readonly string[], label: string): void { const own = Reflect.ownKeys(raw); if (own.some(key => typeof key !== "string") || own.length !== keys.length || own.some(key => !keys.includes(key as string))) throw new TypeError(`${label} is closed`); }

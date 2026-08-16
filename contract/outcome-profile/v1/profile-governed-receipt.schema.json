@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://reelier.dev/contracts/outcome-profile/v1/profile-governed-receipt.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["v", "profileDraft", "profileConformanceReport", "profileConformance", "profileActivation", "authorityReceiptBundle", "authorityBindingEvidence", "edges"],
+  "properties": {
+    "v": { "const": "reelier.profile-governed-authority-receipt/v1" },
+    "profileDraft": { "$ref": "https://reelier.dev/contracts/outcome-profile/v1/profile-draft.schema.json" },
+    "profileConformanceReport": { "$ref": "https://reelier.dev/contracts/outcome-profile/v1/profile-conformance-report.schema.json" },
+    "profileConformance": { "$ref": "https://reelier.dev/contracts/outcome-profile/v1/profile-conformance.schema.json" },
+    "profileActivation": { "$ref": "https://reelier.dev/contracts/outcome-profile/v1/profile-activation.schema.json" },
+    "authorityReceiptBundle": { "$ref": "https://reelier.dev/contracts/authority/v1/authority-receipt-bundle.schema.json" },
+    "authorityBindingEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["signedJobCard", "artifactKeyBinding", "artifactKeyBindingCommitment", "deploymentSnapshot", "routeScope", "routeAuthoritySnapshot", "binding"],
+      "properties": {
+        "signedJobCard": { "type": "object" },
+        "artifactKeyBinding": { "type": "object" },
+        "artifactKeyBindingCommitment": { "type": "object" },
+        "deploymentSnapshot": { "$ref": "#/$defs/deploymentSnapshot" },
+        "routeScope": { "$ref": "#/$defs/routeScope" },
+        "routeAuthoritySnapshot": { "type": "object" },
+        "binding": { "$ref": "https://reelier.dev/contracts/outcome-profile/v1/profile-authority-evidence.schema.json" }
+      }
+    },
+    "edges": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["profileDigest", "conformanceReportDigest", "conformanceDigest", "activationDigest", "innerReceiptDigest", "authorityBindingDigest"],
+      "properties": {
+        "profileDigest": { "$ref": "#/$defs/digest" },
+        "conformanceReportDigest": { "$ref": "#/$defs/digest" },
+        "conformanceDigest": { "$ref": "#/$defs/digest" },
+        "activationDigest": { "$ref": "#/$defs/digest" },
+        "innerReceiptDigest": { "$ref": "#/$defs/digest" },
+        "authorityBindingDigest": { "$ref": "#/$defs/digest" }
+      }
+    }
+  },
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^sha256:(?!0{64}$)[0-9a-f]{64}$" },
+    "id": { "type": "string", "pattern": "^[A-Za-z0-9._~-]{1,128}$" },
+    "routeScope": {
+      "type": "object", "additionalProperties": false,
+      "required": ["v", "tenant", "definitionAlias", "connectorRegistrationDigest", "operatorConfigurationDigest", "routeDigest", "providerId", "connectorId", "accountId", "providerAccountIdentity", "endpointId", "credentialSlotId", "sourceReadRouteDigest", "projectionSchemaDigest"],
+      "properties": {
+        "v": { "const": "reelier.authority-route-scope/v1" }, "tenant": { "$ref": "#/$defs/id" }, "definitionAlias": { "$ref": "#/$defs/id" },
+        "connectorRegistrationDigest": { "$ref": "#/$defs/digest" }, "operatorConfigurationDigest": { "$ref": "#/$defs/digest" }, "routeDigest": { "$ref": "#/$defs/digest" },
+        "providerId": { "$ref": "#/$defs/id" }, "connectorId": { "$ref": "#/$defs/id" }, "accountId": { "$ref": "#/$defs/id" }, "providerAccountIdentity": { "type": "string", "minLength": 1 },
+        "endpointId": { "$ref": "#/$defs/id" }, "credentialSlotId": { "$ref": "#/$defs/id" }, "sourceReadRouteDigest": { "$ref": "#/$defs/digest" }, "projectionSchemaDigest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "deploymentSnapshot": {
+      "type": "object", "additionalProperties": false,
+      "required": ["v", "tenant", "jobCardDigest", "jobCardAuthorityDigest", "authorityStateDigest", "connectorRegistryDigest", "trustRootSetDigest", "connectionDescriptorsDigest", "connectionAdoptionsDigest", "enforcementDigest", "routeScopeDigest"],
+      "properties": {
+        "v": { "const": "reelier.authority-deployment-snapshot/v1" }, "tenant": { "$ref": "#/$defs/id" },
+        "jobCardDigest": { "$ref": "#/$defs/digest" }, "jobCardAuthorityDigest": { "$ref": "#/$defs/digest" }, "authorityStateDigest": { "$ref": "#/$defs/digest" }, "connectorRegistryDigest": { "$ref": "#/$defs/digest" }, "trustRootSetDigest": { "$ref": "#/$defs/digest" }, "connectionDescriptorsDigest": { "$ref": "#/$defs/digest" }, "connectionAdoptionsDigest": { "$ref": "#/$defs/digest" }, "enforcementDigest": { "$ref": "#/$defs/digest" }, "routeScopeDigest": { "$ref": "#/$defs/digest" }
+      }
+    }
+  }
+}

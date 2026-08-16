@@ -1,0 +1,27 @@
+{
+  "v": "reelier.topology-probe-config/v1",
+  "role": "agent",
+  "runtimeSession": "fly-machine-runtime",
+  "providerCredentialEnvNames": [],
+  "allowedCredentialEnvNames": ["ANTHROPIC_API_KEY", "CODEX_API_KEY", "OPENAI_API_KEY"],
+  "rawWriteRouteIds": [],
+  "readSurfaceIds": [
+    "cloudflare.resource.read",
+    "github.commit.read",
+    "github.issue.read",
+    "hubspot.ticket.read",
+    "neon.catalog.read",
+    "slack.channel.read",
+    "vercel.deployment.read"
+  ],
+  "providerEndpoints": [
+    "api.cloudflare.com",
+    "api.github.com",
+    "api.hubapi.com",
+    "api.vercel.com",
+    "console.neon.tech",
+    "slack.com"
+  ],
+  "egressProxy": null,
+  "schemaDigest": "sha256:9be3f4bc9cb0a4f8cc1b271d628e2fc197011de60cfb423322bcca76140fadef"
+}

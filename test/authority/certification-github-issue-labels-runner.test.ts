@@ -1,0 +1,942 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { createPublicKey, generateKeyPairSync } from "node:crypto";
+import { createRequire } from "node:module";
+import { mkdtemp, readFile, readdir, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { authorityCanonicalBytes, authorityDigest } from "../../src/authority/wire.js";
+import { signedJobCardDigest } from "../../src/authority/job.js";
+import { createCertificationCellHost, certificationCellHostInternalState } from "../../src/authority/certification/cell.js";
+import { __testSetGitHubIssueLabelsRunnerBarrier, createGitHubIssueLabelsHermeticComposition, type GitHubIssueLabelsHermeticComposition } from "../../src/authority/certification/github-issue-labels-runner.js";
+import { __testSetAuthorityCellHostPlatform, assertLinuxAuthorityCellHost } from "../../src/authority/host/platform.js";
+import { verifyAuthorityReceiptBundle } from "../../src/authority/verify.js";
+import { verifyCertificationSanitizedPortableOutcomeEvidenceExport, verifyCertificationTaskReceiptGraph } from "../../src/authority/certification/task-receipt-graph.js";
+import { AUTHORITY_ADAPTER_CONTRACT_V1_DIGEST } from "../../src/authority/adapter-contract.js";
+import { signAuthorityDigest } from "../../src/authority/crypto.js";
+import { createCertificationTaskReceiptGraph } from "../../src/authority/certification/task-receipt-graph.js";
+import { createPortableOutcomeEvidencePublication, createSanitizedPortableOutcomeEvidenceExport, portableSignerIdFromPublicKey } from "../../src/authority/host/portable-receipts.js";
+import { httpResponseSemanticsProfileDigest } from "../../src/authority/host/http-response-semantics.js";
+import { createGitHubIssueLabelsFixture, type GitHubIssueLabelsFixture } from "./fixtures/github-issue-labels.js";
+import { profileGovernanceFixture } from "./profile-governance-fixture.js";
+
+const at = "2026-08-11T20:00:00.000Z", expiry = "2026-08-11T21:00:00.000Z";
+const hermeticResponseSemanticsProfile = { v: "reelier.http-response-semantics/v1" as const, profileId: "github.issue-labels.hermetic-v1", acknowledgedStatuses: [200] };
+const graphVerification = (pin: any, overrides: Record<string, unknown> = {}) => ({ trustPin: pin, currentTrustObservation: { v: "reelier.portable-current-trust-observation/v1", observedAt: at, expiresAt: expiry, activeAuthorityEvidenceSignerIds: [pin.keyDescriptors.find((item: any) => item.role === "authority-cell" && item.purpose === "authority-evidence")?.keyId] }, now: new Date("2026-08-11T20:10:00.000Z"), expectedResponseSemanticsProfile: hermeticResponseSemanticsProfile, ...overrides });
+const restorePlatform = __testSetAuthorityCellHostPlatform("linux");
+test.after(() => restorePlatform());
+
+type LifecycleActivationInput = Parameters<Awaited<ReturnType<typeof createCertificationCellHost>>["activateRootTask"]>[0];
+function compileTimeLifecycleActivationBoundary(): void {
+  // @ts-expect-error Lifecycle Cell callers must never be able to type-check raw signer material.
+  const forbidden: LifecycleActivationInput = { jobCard: {}, jobCardTrustPin: {} as never, constraints: {} as never, effects: 1, issuedAt: at, expiresAt: expiry, delegationKeyDescriptor: {}, delegationPrivateKey: generateKeyPairSync("ed25519").privateKey };
+  void forbidden;
+}
+void compileTimeLifecycleActivationBoundary;
+
+async function settleLiveRunBeforeFixtureRemoval(fixture: Pick<GitHubIssueLabelsFixture, "close">, release: () => void, running?: Promise<unknown>): Promise<void> {
+  release();
+  if (running) await Promise.allSettled([running]);
+  await fixture.close();
+}
+
+test("only a genuine Cell host can compose the fixed runner", async () => {
+  profileGovernanceFixture();
+  await assert.rejects(() => createGitHubIssueLabelsHermeticComposition({ verifyDispatchReadiness: async () => ({}), revalidateDispatchPermit: async () => undefined } as never), /genuine|brand|Cell/i);
+});
+
+test("runner refuses absent or caller-substituted contract and gate authority", async () => {
+  await assert.rejects(() => createGitHubIssueLabelsFixture("normal", "absent"), /activated|descriptor|signer|authority|closed/i);
+  await assert.rejects(() => createGitHubIssueLabelsFixture("normal", "substituted"), /match|descriptor|signer|authority/i);
+});
+
+test("rejecting fixture construction removes its exact root and restores the platform seam", async () => {
+  for (const authorityMode of ["absent", "substituted", "contract-substituted"] as const) {
+    const rootsBefore = new Set((await readdir(tmpdir())).filter(name => name.startsWith("reelier-github-cell-")));
+    const restoreSentinel = __testSetAuthorityCellHostPlatform("darwin");
+    try {
+      await assert.rejects(() => createGitHubIssueLabelsFixture("normal", authorityMode), /activated|descriptor|signer|authority|match|adapter|contract|binding|signature|closed/i);
+      assert.throws(() => assertLinuxAuthorityCellHost(), /Linux|AUTHORITY_CELL_LINUX_REQUIRED/i);
+    } finally {
+      restoreSentinel();
+    }
+    const rootsAfter = new Set((await readdir(tmpdir())).filter(name => name.startsWith("reelier-github-cell-")));
+    assert.deepEqual(rootsAfter, rootsBefore, authorityMode);
+  }
+});
+
+test("real Cell permit, gate reservation, exact plan and budget precede one fixed provider write", async () => {
+  const f = await createGitHubIssueLabelsFixture("pause-after-dispatched"); try {
+    await assert.rejects(() => f.cell.verifyDispatchReadiness({ scenario: "github-issue-labels", bearerToken: f.credential.token }), /execution is unavailable|non-dispatchable/i);
+    const result = await f.runner.run({ bearerToken: f.credential.token, requestId: "request_normal" });
+    assert.equal(result.status, "acknowledged"); assert.equal(result.success, false); assert.equal(result.providerWrites, 1);
+    assert.equal((await f.delegation.budget.get(f.activation.allocationId))?.consumed, 1);
+    assert.equal((await f.runner.status({ bearerToken: f.credential.token, requestId: "request_normal" })).status, "acknowledged");
+    const duplicate = await f.runner.run({ bearerToken: f.credential.token, requestId: "request_normal" }); assert.equal(duplicate.providerWrites, 1);
+    await assert.rejects(() => f.runner.run({ bearerToken: "invalid", requestId: "request_normal" }), /credential|principal|bearer/i);
+    assert.equal((await (f.runner as any).status({ bearerToken: f.credential.token, requestId: "request_normal" })).status, "acknowledged");
+    await assert.rejects(() => (f.runner as any).status({ bearerToken: "invalid", requestId: "request_normal" }), /credential|principal|bearer/i);
+  } finally { await f.close(); }
+});
+
+test("each lifecycle publication refreshes the Cell-owned full pin before signing or storing", async () => {
+  const f = await createGitHubIssueLabelsFixture("normal");
+  try {
+    const first = await f.runner.run({ bearerToken: f.credential.token, requestId: "request_before_evidence_revocation" });
+    assert.equal(first.status, "acknowledged");
+    assert.equal(first.providerWrites, 1);
+
+    const receiptRoot = path.join(f.initialized.workspace, "authority", "github-label-runner", "receipts");
+    const countReceiptFiles = async () => {
+      let count = 0;
+      for (const directory of ["local", "portable", "extensions"]) {
+        const target = path.join(receiptRoot, directory);
+        try { count += (await readdir(target)).filter(name => name.endsWith(".json")).length; }
+        catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+      }
+      return count;
+    };
+    const receiptsBefore = await countReceiptFiles();
+    const evidence = f.pin.keyDescriptors.find((item: any) => item.purpose === "authority-evidence");
+    assert.ok(evidence);
+    const prior = f.pin.currentTrustEvents.at(-1)!;
+    const revoke = {
+      v: "reelier.authority-trust-event/v1",
+      eventId: `trust_revoke_${"e".repeat(12)}`,
+      sequence: prior.sequence + 1,
+      action: "revoke",
+      keyDescriptorDigest: authorityDigest(evidence),
+      occurredAt: "2026-08-11T20:09:00.000Z",
+      previousEventDigest: authorityDigest(prior),
+    };
+    await writeFile(path.join(f.root, "operator-current-trust.json"), `${JSON.stringify({ ...f.pin, currentTrustEvents: [...f.pin.currentTrustEvents, revoke] })}\n`);
+
+    await assert.rejects(
+      () => f.runner.run({ bearerToken: f.credential.token, requestId: "request_after_evidence_revocation" }),
+      /revok|inactive|current trust|evidence/i,
+    );
+    assert.equal(await countReceiptFiles(), receiptsBefore, "no signature-backed receipt or extension may be stored");
+    const status = await f.runner.status({ bearerToken: f.credential.token, requestId: "request_after_evidence_revocation" });
+    assert.equal(status.providerWrites, 0, "the provider effect boundary must remain untouched");
+  } finally { await f.close(); }
+});
+
+async function countLifecyclePublicationFiles(fixture: GitHubIssueLabelsFixture): Promise<Readonly<{ receipts: number; extensions: number }>> {
+  const receiptRoot = path.join(fixture.initialized.workspace, "authority", "github-label-runner", "receipts");
+  const count = async (directory: string) => {
+    try { return (await readdir(path.join(receiptRoot, directory))).filter(name => name.endsWith(".json")).length; }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return 0; throw error; }
+  };
+  return Object.freeze({ receipts: await count("local") + await count("portable"), extensions: await count("extensions") });
+}
+
+async function lifecycleProviderWriteCount(fixture: GitHubIssueLabelsFixture): Promise<number> {
+  const provider = JSON.parse(await readFile(path.join(fixture.initialized.workspace, "authority", "github-label-runner", "provider-state.json"), "utf8"));
+  return provider.writes;
+}
+
+test("an expired principal crosses the actual runner with zero receipt, extension, or provider effects", async () => {
+  const f = await createGitHubIssueLabelsFixture("normal");
+  try {
+    const internal = certificationCellHostInternalState(f.cell);
+    const expired = await internal.principalRegistry.issue({
+      principalId: `${f.activation.principalId}_expired`, taskId: f.activation.taskId,
+      grantId: f.activation.grantId, grantDigest: f.activation.signedChildGrant.digest,
+      allocationId: f.activation.allocationId, runtimeSessionId: "session_expired_runner",
+      jobId: f.jobCard.jobId, authorityCellId: f.initialized.identifiers.authorityCellId,
+      expiresAt: "2026-08-11T20:09:59.000Z",
+    });
+    const before = await countLifecyclePublicationFiles(f), providerWritesBefore = await lifecycleProviderWriteCount(f);
+    await assert.rejects(() => f.runner.run({ bearerToken: expired.token, requestId: "request_expired_runner" }), /expired|credential|principal|session|stale/i);
+    assert.deepEqual(await countLifecyclePublicationFiles(f), before);
+    assert.equal(await lifecycleProviderWriteCount(f), providerWritesBefore);
+  } finally { await f.close(); }
+});
+
+test("a current-event head advance preserves historical verification while current verification refuses stale evidence", async () => {
+  const f = await createGitHubIssueLabelsFixture("normal");
+  try {
+    const first = await f.runner.run({ bearerToken: f.credential.token, requestId: "request_before_head_advance" });
+    assert.equal(first.status, "acknowledged");
+    const historicalGraph = await f.runner.exportGraph({ bearerToken: f.credential.token });
+    assert.doesNotThrow(() => verifyCertificationTaskReceiptGraph(historicalGraph, graphVerification(f.pin)));
+    const before = await countLifecyclePublicationFiles(f);
+    const advancedDescriptor = f.pin.keyDescriptors.find((item: any) => item.purpose === "outcome-contract");
+    assert.ok(advancedDescriptor);
+    const prior = f.pin.currentTrustEvents.at(-1)!;
+    const revoke = {
+      v: "reelier.authority-trust-event/v1", eventId: `trust_advance_${"a".repeat(12)}`,
+      sequence: prior.sequence + 1, action: "revoke", keyDescriptorDigest: authorityDigest(advancedDescriptor),
+      occurredAt: "2026-08-11T20:09:00.000Z", previousEventDigest: authorityDigest(prior),
+    };
+    const advancedPin = { ...f.pin, currentTrustEvents: [...f.pin.currentTrustEvents, revoke] };
+    await writeFile(path.join(f.root, "operator-current-trust.json"), `${JSON.stringify(advancedPin)}\n`);
+    const second = await f.runner.run({ bearerToken: f.credential.token, requestId: "request_after_head_advance" });
+    assert.equal(second.status, "duplicate");
+    assert.equal(second.providerWrites, 1);
+    const after = await countLifecyclePublicationFiles(f);
+    assert.deepEqual(after, before, "a duplicate remains zero-effect while still crossing current trust validation");
+    const graph = await f.runner.exportGraph({ bearerToken: f.credential.token });
+    assert.throws(() => verifyCertificationTaskReceiptGraph(graph, graphVerification(advancedPin)), /current trust|stale|expired|missing the signer/i);
+  } finally { await f.close(); }
+});
+
+for (const mode of ["source-drift", "effect-drift"] as const) test(`${mode} refuses with zero writes and no budget consumption`, async () => { const f = await createGitHubIssueLabelsFixture(mode); try { const result = await f.runner.run({ bearerToken: f.credential.token, requestId: `request_${mode}` }); assert.equal(result.status, "refused"); assert.equal(result.providerWrites, 0); const budget = await f.delegation.budget.get(f.activation.allocationId); assert.equal(budget?.consumed, 0); assert.equal(budget?.remaining, 2); } finally { await f.close(); } });
+
+for (const mode of ["provider-503", "accessor-response"] as const) test(`${mode} is never acknowledged`, async () => { const f = await createGitHubIssueLabelsFixture(mode); try { const result = await f.runner.run({ bearerToken: f.credential.token, requestId: `request_${mode}` }); assert.notEqual(result.status, "acknowledged"); assert.equal(result.success, false); assert.equal(result.providerWrites, 1); } finally { await f.close(); } });
+
+test("503 after apply is ambiguous, retains budget, and blocks cleanup until authoritative reconciliation", async () => {
+  const f = await createGitHubIssueLabelsFixture("provider-503"); try {
+    const result = await f.runner.run({ bearerToken: f.credential.token, requestId: "request_503_ambiguous" });
+    assert.equal(result.status, "pending-reconciliation");
+    assert.equal((await f.delegation.budget.get(f.activation.allocationId))?.consumed, 1);
+    await assert.rejects(() => f.runner.cleanup({ bearerToken: f.credential.token, requestId: "request_503_ambiguous" }), /reconciliation|acknowledged/i);
+  } finally { await f.close(); }
+});
+
+test("Adapter Contract digest is bound before dispatch and by every portable receipt extension", async () => {
+  await assert.rejects(() => createGitHubIssueLabelsFixture("normal", "contract-substituted"), /adapter|contract|binding|signature/i);
+  const f = await createGitHubIssueLabelsFixture(); try {
+    assert.equal((f.lifecycle.binding as any).adapterContractDigest, AUTHORITY_ADAPTER_CONTRACT_V1_DIGEST);
+    assert.equal((f.lifecycle.humanCommitment as any).adapterContractDigest, AUTHORITY_ADAPTER_CONTRACT_V1_DIGEST);
+    const internal: any = certificationCellHostInternalState(f.cell), permit = await internal.issueHermeticGitHubPermit(f.credential.token);
+    const snapshot = internal.hermeticGitHubPermitSnapshot(permit);
+    assert.equal(snapshot.adapterContractDigest, AUTHORITY_ADAPTER_CONTRACT_V1_DIGEST);
+    assert.equal(authorityDigest(snapshot.preimage), snapshot.digest);
+    await internal.revalidateHermeticGitHubPermit(permit);
+    await f.runner.run({ bearerToken: f.credential.token, requestId: "request_contract_binding" });
+    const graph: any = await f.runner.exportGraph({ bearerToken: f.credential.token });
+    assert.equal(graph.receiptExtensions.length, graph.receipts.length);
+    assert.equal(graph.receiptExtensions.every((item: any) => item.adapterContractDigest === AUTHORITY_ADAPTER_CONTRACT_V1_DIGEST), true);
+    assert.deepEqual(graph.receiptExtensions.map((item: any) => item.receiptDigest), graph.receipts.map((item: any) => authorityDigest(item.receipt.value)));
+    assert.equal(verifyCertificationTaskReceiptGraph(graph, graphVerification(f.pin)).status, "verified");
+    const changed = structuredClone(graph); changed.receiptExtensions[0].adapterContractDigest = `sha256:${"0".repeat(64)}`;
+    assert.throws(() => verifyCertificationTaskReceiptGraph(changed, graphVerification(f.pin)), /adapter|contract|extension|terminal|digest/i);
+  } finally { await f.close(); }
+});
+
+test("graph export refuses duplicate on-disk receipt extensions before Map collapse", async () => {
+  const f = await createGitHubIssueLabelsFixture(); try {
+    await f.runner.run({ bearerToken: f.credential.token, requestId: "request_duplicate_extension" });
+    const directory = path.join(f.initialized.workspace, "authority", "github-label-runner", "receipts", "extensions");
+    const original = (await readdir(directory)).find(name => name.endsWith(".json"));
+    assert.ok(original);
+    await writeFile(path.join(directory, "duplicate-extension.json"), await readFile(path.join(directory, original)));
+    await assert.rejects(() => f.runner.exportGraph({ bearerToken: f.credential.token }), /duplicate|extension|cardinality/i);
+  } finally { await f.close(); }
+});
+
+test("lifecycle Cell activation rejects every caller-supplied raw delegation key field before access", async () => {
+  const f = await createGitHubIssueLabelsFixture(); try {
+    let accesses = 0;
+    const rawKey = new Proxy({}, { get() { accesses += 1; throw new Error("RAW_KEY_ACCESSED"); } });
+    await assert.rejects(() => f.cell.activateRootTask({ jobCard: f.jobCard, jobCardTrustPin: f.pin, constraints: f.constraints, effects: 2, issuedAt: at, expiresAt: expiry, delegationKeyDescriptor: rawKey, delegationPrivateKey: rawKey } as never), /closed|unknown|caller/i);
+    assert.equal(accesses, 0);
+  } finally { await f.close(); }
+});
+
+test("lifecycle activation delegates to a narrower child principal and child allocation", async () => {
+  const f = await createGitHubIssueLabelsFixture(); try {
+    const activation: any = f.activation;
+    assert.equal(activation.signedRootGrant.grant.delegationPolicy.mayDelegate, true);
+    assert.equal(activation.signedChildGrant.grant.parentDigest, activation.signedRootGrant.digest);
+    assert.equal(activation.signedChildGrant.grant.grantor, activation.signedRootGrant.grant.grantee);
+    assert.equal(activation.principalId, activation.signedChildGrant.grant.grantee);
+    assert.notEqual(activation.allocationId, activation.rootAllocationId);
+    assert.equal(f.credential.context.grantId, activation.signedChildGrant.grant.grantId);
+    const rootBudget = await f.delegation.budget.get(activation.rootAllocationId), childBudget = await f.delegation.budget.get(activation.allocationId);
+    assert.equal(rootBudget?.remaining, 0);
+    assert.equal(childBudget?.effects, 2);
+  } finally { await f.close(); }
+});
+
+test("pending reconciliation uses an authoritative read and converges without resend", async () => {
+  const f = await createGitHubIssueLabelsFixture("provider-503"); try {
+    const pending = await f.runner.run({ bearerToken: f.credential.token, requestId: "request_503_recover" });
+    assert.equal(pending.status, "pending-reconciliation");
+    assert.equal(pending.providerWrites, 1);
+    const restarted = await createGitHubIssueLabelsHermeticComposition(f.cell);
+    assert.deepEqual(await restarted.recover(), ["request_503_recover"]);
+    const reconciled = await restarted.status({ bearerToken: f.credential.token, requestId: "request_503_recover" });
+    assert.equal(reconciled.status, "acknowledged");
+    assert.equal(reconciled.providerWrites, 1);
+    const cleaned = await restarted.cleanup({ bearerToken: f.credential.token, requestId: "request_503_recover" });
+    assert.equal(cleaned.status, "cleaned");
+  } finally { await f.close(); }
+});
+
+for (const mode of ["cut-after-budget", "cut-after-dispatched", "cut-after-send-intent"] as const) test(`${mode} recovery converges without resending`, async () => { const f = await createGitHubIssueLabelsFixture(mode); try { await assert.rejects(() => f.runner.run({ bearerToken: f.credential.token, requestId: `request_${mode}` }), /controlled cut/i); const restarted = await createGitHubIssueLabelsHermeticComposition(f.cell); const recovered = await restarted.recover(); const status = await restarted.status({ bearerToken: f.credential.token, requestId: `request_${mode}` }); assert.equal(status.providerWrites <= 1, true); assert.equal(recovered.includes(`request_${mode}`), true); const budget = await f.delegation.budget.get(f.activation.allocationId); assert.equal(budget?.remaining, mode === "cut-after-budget" ? 2 : 1); if (mode !== "cut-after-budget") assert.equal(status.status, "pending-reconciliation"); } finally { await f.close(); } });
+
+test("well-shaped journal tampering refuses recovery without budget mutation or provider action", async () => {
+  const f = await createGitHubIssueLabelsFixture("cut-after-budget"); try {
+    await assert.rejects(() => f.runner.run({ bearerToken: f.credential.token, requestId: "request_tamper" }), /controlled cut/i);
+    const journalPath = path.join(f.initialized.workspace, "authority", "github-label-runner", "request_tamper.journal.json");
+    const journal = JSON.parse(await readFile(journalPath, "utf8")); journal.effectDigest = `sha256:${"0".repeat(64)}`; await writeFile(journalPath, `${JSON.stringify(journal)}\n`, "utf8");
+    const restarted = await createGitHubIssueLabelsHermeticComposition(f.cell);
+    await assert.rejects(() => restarted.recover(), /signature|tamper|journal/i);
+    const budget = await f.delegation.budget.get(f.activation.allocationId); assert.equal(budget?.consumed, 1); assert.equal(budget?.remaining, 1);
+  } finally { await f.close(); }
+});
+
+test("a previously valid signed journal cannot roll acknowledged ledger truth backward", async () => {
+  const f = await createGitHubIssueLabelsFixture("pause-after-dispatched"); try {
+    const journalPath = path.join(f.initialized.workspace, "authority", "github-label-runner", "request_rollback.journal.json");
+    const running = f.runner.run({ bearerToken: f.credential.token, requestId: "request_rollback" });
+    let old = ""; for (let attempts = 0; attempts < 1000; attempts += 1) { try { const bytes = await readFile(journalPath, "utf8"); if (JSON.parse(bytes).phase === "dispatched") { old = bytes; break; } } catch {} await new Promise(resolve => setTimeout(resolve, 2)); }
+    const result = await running; assert.equal(result.status, "acknowledged"); assert.notEqual(old, ""); await writeFile(journalPath, old, "utf8");
+    const restarted = await createGitHubIssueLabelsHermeticComposition(f.cell);
+    await assert.rejects(() => restarted.recover(), /rollback|ledger|phase|binding/i);
+    const budget = await f.delegation.budget.get(f.activation.allocationId); assert.equal(budget?.consumed, 1); assert.equal(budget?.remaining, 1);
+  } finally { await f.close(); }
+});
+
+test("concurrent recovery cannot release a live dispatched request before its one write", async () => {
+  let entered!: () => void, release!: () => void;
+  let running: ReturnType<GitHubIssueLabelsHermeticComposition["run"]> | undefined;
+  const atBarrier = new Promise<void>((resolve) => { entered = resolve; });
+  const holdBarrier = new Promise<void>((resolve) => { release = resolve; });
+  const restoreBarrier = __testSetGitHubIssueLabelsRunnerBarrier(async (requestId: string) => {
+    if (requestId !== "request_race") return;
+    entered();
+    await holdBarrier;
+  });
+  const f = await createGitHubIssueLabelsFixture(); try {
+    running = f.runner.run({ bearerToken: f.credential.token, requestId: "request_race" });
+    await atBarrier;
+    const restarted = await createGitHubIssueLabelsHermeticComposition(f.cell);
+    await assert.rejects(() => restarted.recover(), /busy|lock/i);
+    release();
+    const result = await running; assert.equal(result.status, "acknowledged"); assert.equal(result.providerWrites, 1);
+    const budget = await f.delegation.budget.get(f.activation.allocationId); assert.equal(budget?.consumed, 1); assert.equal(budget?.remaining, 1);
+  } finally {
+    try { await settleLiveRunBeforeFixtureRemoval(f, release, running); }
+    finally { restoreBarrier(); }
+  }
+});
+
+test("failed live-dispatch assertion cleanup settles work before deleting its fixture without masking the primary error", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "reelier-live-dispatch-cleanup-"));
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  let settled = false;
+  const running = (async () => {
+    await held;
+    await writeFile(path.join(root, "settled"), "yes", "utf8");
+    settled = true;
+    throw new Error("secondary live-run failure");
+  })();
+  const primary = new Error("primary recovery assertion failure");
+  let observed: unknown;
+  try {
+    try { throw primary; }
+    finally { await settleLiveRunBeforeFixtureRemoval({ close: () => rm(root, { recursive: true, force: true }) }, release, running); }
+  } catch (error) { observed = error; }
+  assert.equal(observed, primary);
+  assert.equal(settled, true);
+  await assert.rejects(() => readFile(path.join(root, "settled")), /ENOENT/);
+});
+
+test("cut after authoritative apply reconciles from durable provider state without resend and cleanup restores exact before labels", async () => {
+  const f = await createGitHubIssueLabelsFixture("cut-after-apply" as never); try {
+    await assert.rejects(() => f.runner.run({ bearerToken: f.credential.token, requestId: "request_cut_apply" }), /controlled cut/i);
+    const restarted = await createGitHubIssueLabelsHermeticComposition(f.cell);
+    await restarted.recover();
+    const reconciled = await restarted.status({ bearerToken: f.credential.token, requestId: "request_cut_apply" });
+    assert.equal(reconciled.status, "acknowledged");
+    assert.equal(reconciled.providerWrites, 1);
+    const cleaned = await restarted.cleanup({ bearerToken: f.credential.token, requestId: "request_cut_apply" });
+    assert.equal(cleaned.status, "cleaned");
+    assert.deepEqual(cleaned.labels, ["before"]);
+    assert.equal(cleaned.providerWrites, 2);
+    assert.equal((await f.delegation.budget.get(f.activation.allocationId))?.consumed, 2);
+    const replay = await restarted.cleanup({ bearerToken: f.credential.token, requestId: "request_cut_apply" });
+    assert.equal(replay.providerWrites, 2);
+    assert.equal((await f.delegation.budget.get(f.activation.allocationId))?.consumed, 2);
+    const portable = path.join(f.initialized.workspace, "authority", "github-label-runner", "receipts", "portable");
+    assert.equal((await readdir(portable)).length >= 5, true);
+  } finally { await f.close(); }
+});
+
+test("semantic duplicate and conflicting bytes do not write or consume additional budget", async () => {
+  const f = await createGitHubIssueLabelsFixture(); try {
+    const first = await f.runner.run({ bearerToken: f.credential.token, requestId: "request_original" });
+    assert.equal(first.providerWrites, 1);
+    const duplicate = await f.runner.run({ bearerToken: f.credential.token, requestId: "request_semantic_duplicate" });
+    assert.equal(duplicate.status, "duplicate");
+    assert.equal(duplicate.providerWrites, 1);
+    const exactBytes = Buffer.from('{"labels":["conflicting"]}', "utf8").toString("base64");
+    const conflict = await f.runner.conflict({ bearerToken: f.credential.token, requestId: "request_original", exactBytes });
+    assert.equal(conflict.status, "conflict");
+    assert.equal(conflict.providerWrites, 1);
+    assert.equal((conflict as any).exactBytesDigest, authorityDigest({ v: "reelier.exact-conflicting-bytes/v1", base64: exactBytes }));
+    assert.deepEqual(await f.runner.conflict({ bearerToken: f.credential.token, requestId: "request_original", exactBytes }), conflict);
+    await assert.rejects(() => f.runner.conflict({ bearerToken: f.credential.token, requestId: "request_original", exactBytes: Buffer.from("changed").toString("base64") }), /conflict.*bytes|changed.*bytes|exact/i);
+    assert.equal((await f.delegation.budget.get(f.activation.allocationId))?.consumed, 1);
+    const graph = await f.runner.exportGraph({ bearerToken: f.credential.token });
+    assert.equal(graph.exceptions.some((item: any) => item.kind === "conflict" && item.exactBytesDigest === (conflict as any).exactBytesDigest), true);
+    assert.equal(verifyCertificationTaskReceiptGraph(graph, graphVerification(f.pin)).status, "verified");
+  } finally { await f.close(); }
+});
+
+test("conflict receipt publication is recoverable and cannot verify ahead of its journal", async () => {
+  const f = await createGitHubIssueLabelsFixture("cut-after-conflict-publication"); try {
+    await f.runner.run({ bearerToken: f.credential.token, requestId: "request_conflict_cut" });
+    const exactBytes = Buffer.from("provider returned irreconcilable bytes").toString("base64");
+    await assert.rejects(() => f.runner.conflict({ bearerToken: f.credential.token, requestId: "request_conflict_cut", exactBytes }), /controlled cut/i);
+    const journalRoot = path.join(f.initialized.workspace, "authority", "github-label-runner");
+    const pending = JSON.parse(await readFile(path.join(journalRoot, "request_conflict_cut.journal.json"), "utf8"));
+    assert.equal(pending.phase, "conflict-publication-pending");
+    assert.match(pending.exactBytesDigest, /^sha256:[0-9a-f]{64}$/);
+    assert.equal(pending.conflictReceiptDigest, null);
+    const portable = path.join(f.initialized.workspace, "authority", "github-label-runner", "receipts", "portable"), conflictReceipts = await Promise.all((await readdir(portable)).filter(name => name.endsWith(".json")).map(async name => JSON.parse(await readFile(path.join(portable, name), "utf8"))));
+    assert.equal(conflictReceipts.some(bundle => bundle.evidence.value.reconciliation.verdict === "conflict" && bundle.evidence.value.reconciliation.normalizedProjectionDigest === pending.exactBytesDigest), true);
+    await assert.rejects(() => f.runner.exportGraph({ bearerToken: f.credential.token }), /receipt.*journal|lifecycle|pending/i);
+    const restarted = await createGitHubIssueLabelsHermeticComposition(f.cell);
+    assert.deepEqual(await restarted.recover(), ["request_conflict_cut"]);
+    assert.equal((await restarted.status({ bearerToken: f.credential.token, requestId: "request_conflict_cut" })).status, "conflict");
+    const replay = await restarted.conflict({ bearerToken: f.credential.token, requestId: "request_conflict_cut", exactBytes });
+    assert.equal(replay.status, "conflict");
+    await assert.rejects(() => restarted.conflict({ bearerToken: f.credential.token, requestId: "request_conflict_cut", exactBytes: Buffer.from("changed").toString("base64") }), /changed|terminal/i);
+    const graph: any = await restarted.exportGraph({ bearerToken: f.credential.token }), exception = graph.exceptions.find((item: any) => item.requestId === "request_conflict_cut"), receipt = graph.receipts.find((item: any) => authorityDigest(item.receipt.value) === exception?.receiptDigest);
+    assert.ok(receipt);
+    assert.equal(receipt.evidence.value.reconciliation.verdict, "conflict");
+    assert.equal(receipt.evidence.value.reconciliation.normalizedProjectionDigest, exception.exactBytesDigest);
+    assert.equal(verifyCertificationTaskReceiptGraph(graph, graphVerification(f.pin)).status, "verified");
+  } finally { await f.close(); }
+});
+
+test("conflict recovery refuses a duplicated non-head receipt in its durable chain", async () => {
+  const f = await createGitHubIssueLabelsFixture("cut-after-conflict-publication"); try {
+    await f.runner.run({ bearerToken: f.credential.token, requestId: "request_conflict_chain_duplicate" });
+    await assert.rejects(() => f.runner.conflict({ bearerToken: f.credential.token, requestId: "request_conflict_chain_duplicate", exactBytes: Buffer.from("conflict").toString("base64") }), /controlled cut/i);
+    const portable = path.join(f.initialized.workspace, "authority", "github-label-runner", "receipts", "portable"), files = (await readdir(portable)).filter(name => name.endsWith(".json"));
+    const nonHead = (await Promise.all(files.map(async name => ({ name, bundle: JSON.parse(await readFile(path.join(portable, name), "utf8")) })))).find(item => item.bundle.receipt.value.priorReceiptDigest === null);
+    assert.ok(nonHead);
+    await writeFile(path.join(portable, "duplicate-non-head.json"), await readFile(path.join(portable, nonHead.name)));
+    const restarted = await createGitHubIssueLabelsHermeticComposition(f.cell);
+    await assert.rejects(() => restarted.recover(), /receipt.*fork|duplicate|incomplete/i);
+  } finally { await f.close(); }
+});
+
+test("conflict recovery verifies every durable receipt signature before selecting the head", async () => {
+  const f = await createGitHubIssueLabelsFixture("cut-after-conflict-publication"); try {
+    await f.runner.run({ bearerToken: f.credential.token, requestId: "request_conflict_chain_signature" });
+    await assert.rejects(() => f.runner.conflict({ bearerToken: f.credential.token, requestId: "request_conflict_chain_signature", exactBytes: Buffer.from("conflict").toString("base64") }), /controlled cut/i);
+    const portable = path.join(f.initialized.workspace, "authority", "github-label-runner", "receipts", "portable"), file = (await readdir(portable)).find(name => name.endsWith(".json"));
+    assert.ok(file);
+    const bundle = JSON.parse(await readFile(path.join(portable, file), "utf8")); bundle.receipt.signature.sig = Buffer.alloc(64, 7).toString("base64");
+    await writeFile(path.join(portable, file), `${JSON.stringify(bundle)}\n`);
+    const restarted = await createGitHubIssueLabelsHermeticComposition(f.cell);
+    await assert.rejects(() => restarted.recover(), /signature|trusted authority|verification/i);
+  } finally { await f.close(); }
+});
+
+test("conflict recovery repairs the signed extension after a receipt-before-extension crash", async () => {
+  const f = await createGitHubIssueLabelsFixture("cut-after-conflict-receipt-before-extension"); try {
+    await f.runner.run({ bearerToken: f.credential.token, requestId: "request_conflict_extension_cut" });
+    await assert.rejects(() => f.runner.conflict({ bearerToken: f.credential.token, requestId: "request_conflict_extension_cut", exactBytes: Buffer.from("conflict").toString("base64") }), /controlled cut/i);
+    const receiptRoot = path.join(f.initialized.workspace, "authority", "github-label-runner", "receipts"), portable = path.join(receiptRoot, "portable"), extensions = path.join(receiptRoot, "extensions");
+    assert.equal((await readdir(portable)).length, (await readdir(extensions)).length + 1);
+    const restarted = await createGitHubIssueLabelsHermeticComposition(f.cell);
+    assert.deepEqual(await restarted.recover(), ["request_conflict_extension_cut"]);
+    assert.equal((await readdir(portable)).length, (await readdir(extensions)).length);
+    assert.equal(verifyCertificationTaskReceiptGraph(await restarted.exportGraph({ bearerToken: f.credential.token }), graphVerification(f.pin)).status, "verified");
+  } finally { await f.close(); }
+});
+
+test("conflict recovery refuses byte-reordered extension while its journal remains pending", async () => {
+  const f = await createGitHubIssueLabelsFixture("cut-after-conflict-publication"); try {
+    await f.runner.run({ bearerToken: f.credential.token, requestId: "request_conflict_extension_bytes" });
+    await assert.rejects(() => f.runner.conflict({ bearerToken: f.credential.token, requestId: "request_conflict_extension_bytes", exactBytes: Buffer.from("conflict").toString("base64") }), /controlled cut/i);
+    const root = path.join(f.initialized.workspace, "authority", "github-label-runner"), receipts = path.join(root, "receipts"), extensions = path.join(receipts, "extensions"), portable = path.join(receipts, "portable");
+    const conflictBundle = (await Promise.all((await readdir(portable)).filter(name => name.endsWith(".json")).map(async name => JSON.parse(await readFile(path.join(portable, name), "utf8"))))).find(bundle => bundle.evidence.value.reconciliation.verdict === "conflict");
+    assert.ok(conflictBundle);
+    const file = `${authorityDigest(conflictBundle.receipt.value).slice(7)}.json`;
+    const stored = JSON.parse(await readFile(path.join(extensions, file), "utf8"));
+    await writeFile(path.join(extensions, file), `${JSON.stringify({ signature: stored.signature, signerId: stored.signerId, adapterContractDigest: stored.adapterContractDigest, receiptDigest: stored.receiptDigest, v: stored.v })}\n`);
+    const restarted = await createGitHubIssueLabelsHermeticComposition(f.cell);
+    await assert.rejects(() => restarted.recover(), /extension.*bytes|conflict|canonical/i);
+    assert.equal(JSON.parse(await readFile(path.join(root, "request_conflict_extension_bytes.journal.json"), "utf8")).phase, "conflict-publication-pending");
+  } finally { await f.close(); }
+});
+
+test("dispatch and reconciliation mint portable chained receipts accepted by the existing offline verifier", async () => {
+  const f = await createGitHubIssueLabelsFixture(); try {
+    await f.runner.run({ bearerToken: f.credential.token, requestId: "request_receipts" });
+    const directory = path.join(f.initialized.workspace, "authority", "github-label-runner", "receipts", "portable");
+    const bundles = await Promise.all((await readdir(directory)).map(async name => JSON.parse(await readFile(path.join(directory, name), "utf8"))));
+    assert.equal(bundles.length, 3);
+    const activation = JSON.parse(await readFile(path.join(f.initialized.workspace, "authority", "delegation", "root-activation.json"), "utf8"));
+    const direct = f.pin.keyDescriptors.filter((item: any) => item.role === "authority-cell").map((item: any) => ({ tenant: activation.authorityCellId, signerId: item.keyId, principalId: item.purpose === "delegation-grant" ? activation.signedRootGrant.grant.grantor : activation.principalId, publicKey: createPublicKey({ key: Buffer.from(item.publicKeySpkiBase64, "base64"), format: "der", type: "spki" }), purposes: [item.purpose] }));
+    const delegated = f.lifecycle.binding.entries.map(item => ({ tenant: activation.authorityCellId, signerId: item.keyId, principalId: activation.principalId, publicKey: createPublicKey({ key: Buffer.from(item.publicKeySpkiBase64, "base64"), format: "der", type: "spki" }), purposes: [item.artifactPurpose] }));
+    const first = bundles.find(bundle => bundle.receipt.value.priorReceiptDigest === null), second = bundles.find(bundle => bundle.receipt.value.priorReceiptDigest === authorityDigest(first?.receipt.value)), third = bundles.find(bundle => bundle.receipt.value.priorReceiptDigest === authorityDigest(second?.receipt.value));
+    assert.ok(first); assert.ok(second); assert.ok(third);
+    verifyAuthorityReceiptBundle(first, { tenant: activation.authorityCellId, trustRoots: [...direct, ...delegated] as never });
+    verifyAuthorityReceiptBundle(second, { tenant: activation.authorityCellId, trustRoots: [...direct, ...delegated] as never, priorReceipt: first.receipt.value });
+    verifyAuthorityReceiptBundle(third, { tenant: activation.authorityCellId, trustRoots: [...direct, ...delegated] as never, priorReceipt: second.receipt.value });
+    assert.equal(second.receipt.value.priorReceiptDigest, authorityDigest(first.receipt.value));
+  } finally { await f.close(); }
+});
+
+test("closed task receipt graph verifies offline and rejects tampering, omission, duplication, imbalance, forks, contract drift, and confidential leakage", async () => {
+  const f = await createGitHubIssueLabelsFixture(); try {
+    await f.runner.run({ bearerToken: f.credential.token, requestId: "request_graph" });
+    await f.runner.cleanup({ bearerToken: f.credential.token, requestId: "request_graph" });
+    const graph = await f.runner.exportGraph({ bearerToken: f.credential.token });
+    assert.throws(() => (verifyCertificationTaskReceiptGraph as any)(graph), /external|trust pin|operator/i);
+    assert.equal(verifyCertificationTaskReceiptGraph(graph, graphVerification(f.pin)).status, "verified");
+    for (const mutate of [
+      (g: any) => { g.adapterContractDigest = `sha256:${"0".repeat(64)}`; },
+      (g: any) => { g.receipts.pop(); },
+      (g: any) => { g.receipts.push(g.receipts[0]); },
+      (g: any) => { g.allocations[0].consumed += 1; },
+      (g: any) => { g.priorReceiptLinks.find((item: any) => item.priorReceiptDigest !== null).priorReceiptDigest = null; },
+      (g: any) => { g.receipts[0].contract.value.contractId = "substituted"; },
+      (g: any) => { g.secretToken = "canary-private-token"; },
+      (g: any) => { g.receipts.pop(); g.priorReceiptLinks.pop(); g.outcomes.pop(); g.budgetEvents.pop(); },
+    ]) { const changed = structuredClone(graph); mutate(changed); assert.throws(() => verifyCertificationTaskReceiptGraph(changed, graphVerification(f.pin)), /graph|receipt|contract|budget|confidential|closed|digest|chain/i); }
+    const attacker: any = structuredClone(graph); attacker.keyDescriptors = attacker.keyDescriptors.map((item: any) => ({ ...item, keyId: `attacker_${item.keyId}` }));
+    assert.throws(() => verifyCertificationTaskReceiptGraph(attacker, graphVerification(f.pin)), /trust|descriptor|activated|readiness|graph/i);
+    assert.equal(JSON.stringify(graph).includes("canary-private-token"), false);
+  } finally { await f.close(); }
+});
+
+test("linked config, plan, and journal paths refuse before authority recovery or provider action", async t => {
+  for (const target of ["config", "plan", "journal"] as const) await t.test(target, async t => {
+    const f = await createGitHubIssueLabelsFixture(target === "journal" ? "cut-after-budget" : "normal"); try {
+      if (target === "journal") await assert.rejects(() => f.runner.run({ bearerToken: f.credential.token, requestId: "request_link" }), /controlled cut/i);
+      const original = target === "config" ? path.join(f.initialized.workspace, "config.json") : target === "plan" ? path.join(f.initialized.workspace, "inputs", "plans") : path.join(f.initialized.workspace, "authority", "github-label-runner");
+      const real = `${original}.real`; await rename(original, real);
+      try { await symlink(real, original, target === "config" ? "file" : "junction"); } catch (error) { if ((error as NodeJS.ErrnoException).code === "EPERM") { t.skip("symlink privilege unavailable"); return; } throw error; }
+      const budgetBefore = await f.delegation.budget.get(f.activation.allocationId);
+      await assert.rejects(() => createGitHubIssueLabelsHermeticComposition(f.cell), /linked|reparse|confined/i);
+      const budgetAfter = await f.delegation.budget.get(f.activation.allocationId); assert.equal(budgetAfter?.consumed, budgetBefore?.consumed); assert.equal(budgetAfter?.remaining, budgetBefore?.remaining);
+  } finally { await f.close(); }
+  });
+});
+
+test("restart publishes a missing cleanup receipt after authoritative restore without resend or extra budget", async () => {
+  const f = await createGitHubIssueLabelsFixture("cut-after-cleanup-publication"); try {
+    await f.runner.run({ bearerToken: f.credential.token, requestId: "request_cleanup_publish" });
+    await assert.rejects(() => f.runner.cleanup({ bearerToken: f.credential.token, requestId: "request_cleanup_publish" }), /controlled cut/i);
+    const root = path.join(f.initialized.workspace, "authority", "github-label-runner");
+    const pending = JSON.parse(await readFile(path.join(root, "request_cleanup_publish.journal.json"), "utf8"));
+    assert.equal(pending.phase, "cleanup-publication-pending");
+    assert.equal(pending.providerWrites, 2);
+    assert.equal((await f.delegation.budget.get(f.activation.allocationId))?.consumed, 2);
+    const restarted = await createGitHubIssueLabelsHermeticComposition(f.cell);
+    assert.deepEqual(await restarted.recover(), ["request_cleanup_publish"]);
+    const cleaned = await restarted.status({ bearerToken: f.credential.token, requestId: "request_cleanup_publish" });
+    assert.equal(cleaned.status, "cleaned");
+    assert.equal(cleaned.providerWrites, 2);
+    assert.equal((await f.delegation.budget.get(f.activation.allocationId))?.consumed, 2);
+    const generations = await Promise.all((await readdir(root)).filter(name => name.startsWith("request_cleanup_publish.journal-generation.")).map(async name => JSON.parse(await readFile(path.join(root, name), "utf8"))));
+    assert.deepEqual(generations.map(item => item.phase).filter((phase: string) => phase.startsWith("cleanup-")), ["cleanup-reserved", "cleanup-budget-consumed", "cleanup-dispatched", "cleanup-send-intent", "cleanup-applied", "cleanup-publication-pending", "cleanup-receipted"]);
+  } finally { await f.close(); }
+});
+
+test("closed graph of the declared durable fixture collections exports canonical journal and budget chronology", async () => {
+  const f = await createGitHubIssueLabelsFixture(); try {
+    await f.runner.run({ bearerToken: f.credential.token, requestId: "request_graph_chronology" });
+    await f.runner.cleanup({ bearerToken: f.credential.token, requestId: "request_graph_chronology" });
+    const graph: any = await f.runner.exportGraph({ bearerToken: f.credential.token });
+    assert.deepEqual(graph.outcomes.map((item: any) => item.eventSequence), Array.from({ length: 14 }, (_, index) => index));
+    assert.deepEqual(graph.outcomes.map((item: any) => item.phase), ["reserved", "budget-intent", "budget-consumed", "dispatched", "provider-send-intent", "provider-applied", "acknowledged", "cleanup-reserved", "cleanup-budget-consumed", "cleanup-dispatched", "cleanup-send-intent", "cleanup-applied", "cleanup-publication-pending", "cleanup-receipted"]);
+    assert.deepEqual(graph.budgetEvents.map((item: any) => item.event.type), ["allocated", "allocated", "consumed", "consumed"]);
+    assert.deepEqual(graph.budgetEvents.map((item: any) => item.sequence), [0, 1, 2, 3]);
+    assert.equal(graph.budgetEvents[0].priorBudgetEventDigest, null);
+    for (let index = 1; index < graph.budgetEvents.length; index += 1) assert.equal(graph.budgetEvents[index].priorBudgetEventDigest, authorityDigest(graph.budgetEvents[index - 1]));
+    assert.deepEqual(graph.topology, { status: "unchecked" });
+    assert.deepEqual(graph.leases, { status: "absent", entries: [] });
+    assert.deepEqual(graph.terminalCommitment.counts, { grants: 2, principals: 2, allocations: 2, budgetEvents: 4, outcomes: 14, exceptions: 0, topologyEvidence: 0, leases: 0, receipts: 6, receiptExtensions: 6, taskAuthorities: 1, postStateEvidence: 1, portableOutcomeEvidence: 1, policyEvidence: 2, taskStatusEvidence: 2, duplicateAttempts: 0, duplicateDecisions: 0, priorReceiptLinks: 6, keyDescriptors: 8, bindingEntries: 4 });
+    for (const key of ["grants", "principals", "allocations", "budgetEvents", "outcomes", "exceptions", "receipts", "receiptExtensions", "taskAuthorities", "postStateEvidence", "policyEvidence", "taskStatusEvidence", "duplicateAttempts", "duplicateDecisions", "priorReceiptLinks", "keyDescriptors"] as const) assert.equal(graph.terminalCommitment.collectionDigests[key], authorityDigest(graph[key]));
+    assert.equal(verifyCertificationTaskReceiptGraph(graph, graphVerification(f.pin)).status, "verified");
+  } finally { await f.close(); }
+});
+
+test("certification-local task graph schema is closed and accepts the exported graph", async () => {
+  const f = await createGitHubIssueLabelsFixture(); try {
+    await f.runner.run({ bearerToken: f.credential.token, requestId: "request_graph_schema" });
+    const graph = await f.runner.exportGraph({ bearerToken: f.credential.token });
+    const bytes = await readFile(path.resolve("contract/certification/v1/task-receipt-graph.schema.json"), "utf8").catch(() => null);
+    assert.ok(bytes, "certification-local task graph schema must exist");
+    const Ajv2020 = createRequire(import.meta.url)("ajv/dist/2020").default, ajv = new Ajv2020({ strict: false });
+    const validate = ajv.compile(JSON.parse(bytes));
+    assert.equal(validate(graph), true, JSON.stringify(validate.errors));
+    for (const mutate of [
+      (g: any) => { g.extra = true; },
+      (g: any) => { g.topology.extra = true; },
+      (g: any) => { g.leases.status = "verified"; },
+      (g: any) => { g.budgetEvents[0].event.extra = true; },
+      (g: any) => { g.outcomes[0].extra = true; },
+      (g: any) => { g.terminalCommitment.counts.extra = 1; },
+    ]) { const changed: any = structuredClone(graph); mutate(changed); assert.equal(validate(changed), false); }
+  } finally { await f.close(); }
+});
+
+test("cleanup journal is append-only and refuses a valid old signed head rollback", async () => {
+  const f = await createGitHubIssueLabelsFixture(); try {
+    await f.runner.run({ bearerToken: f.credential.token, requestId: "request_cleanup_rollback" });
+    const head = path.join(f.initialized.workspace, "authority", "github-label-runner", "request_cleanup_rollback.journal.json");
+    const acknowledged = await readFile(head);
+    await f.runner.cleanup({ bearerToken: f.credential.token, requestId: "request_cleanup_rollback" });
+    const cleaned = JSON.parse(await readFile(head, "utf8"));
+    assert.equal(cleaned.phase, "cleanup-receipted");
+    assert.equal(cleaned.eventSequence > 0, true);
+    assert.match(cleaned.priorJournalDigest, /^sha256:/);
+    await writeFile(head, acknowledged);
+    const restarted = await createGitHubIssueLabelsHermeticComposition(f.cell);
+    await assert.rejects(() => restarted.status({ bearerToken: f.credential.token, requestId: "request_cleanup_rollback" }), /rollback|journal head|generation/i);
+  } finally { await f.close(); }
+});
+
+test("offline graph verification refuses an evidence root revoked by the external current trust history", async () => {
+  const f = await createGitHubIssueLabelsFixture(); try {
+    await f.runner.run({ bearerToken: f.credential.token, requestId: "request_revoked_evidence" });
+    const graph = await f.runner.exportGraph({ bearerToken: f.credential.token });
+    const evidence = f.pin.keyDescriptors.find((item: any) => item.role === "authority-cell" && item.purpose === "authority-evidence");
+    assert.ok(evidence);
+    const previous = f.pin.currentTrustEvents[f.pin.currentTrustEvents.length - 1];
+    const revoke = { v: "reelier.authority-trust-event/v1", eventId: "trust_revoke_evidence", sequence: f.pin.currentTrustEvents.length, action: "revoke", keyDescriptorDigest: authorityDigest(evidence), occurredAt: new Date(Date.parse(previous.occurredAt) + 1).toISOString(), previousEventDigest: authorityDigest(previous) };
+    const revoked = { ...f.pin, currentTrustEvents: [...f.pin.currentTrustEvents, revoke] };
+    assert.throws(() => verifyCertificationTaskReceiptGraph(graph, graphVerification(revoked)), /evidence.*revoked|currently active|current trust/i);
+  } finally { await f.close(); }
+});
+
+test("a junction-substituted receipt store refuses cleanup and leaves the external target untouched", async t => {
+  const f = await createGitHubIssueLabelsFixture(); const outside = await mkdtemp(path.join(tmpdir(), "reelier-receipt-outside-")); try {
+    await f.runner.run({ bearerToken: f.credential.token, requestId: "request_receipt_link" });
+    const receipts = path.join(f.initialized.workspace, "authority", "github-label-runner", "receipts"), real = `${receipts}.real`;
+    await rename(receipts, real); try { await symlink(outside, receipts, "junction"); } catch (error) { if ((error as NodeJS.ErrnoException).code === "EPERM") { t.skip("symlink privilege unavailable"); return; } throw error; }
+    await assert.rejects(() => f.runner.cleanup({ bearerToken: f.credential.token, requestId: "request_receipt_link" }), /linked|reparse|confined/i);
+    assert.deepEqual(await readdir(outside), []);
+  } finally { await f.close(); await rm(outside, { recursive: true, force: true }); }
+});
+
+test("portable evidence links the approved task, exact post-state, policy statuses, task status, and zero-effect duplicates", async () => {
+  const f = await createGitHubIssueLabelsFixture(); try {
+    await f.runner.run({ bearerToken: f.credential.token, requestId: "request_portable_original" });
+    const duplicate = await f.runner.run({ bearerToken: f.credential.token, requestId: "request_portable_duplicate" });
+    assert.equal(duplicate.status, "duplicate");
+    const graph: any = await f.runner.exportGraph({ bearerToken: f.credential.token });
+    assert.equal(graph.portableOutcomeEvidenceVersion, "reelier.portable-outcome-graph-extension/v1");
+    assert.equal(graph.portableOutcomeEvidence.length, 1, "removing the native portable outcome collection must fail closed");
+    assert.equal(graph.portableOutcomeEvidence[0].evidence.confidence, "exact");
+    assert.equal(graph.terminalCommitment.counts.portableOutcomeEvidence, 1);
+    assert.equal(graph.portableOutcomeEvidence[0].materializedRequest.originClass, "github-api");
+    assert.equal(graph.portableOutcomeEvidence[0].materializedRequest.pathTemplate, "/repos/{owner}/{repository}/issues/{issueNumber}/labels");
+    const portableJson = JSON.stringify(graph.portableOutcomeEvidence);
+    for (const canary of ["fixlyai", "reelier-certification", "github_fixlyai_reelier", "canary-private-token"]) assert.equal(portableJson.toLowerCase().includes(canary.toLowerCase()), false, `portable evidence leaked ${canary}`);
+    assert.equal(graph.portableOutcomeEvidence[0].reconciliation.providerWriteCount, 1);
+    assert.equal(graph.portableOutcomeEvidence[0].reconciliation.resendCount, 0);
+    assert.equal(graph.taskAuthorities.length, 1);
+    assert.equal(graph.taskAuthorities[0].signedJobCardDigest, signedJobCardDigest(f.jobCard));
+    assert.equal(graph.taskAuthorities[0].adapterContractDigest, AUTHORITY_ADAPTER_CONTRACT_V1_DIGEST);
+    assert.equal(graph.postStateEvidence.length, 1);
+    assert.equal(graph.postStateEvidence[0].confidence, "exact");
+    assert.equal(graph.postStateEvidence[0].expectedProjectionDigest, graph.postStateEvidence[0].observedProjectionDigest);
+    assert.deepEqual(graph.policyEvidence.map((item: any) => [item.artifact, item.status]), [["outcome-contract", "verified"], ["local-gate-policy", "unchecked"]]);
+    assert.equal(graph.policyEvidence.some((item: any) => "fired" in item || "matchedRule" in item || "coverage" in item), false);
+    assert.deepEqual(graph.taskStatusEvidence.map((item: any) => item.phase), ["dispatch", "export"]);
+    assert.equal(graph.taskStatusEvidence.every((item: any) => item.freshness === "unchecked"), true);
+    assert.equal(graph.duplicateDecisions.length, 1);
+    assert.equal(graph.duplicateAttempts.length, 1);
+    assert.equal(graph.duplicateAttempts[0].attemptRequestId, "request_portable_duplicate");
+    assert.equal(graph.duplicateAttempts[0].operationKind, "run");
+    assert.deepEqual({ budget: graph.duplicateDecisions[0].budgetDelta, writes: graph.duplicateDecisions[0].providerWriteDelta }, { budget: 0, writes: 0 });
+    assert.equal(verifyCertificationTaskReceiptGraph(graph, graphVerification(f.pin)).status, "verified");
+    const missingNative = structuredClone(graph);
+    delete missingNative.portableOutcomeEvidence;
+    assert.throws(() => verifyCertificationTaskReceiptGraph(missingNative, graphVerification(f.pin)), /portable|outcome|closed|collection|private certification receipt graph/i);
+    const legacyV1 = structuredClone(graph);
+    delete legacyV1.portableOutcomeEvidenceVersion;
+    assert.throws(() => verifyCertificationTaskReceiptGraph(legacyV1, graphVerification(f.pin)), /extension|version|closed|exact canonical/i);
+    assert.throws(() => verifyCertificationTaskReceiptGraph(graph, { trustPin: f.pin } as any), /current trust|verification time|external.*anchor|required/i);
+    assert.throws(() => verifyCertificationTaskReceiptGraph(graph, graphVerification(f.pin, { expectedResponseSemanticsProfile: undefined })), /response|profile|external.*anchor|required/i);
+    for (const key of ["routeAuthority", "authenticatedIdentity", "materializedRequest", "responseSemanticsProfile", "reconciliation"] as const) {
+      const missingBinding = structuredClone(graph);
+      delete missingBinding.portableOutcomeEvidence[0][key];
+      assert.throws(() => verifyCertificationTaskReceiptGraph(missingBinding, graphVerification(f.pin)), /portable|runtime|route|identity|request|response|reconciliation|closed|terminal|digest/i);
+    }
+    const missingCleanup = structuredClone(graph);
+    delete missingCleanup.portableOutcomeEvidence[0].evidence.cleanupParentReceiptDigest;
+    assert.throws(() => verifyCertificationTaskReceiptGraph(missingCleanup, graphVerification(f.pin)), /portable|cleanup|closed|terminal|digest/i);
+    assert.throws(() => verifyCertificationTaskReceiptGraph(graph, {
+      trustPin: f.pin,
+      currentTrustObservation: { v: "reelier.portable-current-trust-observation/v1", observedAt: at, expiresAt: expiry, activeAuthorityEvidenceSignerIds: [graph.portableOutcomeEvidence[0].evidence.executionAttestationSignerId] },
+      now: new Date("2100-01-01T00:00:00.000Z"),
+      expectedResponseSemanticsProfile: hermeticResponseSemanticsProfile,
+    }), /stale|expired|current trust/i);
+    for (const mutate of [
+      (g: any) => { g.taskAuthorities[0].instructionsDigest = `sha256:${"9".repeat(64)}`; },
+      (g: any) => { g.taskAuthorities[0].dispatchSnapshotPreimage.runner = `sha256:${"8".repeat(64)}`; },
+      (g: any) => { g.postStateEvidence[0].preSourceBundleDigest = `sha256:${"7".repeat(64)}`; },
+      (g: any) => { g.postStateEvidence[0].observedProjectionDigest = `sha256:${"6".repeat(64)}`; },
+      (g: any) => { g.policyEvidence[0].policyDigest = `sha256:${"5".repeat(64)}`; },
+      (g: any) => { g.policyEvidence[1].status = "verified"; },
+      (g: any) => { g.policyEvidence[0].fired = true; },
+      (g: any) => { g.taskStatusEvidence[1].allocationRevoked = true; },
+      (g: any) => { g.duplicateDecisions.pop(); },
+      (g: any) => { g.duplicateDecisions[0].providerWriteDelta = 1; },
+    ]) { const changed = structuredClone(graph); mutate(changed); assert.throws(() => verifyCertificationTaskReceiptGraph(changed, graphVerification(f.pin)), /portable|task|post-state|policy|status|duplicate|signature|terminal|digest|closed/i); }
+  } finally { await f.close(); }
+});
+
+test("private graph consumes signed durable execution provenance without graph-time reconstruction", async () => {
+  const f = await createGitHubIssueLabelsFixture(); try {
+    await f.runner.run({ bearerToken: f.credential.token, requestId: "request_runtime_provenance" });
+    await f.runner.cleanup({ bearerToken: f.credential.token, requestId: "request_runtime_provenance" });
+    const graph: any = await f.runner.exportGraph({ bearerToken: f.credential.token });
+    const providerPath = path.join(f.initialized.workspace, "authority", "github-label-runner", "provider-state.json");
+    const providerState: any = JSON.parse(await readFile(providerPath, "utf8"));
+    assert.equal(providerState.v, "reelier.github-hermetic-provider/v4");
+    const executed = providerState.executions.find((item: any) => item.requestId === "request_runtime_provenance");
+    assert.equal(executed.routeAuthoritySnapshot.v, "reelier.route-authority-snapshot/v1");
+    assert.equal(executed.authenticatedIdentity.v, "reelier.authenticated-provider-identity/v1");
+    assert.equal(typeof executed.authenticatedIdentity.signerId, "string");
+    assert.equal(typeof executed.authenticatedIdentity.signature?.sig, "string");
+    assert.equal(executed.materializedRequest.v, "reelier.materialized-http-request/v1");
+    assert.equal(executed.responseSemanticsProfile.v, "reelier.http-response-semantics/v1");
+    assert.equal(Buffer.from(executed.acceptedRouteAuthorityCanonicalBase64, "base64").equals(authorityCanonicalBytes(executed.routeAuthoritySnapshot)), true);
+    assert.equal(Buffer.from(executed.acceptedAuthenticatedIdentityCanonicalBase64, "base64").equals(authorityCanonicalBytes(executed.authenticatedIdentity)), true);
+    const { signerId: _identitySignerId, signature: _identitySignature, ...identityObservation } = executed.authenticatedIdentity;
+    assert.equal(executed.routeAuthoritySnapshot.authenticatedProviderIdentityDigest, authorityDigest(identityObservation));
+    assert.equal(executed.routeAuthoritySnapshot.expectedMaterializedRequestDigest, authorityDigest(executed.materializedRequest));
+    assert.deepEqual(executed.reconciliation, { verdict: "matched", providerWriteCount: 1, resendCount: 0, observedProjectionDigest: graph.postStateEvidence[0].observedProjectionDigest });
+    const cleanupReceipt = graph.receipts.filter((item: any) => item.receipt.value.decisionContext.requestId === "request_runtime_provenance.cleanup").at(-1);
+    assert.equal(executed.cleanupParentReceiptDigest, cleanupReceipt.receipt.value.priorReceiptDigest);
+    const publication = graph.portableOutcomeEvidence[0];
+    assert.deepEqual(publication.routeAuthority, executed.portableRouteAuthority);
+    assert.deepEqual(publication.authenticatedIdentity, executed.portableAuthenticatedIdentity);
+    assert.deepEqual(publication.materializedRequest, executed.portableMaterializedRequest);
+    assert.equal(publication.routeAuthority.expectedMaterializedRequestDigest, authorityDigest(executed.materializedRequest));
+    assert.equal(publication.routeAuthority.portableMaterializedRequestDigest, authorityDigest(publication.materializedRequest));
+    assert.deepEqual(publication.responseSemanticsProfile, executed.portableResponseSemanticsProfile);
+    assert.deepEqual(publication.reconciliation, executed.reconciliation);
+    assert.equal(publication.evidence.cleanupParentReceiptDigest, executed.cleanupParentReceiptDigest);
+
+    const portableKeys = generateKeyPairSync("ed25519");
+    const portableSignerId = portableSignerIdFromPublicKey(portableKeys.publicKey);
+    const sanitized = createSanitizedPortableOutcomeEvidenceExport({ privateGraph: graph, verifiedAt: "2026-08-11T20:10:00.000Z", signer: { signerId: portableSignerId, publicKey: portableKeys.publicKey, sign: digest => signAuthorityDigest(portableKeys.privateKey, "authority-evidence", digest) } });
+    assert.equal(verifyCertificationSanitizedPortableOutcomeEvidenceExport(sanitized, graph, { ...graphVerification(f.pin), portableVerifier: { signerId: portableSignerId, publicKey: portableKeys.publicKey, purpose: "authority-evidence" } }).status, "verified");
+    assert.doesNotMatch(JSON.stringify(sanitized), /fixlyai|reelier-certification|maxime@example\.com|account_fixlyai|jobCard|sourceReceipt|accountId|principalId/i);
+    const serializedMutations: readonly ((value: any) => void)[] = [
+      value => { value.privateGraphDigest = authorityDigest({ substituted: true }); },
+      value => { value.outcomeCollectionDigest = authorityDigest({ substituted: true }); },
+      value => { value.outcomeCount += 1; },
+      value => { value.responseSemanticsProfilesDigest = authorityDigest({ substituted: true }); },
+      value => { value.verifiedAt = "2026-08-11T20:10:01.000Z"; },
+      value => { value.signerId = portableSignerIdFromPublicKey(generateKeyPairSync("ed25519").publicKey); },
+      value => { value.signature.sig = "A".repeat(value.signature.sig.length); },
+      value => { delete value.outcomeCount; },
+      value => { value.signature.extra = "nested"; },
+    ];
+    for (const [index, mutate] of serializedMutations.entries()) {
+      const changed = JSON.parse(JSON.stringify(sanitized));
+      mutate(changed);
+      assert.throws(() => verifyCertificationSanitizedPortableOutcomeEvidenceExport(changed, graph, { ...graphVerification(f.pin), portableVerifier: { signerId: portableSignerId, publicKey: portableKeys.publicKey, purpose: "authority-evidence" } }), /portable|digest|count|timestamp|signer|signature|closed|canonical|graph/i, `serialized mutation ${index}`);
+    }
+    const reordered = JSON.parse(JSON.stringify(sanitized));
+    const orderedEntries = Object.entries(reordered).reverse();
+    for (const key of Object.keys(reordered)) delete reordered[key];
+    Object.assign(reordered, Object.fromEntries(orderedEntries));
+    assert.throws(() => verifyCertificationSanitizedPortableOutcomeEvidenceExport(reordered, graph, { ...graphVerification(f.pin), portableVerifier: { signerId: portableSignerId, publicKey: portableKeys.publicKey, purpose: "authority-evidence" } }), /canonical|closed|portable/i);
+
+    const evidence = certificationCellHostInternalState(f.cell).hermeticGitHubAuthority().lifecycle.direct.get("authority-evidence")!;
+    const signer = { signerId: evidence.descriptor.keyId, sign: (digest: string) => signAuthorityDigest(evidence.privateKey, "authority-evidence", digest) };
+    const originalRequestId = graph.postStateEvidence[0].requestId;
+    const receiptChain = graph.receipts.filter((bundle: any) => [originalRequestId, `${originalRequestId}.cleanup`].includes(bundle.receipt.value.decisionContext.requestId)).map((bundle: any) => authorityDigest(bundle.receipt.value));
+    const collectionCounts = { receipts: graph.receipts.length, receiptExtensions: graph.receiptExtensions.length, portableOutcomeEvidence: graph.portableOutcomeEvidence.length, postStateEvidence: graph.postStateEvidence.length, outcomes: graph.outcomes.length, requestReceipts: receiptChain.length };
+    const terminalDigest = authorityDigest({ v: "reelier.portable-terminal-anchor/v1", taskId: graph.taskId, rootGrantDigest: graph.rootGrant.digest, receiptLinksDigest: authorityDigest(graph.priorReceiptLinks), postStateEvidenceDigest: authorityDigest(graph.postStateEvidence), collectionCountsDigest: authorityDigest(collectionCounts) });
+    const trustObservation = graphVerification(f.pin).currentTrustObservation;
+    const republish = (cleanupParentReceiptDigest: string | null) => createPortableOutcomeEvidencePublication({ requestId: publication.requestId, routeAuthority: publication.routeAuthority, authenticatedIdentity: publication.authenticatedIdentity, materializedRequest: publication.materializedRequest, responseSemanticsProfile: publication.responseSemanticsProfile, responseObservation: publication.responseObservation, preStateEvidence: publication.preStateEvidence, postStateEvidence: publication.postStateEvidence, expectedPostProjectionDigest: publication.expectedPostProjectionDigest, confidence: publication.evidence.confidence, authoritativeStateSource: publication.evidence.authoritativeStateSource, reconciliation: publication.reconciliation, cleanupParentReceiptDigest, receiptChain, collectionCounts, terminalDigest, currentTrustObservation: trustObservation, executionSigner: signer, reconciliationSigner: signer });
+    const rebuild = (replacement: any) => { const { v: _v, adapterContractDigest: _adapter, topology: _topology, leases: _leases, priorReceiptLinks: _links, terminalCommitment: _terminal, ...content } = graph; return createCertificationTaskReceiptGraph({ ...content, portableOutcomeEvidence: [replacement], terminalSigner: signer }); };
+    assert.throws(() => verifyCertificationTaskReceiptGraph(rebuild(republish(null)), graphVerification(f.pin)), /cleanup|parent/i);
+    const arbitraryMember = receiptChain.find((digest: string) => digest !== executed.cleanupParentReceiptDigest)!;
+    assert.throws(() => verifyCertificationTaskReceiptGraph(rebuild(republish(arbitraryMember)), graphVerification(f.pin)), /cleanup|parent/i);
+    const attackerProfile = { ...publication.responseSemanticsProfile, acknowledgedStatuses: [201] };
+    const attackerRoute = { ...publication.routeAuthority, responseSemanticsProfileDigest: attackerProfile.profileDigest };
+    const attackerObservation = { ...publication.responseObservation, status: 201, classification: "acknowledged" };
+    const attackerPublication = createPortableOutcomeEvidencePublication({ requestId: publication.requestId, routeAuthority: attackerRoute, authenticatedIdentity: publication.authenticatedIdentity, materializedRequest: publication.materializedRequest, responseSemanticsProfile: attackerProfile, responseObservation: attackerObservation, preStateEvidence: publication.preStateEvidence, postStateEvidence: publication.postStateEvidence, expectedPostProjectionDigest: publication.expectedPostProjectionDigest, confidence: publication.evidence.confidence, authoritativeStateSource: publication.evidence.authoritativeStateSource, reconciliation: publication.reconciliation, cleanupParentReceiptDigest: publication.evidence.cleanupParentReceiptDigest, receiptChain, collectionCounts, terminalDigest, currentTrustObservation: trustObservation, executionSigner: signer, reconciliationSigner: signer });
+    assert.equal(attackerProfile.profileDigest, httpResponseSemanticsProfileDigest(hermeticResponseSemanticsProfile));
+    assert.throws(() => verifyCertificationTaskReceiptGraph(rebuild(attackerPublication), graphVerification(f.pin)), /response|profile|extern|ratified|semantics/i);
+
+    providerState.executions[0].routeAuthoritySnapshot.routeDigest = `sha256:${"f".repeat(64)}`;
+    await writeFile(providerPath, `${JSON.stringify(providerState)}\n`);
+    await assert.rejects(() => f.runner.exportGraph({ bearerToken: f.credential.token }), /execution provenance|signature|route authority|tamper/i);
+  } finally { await f.close(); }
+});
+
+test("an applied 503 remains ambiguous while matched authoritative reconciliation exports exact no-resend evidence", async () => {
+  const f = await createGitHubIssueLabelsFixture("provider-503"); try {
+    const initial = await f.runner.run({ bearerToken: f.credential.token, requestId: "request_503_exact_portable" });
+    assert.equal(initial.status, "pending-reconciliation");
+    assert.equal(initial.providerWrites, 1);
+    const restarted = await createGitHubIssueLabelsHermeticComposition(f.cell);
+    assert.deepEqual(await restarted.recover(), ["request_503_exact_portable"]);
+    const graph: any = await restarted.exportGraph({ bearerToken: f.credential.token });
+    const publication = graph.portableOutcomeEvidence[0];
+    assert.equal(publication.evidence.confidence, "exact");
+    assert.deepEqual(publication.responseObservation, {
+      v: "reelier.portable-http-response-observation/v1",
+      status: 503,
+      classification: "ambiguous",
+    });
+    assert.deepEqual(publication.responseSemanticsProfile.acknowledgedStatuses, [200]);
+    assert.deepEqual(publication.reconciliation, {
+      verdict: "matched",
+      providerWriteCount: 1,
+      resendCount: 0,
+      observedProjectionDigest: graph.postStateEvidence[0].observedProjectionDigest,
+    });
+    assert.equal(verifyCertificationTaskReceiptGraph(graph, graphVerification(f.pin)).status, "verified");
+    const providerState: any = JSON.parse(await readFile(path.join(f.initialized.workspace, "authority", "github-label-runner", "provider-state.json"), "utf8"));
+    const execution = providerState.executions.find((item: any) => item.requestId === "request_503_exact_portable");
+    assert.equal(execution.responseStatus, 503);
+    assert.equal(execution.initialResponseClassification, "ambiguous");
+    assert.equal(execution.afterWriteCount - execution.beforeWriteCount, 1);
+    assert.equal(execution.sendCount, 1);
+  } finally { await f.close(); }
+});
+
+test("persisted provider v2 restart refuses before reconstruction or provider action", async () => {
+  const f = await createGitHubIssueLabelsFixture(); try {
+    const providerPath = path.join(f.initialized.workspace, "authority", "github-label-runner", "provider-state.json");
+    await writeFile(providerPath, `${JSON.stringify({ v: "reelier.github-hermetic-provider/v2", before: ["before"], labels: ["before"], writes: 0, executions: [] })}\n`);
+    await assert.rejects(() => f.runner.exportGraph({ bearerToken: f.credential.token }), /provider v2|cannot be migrated|rerun|provenance/i);
+    await assert.rejects(() => createGitHubIssueLabelsHermeticComposition(f.cell), /provider v2|cannot be migrated|rerun|provenance/i);
+    const persisted = JSON.parse(await readFile(providerPath, "utf8"));
+    assert.deepEqual({ version: persisted.v, labels: persisted.labels, writes: persisted.writes, executions: persisted.executions }, { version: "reelier.github-hermetic-provider/v2", labels: ["before"], writes: 0, executions: [] });
+  } finally { await f.close(); }
+});
+
+test("duplicate ledger serializes concurrent exhausted attempts and ignores lexical old-head injection", async () => {
+  const f = await createGitHubIssueLabelsFixture(); try {
+    await f.runner.run({ bearerToken: f.credential.token, requestId: "request_duplicate_race_original" });
+    await f.runner.cleanup({ bearerToken: f.credential.token, requestId: "request_duplicate_race_original" });
+    const [left, right] = await Promise.all([
+      f.runner.run({ bearerToken: f.credential.token, requestId: "request_duplicate_race_left" }),
+      f.runner.run({ bearerToken: f.credential.token, requestId: "request_duplicate_race_right" }),
+    ]);
+    assert.deepEqual([left.status, right.status], ["duplicate", "duplicate"]);
+    const first: any = await f.runner.exportGraph({ bearerToken: f.credential.token });
+    assert.equal(first.duplicateAttemptHead.count, 2);
+    assert.deepEqual(first.duplicateAttempts.map((item: any) => item.attemptRequestId).sort(), ["request_duplicate_race_left", "request_duplicate_race_right"]);
+    const portable = path.join(f.initialized.workspace, "authority", "github-label-runner", "portable-evidence");
+    await writeFile(path.join(portable, "duplicate-head.zzzzzzzz.json"), `${JSON.stringify({ ...first.duplicateAttemptHead, count: 0 })}\n`);
+    const exported: any = await f.runner.exportGraph({ bearerToken: f.credential.token });
+    assert.equal(exported.duplicateAttemptHead.count, 2);
+    assert.equal(verifyCertificationTaskReceiptGraph(exported, graphVerification(f.pin)).status, "verified");
+  } finally { await f.close(); }
+});
+
+test("externally anchored duplicate head rejects canonical rollback after restart and concurrent attempts", async () => {
+  const f = await createGitHubIssueLabelsFixture(); try {
+    await f.runner.run({ bearerToken: f.credential.token, requestId: "request_duplicate_anchor_original" });
+    await f.runner.cleanup({ bearerToken: f.credential.token, requestId: "request_duplicate_anchor_original" });
+    const portable = path.join(f.initialized.workspace, "authority", "github-label-runner", "portable-evidence"),
+      ledgerPath = path.join(portable, "duplicate-ledger.json"),
+      zeroLedger = await readFile(ledgerPath),
+      zeroGraph: any = await f.runner.exportGraph({ bearerToken: f.credential.token });
+    assert.equal(zeroGraph.duplicateAttemptHead.count, 0);
+    assert.equal(verifyCertificationTaskReceiptGraph(zeroGraph, graphVerification(f.pin)).duplicateHistoryFreshness, "unchecked");
+
+    await f.runner.run({ bearerToken: f.credential.token, requestId: "request_duplicate_anchor_old" });
+    const
+      oldLedger = await readFile(ledgerPath),
+      oldGraph: any = await f.runner.exportGraph({ bearerToken: f.credential.token });
+    assert.equal(oldGraph.duplicateAttemptHead.count, 1);
+
+    await writeFile(ledgerPath, zeroLedger);
+    const rolledBackZeroGraph: any = await f.runner.exportGraph({ bearerToken: f.credential.token });
+    assert.equal(rolledBackZeroGraph.duplicateAttemptHead.count, 0);
+    assert.throws(
+      () => verifyCertificationTaskReceiptGraph(rolledBackZeroGraph, graphVerification(f.pin)),
+      /duplicate.*current|head.*rollback|external.*anchor/i,
+    );
+    await writeFile(ledgerPath, oldLedger);
+
+    const restarted = await createGitHubIssueLabelsHermeticComposition(f.cell);
+    const [left, right] = await Promise.all([
+      restarted.run({ bearerToken: f.credential.token, requestId: "request_duplicate_anchor_left" }),
+      restarted.run({ bearerToken: f.credential.token, requestId: "request_duplicate_anchor_right" }),
+    ]);
+    assert.deepEqual([left.status, right.status], ["duplicate", "duplicate"]);
+    const currentGraph: any = await restarted.exportGraph({ bearerToken: f.credential.token });
+    assert.equal(currentGraph.duplicateAttemptHead.count, 3);
+    const currentDuplicateAttemptHeadDigest = authorityDigest(currentGraph.duplicateAttemptHead);
+    assert.equal(verifyCertificationTaskReceiptGraph(currentGraph, graphVerification(f.pin)).duplicateHistoryFreshness, "unchecked");
+
+    await writeFile(ledgerPath, oldLedger);
+    const rolledBackGraph: any = await restarted.exportGraph({ bearerToken: f.credential.token });
+    assert.equal(rolledBackGraph.duplicateAttemptHead.count, 1);
+    assert.throws(
+      () => verifyCertificationTaskReceiptGraph(rolledBackGraph, graphVerification(f.pin)),
+      /duplicate.*current|head.*rollback|external.*anchor/i,
+    );
+    assert.equal(verifyCertificationTaskReceiptGraph(oldGraph, graphVerification(f.pin)).duplicateHistoryFreshness, "unchecked");
+    assert.notEqual(authorityDigest(oldGraph.duplicateAttemptHead), currentDuplicateAttemptHeadDigest);
+  } finally { await f.close(); }
+});
+
+test("exhausted exact conflict replay records literal request id and operation kind without effect", async () => {
+  const f = await createGitHubIssueLabelsFixture(); try {
+    await f.runner.run({ bearerToken: f.credential.token, requestId: "request_exhausted_conflict" });
+    const exactBytes = Buffer.from("conflict", "utf8").toString("base64");
+    await f.runner.conflict({ bearerToken: f.credential.token, requestId: "request_exhausted_conflict", exactBytes });
+    await f.delegation.budget.consumeOnce({ allocationId: f.activation.allocationId, reservationId: "manual_exhaustion", effects: 1 });
+    const replay = await f.runner.conflict({ bearerToken: f.credential.token, requestId: "request_exhausted_conflict", exactBytes });
+    assert.equal(replay.status, "conflict");
+    const graph: any = await f.runner.exportGraph({ bearerToken: f.credential.token });
+    const attempt = graph.duplicateAttempts.at(-1);
+    assert.equal(attempt.attemptRequestId, "request_exhausted_conflict");
+    assert.equal(attempt.operationKind, "conflict");
+    assert.deepEqual({ consumed: (await f.delegation.budget.get(f.activation.allocationId))?.consumed, writes: replay.providerWrites }, { consumed: 2, writes: 1 });
+  } finally { await f.close(); }
+});
+
+test("portable export preserves dispatch history while reporting a current task revocation", async () => {
+  const f = await createGitHubIssueLabelsFixture(); try {
+    await f.runner.run({ bearerToken: f.credential.token, requestId: "request_revoked_export" });
+    await f.delegation.revoke(f.initialized.identifiers.authorityCellId, f.initialized.identifiers.taskId);
+    const graph: any = await f.runner.exportGraph({ bearerToken: f.credential.token });
+    assert.deepEqual(graph.taskStatusEvidence.map((item: any) => [item.phase, item.lifecycleState, item.allocationRevoked]), [["dispatch", "active", false], ["export", "revoked", true]]);
+    assert.equal(verifyCertificationTaskReceiptGraph(graph, graphVerification(f.pin)).status, "verified");
+    const evidence = certificationCellHostInternalState(f.cell).hermeticGitHubAuthority().lifecycle.direct.get("authority-evidence")!;
+    const signer = { signerId: evidence.descriptor.keyId, sign: (digest: string) => signAuthorityDigest(evidence.privateKey, "authority-evidence", digest) };
+    const resign = (record: any) => { const { signature: _old, ...body } = record; return { ...body, signature: signer.sign(authorityDigest(body)) }; };
+    const rebuild = (changed: any) => { const { v: _v, adapterContractDigest: _adapter, topology: _topology, leases: _leases, priorReceiptLinks: _links, terminalCommitment: _terminal, ...content } = changed; return createCertificationTaskReceiptGraph({ ...content, terminalSigner: signer }); };
+    for (const [index, allocationRevoked, lifecycleState] of [[0, true, "revoked"], [1, false, "active"]] as const) {
+      const changed = structuredClone(graph), previous = changed.taskStatusEvidence[index];
+      changed.taskStatusEvidence[index] = resign({ ...previous, allocationRevoked, lifecycleState, currentActiveClaim: !allocationRevoked });
+      assert.throws(() => verifyCertificationTaskReceiptGraph(rebuild(changed), graphVerification(f.pin)), /task status|history|observation/i);
+    }
+    for (const index of [0, 1]) {
+      const changed = structuredClone(graph), previous = changed.taskStatusEvidence[index], lifecycleState = "inactive", allocationRevoked = index === 0 ? false : true;
+      const budgetEvents = changed.budgetEvents.map((node: any) => node.event).slice(0, index === 0 ? 2 : undefined);
+      const durableHistoryDigest = authorityDigest({ task: { taskId: changed.taskId, authorityCellId: changed.authorityCellId, lifecycleState, grantExpiresAt: previous.grantExpiresAt, allocationRevoked }, budgetEvents });
+      changed.taskStatusEvidence[index] = resign({ ...previous, lifecycleState, allocationRevoked, currentActiveClaim: false, durableHistoryDigest });
+      assert.throws(() => verifyCertificationTaskReceiptGraph(rebuild(changed), graphVerification(f.pin)), /task status|history|lifecycle|observation/i);
+    }
+  } finally { await f.close(); }
+});
+
+test("offline portable verification rejects re-signed false claims with a fresh terminal commitment", async () => {
+  const f = await createGitHubIssueLabelsFixture(); try {
+    await f.runner.run({ bearerToken: f.credential.token, requestId: "request_resigned" });
+    await f.runner.run({ bearerToken: f.credential.token, requestId: "request_resigned_duplicate" });
+    const graph: any = await f.runner.exportGraph({ bearerToken: f.credential.token });
+    const evidence = f.cell && certificationCellHostInternalState(f.cell).hermeticGitHubAuthority().lifecycle.direct.get("authority-evidence")!;
+    const signer = { signerId: evidence.descriptor.keyId, sign: (digest: string) => signAuthorityDigest(evidence.privateKey, "authority-evidence", digest) };
+    const resign = (record: any) => { const { signature: _old, ...body } = record; return { ...body, signature: signer.sign(authorityDigest(body)) }; };
+    const rebuild = (changed: any) => { const { v: _v, adapterContractDigest: _adapter, topology: _topology, leases: _leases, priorReceiptLinks: _links, terminalCommitment: _terminal, ...content } = changed; return createCertificationTaskReceiptGraph({ ...content, terminalSigner: signer }); };
+    for (const mutate of [
+      (g: any) => { g.postStateEvidence[0] = resign({ ...g.postStateEvidence[0], confidence: "pending", observationMethod: "provider-acknowledgment", observedProjectionDigest: null }); },
+      (g: any) => { g.postStateEvidence.push(g.postStateEvidence[0]); },
+      (g: any) => { g.postStateEvidence[0] = resign({ ...g.postStateEvidence[0], expectedProjectionDigest: authorityDigest(["WRONG"]), observedProjectionDigest: authorityDigest(["WRONG"]) }); },
+      (g: any) => { g.taskStatusEvidence[1] = resign({ ...g.taskStatusEvidence[1], taskId: "WRONG_TASK" }); },
+      (g: any) => { g.policyEvidence[1] = resign({ ...g.policyEvidence[1], policyDigest: `sha256:${"a".repeat(64)}` }); },
+      (g: any) => { g.duplicateAttempts = []; g.duplicateDecisions = []; },
+    ]) { const changed: any = structuredClone(graph); mutate(changed); assert.throws(() => verifyCertificationTaskReceiptGraph(rebuild(changed), graphVerification(f.pin)), /post-state|projection|task status|policy|duplicate|authority/i); }
+  } finally { await f.close(); }
+});

@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://reelier.dev/contracts/outcome-profile/v1/profile-authority-evidence.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["v", "purpose", "tenant", "profileDigest", "activationDigest", "innerReceiptDigest", "jobCardDigest", "artifactKeyBindingDigest", "artifactKeyBindingCommitmentDigest", "contractDigest", "deploymentDigest", "routeScopeDigest", "routeAuthoritySnapshotDigest", "authorityTrustHeadDigest", "observedAt", "signerId", "signature"],
+  "properties": {
+    "v": { "const": "reelier.profile-authority-binding/v1" },
+    "purpose": { "const": "profile-authority-binding" },
+    "tenant": { "$ref": "#/$defs/id" },
+    "profileDigest": { "$ref": "#/$defs/digest" },
+    "activationDigest": { "$ref": "#/$defs/digest" },
+    "innerReceiptDigest": { "$ref": "#/$defs/digest" },
+    "jobCardDigest": { "$ref": "#/$defs/digest" },
+    "artifactKeyBindingDigest": { "$ref": "#/$defs/digest" },
+    "artifactKeyBindingCommitmentDigest": { "$ref": "#/$defs/digest" },
+    "contractDigest": { "$ref": "#/$defs/digest" },
+    "deploymentDigest": { "$ref": "#/$defs/digest" },
+    "routeScopeDigest": { "$ref": "#/$defs/digest" },
+    "routeAuthoritySnapshotDigest": { "$ref": "#/$defs/digest" },
+    "authorityTrustHeadDigest": { "$ref": "#/$defs/digest" },
+    "observedAt": { "$ref": "#/$defs/time" },
+    "signerId": { "$ref": "#/$defs/id" },
+    "signature": { "$ref": "#/$defs/signature" }
+  },
+  "$defs": {
+    "id": { "type": "string", "pattern": "^[A-Za-z0-9._~-]{1,128}$" },
+    "digest": { "type": "string", "pattern": "^sha256:(?!0{64}$)[0-9a-f]{64}$" },
+    "time": { "type": "string", "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-([0-2][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]\\.[0-9]{3}Z$" },
+    "signature": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["alg", "sig"],
+      "properties": {
+        "alg": { "const": "ed25519" },
+        "sig": { "type": "string", "pattern": "^[A-Za-z0-9+/]{86}==$" }
+      }
+    }
+  }
+}

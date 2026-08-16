@@ -180,16 +180,18 @@ delegate outcomes rather than merely observe activity.
 
 Recorded 2026-08-04 against the Path C SDD ledger.
 
-**HighLevel and Slack are not ICP frameworks**, so SDD task 5 (HighLevel pack and host guides) and
-task 6 (Slack pack and ABI freeze) are **not targeted as scoped**. Two pieces bundled inside them are
-**not** dropped:
+**HighLevel is removed from Path C v1.** The required conformance packs are now the explicitly
+scoped GitHub issue-label replacement and Slack channel-topic replacement. Both are read-back
+surfaces, so they preserve the evidence model while exercising real external writes.
 
-- **ABI freeze** (was inside task 6). Cloud PR `seldonframe/reelier-cloud#54` merges only after the
+The earlier SDD task split is superseded; two durable pieces remain:
+
+- **ABI freeze**. Cloud PR `seldonframe/reelier-cloud#54` merges only after the
   OSS ABI is frozen **and PR #85 is merged** — both conditions, per the PR body. Per §2.3 Cloud is
   what the paying segments buy, so dropping task 6 wholesale would remove the gate on the deliverable
   those segments purchase. It needs a brief of its own.
-- **Host guides** (were inside task 5). Priority-3 framework authors are the distribution channel, so
-  the guides are **retargeted** from HighLevel to the priority-1 frameworks, not deleted.
+- **Host guides**. Priority-3 framework authors are the distribution channel, so the guides target
+  Codex, Claude Code, Cursor, Eve, Hermes, and OpenClaw.
 
 ### 8.1 The substrate constraint — read this before choosing a pack
 

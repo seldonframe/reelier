@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://reelier.dev/contracts/outcome-profile/v1/profile-conformance-report.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["v", "profileDigest", "packDigest", "definitionDigest", "definitionRegistrationDigest", "harnessId", "harnessDigest", "vectorSetDigest", "sourceRevision", "checks", "claims"],
+  "properties": {
+    "v": { "const": "reelier.outcome-profile-conformance-report/v1" },
+    "profileDigest": { "$ref": "#/$defs/digest" },
+    "packDigest": { "$ref": "#/$defs/digest" },
+    "definitionDigest": { "$ref": "#/$defs/digest" },
+    "definitionRegistrationDigest": { "$ref": "#/$defs/digest" },
+    "harnessId": { "$ref": "#/$defs/id" },
+    "harnessDigest": { "$ref": "#/$defs/digest" },
+    "vectorSetDigest": { "$ref": "#/$defs/digest" },
+    "sourceRevision": { "type": "string", "pattern": "^[A-Za-z0-9._/~+-]{1,160}$" },
+    "checks": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["checkId", "vectorDigest", "status", "evidenceDigest"],
+        "properties": {
+          "checkId": { "$ref": "#/$defs/id" },
+          "vectorDigest": { "$ref": "#/$defs/digest" },
+          "status": { "enum": ["passed", "failed"] },
+          "evidenceDigest": { "$ref": "#/$defs/digest" }
+        }
+      }
+    },
+    "claims": { "$ref": "#/$defs/claims" }
+  },
+  "$defs": {
+    "id": { "type": "string", "pattern": "^[A-Za-z0-9._~-]{1,128}$" },
+    "digest": { "type": "string", "pattern": "^sha256:(?!0{64}$)[0-9a-f]{64}$" },
+    "claim": { "enum": ["verified", "failed", "unchecked", "absent"] },
+    "claims": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["closure", "determinism", "accountBinding", "noSecrets", "reconciliation"],
+      "properties": {
+        "closure": { "$ref": "#/$defs/claim" },
+        "determinism": { "$ref": "#/$defs/claim" },
+        "accountBinding": { "$ref": "#/$defs/claim" },
+        "noSecrets": { "$ref": "#/$defs/claim" },
+        "reconciliation": { "$ref": "#/$defs/claim" }
+      }
+    }
+  }
+}

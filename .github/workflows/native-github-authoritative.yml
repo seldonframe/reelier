@@ -1,0 +1,181 @@
+name: Native GitHub authoritative verification (Gate 4)
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_id:
+        description: Immutable Task 10 candidate ID
+        required: true
+        type: string
+      bundle_path:
+        description: Path to the exact retained workflow bundle
+        required: true
+        type: string
+      checker_public_key_path:
+        description: Path to the retained public key for offline signature verification
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  NATIVE_CANDIDATE_ID: sha256:e46498b6441a44e7de42264ebf243e4462aae6e4c4b3d33ed4276fcc50190e96
+  NATIVE_PUBLIC_COMMIT: 03ac48e
+  NATIVE_TARBALL_DIGEST: sha256:0659c2f402002d733dfd2621c5d8cce5df301975606a3fcb1b802e492bec5309
+  NATIVE_PACK_DIGEST: sha256:8101632acbacaf2738b8a7e698b0fb301539163edc713a37e74df0a6d233d689
+  NATIVE_TASK8_BASELINE_DIGEST: sha256:8888888888888888888888888888888888888888888888888888888888888888
+  NATIVE_TASK9_EVIDENCE_DIGEST: sha256:9999999999999999999999999999999999999999999999999999999999999999
+  NATIVE_PORTABLE_CONTRACT_DIGEST: sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
+  NATIVE_OPERATOR_EVIDENCE_LANE: cccccccccccccccccccccccccccccccccccccccc
+  NATIVE_PROVIDER_AUTHORITY_LANE: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  NATIVE_RECONCILIATION_VERIFIER_LANE: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+
+jobs:
+  preflight:
+    name: Verify immutable candidate input
+    runs-on: ubuntu-latest
+    environment:
+      name: native-github-live
+    steps:
+      - name: Checkout pinned source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Install and build verifier from tracked source
+        shell: bash
+        run: npm ci --ignore-scripts --no-audit --no-fund && npm run build
+      - name: Refuse mutable candidate inputs
+        env:
+          EXPECTED_CANDIDATE_ID: ${{ inputs.candidate_id }}
+          BUNDLE_PATH: ${{ inputs.bundle_path }}
+          RUNNER_SOURCE_COMMIT: ${{ github.sha }}
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$RUNNER_SOURCE_COMMIT" = "$GITHUB_SHA"
+          test "$EXPECTED_CANDIDATE_ID" = "$NATIVE_CANDIDATE_ID"
+          test "$NATIVE_PUBLIC_COMMIT" = "03ac48e"
+          test "$NATIVE_TARBALL_DIGEST" = "sha256:0659c2f402002d733dfd2621c5d8cce5df301975606a3fcb1b802e492bec5309"
+          test "$NATIVE_PACK_DIGEST" = "sha256:8101632acbacaf2738b8a7e698b0fb301539163edc713a37e74df0a6d233d689"
+          test "$NATIVE_TASK8_BASELINE_DIGEST" = "sha256:8888888888888888888888888888888888888888888888888888888888888888"
+          test "$NATIVE_TASK9_EVIDENCE_DIGEST" = "sha256:9999999999999999999999999999999999999999999999999999999999999999"
+          test "$NATIVE_PORTABLE_CONTRACT_DIGEST" = "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+          test "$NATIVE_OPERATOR_EVIDENCE_LANE" = "cccccccccccccccccccccccccccccccccccccccc"
+          test "$NATIVE_PROVIDER_AUTHORITY_LANE" = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          test "$NATIVE_RECONCILIATION_VERIFIER_LANE" = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+          test -n "$BUNDLE_PATH"
+
+  ubuntu-authoritative:
+    name: Ubuntu authoritative lifecycle verification
+    needs: preflight
+    if: ${{ needs.preflight.result == 'success' }}
+    runs-on: ubuntu-latest
+    environment:
+      name: native-github-live
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout pinned source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Install and build verifier from tracked source
+        shell: bash
+        run: npm ci --ignore-scripts --no-audit --no-fund && npm run build
+      - name: Stage retained signed evidence
+        env:
+          BUNDLE_PATH: ${{ inputs.bundle_path }}
+          CHECKER_PUBLIC_KEY_PATH: ${{ inputs.checker_public_key_path }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .superpowers/input
+          case "$BUNDLE_PATH" in /*) ;; *) printf '{"v":"reelier.native-github-gate4-decision/v1","state":"insufficient","decision":"blocked","reason":"bundle path must be absolute"}\n' > .superpowers/native-github-gate4-decision.json; exit 78 ;; esac
+          case "$CHECKER_PUBLIC_KEY_PATH" in /*) ;; *) printf '{"v":"reelier.native-github-gate4-decision/v1","state":"insufficient","decision":"blocked","reason":"checker key path must be absolute"}\n' > .superpowers/native-github-gate4-decision.json; exit 78 ;; esac
+          if ! test -f "$BUNDLE_PATH" || ! test -s "$BUNDLE_PATH" || ! test -f "$CHECKER_PUBLIC_KEY_PATH" || ! test -s "$CHECKER_PUBLIC_KEY_PATH"; then
+            printf '{"v":"reelier.native-github-gate4-decision/v1","state":"insufficient","decision":"blocked","reason":"retained signed evidence bundle or checker key is unavailable"}\n' > .superpowers/native-github-gate4-decision.json
+            exit 78
+          fi
+          cp -- "$BUNDLE_PATH" .superpowers/input/bundle.json
+          cp -- "$CHECKER_PUBLIC_KEY_PATH" .superpowers/input/checker-public-key.pem
+      - name: Verify retained Ubuntu and Windows artifacts offline
+        env:
+          BUNDLE_PATH: ${{ github.workspace }}/.superpowers/input/bundle.json
+          CHECKER_PUBLIC_KEY_PATH: ${{ github.workspace }}/.superpowers/input/checker-public-key.pem
+          EXPECTED_RUNNER_SOURCE_COMMIT: ${{ github.sha }}
+        shell: bash
+        run: node scripts/verify-native-github-hosted.mjs --bundle "$BUNDLE_PATH" --execution hosted-run --public-key "$CHECKER_PUBLIC_KEY_PATH"
+      - name: Upload private Gate 4 evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-github-gate4-ubuntu
+          path: .superpowers/native-github-gate4-decision.json
+          retention-days: 7
+          if-no-files-found: error
+
+  windows-offline:
+    name: Windows offline/native-host refusal verification
+    needs: preflight
+    if: ${{ needs.preflight.result == 'success' }}
+    runs-on: windows-latest
+    environment:
+      name: native-github-live
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout pinned source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Install and build verifier from tracked source
+        shell: pwsh
+        run: npm ci --ignore-scripts --no-audit --no-fund; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; npm run build
+      - name: Stage retained signed evidence
+        env:
+          BUNDLE_PATH: ${{ inputs.bundle_path }}
+          CHECKER_PUBLIC_KEY_PATH: ${{ inputs.checker_public_key_path }}
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path .superpowers/input | Out-Null
+          if (-not [System.IO.Path]::IsPathFullyQualified($env:BUNDLE_PATH) -or -not [System.IO.Path]::IsPathFullyQualified($env:CHECKER_PUBLIC_KEY_PATH)) {
+            '{"v":"reelier.native-github-gate4-decision/v1","state":"insufficient","decision":"blocked","reason":"retained evidence paths must be absolute"}' | Set-Content -Encoding utf8 .superpowers/native-github-gate4-decision.json
+            exit 78
+          }
+          if (-not (Test-Path -LiteralPath $env:BUNDLE_PATH -PathType Leaf) -or -not (Test-Path -LiteralPath $env:CHECKER_PUBLIC_KEY_PATH -PathType Leaf)) {
+            '{"v":"reelier.native-github-gate4-decision/v1","state":"insufficient","decision":"blocked","reason":"retained signed evidence bundle or checker key is unavailable"}' | Set-Content -Encoding utf8 .superpowers/native-github-gate4-decision.json
+            exit 78
+          }
+          Copy-Item -LiteralPath $env:BUNDLE_PATH -Destination .superpowers/input/bundle.json -Force
+          Copy-Item -LiteralPath $env:CHECKER_PUBLIC_KEY_PATH -Destination .superpowers/input/checker-public-key.pem -Force
+      - name: Verify retained artifacts without native execution
+        env:
+          BUNDLE_PATH: ${{ github.workspace }}\.superpowers\input\bundle.json
+          CHECKER_PUBLIC_KEY_PATH: ${{ github.workspace }}\.superpowers\input\checker-public-key.pem
+          EXPECTED_RUNNER_SOURCE_COMMIT: ${{ github.sha }}
+        shell: pwsh
+        run: node scripts/verify-native-github-hosted.mjs --bundle "$env:BUNDLE_PATH" --execution hosted-run --public-key "$env:CHECKER_PUBLIC_KEY_PATH"
+      - name: Upload private Windows evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-github-gate4-windows
+          path: .superpowers/native-github-gate4-decision.json
+          retention-days: 7
+          if-no-files-found: error

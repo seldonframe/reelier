@@ -4,7 +4,7 @@ import { existsSync, writeFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { hostname, tmpdir } from "node:os";
 import path from "node:path";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { pathToFileURL } from "node:url";
 import { authorityCanonicalBytes, authorityDigest } from "../../src/authority/wire.js";
@@ -15,6 +15,7 @@ import {
   parseGateDecisionRecord,
   type GateDecisionRecord,
 } from "../../src/authority/decision.js";
+import * as decisionModule from "../../src/authority/decision.js";
 import { GATE_REFUSAL_REASONS, GATE_UNAVAILABLE_REASONS } from "../../src/authority/errors.js";
 
 const sha = (character: string) => `sha256:${character.repeat(64)}`;
@@ -37,6 +38,16 @@ function primary(overrides: Partial<GateDecisionRecord> = {}): GateDecisionRecor
     gateEventDigest: authorityDigest(event), signerId: "gate_signer_1", signature: { alg: "ed25519" as const, sig: Buffer.alloc(64, 7).toString("base64") },
     ...overrides,
   });
+}
+
+function deferred():Readonly<{promise:Promise<void>;resolve:()=>void}>{let resolve!:()=>void;const promise=new Promise<void>(done=>{resolve=done;});return {promise,resolve};}
+
+async function startPausedDecisionWinner(root:string,record:GateDecisionRecord):Promise<Readonly<{release:()=>void;result:Promise<unknown>}>>{
+  const moduleUrl=pathToFileURL(path.resolve("dist-test/src/authority/decision.js")).href,ready=deferred(),script='const{createFileGateDecisionSink}=await import(process.argv[1]);let release;const gate=new Promise(resolve=>{release=resolve;});process.on("message",message=>{if(message==="release")release();});const result=await createFileGateDecisionSink(process.argv[2],{faultInjector:async point=>{if(point==="before-rename"){process.send?.("ready");await gate;}}}).append(JSON.parse(process.argv[3]));process.stdout.write(JSON.stringify(result));process.disconnect?.();';
+  const child=spawn(process.execPath,["--input-type=module","-e",script,moduleUrl,root,JSON.stringify(record)],{stdio:["ignore","pipe","pipe","ipc"]});let stdout="",stderr="";
+  child.stdout!.setEncoding("utf8");child.stdout!.on("data",chunk=>{stdout+=String(chunk);});child.stderr!.setEncoding("utf8");child.stderr!.on("data",chunk=>{stderr+=String(chunk);});child.on("message",message=>{if(message==="ready")ready.resolve();});
+  const result=new Promise<unknown>((resolve,reject)=>{child.once("error",reject);child.once("close",code=>{if(code===0){try{resolve(JSON.parse(stdout));}catch(error){reject(error);}}else reject(new Error(`decision winner exited ${code}: ${stderr}`));});});
+  await ready.promise;return {release:()=>child.send("release"),result};
 }
 
 function accepted(eventId="event_accepted",ingressClaimDigest=sha("4"),reservationId="reservation_1"):GateDecisionRecord{
@@ -233,8 +244,59 @@ test("a failed atomic decision-lock retirement leaves the complete verified owne
     const preserved=await readFile(ownerFile),parsed=JSON.parse(preserved.toString("utf8"));
     assert.deepEqual(Object.keys(parsed).sort(),["host","nonce","pid","v"]);
     assert.equal(parsed.v,"reelier.gate-decision-lock/internal-v1");
-    assert.deepEqual(await createFileGateDecisionSink(root,{lockTimeoutMs:20}).append(primary({gateEvent:{...event,eventId:"event_after_failed_release"},gateEventDigest:authorityDigest({...event,eventId:"event_after_failed_release"})})),{ok:false,reason:"unavailable"});
+    assert.deepEqual(await createFileGateDecisionSink(root,{lockTimeoutMs:20}).append(primary({gateEvent:{...event,eventId:"event_after_failed_release"},gateEventDigest:authorityDigest({...event,eventId:"event_after_failed_release"})})),{ok:false,reason:"primary-ingress-conflict"});
     assert.deepEqual(await readFile(ownerFile),preserved);
+  }finally{await rm(root,{recursive:true,force:true});}
+});
+
+test("a concurrent held decision lock returns the durable terminal classification",async()=>{
+  const root=await mkdtemp(path.join(tmpdir(),"reelier-decision-held-lock-"));
+  try{
+    const record=primary(),sink=createFileGateDecisionSink(root,{lockTimeoutMs:20});
+    assert.deepEqual(await sink.append(record),{ok:true,status:"appended",recordDigest:authorityDigest(record)});
+    const lock=path.join(root,".gate-decisions.lock");
+    await mkdir(lock);
+    await writeFile(path.join(lock,"owner.json"),authorityCanonicalBytes({host:hostname(),nonce:"c".repeat(64),pid:process.pid,v:"reelier.gate-decision-lock/internal-v1"}));
+    assert.deepEqual(await createFileGateDecisionSink(root,{lockTimeoutMs:20}).append(record),{ok:true,status:"idempotent",recordDigest:authorityDigest(record)});
+  }finally{await rm(root,{recursive:true,force:true});}
+});
+
+test("decision contention consumes one absolute timeout budget even when the winner remains pre-persistence",async()=>{
+  const root=await mkdtemp(path.join(tmpdir(),"reelier-decision-late-winner-"));
+  try{
+    const runtimeOption=(decisionModule as unknown as {__testGateDecisionLockRuntimeOption?:symbol}).__testGateDecisionLockRuntimeOption;
+    assert.equal(typeof runtimeOption,"symbol","the decision-private monotonic runtime is available");
+    const record=primary(),winner=await startPausedDecisionWinner(root,record);
+    let now=0;const delays:number[]=[];
+    const result=await createFileGateDecisionSink(root,{lockTimeoutMs:21,[runtimeOption!]:{monotonicNow:()=>now,delay:async(milliseconds:number)=>{delays.push(milliseconds);now+=milliseconds;}}} as never).append(record);
+    winner.release();const winnerResult=await winner.result;
+    assert.deepEqual(result,{ok:false,reason:"unavailable"});
+    assert.deepEqual(winnerResult,{ok:true,status:"appended",recordDigest:authorityDigest(record)});
+    assert.equal(now,21,"contention stops at the one absolute deadline");assert.equal(delays.reduce((sum,value)=>sum+value,0),21,"no retry or final sleep crosses the absolute timeout budget");
+  }finally{await rm(root,{recursive:true,force:true});}
+});
+
+test("a real pre-persistence winner is terminally classified after the contender's timeout read boundary",async()=>{
+  const root=await mkdtemp(path.join(tmpdir(),"reelier-decision-real-late-winner-"));
+  try{
+    const runtimeOption=(decisionModule as unknown as {__testGateDecisionLockRuntimeOption?:symbol}).__testGateDecisionLockRuntimeOption;
+    assert.equal(typeof runtimeOption,"symbol","the decision-private monotonic runtime is available");
+    const record=primary(),winner=await startPausedDecisionWinner(root,record);let winnerResult:unknown,initialReadBoundary=false,now=0;const delays:number[]=[];
+    const result=await createFileGateDecisionSink(root,{lockTimeoutMs:20,[runtimeOption!]:{monotonicNow:()=>now,delay:async(milliseconds:number)=>{delays.push(milliseconds);now+=milliseconds;}},lockFaultInjector:async(point:string)=>{if(point==="after-contention-read"&&!initialReadBoundary){initialReadBoundary=true;winner.release();winnerResult=await winner.result;}}} as never).append(record);
+    assert.deepEqual(result,{ok:true,status:"idempotent",recordDigest:authorityDigest(record)});
+    assert.deepEqual(winnerResult,{ok:true,status:"appended",recordDigest:authorityDigest(record)});
+    assert.equal(initialReadBoundary,true,"the winner commits only after the contender's initial timeout and store-read boundary");
+    assert.equal(now,20,"the terminal read does not mint a fresh timeout budget");assert.equal(delays.reduce((sum,value)=>sum+value,0),20);
+  }finally{await rm(root,{recursive:true,force:true});}
+});
+
+test("a contention-boundary failure still returns unavailable after its final durable classification",async()=>{
+  const root=await mkdtemp(path.join(tmpdir(),"reelier-decision-contention-boundary-failure-"));
+  try{
+    const runtimeOption=(decisionModule as unknown as {__testGateDecisionLockRuntimeOption?:symbol}).__testGateDecisionLockRuntimeOption;assert.equal(typeof runtimeOption,"symbol");
+    const lock=path.join(root,".gate-decisions.lock");await mkdir(lock);await writeFile(path.join(lock,"owner.json"),authorityCanonicalBytes({host:hostname(),nonce:"e".repeat(64),pid:process.pid,v:"reelier.gate-decision-lock/internal-v1"}));let now=0,boundary=false;
+    const result=await createFileGateDecisionSink(root,{lockTimeoutMs:21,[runtimeOption!]:{monotonicNow:()=>now,delay:async(milliseconds:number)=>{now+=milliseconds;}},lockFaultInjector:async(point:string)=>{if(point==="after-contention-read"){boundary=true;throw new Error("contention observer failed");}}} as never).append(primary());
+    assert.deepEqual(result,{ok:false,reason:"unavailable"});assert.equal(boundary,true);assert.equal(now,21);assert.equal(existsSync(path.join(root,"gate-decisions.json")),false,"an unavailable sink is never classified as success");
   }finally{await rm(root,{recursive:true,force:true});}
 });
 
@@ -259,12 +321,12 @@ test("concurrent appends and every crash boundary expose a complete transaction 
   const script='const {createFileGateDecisionSink}=await import(process.argv[1]);const result=await createFileGateDecisionSink(process.argv[2]).append(JSON.parse(process.argv[3]));process.stdout.write(JSON.stringify(result));';
   const run=promisify(execFile);
   for(const [label,records,conflictReason] of [
-    ["event",Array.from({length:20},(_,index)=>primary({signerId:`child_signer_${index}`})),"event-id-conflict"],
-    ["primary",Array.from({length:20},(_,index)=>{const gateEvent={...event,eventId:`event_child_primary_${index}`};return primary({gateEvent,gateEventDigest:authorityDigest(gateEvent)});}),"primary-ingress-conflict"],
-    ["reservation",Array.from({length:20},(_,index)=>accepted(`event_child_reservation_${index}`,`sha256:${(index+200).toString(16).padStart(64,"0")}`)),"reservation-conflict"],
+    ["event",Array.from({length:80},(_,index)=>primary({signerId:`child_signer_${index}`})),"event-id-conflict"],
+    ["primary",Array.from({length:80},(_,index)=>{const gateEvent={...event,eventId:`event_child_primary_${index}`};return primary({gateEvent,gateEventDigest:authorityDigest(gateEvent)});}),"primary-ingress-conflict"],
+    ["reservation",Array.from({length:80},(_,index)=>accepted(`event_child_reservation_${index}`,`sha256:${(index+200).toString(16).padStart(64,"0")}`)),"reservation-conflict"],
   ] as const){
     const childRoot=await mkdtemp(path.join(tmpdir(),`reelier-decision-child-${label}-race-`));
-    try{const outputs=await Promise.all(records.map(record=>run(process.execPath,["--input-type=module","-e",script,moduleUrl,childRoot,JSON.stringify(record)])));const results=outputs.map(output=>JSON.parse(output.stdout) as {ok:boolean;status?:string;reason?:string});assert.equal(results.filter(result=>result.ok&&result.status==="appended").length,1,label);assert.equal(results.filter(result=>!result.ok&&result.reason===conflictReason).length,19,label);}finally{await rm(childRoot,{recursive:true,force:true});}
+    try{const outputs=await Promise.all(records.map(record=>run(process.execPath,["--input-type=module","-e",script,moduleUrl,childRoot,JSON.stringify(record)])));const results=outputs.map(output=>JSON.parse(output.stdout) as {ok:boolean;status?:string;reason?:string});assert.equal(results.filter(result=>result.ok&&result.status==="appended").length,1,label);assert.equal(results.filter(result=>!result.ok&&result.reason===conflictReason).length,records.length-1,label);}finally{await rm(childRoot,{recursive:true,force:true});}
   }
 
   const expectedFaultPoints=["before-write","after-write","before-file-sync","after-file-sync","before-rename","after-rename","before-directory-sync","after-directory-sync"] as const;
@@ -274,8 +336,9 @@ test("concurrent appends and every crash boundary expose a complete transaction 
     try{
       let fired=false;
       const sink=createFileGateDecisionSink(directory,{faultInjector(observed:string){if(!fired&&observed===point){fired=true;throw new Error(`fault:${point}`);}}});
-      await sink.append(record);
+      const appendResult=await sink.append(record),postPublication=["after-rename","before-directory-sync","after-directory-sync"].includes(point);
       assert.equal(fired,true,`${shape}:${point}`);
+      assert.deepEqual(appendResult,postPublication?{ok:true,status:"idempotent",recordDigest:authorityDigest(record)}:{ok:false,reason:"unavailable"},`${shape}:${point}: the state machine classifies only a durably visible terminal`);
       const recovered=createFileGateDecisionSink(directory);
       const lookups=[];
       if(indexes.includes("event"))lookups.push(await recovered.lookupByEvent(record.gateEvent.eventId));

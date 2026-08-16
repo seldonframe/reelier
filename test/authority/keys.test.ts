@@ -52,6 +52,24 @@ test("request digest and global key reject alias/body confusion and delimiter co
   assert.throws(() => authenticateOutcomeRequest({ tenant: "tenant_1", requester: "requester_1", definitionAlias: "definition_1", request: { ...request, choices: { connector: "evil" } } }), /invalid outcome-request/i);
 });
 
+test("authenticated requests retain host-bound execution context outside the request wire", () => {
+  const context = {
+    v: "reelier.authority-execution-context/v1" as const,
+    taskId: "task_1",
+    principalId: "agent_1",
+    grantId: "grant_1",
+    grantDigest: "sha256:" + "1".repeat(64),
+    allocationId: "allocation_1",
+    runtimeSessionId: "session_1",
+    jobId: "job_1",
+    authorityCellId: "cell_1",
+  };
+  const authenticated = authenticateOutcomeRequest({ tenant: "tenant_1", requester: "agent_1", definitionAlias: "definition_1", request: outcomeRequest(), executionContext: context });
+  const state = authenticatedOutcomeRequestState(authenticated);
+  assert.deepEqual(state.executionContext, context);
+  assert.equal("executionContext" in state.request, false);
+});
+
 test("contract-window and provider-trigger limit keys bind exact closed preimages", () => {
   assert.deepEqual(deriveContractWindowLimitKey({
     tenant: "tenant_1",

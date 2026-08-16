@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "reelier.authority/certification-cell-activation/v1",
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "signature": { "type": "object", "additionalProperties": false, "required": ["alg", "sig"], "properties": { "alg": { "const": "ed25519" }, "sig": { "type": "string", "pattern": "^(?:[A-Za-z0-9+/]{4}){21}[A-Za-z0-9+/][AQgw]==$", "contentEncoding": "base64" } } }
+  },
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["v", "taskId", "jobId", "grantId", "allocationId", "authorityCellId", "principalId", "runtimeSessionId", "signerKeyId", "signerKeyDescriptorDigest", "signedReadinessDigest", "signedJobCardDigest", "constraintsDigest", "currentTrustEventCount", "currentTrustHistoryDigest", "currentTrustHeadDigest", "currentTrustPinPathDigest", "effects", "signedRootGrant", "completeness", "dispatchable"],
+  "properties": {
+    "v": { "const": "reelier.certification-cell-activation/v1" },
+    "taskId": { "type": "string", "pattern": "^task_[0-9a-f]{24}$" },
+    "jobId": { "type": "string", "pattern": "^job_[0-9a-f]{24}$" },
+    "grantId": { "type": "string", "pattern": "^grant_[0-9a-f]{24}$" },
+    "allocationId": { "type": "string", "pattern": "^grant_[0-9a-f]{24}$" },
+    "authorityCellId": { "type": "string", "pattern": "^cell_[0-9a-f]{24}$" },
+    "principalId": { "type": "string", "pattern": "^principal_[0-9a-f]{24}$" },
+    "runtimeSessionId": { "type": "string", "pattern": "^session_[0-9a-f]{24}$" },
+    "signerKeyId": { "type": "string", "pattern": "^[a-z][a-z0-9_-]{2,127}$" },
+    "signerKeyDescriptorDigest": { "$ref": "#/$defs/digest" },
+    "signedReadinessDigest": { "$ref": "#/$defs/digest" },
+    "signedJobCardDigest": { "$ref": "#/$defs/digest" },
+    "constraintsDigest": { "$ref": "#/$defs/digest" },
+    "currentTrustEventCount": { "type": "integer", "minimum": 1 },
+    "currentTrustHistoryDigest": { "$ref": "#/$defs/digest" },
+    "currentTrustHeadDigest": { "$ref": "#/$defs/digest" },
+    "currentTrustPinPathDigest": { "$ref": "#/$defs/digest" },
+    "effects": { "type": "integer", "minimum": 1 },
+    "signedRootGrant": { "type": "object", "additionalProperties": false, "required": ["grant", "digest", "signerId", "signature"], "properties": {
+      "grant": { "$ref": "reelier.authority/delegation-grant/v1" },
+      "digest": { "$ref": "#/$defs/digest" },
+      "signerId": { "type": "string", "pattern": "^[a-z][a-z0-9_-]{2,127}$" },
+      "signature": { "$ref": "#/$defs/signature" }
+    } },
+    "completeness": { "const": "unchecked" },
+    "dispatchable": { "const": false }
+  }
+}

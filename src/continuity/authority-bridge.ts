@@ -1,0 +1,64 @@
+import type { LedgerState } from "../authority/ledger.js";
+import {
+  readVerifiedNativeOutcomeProjections,
+  type VerifiedCertificationTaskReceiptGraphV1,
+} from "../authority/certification/task-receipt-graph.js";
+import type { VerifierProducedConsequenceEventV1 } from "./types.js";
+
+type ConsequenceState = Exclude<LedgerState, "issued">;
+
+const NEXT: Readonly<Record<"issued" | ConsequenceState, readonly ConsequenceState[]>> = {
+  issued: ["reserved"],
+  reserved: ["dispatched", "cancelled"],
+  dispatched: ["acknowledged", "definitive-failure", "ambiguous"],
+  acknowledged: ["reconciled"],
+  "definitive-failure": ["reconciled"],
+  ambiguous: ["reconciled"],
+  cancelled: [],
+  reconciled: [],
+};
+
+const verifierProducedConsequenceEvents = new WeakSet<object>();
+
+export function assertVerifierProducedConsequenceEvent(
+  value: unknown,
+): asserts value is VerifierProducedConsequenceEventV1 {
+  if (value === null || typeof value !== "object" || !verifierProducedConsequenceEvents.has(value)) {
+    throw new TypeError("verified consequence requires verifier provenance");
+  }
+}
+
+/**
+ * Projects verifier-produced native Path C proof into the continuity kernel.
+ * The verifier result is registered opaquely by the full signed task-graph
+ * verifier. Frozen objects, hashes, casts, and generic receipt bundles cannot
+ * enter this path.
+ */
+export function continuityEventsFromVerifiedAuthorityReceipt(
+  verified: VerifiedCertificationTaskReceiptGraphV1,
+): readonly VerifierProducedConsequenceEventV1[] {
+  const eventIds = new Set<string>();
+  const events = readVerifiedNativeOutcomeProjections(verified).flatMap((projection) => {
+    let prior: "issued" | ConsequenceState = "issued";
+    return projection.timeline.map((entry) => {
+      const state = entry.state as ConsequenceState;
+      if (!NEXT[prior].includes(state)) throw new TypeError(`verified native outcome timeline transition is invalid: ${prior} -> ${state}`);
+      if (eventIds.has(entry.eventDigest)) throw new TypeError("verified native outcome timeline event digest is duplicated");
+      eventIds.add(entry.eventDigest);
+      prior = state;
+      const event = Object.freeze({
+        type: "consequence.observed" as const,
+        eventId: entry.eventDigest,
+        semanticOperationId: projection.semanticOperationId,
+        reservationId: projection.reservationId,
+        state,
+        authorityEvidenceDigest: projection.authorityEvidenceDigest,
+        receiptDigest: projection.receiptDigest,
+        verification: projection.verification,
+      }) as VerifierProducedConsequenceEventV1;
+      verifierProducedConsequenceEvents.add(event);
+      return event;
+    });
+  });
+  return Object.freeze(events);
+}

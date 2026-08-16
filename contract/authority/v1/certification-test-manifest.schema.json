@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "reelier.authority/certification-test-manifest/v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["v", "scenarioId", "suiteId", "runnerManifestDigest", "cases"],
+  "properties": {
+    "v": { "const": "reelier.certification-test-manifest/v1" },
+    "scenarioId": { "enum": ["cloudflare-dns", "cloudflare-vercel-secret", "codex-ten-principal", "fly-topology", "github-issue-labels", "neon-migration", "slack-topic", "vercel-promotion"] },
+    "suiteId": { "type": "string", "pattern": "^[a-z][a-z0-9_]{2,127}$" },
+    "runnerManifestDigest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "cases": { "const": ["account-binding", "ambiguity", "cleanup", "normal", "redaction", "stale-state"] }
+  }
+}

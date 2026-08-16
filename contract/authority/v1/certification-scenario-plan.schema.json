@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "reelier.authority/certification-scenario-plan/v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["v", "scenarioId", "definitionAliases", "sourceRefs", "resourceDigest", "accountCommitments", "desiredStateDigest", "policyCommitments", "cleanup", "controlledCut", "runnerManifestDigest", "testManifestDigest", "endpointManifestDigest", "runnerRegistryDigest"],
+  "properties": {
+    "v": { "const": "reelier.certification-scenario-plan/v1" },
+    "scenarioId": { "enum": ["cloudflare-dns", "cloudflare-vercel-secret", "github-issue-labels", "neon-migration", "slack-topic", "vercel-promotion"] },
+    "definitionAliases": { "type": "array", "minItems": 1, "maxItems": 2, "uniqueItems": true, "items": { "type": "string", "pattern": "^[a-z][a-z0-9_]{2,127}$" } },
+    "sourceRefs": { "type": "object", "minProperties": 1, "maxProperties": 2, "propertyNames": { "enum": ["cloudflare", "github", "neon", "slack", "vercel"] }, "additionalProperties": { "$ref": "#/$defs/digest" } },
+    "resourceDigest": { "$ref": "#/$defs/digest" },
+    "accountCommitments": { "type": "array", "minItems": 1, "maxItems": 2, "uniqueItems": true, "items": { "type": "object", "additionalProperties": false, "required": ["provider", "digest"], "properties": { "provider": { "enum": ["cloudflare", "github", "neon", "slack", "vercel"] }, "digest": { "$ref": "#/$defs/digest" } } } },
+    "desiredStateDigest": { "$ref": "#/$defs/digest" },
+    "policyCommitments": { "type": "array", "minItems": 1, "maxItems": 8, "uniqueItems": true, "items": { "type": "object", "additionalProperties": false, "required": ["schemaId", "digest"], "properties": { "schemaId": { "type": "string", "pattern": "^[a-z][a-z0-9_]{2,127}$" }, "digest": { "$ref": "#/$defs/digest" } } } },
+    "cleanup": { "type": "object", "additionalProperties": false, "required": ["recipeIds", "beforeState"], "properties": { "recipeIds": { "type": "array", "minItems": 1, "maxItems": 64, "uniqueItems": true, "items": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$" } }, "beforeState": { "const": "pending" } } },
+    "controlledCut": { "type": "object", "additionalProperties": false, "required": ["case"], "properties": { "case": { "const": "ambiguous-after-dispatch" } } },
+    "runnerManifestDigest": { "$ref": "#/$defs/digest" },
+    "testManifestDigest": { "$ref": "#/$defs/digest" },
+    "endpointManifestDigest": { "$ref": "#/$defs/digest" },
+    "runnerRegistryDigest": { "const": "sha256:247f46c943ddd64c638c7577347eb44d0b80eaada24876168ba717866721ce1c" }
+  },
+  "oneOf": [
+    { "properties": { "scenarioId": { "const": "cloudflare-dns" }, "definitionAliases": { "const": ["cloudflare_dns_record_set_v1"] }, "sourceRefs": { "$ref": "#/$defs/cloudflareSourceRefs" }, "accountCommitments": { "$ref": "#/$defs/cloudflareAccounts" }, "policyCommitments": { "const": [{"schemaId":"cloudflare_dns_record_policy_v1","digest":"sha256:c1f8783c6c1ca02c4cdcf1045f94492e4d1a6973685c1569e20a11a70398f404"}] } } },
+    { "properties": { "scenarioId": { "const": "cloudflare-vercel-secret" }, "definitionAliases": { "const": ["cloudflare_api_token_create_v1","vercel_project_environment_secret_set_v1"] }, "sourceRefs": { "$ref": "#/$defs/cloudflareVercelSourceRefs" }, "accountCommitments": { "$ref": "#/$defs/cloudflareVercelAccounts" }, "policyCommitments": { "const": [{"schemaId":"cloudflare_api_token_create_policy_v1","digest":"sha256:e44900af68f09eeb389edaa53d308c2dae682601b55d7c869f939df184865d51"},{"schemaId":"vercel_project_environment_secret_policy_v1","digest":"sha256:cd84cabc8c5fe96ce80f15dd85e55135456b91bcade74d80a703371c49353603"}] } } },
+    { "properties": { "scenarioId": { "const": "github-issue-labels" }, "definitionAliases": { "const": ["github_issue_labels_set_v1"] }, "sourceRefs": { "$ref": "#/$defs/githubSourceRefs" }, "accountCommitments": { "$ref": "#/$defs/githubAccounts" }, "policyCommitments": { "const": [{"schemaId":"github_issue_labels_policy_v1","digest":"sha256:7b68ae5753f5b4258ff9e48ef24f67fced35ee57a4d9b994919ff2abaa1ed47f"}] } } },
+    { "properties": { "scenarioId": { "const": "neon-migration" }, "definitionAliases": { "const": ["neon_database_migration_apply_v1"] }, "sourceRefs": { "$ref": "#/$defs/neonSourceRefs" }, "accountCommitments": { "$ref": "#/$defs/neonAccounts" }, "policyCommitments": { "const": [{"schemaId":"neon_database_migration_policy_v1","digest":"sha256:f1b6e6a852e067dd6f7a1735a6d7529bdbf0c6157c4fdc56b86f0259ffdd4786"}] } } },
+    { "properties": { "scenarioId": { "const": "slack-topic" }, "definitionAliases": { "const": ["slack_channel_topic_set_v1"] }, "sourceRefs": { "$ref": "#/$defs/slackSourceRefs" }, "accountCommitments": { "$ref": "#/$defs/slackAccounts" }, "policyCommitments": { "const": [{"schemaId":"slack_channel_topic_policy_v1","digest":"sha256:2b55df3b1ca8f1c989f96a03ae96696beaf03640277ea249b16d3085d45825a5"}] } } },
+    { "properties": { "scenarioId": { "const": "vercel-promotion" }, "definitionAliases": { "const": ["vercel_deployment_release_v1"] }, "sourceRefs": { "$ref": "#/$defs/vercelSourceRefs" }, "accountCommitments": { "$ref": "#/$defs/vercelAccounts" }, "policyCommitments": { "const": [{"schemaId":"vercel_deployment_release_policy_v1","digest":"sha256:ca1e0310e000421fe3be56496770f65b666eb9ff7f3507e695af0f0f95dc1f47"}] } } }
+  ],
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "cloudflareSourceRefs": { "type": "object", "additionalProperties": false, "required": ["cloudflare"], "properties": { "cloudflare": { "$ref": "#/$defs/digest" } } },
+    "cloudflareVercelSourceRefs": { "type": "object", "additionalProperties": false, "required": ["cloudflare", "vercel"], "properties": { "cloudflare": { "$ref": "#/$defs/digest" }, "vercel": { "$ref": "#/$defs/digest" } } },
+    "githubSourceRefs": { "type": "object", "additionalProperties": false, "required": ["github"], "properties": { "github": { "$ref": "#/$defs/digest" } } },
+    "neonSourceRefs": { "type": "object", "additionalProperties": false, "required": ["neon"], "properties": { "neon": { "$ref": "#/$defs/digest" } } },
+    "slackSourceRefs": { "type": "object", "additionalProperties": false, "required": ["slack"], "properties": { "slack": { "$ref": "#/$defs/digest" } } },
+    "vercelSourceRefs": { "type": "object", "additionalProperties": false, "required": ["vercel"], "properties": { "vercel": { "$ref": "#/$defs/digest" } } },
+    "cloudflareAccounts": { "type": "array", "minItems": 1, "maxItems": 1, "prefixItems": [{ "properties": { "provider": { "const": "cloudflare" } } }] },
+    "cloudflareVercelAccounts": { "type": "array", "minItems": 2, "maxItems": 2, "prefixItems": [{ "properties": { "provider": { "const": "cloudflare" } } }, { "properties": { "provider": { "const": "vercel" } } }] },
+    "githubAccounts": { "type": "array", "minItems": 1, "maxItems": 1, "prefixItems": [{ "properties": { "provider": { "const": "github" } } }] },
+    "neonAccounts": { "type": "array", "minItems": 1, "maxItems": 1, "prefixItems": [{ "properties": { "provider": { "const": "neon" } } }] },
+    "slackAccounts": { "type": "array", "minItems": 1, "maxItems": 1, "prefixItems": [{ "properties": { "provider": { "const": "slack" } } }] },
+    "vercelAccounts": { "type": "array", "minItems": 1, "maxItems": 1, "prefixItems": [{ "properties": { "provider": { "const": "vercel" } } }] }
+  }
+}

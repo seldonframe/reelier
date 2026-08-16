@@ -70,7 +70,7 @@ export function isWrappedEntry(entry: unknown): boolean {
   return (
     entry.command === "npx" &&
     Array.isArray(args) &&
-    (args.includes("reelier") || args.includes("@seldonframe/reelier")) &&
+    args.some(value => typeof value === "string" && /^(?:reelier|@seldonframe\/reelier)(?:@[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?)?$/.test(value)) &&
     args.includes("mcp") &&
     args.includes("--wrap")
   );

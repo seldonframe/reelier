@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "reelier.certification/task-current-state/v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["v", "phase", "taskId", "lifecycleState", "grantExpiresAt", "allocationRevoked", "observedAt", "durableHistoryDigest", "currentActiveClaim", "freshness", "signerId", "signature"],
+  "properties": {
+    "v": { "const": "reelier.certification-task-status-evidence/v1" },
+    "phase": { "enum": ["dispatch", "export"] },
+    "taskId": { "type": "string" },
+    "lifecycleState": { "enum": ["active", "revoked", "expired", "inactive"] },
+    "grantExpiresAt": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$" },
+    "allocationRevoked": { "type": "boolean" },
+    "observedAt": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$" },
+    "durableHistoryDigest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "currentActiveClaim": { "type": "boolean" },
+    "freshness": { "const": "unchecked" },
+    "signerId": { "type": "string" },
+    "signature": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["alg", "sig"],
+      "properties": { "alg": { "const": "ed25519" }, "sig": { "type": "string" } }
+    }
+  }
+}

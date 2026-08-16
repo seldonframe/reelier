@@ -10,6 +10,8 @@ import {
   renderCoverageReport,
   type CoverageServer,
 } from "../src/coverage.js";
+import { translateCodexCoverage } from "../src/routes/hosts/codex.js";
+import type { RouteCoverageV1 } from "../src/routes/types.js";
 
 const CONFIG_PATH = "C:/Users/alice/.codex/config.toml";
 
@@ -18,6 +20,23 @@ test("analyzeCodexConfig reports an absent config as absent, with no invented se
   assert.equal(analysis.location, "absent");
   assert.equal(analysis.servers.length, 0);
   assert.equal(analysis.plugins.length, 0);
+});
+
+test("Codex route translation preserves config and plugin origins with the same server name", () => {
+  const rows = translateCodexCoverage({
+    report: {
+      homedir: "C:/private",
+      configPath: "C:/private/.codex/config.toml",
+      config: { configPath: "C:/private/.codex/config.toml", location: "parsed", servers: [{ name: "gmail.send", origin: "C:/private/.codex/config.toml", location: "parsed", transport: "stdio", routing: "wrapped" }], plugins: [], marketplaces: [] },
+      plugins: [{ registration: { name: "gmail", marketplace: "official", enabled: true }, inspected: true, location: "parsed", manifestPath: "C:/private/plugins/gmail/mcp.json", candidatesTried: [], servers: [{ name: "gmail.send", origin: "C:/private/plugins/gmail/mcp.json", location: "parsed", transport: "stdio", routing: "unwrapped" }] }],
+      inspectedLocations: ["C:/private/.codex/config.toml"],
+    },
+    observedAt: "2026-08-15T12:00:00.000Z", freshnessMs: 900_000, sourceDigest: `sha256:${"1".repeat(64)}`, contractIdentityDigest: `sha256:${"3".repeat(64)}`,
+    canonicalConfigBytes: "[mcp_servers.gmail]", fileIdentityDigest: `sha256:${"2".repeat(64)}`,
+    sourceInstances: [{ sourceRef: "C:/private/.codex/config.toml", sourceInstanceIdentityDigest: `sha256:${"4".repeat(64)}`, canonicalBytes: "[mcp_servers.gmail]", fileIdentityDigest: `sha256:${"2".repeat(64)}` }, { sourceRef: "C:/private/plugins/gmail/mcp.json", sourceInstanceIdentityDigest: `sha256:${"5".repeat(64)}`, canonicalBytes: "{}", fileIdentityDigest: `sha256:${"6".repeat(64)}` }], surfaces: [],
+  });
+  assert.deepEqual(rows.map((row: RouteCoverageV1) => [row.discoverySource, row.observation]), [["host-config", "observed"], ["plugin-manifest", "uncovered"]]);
+  assert.ok(rows.every((row: RouteCoverageV1) => /^route_[0-9a-f]{64}$/.test(row.routeId)));
 });
 
 test("analyzeCodexConfig classifies a plain stdio entry as unwrapped", () => {
@@ -183,6 +202,11 @@ test("collectCodexCoverage finds a manifest one level below the payload root —
     assert.equal(plugin?.servers[0]?.name, "playwright");
     assert.equal(plugin?.servers[0]?.routing, "unwrapped");
     assert.ok(plugin?.manifestPath?.endsWith(".mcp.json"));
+    const evidence = report.routeEvidence.find((item: { readonly sourceRef: string }) => item.sourceRef === plugin?.manifestPath);
+    assert.match(evidence?.sourceInstanceIdentityDigest ?? "", /^sha256:[0-9a-f]{64}$/);
+    assert.match(evidence?.fileIdentityDigest ?? "", /^sha256:[0-9a-f]{64}$/);
+    assert.match(evidence?.canonicalBytes ?? "", /contentDigest/);
+    assert.doesNotMatch(evidence?.canonicalBytes ?? "", /playwright-mcp/);
   } finally {
     await rm(home, { recursive: true, force: true });
   }

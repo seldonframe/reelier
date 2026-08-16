@@ -15,8 +15,9 @@
 // validated — the probe is an inventory, not a linter. (The JSON-only
 // constraint in src/init.ts binds the config WRITER; reading TOML is fine.)
 
-import { readdir, readFile, stat } from "node:fs/promises";
+import { open, readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
+import { canonicalJson, digestSha256 } from "./canonical-json.js";
 import { knownMcpConfigPaths } from "./init.js";
 import { sameProjectDirectory } from "./project-scope.js";
 
@@ -496,6 +497,8 @@ export interface CoverageView {
   inspectedLocations: string[];
   /** Host-specific limits printed above the closing line. Never a percentage. */
   notes?: string[];
+  /** Internal static-source commitments consumed by route discovery; never rendered. */
+  routeEvidence?: readonly CoverageRouteSourceEvidence[];
 }
 
 export interface CodexCoverageReport {
@@ -505,6 +508,37 @@ export interface CodexCoverageReport {
   plugins: PluginCoverage[];
   /** Every location actually read during this run — the report names these. */
   inspectedLocations: string[];
+  /** Internal static-source commitments consumed by route discovery; never rendered. */
+  routeEvidence?: readonly CoverageRouteSourceEvidence[];
+}
+
+export interface CoverageRouteSourceEvidence {
+  readonly sourceRef: string;
+  readonly sourceInstanceIdentityDigest: string;
+  readonly canonicalBytes: string;
+  readonly fileIdentityDigest: string;
+}
+
+/**
+ * Commit static discovery evidence without copying file paths or contents into
+ * the route artifact. The caller supplies canonical bytes and the identity of
+ * the file handle those bytes came from; collectors remain the sole parsers.
+ */
+export function staticCoverageEvidenceDigest(input: Readonly<{
+  sourceId: string;
+  sourceVersion: string;
+  sourceDigest: string;
+  canonicalBytes: string;
+  fileIdentityDigest: string;
+}>): string {
+  if (!/^sha256:[0-9a-f]{64}$/.test(input.sourceDigest) || !/^sha256:[0-9a-f]{64}$/.test(input.fileIdentityDigest)) throw new TypeError("static coverage evidence identity is invalid");
+  return digestSha256({ v: "reelier.static-coverage-evidence/v1", ...input });
+}
+
+/** Commit a sanitized live collector observation; provider bodies are never accepted. */
+export function liveCoverageEvidenceDigest(input: Readonly<{ sourceId: string; sourceVersion: string; sourceDigest: string; observation: unknown }>): string {
+  if (!/^sha256:[0-9a-f]{64}$/.test(input.sourceDigest)) throw new TypeError("live coverage evidence identity is invalid");
+  return digestSha256({ v: "reelier.live-coverage-evidence/v1", ...input });
 }
 
 async function isDirectory(p: string): Promise<boolean> {
@@ -562,7 +596,7 @@ async function readFileOrUndefined(p: string): Promise<string | undefined> {
 }
 
 /** Inventory a Codex install's observed MCP surface. Read-only: writes nothing, edits nothing. */
-export async function collectCodexCoverage(homedir: string): Promise<CodexCoverageReport> {
+export async function collectCodexCoverage(homedir: string): Promise<CodexCoverageReport & { readonly routeEvidence: readonly CoverageRouteSourceEvidence[] }> {
   const configPath = path.join(homedir, ".codex", "config.toml");
   const inspectedLocations: string[] = [configPath];
 
@@ -644,7 +678,7 @@ export async function collectCodexCoverage(homedir: string): Promise<CodexCovera
     });
   }
 
-  return { homedir, configPath, config, plugins, inspectedLocations };
+  return { homedir, configPath, config, plugins, inspectedLocations, routeEvidence: await collectRouteSourceEvidence("codex", inspectedLocations) };
 }
 
 // ---------------------------------------------------------------------------
@@ -866,7 +900,7 @@ export async function collectClaudeCodeCoverage(
   cwd: string,
   homedir: string,
   env: NodeJS.ProcessEnv = process.env,
-): Promise<CoverageView> {
+): Promise<CoverageView & { readonly routeEvidence: readonly CoverageRouteSourceEvidence[] }> {
   const inspectedLocations: string[] = [];
   const sources: CoverageSource[] = [];
   const notes: string[] = [];
@@ -1063,6 +1097,7 @@ export async function collectClaudeCodeCoverage(
     pluginSource,
     pluginRegistry,
     inspectedLocations,
+    routeEvidence: await collectRouteSourceEvidence("claude-code", [...inspectedLocations, ...sources.map(source => source.path)]),
     notes: [
       ...notes,
       "Plugin-delivered servers load from the plugin's own manifest, not from a config `reelier install` rewrites; listing one here is not a claim that it is covered.",
@@ -1070,6 +1105,47 @@ export async function collectClaudeCodeCoverage(
       "Claude Code CLI only. Claude Desktop / Cowork plugins are a separate host with a separate registry and were not inspected.",
     ],
   };
+}
+
+async function collectRouteSourceEvidence(harnessId: "codex" | "claude-code", sourceRefs: readonly string[]): Promise<readonly CoverageRouteSourceEvidence[]> {
+  const evidence: CoverageRouteSourceEvidence[] = [];
+  const seen = new Set<string>();
+  const reads = new Map<string, Readonly<{ contentDigest: string; device: number; inode: number; size: number; modifiedMs: number }> | null>();
+  for (const sourceRef of sourceRefs) {
+    const projectMarker = sourceRef.indexOf("#projects/");
+    const filePath = projectMarker < 0 ? sourceRef : sourceRef.slice(0, projectMarker);
+    if (seen.has(sourceRef)) continue;
+    seen.add(sourceRef);
+    try {
+      let captured = reads.get(filePath);
+      if (captured === undefined) {
+        const handle = await open(filePath, "r");
+        try {
+          const before = await handle.stat();
+          const raw = await handle.readFile("utf8");
+          const after = await handle.stat();
+          if (!before.isFile() || !after.isFile() || before.dev !== after.dev || before.ino !== after.ino || before.size !== after.size || before.mtimeMs !== after.mtimeMs) throw new TypeError("coverage source changed during read");
+          captured = Object.freeze({ contentDigest: digestSha256(raw), device: after.dev, inode: after.ino, size: after.size, modifiedMs: after.mtimeMs });
+          reads.set(filePath, captured);
+        } finally {
+          await handle.close();
+        }
+      }
+      if (captured === null) continue;
+      const sourceInstanceIdentityDigest = digestSha256({ v: "reelier.route-source-instance/v1", harnessId, sourceRef });
+      evidence.push(Object.freeze({
+        sourceRef,
+        sourceInstanceIdentityDigest,
+        canonicalBytes: canonicalJson({ v: "reelier.sanitized-route-source/v1", contentDigest: captured.contentDigest }),
+        fileIdentityDigest: digestSha256({ v: "reelier.route-file-identity/v1", harnessId, sourceRefDigest: digestSha256(sourceRef), device: captured.device, inode: captured.inode, size: captured.size, modifiedMs: captured.modifiedMs }),
+      }));
+    } catch {
+      reads.set(filePath, null);
+      // Missing and unreadable sources remain explicit collector findings; no
+      // static evidence is invented for a file whose bytes were not read.
+    }
+  }
+  return Object.freeze(evidence.sort((left, right) => Buffer.from(left.sourceRef).compare(Buffer.from(right.sourceRef))));
 }
 
 // ---------------------------------------------------------------------------
