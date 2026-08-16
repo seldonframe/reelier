@@ -301,6 +301,7 @@
           "additionalProperties": false,
           "required": ["verdict", "reasonCode", "lifecycleState"],
           "properties": {
+            "requestId": { "$ref": "#/$defs/id" },
             "verdict": { "enum": ["accepted", "refused"] },
             "reasonCode": { "$ref": "#/$defs/id" },
             "lifecycleState": { "$ref": "#/$defs/id" },
@@ -342,6 +343,7 @@
           "additionalProperties": false,
           "required": ["lifecycleState", "pass", "claims"],
           "properties": {
+            "requestId": { "$ref": "#/$defs/id" },
             "lifecycleState": { "$ref": "#/$defs/id" },
             "pass": { "type": "boolean" },
             "claims": { "$ref": "#/$defs/claims" }
