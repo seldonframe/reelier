@@ -10,6 +10,9 @@ const checker = await import(pathToFileURL(resolve("conformance/hermetic-outcome
 const schema = JSON.parse(readFileSync(resolve("conformance/hermetic-outcome/v0/bundle.schema.json"), "utf8"));
 const Ajv2020 = createRequire(import.meta.url)("ajv/dist/2020").default;
 const validateSchema = new Ajv2020({ allErrors: true, strict: true }).compile(schema);
+const validateGrant = new Ajv2020({ allErrors: true, strict: true, validateFormats: false }).compile(JSON.parse(readFileSync(resolve("contract/authority/v1/delegation-grant.schema.json"), "utf8")));
+const validatePrincipal = new Ajv2020({ allErrors: true, strict: true }).compile(JSON.parse(readFileSync(resolve("contract/authority/v1/principal.schema.json"), "utf8")));
+const validateSessionBinding = new Ajv2020({ allErrors: true, strict: true }).compile(JSON.parse(readFileSync(resolve("contract/bootstrap/v1/authority-cell-session-binding.schema.json"), "utf8")));
 
 const expectedArtifacts = [
   "descriptor.json",
@@ -85,6 +88,19 @@ test("duplicate retry reuses the reservation and causes no duplicate provider ef
     assert.equal(bundle.dispatch.attempts[1].providerEffectDelta, 0);
     assert.equal(bundle.providerState.providerEffectCount, 1);
     assert.equal(bundle.failureInjection.cases.find((item: any) => item.caseId === "duplicate-retry").result, "verified-zero-effect");
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("delegation and host binding remain valid existing Reelier authority artifacts", () => {
+  const directory = temporaryBundle();
+  try {
+    const { delegation } = checker.loadHermeticOutcomeBundle(directory);
+    assert.equal(validateGrant(delegation.parentGrant), true, JSON.stringify(validateGrant.errors));
+    assert.equal(validateGrant(delegation.childGrant), true, JSON.stringify(validateGrant.errors));
+    assert.equal(validatePrincipal(delegation.principal), true, JSON.stringify(validatePrincipal.errors));
+    assert.equal(validateSessionBinding(delegation.sessionBinding), true, JSON.stringify(validateSessionBinding.errors));
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
