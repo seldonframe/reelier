@@ -160,4 +160,4 @@ Verbatim tail:
 ℹ duration_ms 2167.3582
 ```
 
-Round-2 fix commit: recorded after this report update.
+Round-2 fix commit: `a3daccc570ab4d78e11d2af79e8e9c3ab2337ce7`.
