@@ -1,0 +1,28 @@
+{
+  "v": "reelier.github-disposable-conformance/v1",
+  "repository": "fixlyai/soloproof",
+  "branch": "reelier/conformance-20260816",
+  "branchCommit": "0200626832a4a5e384cb426002a60e7a5d53dea0",
+  "branchTree": "364495623c584d37b8b09c4b1e4bcce9a7a393e5",
+  "contentPath": "reelier-conformance-proof.txt",
+  "contentSha": "050e2fb5914abde1d15c88f8b44f89eeed382e50",
+  "retry": "up-to-date",
+  "directMainPush": "rejected-protected-branch",
+  "pullRequest": "https://github.com/fixlyai/soloproof/pull/1",
+  "normalMergeWithOneRequiredApproval": "blocked",
+  "temporaryZeroApprovalPrMerge": "merged",
+  "mergeCommit": "0c40e35bf252b4f0c5fb8cff02713ac83927f437",
+  "mainContentShaAfterMerge": "050e2fb5914abde1d15c88f8b44f89eeed382e50",
+  "finalProtection": {
+    "protected": true,
+    "enforceAdmins": true,
+    "requiredApprovals": 1
+  },
+  "claims": {
+    "exactBranchReadback": "proved",
+    "safeRetryNoDuplicateCommit": "proved",
+    "directMainWriteBlocked": "proved",
+    "reviewedProtectedMerge": "not-proved",
+    "providerReceipt": "not-applicable"
+  }
+}
