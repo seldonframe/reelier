@@ -29,7 +29,35 @@ const expectedCases = Object.freeze({
   "unavailable-coverage": ["unsupported", "coverage-unavailable"],
 } as const);
 
-test("the closed table covers every planned failure injection without a passing result", () => {
+test("every named mutation changes the baseline evaluation and cannot be marked passed", () => {
+  const baseline = checker.createFailureInjectionBaseline();
+  const baselineResult = checker.evaluateFailureInjectionState(baseline);
+  assert.equal(baselineResult.disposition, "passed");
+  assert.equal(baselineResult.passEligibility, true);
+
+  for (const [caseId, expected] of Object.entries(expectedCases)) {
+    const mutated = checker.applyFailureInjectionMutation(baseline, caseId);
+    const actual = checker.evaluateFailureInjectionState(mutated);
+    assert.notDeepEqual(actual, baselineResult, caseId);
+    assert.notEqual(actual.disposition, "passed", caseId);
+    assert.equal(actual.passEligibility, false, caseId);
+    assert.equal(actual.disposition, expected[0], caseId);
+    assert.deepEqual(actual.reasonCodes, [expected[1]], caseId);
+  }
+});
+
+test("an evaluation is invalidated when its hermetic input is mutated", () => {
+  const baseline = checker.createFailureInjectionBaseline();
+  const baselineResult = checker.evaluateFailureInjectionState(baseline);
+  assert.equal(checker.validateFailureInjectionEvaluation(baseline, baselineResult), true);
+
+  const mutated = checker.applyFailureInjectionMutation(baseline, "wrong-principal");
+  assert.equal(checker.validateFailureInjectionEvaluation(mutated, baselineResult), false);
+  assert.equal(checker.validateFailureInjectionEvaluation(mutated, checker.evaluateFailureInjectionState(mutated)), true);
+  assert.deepEqual(baseline, checker.createFailureInjectionBaseline(), "mutation must operate on a clone");
+});
+
+test("the executable matrix covers every planned failure injection without a passing result", () => {
   const report = checker.buildFailureInjectionReport();
   assert.equal(validateSchema(report), true, JSON.stringify(validateSchema.errors));
   assert.equal(checker.validateFailureInjectionReport(report), true);
