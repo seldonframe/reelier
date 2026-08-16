@@ -70,10 +70,12 @@ export async function stopEveProcess(child) {
     if (process.platform === "win32") {
       const treeStop = spawn("taskkill", ["/PID", String(exactPid), "/T"], { stdio: "ignore", windowsHide: true });
       await new Promise((resolveExit) => treeStop.once("close", resolveExit));
+      closeLauncherStreams(child);
       exited = await waitForExit(child, 5_000);
       if (!exited) {
         const forceTree = spawn("taskkill", ["/PID", String(exactPid), "/T", "/F"], { stdio: "ignore", windowsHide: true });
         await new Promise((resolveExit) => forceTree.once("close", resolveExit));
+        closeLauncherStreams(child);
       }
     } else {
       signalProcessGroup(exactPid, "SIGTERM");
@@ -81,6 +83,7 @@ export async function stopEveProcess(child) {
         signalProcessGroup(exactPid, "SIGKILL");
       }
       assert.equal(await waitForProcessGroupExit(exactPid, 5_000), true, `Eve process group ${exactPid} survived forced stop`);
+      closeLauncherStreams(child);
       exited = await waitForExit(child, 5_000);
     }
     assert.equal(exited || await waitForExit(child, 5_000), true, `exact Eve PID ${exactPid} survived graceful stop`);
@@ -88,12 +91,16 @@ export async function stopEveProcess(child) {
     // A descendant can inherit the launcher's pipes even after the leader and
     // its process group are gone. Close our handles so the supervising matrix
     // process can observe the launcher's `close` event and finish cleanup.
-    child.stdin?.destroy();
-    child.stdout?.destroy();
-    child.stderr?.destroy();
+    closeLauncherStreams(child);
   }
   const listener = listenerByChild.get(child);
   if (listener) await waitForListenerClosed(listener.url, listener.http);
+}
+
+function closeLauncherStreams(child) {
+  child.stdin?.destroy();
+  child.stdout?.destroy();
+  child.stderr?.destroy();
 }
 
 export async function crashEveProcess(processHandle) {
