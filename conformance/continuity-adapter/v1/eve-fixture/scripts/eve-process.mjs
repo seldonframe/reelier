@@ -30,7 +30,7 @@ export async function runLiveAgentAdapterV0(resultPath, runtimeRoot, options = {
   const childPrincipalId = `principal_eve_1_child${suffix}`;
   const childAllocationId = `${allocationId}_child`;
   const grantId = `grant_eve_process_root_child${suffix}`;
-  const tracePath = resolve(runtimeRoot, "live-agent-adapter-v0", "adapter-events.jsonl");
+  const tracePath = resolve(runtimeRoot, `live-agent-adapter-v0${suffix}`, "adapter-events.jsonl");
   const env = {
     ...state.env,
     REELIER_ADAPTER_CONTRACT_SERVER: resolve(repositoryRoot, "scripts/serve-agent-adapter-contract.mjs"),
