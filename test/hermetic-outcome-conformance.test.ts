@@ -70,6 +70,7 @@ test("emits a deterministic closed reversible bundle using existing authority se
     assert.equal(delegation.sessionBinding.principalId, delegation.childGrant.grantee);
     assert.equal(delegation.sessionBinding.grantId, delegation.childGrant.grantId);
     assert.equal(delegation.childGrant.grantor, delegation.parentGrant.grantee);
+    assert.equal(delegation.signerId, delegation.childGrant.grantor);
     assert.equal(delegation.principal.id, delegation.childGrant.grantee);
     assert.equal(delegation.childGrant.parentDigest, delegation.parentCommitmentDigest);
     assert.equal(delegation.parentCommitmentDigest, artifactDigest(delegation.parentGrant));
@@ -202,9 +203,11 @@ test("rejects every tampered artifact join with a relationship-specific error", 
     { name: "post-state permit digest", artifact: "provider-state.json", mutate: (value) => { value.postStateEvidence.permitSnapshotDigest = wrongDigest; }, error: /post-state permit snapshot digest/i },
     { name: "parent grant commitment", artifact: "delegation.json", mutate: (value) => { value.parentGrant.grantee = "principal_tampered"; }, error: /parent commitment digest/i },
     { name: "parent to child principal", artifact: "delegation.json", mutate: (value) => { value.childGrant.grantor = "principal_tampered"; }, error: /child grantor.*parent grantee/i },
+    { name: "signed child grantor identity", artifact: "delegation.json", mutate: (value) => { value.signerId = "principal_tampered"; }, error: /delegation signer.*child grantor/i },
     { name: "principal to child binding", artifact: "delegation.json", mutate: (value) => { value.principal.id = "principal_tampered"; }, error: /principal id.*child grantee/i },
     { name: "principal to session binding", artifact: "delegation.json", mutate: (value) => { value.sessionBinding.principalId = "principal_tampered"; }, error: /principal id.*session principal/i },
     { name: "session to signed child grant id", artifact: "delegation.json", mutate: (value) => { value.sessionBinding.grantId = "grant_tampered"; }, error: /session grant id.*child grant id/i },
+    { name: "session tenant to child grant", artifact: "delegation.json", mutate: (value) => { value.sessionBinding.tenant = "tenant_tampered"; }, error: /session tenant.*child grant tenant/i },
     { name: "decision requester to session principal", artifact: "dispatch.json", mutate: (value) => { value.decisionContext.requester = "principal_tampered"; }, error: /decision requester.*session principal/i },
     { name: "decision capability id to child grant", artifact: "dispatch.json", mutate: (value) => { value.decisionContext.capabilityId = "grant_tampered"; }, error: /decision capability id.*child grant id/i },
     { name: "max effects per window attenuation", artifact: "delegation.json", mutate: (value) => { value.childGrant.constraints.limits.maxEffectsPerWindow = 3; }, error: /maxEffectsPerWindow attenuation/i },
@@ -217,6 +220,7 @@ test("rejects every tampered artifact join with a relationship-specific error", 
     { name: "attempt references a different self-authored reservation", artifact: "dispatch.json", mutate: (value) => { value.attempts[0].reservationId = "reservation_other"; value.attempts[1].reservationId = "reservation_other"; }, error: /dispatch attempt reservation id.*actual reservation/i },
     { name: "unrelated dispatched request", artifact: "dispatch.json", mutate: (value) => { value.dispatchedRequestDigest = wrongDigest; }, error: /dispatched request digest.*authorized decision context/i },
     { name: "authorized request body", artifact: "dispatch.json", mutate: (value) => { value.authorizedRequest = { v: "reelier.hermetic-provider-request/v0", resourceId: "fixture_switch", value: "off", idempotencyKey: value.decisionContext.requestKey }; }, error: /authorized request digest.*decision context/i },
+    { name: "authorized request idempotency key", artifact: "dispatch.json", mutate: (value) => { value.authorizedRequest.idempotencyKey = wrongDigest; }, error: /authorized request idempotency key.*decision context request key/i },
   ];
 
   for (const item of cases) await t.test(item.name, () => {

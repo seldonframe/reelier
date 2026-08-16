@@ -99,15 +99,22 @@
         "snapshots": { "type": "object", "additionalProperties": false, "required": ["sourceBundleDigest", "authorityStateDigest"], "properties": { "sourceBundleDigest": { "$ref": "#/$defs/digest" }, "authorityStateDigest": { "$ref": "#/$defs/digest" } } }
       }
     },
+    "providerRequest": {
+      "type": "object", "additionalProperties": false,
+      "required": ["v", "resourceId", "value", "idempotencyKey"],
+      "properties": {
+        "v": { "const": "reelier.hermetic-provider-request/v0" }, "resourceId": { "$ref": "#/$defs/id" }, "value": { "enum": ["off", "on"] }, "idempotencyKey": { "$ref": "#/$defs/digest" }
+      }
+    },
     "dispatch": {
       "type": "object", "additionalProperties": false,
-      "required": ["v", "decisionContext", "decisionContextDigest", "delegationCommitmentDigest", "gateEvent", "gateEventDigest", "reservation", "dispatchedRequestDigest", "providerResponseDigest", "attempts"],
+      "required": ["v", "decisionContext", "decisionContextDigest", "delegationCommitmentDigest", "gateEvent", "gateEventDigest", "reservation", "authorizedRequest", "dispatchedRequestDigest", "providerResponseDigest", "attempts"],
       "properties": {
         "v": { "const": "reelier.hermetic-dispatch-evidence/v0" }, "decisionContext": { "$ref": "#/$defs/decisionContext" }, "decisionContextDigest": { "$ref": "#/$defs/digest" }, "delegationCommitmentDigest": { "$ref": "#/$defs/digest" },
         "gateEvent": { "type": "object", "additionalProperties": false, "required": ["v", "eventId", "at", "verdict", "reasonCode", "decisionContextDigest"], "properties": { "v": { "const": "reelier.gate-event/v1" }, "eventId": { "$ref": "#/$defs/id" }, "at": { "$ref": "#/$defs/time" }, "verdict": { "const": "accepted" }, "reasonCode": { "const": "accepted" }, "decisionContextDigest": { "$ref": "#/$defs/digest" } } },
         "gateEventDigest": { "$ref": "#/$defs/digest" },
-        "reservation": { "type": "object", "additionalProperties": false, "required": ["reservationId", "idempotencyKey", "state", "effectsReserved"], "properties": { "reservationId": { "$ref": "#/$defs/id" }, "idempotencyKey": { "$ref": "#/$defs/digest" }, "state": { "const": "reconciled" }, "effectsReserved": { "const": 1 } } },
-        "dispatchedRequestDigest": { "$ref": "#/$defs/digest" }, "providerResponseDigest": { "$ref": "#/$defs/digest" },
+        "reservation": { "type": "object", "additionalProperties": false, "required": ["id", "idempotencyKey", "state", "effectsReserved"], "properties": { "id": { "$ref": "#/$defs/id" }, "idempotencyKey": { "$ref": "#/$defs/digest" }, "state": { "const": "reconciled" }, "effectsReserved": { "const": 1 } } },
+        "authorizedRequest": { "$ref": "#/$defs/providerRequest" }, "dispatchedRequestDigest": { "$ref": "#/$defs/digest" }, "providerResponseDigest": { "$ref": "#/$defs/digest" },
         "attempts": { "type": "array", "minItems": 2, "maxItems": 2, "items": { "type": "object", "additionalProperties": false, "required": ["attemptId", "reservationId", "requestKey", "decision", "providerEffectDelta"], "properties": { "attemptId": { "$ref": "#/$defs/id" }, "reservationId": { "$ref": "#/$defs/id" }, "requestKey": { "$ref": "#/$defs/digest" }, "decision": { "enum": ["dispatched", "duplicate"] }, "providerEffectDelta": { "type": "integer", "minimum": 0, "maximum": 1 } } } }
       }
     },

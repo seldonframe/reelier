@@ -56,7 +56,7 @@ function buildDelegation() {
   const parentCommitmentDigest = digest(parentGrant);
   const childGrant = grant("grant_child", parentCommitmentDigest, "principal_parent", "principal_child", 1, ["hermetic_state_set_v1"]);
   const childCommitmentDigest = digest(childGrant);
-  const signed = { v: "reelier.signed-delegation-commitment/v1", signerId: "operator_fixture", grantDigest: childCommitmentDigest, grant: childGrant };
+  const signed = { v: "reelier.signed-delegation-commitment/v1", signerId: childGrant.grantor, grantDigest: childCommitmentDigest, grant: childGrant };
   return Object.freeze({
     v: "reelier.hermetic-delegation-evidence/v0", parentGrant, parentCommitmentDigest, childGrant, childCommitmentDigest,
     principal: { v: "reelier.principal/v1", id: "principal_child", kind: "requester" },
@@ -66,7 +66,7 @@ function buildDelegation() {
       grantId: "grant_child", grantDigest: childCommitmentDigest, allocationId: "allocation_child_1", profileDigest: digest("hermetic-profile"), activationDigest: digest("hermetic-activation"), profileTrustHeadDigest: digest("hermetic-trust-head"),
       expiresAt: "2026-08-16T12:10:00.000Z", bindingObservedAt: AT, bindingFreshUntil: "2026-08-16T12:05:00.000Z", topologyEvidenceDigest: digest("local-authority-host-topology"), topologyFreshUntil: "2026-08-16T12:05:00.000Z",
     },
-    signerId: "operator_fixture", publicKey, signature: signature(signed),
+    signerId: childGrant.grantor, publicKey, signature: signature(signed),
   });
 }
 
@@ -79,7 +79,7 @@ function buildCoverage() {
 
 function buildCore() {
   const delegation = buildDelegation();
-  const request = { v: "reelier.hermetic-provider-request/v0", resourceId: "fixture_switch", value: "on", idempotencyKey: digest("fixture-switch-on") };
+  const request = Object.freeze({ v: "reelier.hermetic-provider-request/v0", resourceId: "fixture_switch", value: "on", idempotencyKey: digest("fixture-switch-on") });
   const dispatchedRequestDigest = digest(request);
   const preState = Object.freeze({ resourceId: "fixture_switch", value: "off", revision: 0 });
   const postState = Object.freeze({ resourceId: "fixture_switch", value: "on", revision: 1 });
@@ -101,8 +101,8 @@ function buildCore() {
   const providerState = Object.freeze({ v: "reelier.hermetic-provider-state/v0", preState, postState, restoredState: preState, acknowledgment, postStateEvidence, providerEffectCount: 1, rollbackEffectCount: 1 });
   const dispatch = Object.freeze({
     v: "reelier.hermetic-dispatch-evidence/v0", decisionContext, decisionContextDigest, delegationCommitmentDigest: delegation.childCommitmentDigest,
-    gateEvent, gateEventDigest, reservation: { reservationId: "reservation_fixture_1", idempotencyKey: request.idempotencyKey, state: "reconciled", effectsReserved: 1 },
-    dispatchedRequestDigest, providerResponseDigest: digest(acknowledgment),
+    gateEvent, gateEventDigest, reservation: { id: "reservation_fixture_1", idempotencyKey: request.idempotencyKey, state: "reconciled", effectsReserved: 1 },
+    authorizedRequest: request, dispatchedRequestDigest, providerResponseDigest: digest(acknowledgment),
     attempts: [
       { attemptId: "attempt_original", reservationId: "reservation_fixture_1", requestKey: decisionContext.requestKey, decision: "dispatched", providerEffectDelta: 1 },
       { attemptId: "attempt_retry", reservationId: "reservation_fixture_1", requestKey: decisionContext.requestKey, decision: "duplicate", providerEffectDelta: 0 },
@@ -175,8 +175,13 @@ export function checkHermeticOutcomeBundle(directory) {
   try { signatureValid = verify(null, bytes(signed), createPublicKey({ key: Buffer.from(bundle.delegation.publicKey, "base64"), format: "der", type: "spki" }), Buffer.from(bundle.delegation.signature.sig, "base64")); } catch { signatureValid = false; }
   if (digest(bundle.delegation?.parentGrant) !== bundle.delegation?.parentCommitmentDigest) errors.push("parent commitment digest does not match the actual parent grant");
   if (!signatureValid || digest(bundle.delegation?.childGrant) !== bundle.delegation?.childCommitmentDigest || bundle.delegation?.childGrant?.parentDigest !== bundle.delegation?.parentCommitmentDigest) errors.push("delegation signature or child commitment linkage is invalid");
+  if (bundle.delegation?.childGrant?.grantor !== bundle.delegation?.parentGrant?.grantee) errors.push("child grantor does not match the parent grantee");
+  if (bundle.delegation?.signerId !== bundle.delegation?.childGrant?.grantor) errors.push("delegation signer does not match the signed child grantor");
+  if (bundle.delegation?.childGrant?.tenant !== bundle.delegation?.parentGrant?.tenant) errors.push("child grant tenant does not match the parent grant tenant");
   if (bundle.delegation?.principal?.id !== bundle.delegation?.childGrant?.grantee) errors.push("principal id does not match the child grantee");
   if (bundle.delegation?.principal?.id !== bundle.delegation?.sessionBinding?.principalId) errors.push("principal id does not match the session principal");
+  if (bundle.delegation?.sessionBinding?.grantId !== bundle.delegation?.childGrant?.grantId) errors.push("session grant id does not match the signed child grant id");
+  if (bundle.delegation?.sessionBinding?.tenant !== bundle.delegation?.childGrant?.tenant) errors.push("session tenant does not match the child grant tenant");
   if (bundle.delegation?.sessionBinding?.grantDigest !== bundle.delegation?.childCommitmentDigest || bundle.delegation?.sessionBinding?.runtimeSessionId !== "session_host_bound" || !bundle.delegation?.sessionBinding?.topologyEvidenceDigest) errors.push("host binding does not link to the child delegation");
   const parentConstraints = bundle.delegation?.parentGrant?.constraints;
   const childConstraints = bundle.delegation?.childGrant?.constraints;
@@ -188,16 +193,28 @@ export function checkHermeticOutcomeBundle(directory) {
   if (childAliases.length >= parentAliases.size || childAliases.some((alias) => !parentAliases.has(alias))) errors.push("source-trigger allowlist attenuation is invalid");
 
   if (bundle.receipt?.decisionContext?.capabilityDigest !== bundle.delegation?.childCommitmentDigest || bundle.dispatch?.delegationCommitmentDigest !== bundle.delegation?.childCommitmentDigest) errors.push("receipt capability does not link to delegation commitment");
+  if (bundle.dispatch?.decisionContext?.requester !== bundle.delegation?.sessionBinding?.principalId) errors.push("decision requester does not match the authoritative session principal");
+  if (bundle.dispatch?.decisionContext?.tenant !== bundle.delegation?.sessionBinding?.tenant) errors.push("decision tenant does not match the authoritative session tenant");
+  if (bundle.dispatch?.decisionContext?.capabilityId !== bundle.delegation?.childGrant?.grantId) errors.push("decision capability id does not match the signed child grant id");
   if (digest(bundle.dispatch?.decisionContext) !== bundle.dispatch?.decisionContextDigest || digest(bundle.receipt?.decisionContext) !== bundle.receipt?.decisionContextDigest || bundle.receipt?.decisionContextDigest !== bundle.dispatch?.decisionContextDigest || bundle.dispatch?.gateEvent?.decisionContextDigest !== bundle.dispatch?.decisionContextDigest) errors.push("receipt does not link to the actual dispatch decision context");
   if (digest(bundle.dispatch?.gateEvent) !== bundle.dispatch?.gateEventDigest) errors.push("gate event digest does not match the actual gate event");
   if (bundle.receipt?.gateEventDigest !== bundle.dispatch?.gateEventDigest) errors.push("receipt gate event does not link to the dispatch gate event");
   if (bundle.receipt?.evidenceDigest !== digest(bundle.providerState)) errors.push("receipt evidence does not link to provider state");
   if (bundle.dispatch?.providerResponseDigest !== digest(bundle.providerState?.acknowledgment)) errors.push("provider response digest does not match the acknowledgment");
-  if (bundle.providerState?.acknowledgment?.reservationId !== bundle.dispatch?.reservation?.reservationId) errors.push("acknowledgment reservation does not match the dispatch reservation");
+  if (bundle.providerState?.acknowledgment?.reservationId !== bundle.dispatch?.reservation?.id) errors.push("acknowledgment reservation does not match the dispatch reservation");
 
-  const expectedPostDigest = digest(bundle.providerState?.postState);
-  if (bundle.providerState?.postStateEvidence?.expectedProjectionDigest !== expectedPostDigest || bundle.providerState?.postStateEvidence?.observedProjectionDigest !== expectedPostDigest) errors.push("provider post-state projection mismatch");
+  const authorizedRequest = bundle.dispatch?.authorizedRequest;
+  if (digest(authorizedRequest) !== bundle.dispatch?.decisionContext?.requestDigest) errors.push("authorized request digest does not match the decision context request digest");
+  if (bundle.dispatch?.dispatchedRequestDigest !== bundle.dispatch?.decisionContext?.requestDigest) errors.push("dispatched request digest does not match the authorized decision context request digest");
+  if (authorizedRequest?.idempotencyKey !== bundle.dispatch?.decisionContext?.requestKey) errors.push("authorized request idempotency key does not match the decision context request key");
+  if (digest({ resourceId: authorizedRequest?.resourceId, value: authorizedRequest?.value }) !== bundle.dispatch?.decisionContext?.effectDigest) errors.push("authorized request effect does not match the decision context effect digest");
+  const expectedPostState = { resourceId: authorizedRequest?.resourceId, value: authorizedRequest?.value, revision: bundle.providerState?.preState?.revision + 1 };
+  const expectedPostDigest = digest(expectedPostState);
+  if (bundle.providerState?.postStateEvidence?.expectedProjectionDigest !== expectedPostDigest) errors.push("expected post-state projection does not match the authorized effect");
+  if (bundle.providerState?.postStateEvidence?.observedProjectionDigest !== digest(bundle.providerState?.postState)) errors.push("observed provider post-state projection mismatch");
+  if (!same(bundle.providerState?.postState, expectedPostState)) errors.push("provider post-state does not match the authorized effect");
   if (bundle.providerState?.postStateEvidence?.preProjectionDigest !== digest(bundle.providerState?.preState)) errors.push("provider pre-state projection mismatch");
+  if (bundle.providerState?.postStateEvidence?.requestId !== bundle.dispatch?.decisionContext?.requestId) errors.push("post-state request id does not match the decision context request id");
   if (bundle.providerState?.postStateEvidence?.dispatchRequestDigest !== bundle.dispatch?.dispatchedRequestDigest) errors.push("post-state dispatch request digest does not match dispatch evidence");
   if (bundle.providerState?.postStateEvidence?.permitSnapshotDigest !== bundle.dispatch?.gateEventDigest) errors.push("post-state permit snapshot digest does not match the gate event");
   if (bundle.providerState?.postState?.resourceId !== bundle.providerState?.preState?.resourceId || bundle.providerState?.postState?.revision !== bundle.providerState?.preState?.revision + 1) errors.push("provider post-state transition is not exact");
@@ -208,7 +225,8 @@ export function checkHermeticOutcomeBundle(directory) {
   if (!same(bundle.providerState?.restoredState, bundle.providerState?.preState)) errors.push("reversible transition did not restore pre-state");
   const attempts = bundle.dispatch?.attempts ?? [];
   if (attempts.length !== 2 || attempts[0]?.reservationId !== attempts[1]?.reservationId || attempts[1]?.decision !== "duplicate" || attempts[1]?.providerEffectDelta !== 0 || bundle.providerState?.providerEffectCount !== 1) errors.push("duplicate retry produced or could hide a duplicate effect");
-  if (attempts.some((attempt) => attempt?.requestKey !== bundle.dispatch?.decisionContext?.requestKey)) errors.push("dispatch attempt request key does not match the decision context request key");
+  if (attempts.some((attempt) => attempt?.reservationId !== bundle.dispatch?.reservation?.id)) errors.push("dispatch attempt reservation id does not match the actual reservation id");
+  if (attempts.some((attempt) => attempt?.requestKey !== bundle.dispatch?.reservation?.idempotencyKey || attempt?.requestKey !== bundle.dispatch?.decisionContext?.requestKey)) errors.push("dispatch attempt request key does not match the reservation idempotency key and decision context request key");
   if (bundle.dispatch?.reservation?.idempotencyKey !== bundle.dispatch?.decisionContext?.requestKey) errors.push("reservation idempotency key does not match the decision context request key");
 
   if (bundle.coverage?.mode !== "discovery-only" || bundle.coverage?.status !== "failed" || bundle.coverage?.passEligibility !== false || bundle.coverage?.topology !== "unchecked" || bundle.coverage?.completeness !== "unchecked") errors.push("coverage must remain discovery-only and non-passing");
