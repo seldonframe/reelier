@@ -37,11 +37,13 @@ not used by the CLI. Use `missingCandidate: true` only when no candidate exists.
 
 Raw payloads are parsed only for identity and secret rejection and are never echoed into reports.
 URL, URI, endpoint, transport, protocol, host, port, socket, connection, header, cookie, auth, token,
-secret, password, API-key, access-key, and credential field-name variants are rejected recursively.
-The required candidate identity field `descriptor.agentHost` is the only host-key exception. Any
-`scheme://` value, connection URI, and common `Basic`, `Bearer`, `sk-`, `ghp_`, `xox`, `npm_`,
-`eyJ`, credential-assignment, private-key, or AWS-key form is also rejected recursively. The checker
-does not silently redact them. Remove transport data and secrets at the harness before capture. For
+secret, password, API-key, access-key, and credential identifiers are rejected recursively whether
+they occur as object keys, string values, pair-array names, or field descriptors. The required
+candidate identity field `descriptor.agentHost` is the only host-key exception. Any string beginning
+with the URI-scheme grammar `[A-Za-z][A-Za-z0-9+.-]*:` or `//`, including `mailto:`, `data:`, and
+`postgres:`, is rejected. Common `Basic`, `Bearer`, `sk-`, `ghp_`, `xox`, `npm_`, `eyJ`,
+credential-assignment, private-key, and AWS-key forms remain rejected recursively. The checker does
+not silently redact them. Remove transport data and secrets at the harness before capture. For
 a supplied invalid artifact, the output retains at most its kind and a checker-computed raw digest;
 it never retains the raw payload. Valid semantic reports with none of those fields remain accepted
 at this non-passing boundary and retain only artifact kind, raw digest, identity binding digest, and
