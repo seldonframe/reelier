@@ -1,30 +1,47 @@
 Files changed
 
+- `.superpowers/sdd/task-7-hermetic-outcome-report.md`
+
+This is a report-only completion. The Task 7 code and tests at `05b7df1` were preserved byte-for-byte; no implementation file was modified or reverted.
+
+## Preserved Task 7 implementation scope
+
 - `conformance/hermetic-outcome/v0/check.mjs`
 - `conformance/hermetic-outcome/v0/bundle.schema.json`
 - `test/hermetic-outcome-conformance.test.ts`
-- `.superpowers/sdd/task-7-hermetic-outcome-report.md`
 
 ## What changed per file
 
-- `conformance/hermetic-outcome/v0/check.mjs` adds a local-only deterministic emitter and checker for exactly eight artifacts: `descriptor.json`, `delegation.json`, `coverage.json`, `dispatch.json`, `provider-state.json`, `receipt.json`, `failure-injection.json`, and `final-report.json`. The fixture uses existing Reelier delegation grants, principal, authority-cell session binding, decision context, gate event, post-state evidence, and authority receipt semantics. A fixed public fixture Ed25519 seed signs the child delegation commitment; it is test material and explicitly not a production key or credential. The checker derives artifact joins from actual inputs. Fix round 2 additionally binds each attempt to `reservation.id`, binds attempt/request/reservation idempotency keys to the authorized decision context, binds child signer/grantor, parent grantee, child grantee, session principal/grant/tenant, and decision requester/capability/tenant, requires the dispatched digest to equal the authorized request digest, and derives expected post-state from the authorized request plus pre-state before comparing exact observed provider state.
-- `conformance/hermetic-outcome/v0/bundle.schema.json` closes the aggregate bundle and every nested Task 7 artifact. It fixes discovery coverage to `status: failed`, `passEligibility: false`, and `mode: discovery-only`; fixes the final report to `status: non-passing`; requires final-report commitments for receipt, delegation, provider-state, dispatch, coverage, and failure-injection; and keeps dispatch closed while adding the authorized provider request and authoritative reservation `id`.
-- `test/hermetic-outcome-conformance.test.ts` proves deterministic bytes across independent output directories, the exact closed artifact set, schema validity, reversibility, cryptographic delegation commitment, existing authority-schema conformance, host binding, attenuation, reservation/dispatch/provider/receipt evidence, and explicit human/non-claims. Fix round 2 adds regressions for a different self-authored reservation, signer/grant/parent/session/decision identity substitutions, unrelated dispatch, altered authorized request, and contradictory post-state whose expected and observed digests were copied from the contradiction.
-- `.superpowers/sdd/task-7-hermetic-outcome-report.md` records Task 7 scope, RED/GREEN evidence, verification outputs, external escalation boundary, deviations, and remaining gaps.
+- `conformance/hermetic-outcome/v0/check.mjs` adds a local-only deterministic emitter and checker for exactly eight artifacts: `descriptor.json`, `delegation.json`, `coverage.json`, `dispatch.json`, `provider-state.json`, `receipt.json`, `failure-injection.json`, and `final-report.json`. The fixture uses existing Reelier delegation grants, principal, authority-cell session binding, decision context, gate event, post-state evidence, and authority receipt semantics. A fixed public fixture Ed25519 seed signs the child delegation commitment; it is test material and explicitly not a production key or credential. The checker derives artifact joins from actual inputs. Fix round 2 additionally binds each attempt to `reservation.id`, binds attempt/request/reservation idempotency keys to the authorized decision context, binds child signer/grantor, parent grantee, child grantee, session principal/grant/tenant, and decision requester/capability/tenant, requires the dispatched digest to equal the authorized request digest, and derives expected post-state from the authorized request plus pre-state before comparing exact observed provider state. Commit `05b7df1` replaces pre-authored provider values with an executable `LocalProvider` state machine and consumes Task 6 through its executable report builder.
+- `conformance/hermetic-outcome/v0/bundle.schema.json` closes the aggregate bundle and every nested Task 7 artifact. It fixes discovery coverage to `status: failed`, `passEligibility: false`, and `mode: discovery-only`; fixes the final report to `status: non-passing`; requires final-report commitments for receipt, delegation, provider-state, dispatch, coverage, and failure-injection; and keeps dispatch closed while adding the authorized provider request and authoritative reservation `id`. Commit `05b7df1` also closes the embedded executable Task 6 report shape and its case/reason vocabulary.
+- `test/hermetic-outcome-conformance.test.ts` proves deterministic bytes across independent output directories, the exact closed artifact set, schema validity, reversibility, cryptographic delegation commitment, existing authority-schema conformance, host binding, attenuation, reservation/dispatch/provider/receipt evidence, and explicit human/non-claims. Fix round 2 adds regressions for a different self-authored reservation, signer/grant/parent/session/decision identity substitutions, unrelated dispatch, altered authorized request, and contradictory post-state whose expected and observed digests were copied from the contradiction. Commit `7987fc2` adds the executable local-provider sequence and executable Task 6 linkage regressions.
+- `.superpowers/sdd/task-7-hermetic-outcome-report.md` is the only file changed by this completion; it records the final RED/GREEN commits and counts, executable sequence/linkage, fresh scoped verification, and the incomplete Windows whole-repository gate.
 
 ## Evidence bundle
 
 The deterministic transition starts at `{ resourceId: "fixture_switch", value: "off", revision: 0 }`, applies one reserved and acknowledged effect to reach `{ resourceId: "fixture_switch", value: "on", revision: 1 }`, obtains an exact authoritative post-state digest, and restores the original state. The retry reuses the same reservation and idempotency key, records `decision: "duplicate"`, has `providerEffectDelta: 0`, and leaves `providerEffectCount: 1`.
 
+The actual local-provider execution sequence captured by the test is:
+
+1. `read` the initial `off` state at revision 0.
+2. `reserve` `reservation_fixture_1` with the authorized decision-context idempotency key.
+3. `dispatch` that reservation and request once, recording `decision: "dispatched"` and `effectDelta: 1`.
+4. `read` the authoritative `on` state at revision 1.
+5. `retry` the same reservation and idempotency key, recording `decision: "duplicate"` and `effectDelta: 0`.
+6. `rollback` the resource, recording one rollback effect.
+7. `read` the restored `off` state at revision 0.
+
+`provider-state.json` is built from those observed reads and operation counts: pre-state is operation 1, post-state is operation 4, restored state is operation 7, provider effect count is the summed dispatch delta, and rollback effect count is the summed rollback delta.
+
 The parent grant permits two effects per window/source trigger, the two local source-trigger operation aliases, and 2048 body bytes. Its signed child permits one effect, only `hermetic_state_set_v1`, and 1024 body bytes; references the independently derived parent commitment digest; and is linked through the authoritative child signer/grantor, parent grantee, child grantee, session principal, session grant ID/digest, and tenant to the full existing `reelier.authority-cell-session-binding/v1` host observation. Both dispatch attempts reference `reservation.id`; their request keys and the authorized request idempotency key equal the reservation and decision-context key. The dispatched digest equals the authorized decision-context request digest. Expected post-state is derived from the authorized request and pre-state, never from observed post-state. The receipt links the child capability digest, actual dispatch decision context/gate event, and actual provider-state evidence digest.
 
 Coverage is intentionally discovery-only and non-passing. A valid Task 7 bundle therefore has locally verified outcome evidence while its final aggregate status remains `non-passing`; this does not upgrade topology, traffic completeness, or route enforcement.
 
-Task 6 is consumed by digest from `.superpowers/sdd/task-6-failure-injection-report.md`. Its non-passing duplicate/provider mismatch dispositions remain recorded and are not upgraded. Task 7 adds local evidence that this particular deterministic duplicate reconciles to zero effect and that this checker refuses a post-state mismatch.
+Task 6 linkage is executable, not a digest of the prose report. Task 7 imports `buildFailureInjectionReport` from `conformance/failure-injection/v0/check.mjs`, embeds that complete closed report in `failure-injection.json`, and computes `task6ReportDigest` from the executable report value. The Task 7 checker independently rebuilds the Task 6 report and refuses either semantic inequality or digest drift; the Task 7 schema closes the nested Task 6 report, cases, dispositions, claims, reason codes, and non-claims. Task 6's non-passing duplicate/provider mismatch dispositions remain recorded and are not upgraded. Task 7 adds local evidence that this particular deterministic duplicate reconciles to zero effect and that this checker refuses a post-state mismatch.
 
 ## Deviations from plan
 
-None. Only the four Task 7 allowlisted paths were created or modified. No provider, credential, network, GitHub, Gmail, Stripe, authority runtime, delegation runtime, receipt runtime, route, coverage, continuity, or Task 6 implementation was changed. No second delegation or receipt protocol was introduced.
+None for the implementation plan. The final completion was intentionally report-only: only `.superpowers/sdd/task-7-hermetic-outcome-report.md` changed. No provider, credential, network, GitHub, Gmail, Stripe, authority runtime, delegation runtime, receipt runtime, route, coverage, continuity, Task 6 implementation, or Task 7 implementation was changed. No second delegation or receipt protocol was introduced.
 
 ## Test results
 
@@ -271,6 +288,62 @@ code: 'AUTHORITY_CELL_LINUX_REQUIRED'
 
 Therefore only the emitting build, focused/relevant suites, typechecks, and contract checks above are green; the whole branch is not claimed green.
 
+### Final executable-provider completion
+
+The exact final RED commit is `7987fc2` (`test: require executable Task 7 provider flow`). Test compilation exited 0. The focused Task 7 run executed 43 tests: the 41 existing tests passed and the two newly added tests failed for the intended missing behavior. This is the recorded RED evidence, not a current-green extrapolation:
+
+```text
+✖ builds provider artifacts from real local execution, readback, retry, and rollback operations
+  TypeError: checker.LocalProvider is not a constructor
+✖ binds failure injection to the executable Task 6 closed report and rejects semantic drift
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal
+ℹ tests 43
+ℹ suites 0
+ℹ pass 41
+ℹ fail 2
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+```
+
+The exact implementation commit is `05b7df1` (`fix: execute Task 7 local provider state machine`). It adds the seven-operation `LocalProvider` execution and replaces the prose-path linkage with the executable Task 6 report value, digest, schema, and semantic drift check.
+
+Fresh test compilation (`npx tsc -p tsconfig.test.json --pretty false`) exited 0 with no output. Fresh focused Task 7 (`node --test --test-concurrency=1 dist-test/test/hermetic-outcome-conformance.test.js`) exited 0; verbatim tail:
+
+```text
+✔ rejects every tampered artifact join with a relationship-specific error (230.3958ms)
+✔ rejects a missing artifact from the closed bundle (5.746ms)
+✔ rejects contradictory post-state even when observed and expected digests copy it (7.5878ms)
+✔ discovery-only coverage stays explicit and non-passing (8.1407ms)
+ℹ tests 43
+ℹ suites 0
+ℹ pass 43
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 601.1394
+```
+
+Fresh relevant Task 1–7 conformance execution over aggregate, agent-adapter, candidate-capture, coverage-envelope, failure-injection, semantic-matrix, and hermetic-outcome exited 0; verbatim tail:
+
+```text
+✔ invalid source reports cannot publish semantic checks (0.8124ms)
+✔ listed missing evidence must be explicit and CLI failures remain schema-valid (389.3883ms)
+✔ a passed matrix cannot contain unsupported top-level harness rows (0.5618ms)
+✔ explicit missing evidence cannot coexist with a candidate or report (0.2471ms)
+ℹ tests 109
+ℹ suites 0
+ℹ pass 109
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 5199.622
+```
+
+These results supersede the earlier 41/41 focused and 103/103 relevant snapshots only for the scoped Task 7 completion. They do not supersede or resolve the interrupted native-Windows `npm test` gate above. A complete Linux whole-repository run remains required because the Authority Cell host tests refuse native Windows with `AUTHORITY_CELL_LINUX_REQUIRED`.
+
 ## Later GitHub escalation
 
 Any GitHub proof is a separate operator-run integration after this branch. It requires an operator to select the repository/target, authorize the write and rollback, supply credentials outside the bundle, observe the provider result, verify cleanup, and retain the resulting Reelier receipt chain. Task 7 performs no GitHub API call, obtains no credential, and makes no claim about GitHub route enforcement, provider identity, production safety, or cleanup.
@@ -282,5 +355,5 @@ Any GitHub proof is a separate operator-run integration after this branch. It re
 - The state provider, acknowledgment, authoritative read, and rollback are hermetic values. They prove checker semantics, exact local post-state, retry idempotency, and reversibility, not any live provider behavior.
 - Discovery-only coverage remains failed/non-passing. Route topology, enforcement, and traffic completeness are unchecked and unproved.
 - The human exception is explicit but not exercised: no operator approved an external write, supplied a credential, or reviewed a live cleanup.
-- Task 6 linkage is a digest commitment to its local report. Task 7 does not convert Task 6's hermetic failure classifications into live fault-injection evidence.
+- Task 6 linkage embeds and digests its executable hermetic report and rejects semantic drift. Task 7 does not convert those hermetic failure classifications into live fault-injection evidence.
 - Content correctness and production safety remain explicit non-claims.
