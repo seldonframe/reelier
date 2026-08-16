@@ -8,6 +8,7 @@ import { createRequire } from "node:module";
 import { createHash } from "node:crypto";
 
 const checker = await import(pathToFileURL(resolve("conformance/hermetic-outcome/v0/check.mjs")).href);
+const failureInjectionChecker = await import(pathToFileURL(resolve("conformance/failure-injection/v0/check.mjs")).href);
 const schema = JSON.parse(readFileSync(resolve("conformance/hermetic-outcome/v0/bundle.schema.json"), "utf8"));
 const Ajv2020 = createRequire(import.meta.url)("ajv/dist/2020").default;
 const validateSchema = new Ajv2020({ allErrors: true, strict: true }).compile(schema);
@@ -122,6 +123,55 @@ test("duplicate retry reuses the reservation and causes no duplicate provider ef
     assert.equal(bundle.dispatch.attempts[1].providerEffectDelta, 0);
     assert.equal(bundle.providerState.providerEffectCount, 1);
     assert.equal(bundle.failureInjection.cases.find((item: any) => item.caseId === "duplicate-retry").result, "verified-zero-effect");
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("builds provider artifacts from real local execution, readback, retry, and rollback operations", () => {
+  const provider = new checker.LocalProvider();
+  const bundle = checker.buildHermeticOutcomeBundle(provider);
+
+  assert.deepEqual(provider.operations, [
+    { operation: "read", state: { resourceId: "fixture_switch", value: "off", revision: 0 } },
+    { operation: "reserve", reservationId: "reservation_fixture_1", idempotencyKey: bundle.dispatch.decisionContext.requestKey },
+    { operation: "dispatch", reservationId: "reservation_fixture_1", idempotencyKey: bundle.dispatch.decisionContext.requestKey, decision: "dispatched", effectDelta: 1 },
+    { operation: "read", state: { resourceId: "fixture_switch", value: "on", revision: 1 } },
+    { operation: "retry", reservationId: "reservation_fixture_1", idempotencyKey: bundle.dispatch.decisionContext.requestKey, decision: "duplicate", effectDelta: 0 },
+    { operation: "rollback", resourceId: "fixture_switch", effectDelta: 1 },
+    { operation: "read", state: { resourceId: "fixture_switch", value: "off", revision: 0 } },
+  ]);
+  assert.deepEqual(bundle.providerState.preState, provider.operations[0].state);
+  assert.deepEqual(bundle.providerState.postState, provider.operations[3].state);
+  assert.deepEqual(bundle.providerState.restoredState, provider.operations[6].state);
+  assert.equal(bundle.providerState.providerEffectCount, provider.operations.filter((item: any) => item.operation === "dispatch").reduce((total: number, item: any) => total + item.effectDelta, 0));
+  assert.equal(bundle.providerState.rollbackEffectCount, provider.operations.filter((item: any) => item.operation === "rollback").reduce((total: number, item: any) => total + item.effectDelta, 0));
+});
+
+test("binds failure injection to the executable Task 6 closed report and rejects semantic drift", () => {
+  const directory = temporaryBundle();
+  try {
+    const failureInjection = readArtifact(directory, "failure-injection.json");
+    const task6Report = failureInjectionChecker.buildFailureInjectionReport();
+    assert.deepEqual(failureInjection.task6Report, task6Report);
+    assert.equal(failureInjection.task6ReportDigest, artifactDigest(task6Report));
+
+    failureInjection.task6Report.cases[0].reasonCodes = ["job-not-discovered"];
+    failureInjection.task6ReportDigest = artifactDigest(failureInjection.task6Report);
+    writeArtifact(directory, "failure-injection.json", failureInjection);
+
+    const finalReport = readArtifact(directory, "final-report.json");
+    finalReport.failureInjectionDigest = artifactDigest(failureInjection);
+    writeArtifact(directory, "final-report.json", finalReport);
+
+    const descriptor = readArtifact(directory, "descriptor.json");
+    descriptor.commitments["failure-injection.json"] = artifactDigest(failureInjection);
+    descriptor.commitments["final-report.json"] = artifactDigest(finalReport);
+    writeArtifact(directory, "descriptor.json", descriptor);
+
+    const result = checker.checkHermeticOutcomeBundle(directory);
+    assert.equal(result.valid, false);
+    assert.ok(result.errors.some((error: string) => /Task 6.*closed report.*drift|Task 6.*executable report/i.test(error)), result.errors.join("\n"));
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
