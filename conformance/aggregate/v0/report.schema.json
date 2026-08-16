@@ -14,6 +14,90 @@
     "then": { "type": "object", "properties": { "harnesses": { "type": "array", "items": { "$ref": "#/$defs/passingHarness" } } } }
   }],
   "$defs": {
+    "agentAdapterSourceReport": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["v", "status", "adapterId", "checks"],
+      "properties": {
+        "v": { "const": "reelier.agent-adapter-conformance-report/v0" },
+        "status": { "enum": ["passed", "failed"] },
+        "adapterId": { "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "null" }] },
+        "checks": {
+          "type": "array",
+          "minItems": 7,
+          "maxItems": 7,
+          "prefixItems": [
+            { "$ref": "#/$defs/universalOperationsCheck" },
+            { "$ref": "#/$defs/dynamicJobDiscoveryCheck" },
+            { "$ref": "#/$defs/hostBoundOutcomeInputCheck" },
+            { "$ref": "#/$defs/attenuatedChildPrincipalCheck" },
+            { "$ref": "#/$defs/preFreezeNoDispatchCheck" },
+            { "$ref": "#/$defs/observedCoverageHonestyCheck" },
+            { "$ref": "#/$defs/enforcedModeUnavailableCheck" }
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "status": { "const": "passed" } }, "required": ["status"] },
+          "then": { "properties": { "checks": { "type": "array", "items": { "type": "object", "properties": { "status": { "const": "passed" } }, "required": ["status"] } } } }
+        },
+        {
+          "if": { "properties": { "status": { "const": "failed" } }, "required": ["status"] },
+          "then": { "properties": { "checks": { "type": "array", "contains": { "type": "object", "properties": { "status": { "const": "failed" } }, "required": ["status"] }, "minContains": 1 } } }
+        }
+      ]
+    },
+    "universalOperationsCheck": {
+      "oneOf": [
+        { "type": "object", "$ref": "#/$defs/passedAgentCheck", "properties": { "id": { "const": "universal-operations" }, "detail": { "const": "adapter exposes only the universal semantic operation set" } } },
+        { "type": "object", "$ref": "#/$defs/failedAgentCheck", "properties": { "id": { "const": "universal-operations" }, "detail": { "const": "adapter operation set is missing, widened, or hard-coded" } } }
+      ]
+    },
+    "dynamicJobDiscoveryCheck": {
+      "oneOf": [
+        { "type": "object", "$ref": "#/$defs/passedAgentCheck", "properties": { "id": { "const": "dynamic-job-discovery" }, "detail": { "const": "loaded and invoked job references originate in catalog discovery" } } },
+        { "type": "object", "$ref": "#/$defs/failedAgentCheck", "properties": { "id": { "const": "dynamic-job-discovery" }, "detail": { "const": "job reference was not preserved from catalog discovery" } } }
+      ]
+    },
+    "hostBoundOutcomeInputCheck": {
+      "oneOf": [
+        { "type": "object", "$ref": "#/$defs/passedAgentCheck", "properties": { "id": { "const": "host-bound-outcome-input" }, "detail": { "const": "Outcome input contains no authenticated identity or provider authority" } } },
+        { "type": "object", "$ref": "#/$defs/failedAgentCheck", "properties": { "id": { "const": "host-bound-outcome-input" }, "detail": { "const": "Outcome input contains an identity or provider-authority override" } } }
+      ]
+    },
+    "attenuatedChildPrincipalCheck": {
+      "oneOf": [
+        { "type": "object", "$ref": "#/$defs/passedAgentCheck", "properties": { "id": { "const": "attenuated-child-principal" }, "detail": { "const": "child principal and effect allocation are distinct and narrower" } } },
+        { "type": "object", "$ref": "#/$defs/failedAgentCheck", "properties": { "id": { "const": "attenuated-child-principal" }, "detail": { "const": "child delegation does not attenuate the parent session" } } }
+      ]
+    },
+    "preFreezeNoDispatchCheck": {
+      "oneOf": [
+        { "type": "object", "$ref": "#/$defs/passedAgentCheck", "properties": { "id": { "const": "pre-freeze-no-dispatch" }, "detail": { "const": "pending Adapter Contract refuses without dispatch or a passing receipt" } } },
+        { "type": "object", "$ref": "#/$defs/failedAgentCheck", "properties": { "id": { "const": "pre-freeze-no-dispatch" }, "detail": { "const": "pre-freeze lifecycle implies dispatch, success, or upgraded evidence" } } }
+      ]
+    },
+    "observedCoverageHonestyCheck": {
+      "oneOf": [
+        { "type": "object", "$ref": "#/$defs/passedAgentCheck", "properties": { "id": { "const": "observed-coverage-honesty" }, "detail": { "const": "observed mode remains available with unchecked topology and completeness" } } },
+        { "type": "object", "$ref": "#/$defs/failedAgentCheck", "properties": { "id": { "const": "observed-coverage-honesty" }, "detail": { "const": "observed mode upgrades topology or completeness" } } }
+      ]
+    },
+    "enforcedModeUnavailableCheck": {
+      "oneOf": [
+        { "type": "object", "$ref": "#/$defs/passedAgentCheck", "properties": { "id": { "const": "enforced-mode-unavailable" }, "detail": { "const": "enforced mode remains unavailable without verified topology" } } },
+        { "type": "object", "$ref": "#/$defs/failedAgentCheck", "properties": { "id": { "const": "enforced-mode-unavailable" }, "detail": { "const": "enforced mode activates or upgrades claims before topology verifies" } } }
+      ]
+    },
+    "passedAgentCheck": {
+      "type": "object", "additionalProperties": false, "required": ["id", "status", "detail"],
+      "properties": { "id": { "type": "string" }, "status": { "const": "passed" }, "detail": { "type": "string" } }
+    },
+    "failedAgentCheck": {
+      "type": "object", "additionalProperties": false, "required": ["id", "status", "detail"],
+      "properties": { "id": { "type": "string" }, "status": { "const": "failed" }, "detail": { "type": "string" } }
+    },
     "evidence": { "enum": ["fixture-only", "continuity-only", "continuity-proven", "execution-proven", "unsupported", "failed"] },
     "coverage": { "enum": ["observed-only", "coverage-unknown", "unknown", "uncovered", "unchecked", "enforced", "unsupported", "failed"] },
     "execution": { "enum": ["execution-proven", "unknown", "unchecked", "pending", "not-tested", "unsupported", "failed"] },

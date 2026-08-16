@@ -12,9 +12,11 @@ const aggregate = await import(pathToFileURL(resolve("conformance/aggregate/v0/c
 const Ajv2020 = createRequire(import.meta.url)("ajv/dist/2020").default;
 const aggregateSchema = JSON.parse(readFileSync(resolve("conformance/aggregate/v0/report.schema.json"), "utf8"));
 const validateStandaloneAggregate = new Ajv2020({ allErrors: true, strict: true }).compile(aggregateSchema);
-const validateStandaloneAgentSource = new Ajv2020({ allErrors: true, strict: true }).compile(
-  aggregateSchema.$defs.agentAdapterSourceReport ?? {},
-);
+const standaloneAgentSourceAjv = new Ajv2020({ allErrors: true, strict: true });
+standaloneAgentSourceAjv.addSchema(aggregateSchema);
+const validateStandaloneAgentSource = standaloneAgentSourceAjv.compile({
+  $ref: `${aggregateSchema.$id}#/$defs/agentAdapterSourceReport`,
+});
 
 const agentCandidate = JSON.parse(readFileSync(resolve("conformance/agent-adapter/v0/fixtures/grok-build-observed.json"), "utf8"));
 const agentReport = agent.checkCandidate(agentCandidate);
@@ -91,6 +93,7 @@ test("aggregate closes the agent-adapter source report check vector", () => {
     ["duplicate and missing id", (report: any) => { report.checks[1].id = report.checks[0].id; }],
     ["wrong passing detail", (report: any) => { report.checks[0].detail = "invented passing detail"; }],
     ["inconsistent source status", (report: any) => { report.status = "failed"; }],
+    ["mismatched failed detail", (report: any) => { report.status = "failed"; report.checks[0].status = "failed"; }],
   ] as const;
   for (const [label, mutate] of mutations) {
     const forged = structuredClone(agentReport);
@@ -99,6 +102,17 @@ test("aggregate closes the agent-adapter source report check vector", () => {
     const report = aggregate.aggregateReports([{ harnessId: "xai.grok-build", adapterPath: "agent-adapter/v0", report: forged }]);
     assert.equal(report.harnesses[0].overallStatus, "unsupported", label);
   }
+});
+
+test("aggregate accepts a genuine failed closed agent-adapter vector", () => {
+  const failedCandidate = structuredClone(agentCandidate);
+  const delegation = failedCandidate.transcript.find((event: any) => event.operation === "delegations.request");
+  delegation.request.childPrincipalId = failedCandidate.session.principalId;
+  const failedReport = agent.checkCandidate(failedCandidate);
+  assert.equal(failedReport.status, "failed");
+  assert.equal(validateStandaloneAgentSource(failedReport), true, JSON.stringify(validateStandaloneAgentSource.errors));
+  const report = aggregate.aggregateReports([{ harnessId: "xai.grok-build", adapterPath: "agent-adapter/v0", report: failedReport }]);
+  assert.equal(report.harnesses[0].overallStatus, "failed");
 });
 
 test("unknown-like aggregate states are never passing", () => {

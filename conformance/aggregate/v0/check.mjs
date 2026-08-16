@@ -6,6 +6,7 @@ const VERSION = "reelier.aggregate-conformance-report/v0";
 const here = (name) => fileURLToPath(new URL(name, import.meta.url));
 const ajv = new Ajv2020({ allErrors: true, strict: true });
 const validateReport = ajv.compile(JSON.parse(readFileSync(here("./report.schema.json"), "utf8")));
+const validateAgentReport = ajv.compile({ $ref: "https://reelier.dev/contracts/aggregate-conformance/v0/report.schema.json#/$defs/agentAdapterSourceReport" });
 const validateContinuity = ajv.compile(JSON.parse(readFileSync(here("../../continuity-adapter/v1/report.schema.json"), "utf8")));
 const validateEve = ajv.compile(JSON.parse(readFileSync(here("../../continuity-adapter/v1/eve-fixture/conformance-report.schema.json"), "utf8")));
 
@@ -28,11 +29,7 @@ function row(harnessId, adapterPath, values, reasons) {
 export function validateAggregateReport(value) { return validateReport(value); }
 
 function validAgentReport(report) {
-  const keys = report && typeof report === "object" ? Object.keys(report) : [];
-  const expectedKeys = ["v", "status", "adapterId", "checks"];
-  if (!report || keys.length !== expectedKeys.length || expectedKeys.some((key) => !keys.includes(key)) || report.v !== "reelier.agent-adapter-conformance-report/v0" || !["passed", "failed"].includes(report.status) || !(typeof report.adapterId === "string" || report.adapterId === null) || !Array.isArray(report.checks) || report.checks.length === 0) return false;
-  if (report.status === "passed" && report.checks.some((check) => check?.status !== "passed")) return false;
-  return report.checks.every((check) => check && Object.keys(check).length === 3 && typeof check.id === "string" && ["passed", "failed"].includes(check.status) && typeof check.detail === "string" && check.detail.length > 0);
+  return validateAgentReport(report);
 }
 
 function sourceIsValid(record, report) {
