@@ -130,7 +130,13 @@ export async function crashEveProcess(processHandle) {
     }
   }
   assert.equal(await waitForExit(child, 5_000), true, `exact Eve PID ${exactPid} survived the crash cut`);
-  await waitForListenerClosed(url, processHandle.http);
+  try {
+    await waitForListenerClosed(url, processHandle.http);
+  } catch (error) {
+    await forceCloseListener(url);
+    try { await waitForListenerClosed(url, processHandle.http); }
+    catch { throw error; }
+  }
 }
 
 async function runMatrix(resultPath, runtimeRoot) {
