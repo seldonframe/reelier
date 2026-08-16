@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { resolve } from "node:path";
 
@@ -7,19 +8,8 @@ const agent = await import(pathToFileURL(resolve("conformance/agent-adapter/v0/c
 const continuity = await import(pathToFileURL(resolve("conformance/continuity-adapter/v1/check.mjs")).href);
 const aggregate = await import(pathToFileURL(resolve("conformance/aggregate/v0/check.mjs")).href);
 
-const agentReport = agent.checkCandidate({
-  v: "reelier.agent-adapter-candidate/v0",
-  descriptor: {
-    adapterId: "xai.grok-build", agentHost: "grok-build", transport: "https", execution: "fixture-only",
-    identityBinding: "host-authenticated", providerCredentialAccess: "none",
-    authorityContract: { status: "pending-freeze", digest: null },
-    coverage: { supportedModes: ["observed", "enforced"], defaultMode: "observed" },
-    operations: ["jobs.search", "jobs.load", "delegations.request", "delegations.status", "tasks.status", "outcomes.invoke", "outcomes.status"],
-    hardCodedJobRefs: [],
-  },
-  session: { taskId: "task", principalId: "principal", allocationId: "allocation", remainingEffects: 2 },
-  transcript: [], coverageProbes: [],
-});
+const agentCandidate = JSON.parse(readFileSync(resolve("conformance/agent-adapter/v0/fixtures/grok-build-observed.json"), "utf8"));
+const agentReport = agent.checkCandidate(agentCandidate);
 
 const eveReport = await continuity.checkContinuityAdapterCandidate(pathToFileURL(resolve("conformance/continuity-adapter/v1/fixtures/core-candidate.mjs")).href);
 

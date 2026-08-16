@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://reelier.dev/contracts/aggregate-conformance/v0/report.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["v", "status", "harnesses"],
+  "properties": {
+    "v": { "const": "reelier.aggregate-conformance-report/v0" },
+    "status": { "enum": ["passed", "failed"] },
+    "harnesses": { "type": "array", "items": { "$ref": "#/$defs/harness" } }
+  },
+  "$defs": {
+    "status": { "enum": ["fixture-only", "observed-only", "continuity-proven", "execution-proven", "coverage-unknown", "not-tested", "unsupported", "failed", "enforced", "verified"] },
+    "harness": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["harnessId", "adapterPath", "evidenceMaturity", "coverageStatus", "executionStatus", "outcomeStatus", "overallStatus", "nonClaims", "reasons"],
+      "properties": {
+        "harnessId": { "type": "string", "minLength": 1 },
+        "adapterPath": { "type": "string", "minLength": 1 },
+        "evidenceMaturity": { "$ref": "#/$defs/status" },
+        "coverageStatus": { "$ref": "#/$defs/status" },
+        "executionStatus": { "$ref": "#/$defs/status" },
+        "outcomeStatus": { "$ref": "#/$defs/status" },
+        "overallStatus": { "$ref": "#/$defs/status" },
+        "nonClaims": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "reasons": { "type": "array", "items": { "type": "string", "minLength": 1 } }
+      }
+    }
+  }
+}
