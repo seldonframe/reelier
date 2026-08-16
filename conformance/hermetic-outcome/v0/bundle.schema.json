@@ -146,11 +146,52 @@
         "claims": { "type": "object", "additionalProperties": false, "required": ["authorization", "sourceCompleteness", "dispatch", "providerAcknowledgment", "reconciliation", "topology", "completeness"], "properties": { "authorization": { "const": "verified" }, "sourceCompleteness": { "const": "verified" }, "dispatch": { "const": "verified" }, "providerAcknowledgment": { "const": "verified" }, "reconciliation": { "const": "verified" }, "topology": { "const": "unchecked" }, "completeness": { "const": "unchecked" } } }
       }
     },
+    "task6Claims": {
+      "type": "object", "additionalProperties": false,
+      "required": ["authorization", "dispatch", "providerAcknowledgment", "reconciliation", "topology", "completeness"],
+      "properties": {
+        "authorization": { "enum": ["verified", "failed", "unchecked", "absent"] },
+        "dispatch": { "enum": ["verified", "failed", "unchecked", "absent"] },
+        "providerAcknowledgment": { "enum": ["verified", "failed", "unchecked", "absent"] },
+        "reconciliation": { "enum": ["verified", "failed", "unchecked", "absent"] },
+        "topology": { "enum": ["verified", "failed", "unchecked", "absent"] },
+        "completeness": { "enum": ["verified", "failed", "unchecked", "absent"] }
+      }
+    },
+    "task6Case": {
+      "type": "object", "additionalProperties": false,
+      "required": ["caseId", "harnessId", "adapterPath", "expectedLifecycle", "observedResult", "passEligibility", "reasonCodes", "nonClaims"],
+      "properties": {
+        "caseId": { "enum": ["wrong-principal", "reused-parent-principal", "identity-injection-through-task-choices", "undiscovered-job", "unauthorized-repo-branch-target", "budget-overflow", "duplicate-retry", "crash-after-reservation", "crash-after-dispatch", "stale-outcome", "provider-ack-without-matching-post-state", "hidden-unwrapped-route", "incomplete-route-inventory", "malformed-coverage", "unavailable-coverage"] },
+        "harnessId": { "const": "harness-neutral" },
+        "adapterPath": { "enum": ["agent-adapter/v0", "continuity-adapter/v1", "coverage-envelope/v0"] },
+        "expectedLifecycle": { "type": "array", "minItems": 2, "maxItems": 4, "items": { "enum": ["admission", "delegation", "reservation", "dispatch", "provider-acknowledgment", "reconciliation", "coverage-evaluation", "refused", "unsupported", "not-tested"] } },
+        "observedResult": {
+          "type": "object", "additionalProperties": false, "required": ["disposition", "lifecycleState", "claims"],
+          "properties": {
+            "disposition": { "enum": ["refused", "ambiguous", "reconciliation-required", "unsupported", "not-tested"] },
+            "lifecycleState": { "enum": ["refused", "reserved", "dispatched", "reconciling", "unsupported", "not-tested"] },
+            "claims": { "$ref": "#/$defs/task6Claims" }
+          }
+        },
+        "passEligibility": { "const": false },
+        "reasonCodes": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "enum": ["authority-principal-mismatch", "delegation-principal-not-attenuated", "host-bound-identity-override", "job-not-discovered", "target-not-authorized", "allocation-budget-exceeded", "duplicate-retry-requires-reconciliation", "reservation-recovery-required", "dispatch-outcome-ambiguous", "outcome-stale", "provider-post-state-mismatch", "route-unwrapped", "route-inventory-incomplete", "coverage-malformed", "coverage-unavailable"] } },
+        "nonClaims": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "enum": ["agent-adapter-execution-not-proved", "content-correctness-not-proved", "live-harness-execution-not-proved", "outcome-correctness-not-proved", "production-safety-not-proved", "route-enforcement-not-proved", "traffic-completeness-not-proved"] } }
+      }
+    },
+    "task6Report": {
+      "type": "object", "additionalProperties": false, "required": ["v", "status", "cases"],
+      "properties": {
+        "v": { "const": "reelier.failure-injection-report/v0" },
+        "status": { "const": "failed" },
+        "cases": { "type": "array", "minItems": 15, "maxItems": 15, "uniqueItems": true, "items": { "$ref": "#/$defs/task6Case" } }
+      }
+    },
     "failureInjection": {
       "type": "object", "additionalProperties": false,
       "required": ["v", "task6Report", "task6ReportDigest", "task6Status", "cases", "nonClaims"],
       "properties": {
-        "v": { "const": "reelier.hermetic-failure-injection/v0" }, "task6Report": { "const": ".superpowers/sdd/task-6-failure-injection-report.md" }, "task6ReportDigest": { "$ref": "#/$defs/digest" }, "task6Status": { "const": "failed" },
+        "v": { "const": "reelier.hermetic-failure-injection/v0" }, "task6Report": { "$ref": "#/$defs/task6Report" }, "task6ReportDigest": { "$ref": "#/$defs/digest" }, "task6Status": { "const": "failed" },
         "cases": { "type": "array", "minItems": 2, "maxItems": 2, "items": { "type": "object", "additionalProperties": false, "required": ["caseId", "task6Disposition", "result"], "properties": { "caseId": { "enum": ["duplicate-retry", "provider-ack-without-matching-post-state"] }, "task6Disposition": { "const": "reconciliation-required" }, "result": { "enum": ["verified-zero-effect", "checker-refuses-mismatch"] } } } },
         "nonClaims": { "type": "array", "minItems": 2, "uniqueItems": true, "items": { "type": "string" } }
       }

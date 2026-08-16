@@ -3,12 +3,12 @@ import { createHash, createPrivateKey, createPublicKey, sign, verify } from "nod
 import { mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { buildFailureInjectionReport } from "../../failure-injection/v0/check.mjs";
 
 export const ARTIFACT_NAMES = Object.freeze([
   "descriptor.json", "delegation.json", "coverage.json", "dispatch.json", "provider-state.json", "receipt.json", "failure-injection.json", "final-report.json",
 ]);
 const PROPERTY_NAMES = Object.freeze(["descriptor", "delegation", "coverage", "dispatch", "providerState", "receipt", "failureInjection", "finalReport"]);
-const TASK6_REPORT = ".superpowers/sdd/task-6-failure-injection-report.md";
 const AT = "2026-08-16T12:00:00.000Z";
 const schema = JSON.parse(readFileSync(fileURLToPath(new URL("./bundle.schema.json", import.meta.url)), "utf8"));
 const validateSchema = new Ajv2020({ allErrors: true, strict: true }).compile(schema);
@@ -77,13 +77,63 @@ function buildCoverage() {
   });
 }
 
-function buildCore() {
+export class LocalProvider {
+  constructor(initialState = { resourceId: "fixture_switch", value: "off", revision: 0 }) {
+    this.state = structuredClone(initialState);
+    this.operations = [];
+    this.reservation = null;
+    this.completed = new Map();
+  }
+
+  read() {
+    const state = structuredClone(this.state);
+    this.operations.push(Object.freeze({ operation: "read", state }));
+    return state;
+  }
+
+  reserve(request) {
+    if (this.reservation !== null) throw new TypeError("local provider permits exactly one reservation");
+    this.reservation = { id: "reservation_fixture_1", idempotencyKey: request.idempotencyKey, state: "reserved", effectsReserved: 1 };
+    this.operations.push(Object.freeze({ operation: "reserve", reservationId: this.reservation.id, idempotencyKey: request.idempotencyKey }));
+    return this.reservation;
+  }
+
+  dispatch(reservation, request) {
+    this.assertRequest(reservation, request);
+    if (this.completed.has(request.idempotencyKey)) throw new TypeError("duplicate local provider dispatch must use retry");
+    this.state = { resourceId: request.resourceId, value: request.value, revision: this.state.revision + 1 };
+    const acknowledgment = Object.freeze({ v: "reelier.provider-acknowledgment/v1", status: "acknowledged", providerEventId: "provider_event_1", reservationId: reservation.id });
+    this.completed.set(request.idempotencyKey, acknowledgment);
+    const attempt = Object.freeze({ attemptId: "attempt_original", reservationId: reservation.id, requestKey: request.idempotencyKey, decision: "dispatched", providerEffectDelta: 1 });
+    this.operations.push(Object.freeze({ operation: "dispatch", reservationId: reservation.id, idempotencyKey: request.idempotencyKey, decision: "dispatched", effectDelta: 1 }));
+    return { acknowledgment, attempt };
+  }
+
+  retry(reservation, request) {
+    this.assertRequest(reservation, request);
+    if (!this.completed.has(request.idempotencyKey)) throw new TypeError("local provider cannot retry an undispatched request");
+    const attempt = Object.freeze({ attemptId: "attempt_retry", reservationId: reservation.id, requestKey: request.idempotencyKey, decision: "duplicate", providerEffectDelta: 0 });
+    this.operations.push(Object.freeze({ operation: "retry", reservationId: reservation.id, idempotencyKey: request.idempotencyKey, decision: "duplicate", effectDelta: 0 }));
+    return { acknowledgment: this.completed.get(request.idempotencyKey), attempt };
+  }
+
+  rollback(preState) {
+    if (this.completed.size !== 1) throw new TypeError("local provider rollback requires one completed effect");
+    this.state = structuredClone(preState);
+    this.reservation.state = "reconciled";
+    this.operations.push(Object.freeze({ operation: "rollback", resourceId: preState.resourceId, effectDelta: 1 }));
+  }
+
+  assertRequest(reservation, request) {
+    if (reservation !== this.reservation || reservation.idempotencyKey !== request.idempotencyKey) throw new TypeError("local provider request does not match its reservation");
+  }
+}
+
+function buildCore(provider) {
   const delegation = buildDelegation();
   const request = Object.freeze({ v: "reelier.hermetic-provider-request/v0", resourceId: "fixture_switch", value: "on", idempotencyKey: digest("fixture-switch-on") });
   const dispatchedRequestDigest = digest(request);
-  const preState = Object.freeze({ resourceId: "fixture_switch", value: "off", revision: 0 });
-  const postState = Object.freeze({ resourceId: "fixture_switch", value: "on", revision: 1 });
-  const acknowledgment = Object.freeze({ v: "reelier.provider-acknowledgment/v1", status: "acknowledged", providerEventId: "provider_event_1", reservationId: "reservation_fixture_1" });
+  const preState = Object.freeze(provider.read());
   const decisionContext = Object.freeze({
     v: "reelier.decision-context/v1", tenant: "tenant_fixture", requester: "principal_child", definitionAlias: "hermetic_state_set_v1", requestId: "request_fixture_1",
     requestDigest: digest(request), requestKey: request.idempotencyKey, contractDigest: digest("hermetic-contract"), capabilityId: "grant_child", capabilityDigest: delegation.childCommitmentDigest,
@@ -92,21 +142,26 @@ function buildCore() {
   const decisionContextDigest = digest(decisionContext);
   const gateEvent = Object.freeze({ v: "reelier.gate-event/v1", eventId: "gate_event_fixture_1", at: AT, verdict: "accepted", reasonCode: "accepted", decisionContextDigest });
   const gateEventDigest = digest(gateEvent);
+  const reservation = provider.reserve(request);
+  const dispatched = provider.dispatch(reservation, request);
+  const postState = Object.freeze(provider.read());
+  const retried = provider.retry(reservation, request);
+  provider.rollback(preState);
+  const restoredState = Object.freeze(provider.read());
+  const providerEffectCount = provider.operations.filter((operation) => operation.operation === "dispatch").reduce((total, operation) => total + operation.effectDelta, 0);
+  const rollbackEffectCount = provider.operations.filter((operation) => operation.operation === "rollback").reduce((total, operation) => total + operation.effectDelta, 0);
   const postStateUnsigned = {
     v: "reelier.certification-post-state-evidence/v1", requestId: "request_fixture_1", dispatchRequestDigest: dispatchedRequestDigest, permitSnapshotDigest: digest(gateEvent),
     expectedProjectionDigest: digest(postState), preSourceBundleDigest: null, projectionSchemaId: "reelier.hermetic-provider-state-projection/v0", projectionSchemaDigest: digest({ resourceId: "string", value: ["off", "on"], revision: "integer" }),
     preProjectionDigest: digest(preState), observedProjectionDigest: digest(postState), observationMethod: "hermetic-authoritative-read", observedAt: AT, confidence: "exact", signerId: "operator_fixture",
   };
   const postStateEvidence = Object.freeze({ ...postStateUnsigned, signature: signature(postStateUnsigned) });
-  const providerState = Object.freeze({ v: "reelier.hermetic-provider-state/v0", preState, postState, restoredState: preState, acknowledgment, postStateEvidence, providerEffectCount: 1, rollbackEffectCount: 1 });
+  const providerState = Object.freeze({ v: "reelier.hermetic-provider-state/v0", preState, postState, restoredState, acknowledgment: dispatched.acknowledgment, postStateEvidence, providerEffectCount, rollbackEffectCount });
   const dispatch = Object.freeze({
     v: "reelier.hermetic-dispatch-evidence/v0", decisionContext, decisionContextDigest, delegationCommitmentDigest: delegation.childCommitmentDigest,
-    gateEvent, gateEventDigest, reservation: { id: "reservation_fixture_1", idempotencyKey: request.idempotencyKey, state: "reconciled", effectsReserved: 1 },
-    authorizedRequest: request, dispatchedRequestDigest, providerResponseDigest: digest(acknowledgment),
-    attempts: [
-      { attemptId: "attempt_original", reservationId: "reservation_fixture_1", requestKey: decisionContext.requestKey, decision: "dispatched", providerEffectDelta: 1 },
-      { attemptId: "attempt_retry", reservationId: "reservation_fixture_1", requestKey: decisionContext.requestKey, decision: "duplicate", providerEffectDelta: 0 },
-    ],
+    gateEvent, gateEventDigest, reservation: structuredClone(reservation),
+    authorizedRequest: request, dispatchedRequestDigest, providerResponseDigest: digest(dispatched.acknowledgment),
+    attempts: [dispatched.attempt, retried.attempt],
   });
   const receipt = Object.freeze({
     v: "reelier.authority-receipt/v1", receiptId: "receipt_fixture_1", gateEventDigest, decisionContextDigest, evidenceDigest: digest(providerState), priorReceiptDigest: null, decisionContext,
@@ -115,17 +170,15 @@ function buildCore() {
   return { delegation, coverage: buildCoverage(), dispatch, providerState, receipt };
 }
 
-function task6Digest() {
-  return digest(readFileSync(resolve(TASK6_REPORT)));
-}
-
-export function buildHermeticOutcomeBundle() {
-  const core = buildCore();
+export function buildHermeticOutcomeBundle(provider = new LocalProvider()) {
+  const core = buildCore(provider);
+  const task6Report = buildFailureInjectionReport();
+  const task6Cases = new Map(task6Report.cases.map((item) => [item.caseId, item]));
   const failureInjection = Object.freeze({
-    v: "reelier.hermetic-failure-injection/v0", task6Report: TASK6_REPORT, task6ReportDigest: task6Digest(), task6Status: "failed",
+    v: "reelier.hermetic-failure-injection/v0", task6Report, task6ReportDigest: digest(task6Report), task6Status: task6Report.status,
     cases: [
-      { caseId: "duplicate-retry", task6Disposition: "reconciliation-required", result: "verified-zero-effect" },
-      { caseId: "provider-ack-without-matching-post-state", task6Disposition: "reconciliation-required", result: "checker-refuses-mismatch" },
+      { caseId: "duplicate-retry", task6Disposition: task6Cases.get("duplicate-retry").observedResult.disposition, result: "verified-zero-effect" },
+      { caseId: "provider-ack-without-matching-post-state", task6Disposition: task6Cases.get("provider-ack-without-matching-post-state").observedResult.disposition, result: "checker-refuses-mismatch" },
     ],
     nonClaims: ["task6-live-fault-injection-not-proved", "task6-non-passing-results-not-upgraded"],
   });
@@ -234,7 +287,8 @@ export function checkHermeticOutcomeBundle(directory) {
     const index = ARTIFACT_NAMES.indexOf(name);
     if (bundle.descriptor?.commitments?.[name] !== digest(bundle[PROPERTY_NAMES[index]])) errors.push(`descriptor commitment mismatch for ${name}`);
   }
-  if (bundle.failureInjection?.task6ReportDigest !== task6Digest()) errors.push("Task 6 failure-injection report linkage is invalid");
+  const executableTask6Report = buildFailureInjectionReport();
+  if (!same(bundle.failureInjection?.task6Report, executableTask6Report) || bundle.failureInjection?.task6ReportDigest !== digest(executableTask6Report)) errors.push("Task 6 executable closed report drift is invalid");
   for (const [field, property, label] of [
     ["receiptDigest", "receipt", "receipt"], ["delegationDigest", "delegation", "delegation"], ["providerStateDigest", "providerState", "provider-state"],
     ["dispatchDigest", "dispatch", "dispatch"], ["coverageDigest", "coverage", "coverage"], ["failureInjectionDigest", "failureInjection", "failure-injection"],
