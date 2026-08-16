@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://reelier.dev/contracts/semantic-matrix/v0/report.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["v", "status", "aggregate", "harnesses", "semanticChecks"],
+  "properties": {
+    "v": { "const": "reelier.semantic-matrix-report/v0" },
+    "status": { "enum": ["passed", "failed"] },
+    "aggregate": { "$ref": "https://reelier.dev/contracts/aggregate/v0/report.schema.json" },
+    "harnesses": { "type": "array", "minItems": 5, "maxItems": 5, "items": { "$ref": "#/$defs/harness" } },
+    "semanticChecks": { "type": "array", "items": { "$ref": "#/$defs/check" } }
+  },
+  "$defs": {
+    "harness": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["harnessId", "adapterPath", "evidenceMaturity", "coverageStatus", "executionStatus", "outcomeStatus", "overallStatus", "nonClaims", "reasons"],
+      "properties": {
+        "harnessId": { "type": "string", "minLength": 1 },
+        "adapterPath": { "type": "string", "minLength": 1 },
+        "evidenceMaturity": { "type": "string", "minLength": 1 },
+        "coverageStatus": { "type": "string", "minLength": 1 },
+        "executionStatus": { "type": "string", "minLength": 1 },
+        "outcomeStatus": { "type": "string", "minLength": 1 },
+        "overallStatus": { "type": "string", "minLength": 1 },
+        "nonClaims": { "type": "object", "additionalProperties": { "const": "not-proved" } },
+        "reasons": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } }
+      }
+    },
+    "check": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["harnessId", "id", "status", "detail"],
+      "properties": {
+        "harnessId": { "type": "string", "minLength": 1 },
+        "id": { "type": "string", "minLength": 1 },
+        "status": { "enum": ["passed", "failed"] },
+        "detail": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}
