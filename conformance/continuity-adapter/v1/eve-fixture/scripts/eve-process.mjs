@@ -544,5 +544,5 @@ if (process.argv[2] === "--matrix") {
   const rootFlag = process.argv[4];
   const runtimeRoot = process.argv[5];
   if (!resultPath || rootFlag !== "--runtime-root" || !runtimeRoot) throw new Error("usage: eve-process.mjs --matrix <result> --runtime-root <dir>");
-  runMatrix(resolve(resultPath), resolve(runtimeRoot)).catch((error) => { process.stderr.write(`${String(error?.stack ?? error).slice(-4_000)}\n`); process.exitCode = 1; });
+  runMatrix(resolve(resultPath), resolve(runtimeRoot)).then(() => process.exit(0)).catch((error) => { process.stderr.write(`${String(error?.stack ?? error).slice(-4_000)}\n`); process.exitCode = 1; });
 }
