@@ -68,7 +68,8 @@ export default defineAgent({
     if (lastUserMessage === "adapter delegation status") return { toolCalls: [{ name: "reelier_delegation_status", input: { grantId: "grant_eve_process_root_child" } }] };
     if (lastUserMessage === "adapter task status") return { toolCalls: [{ name: "reelier_task_status", input: { taskId: "task_eve_process" } }] };
     if (lastUserMessage === "adapter invoke v0") {
-      const jobRef = adapterContract.jobRef ?? "";
+      const jobRef = previousToolOutputWithJobRef(messages)?.jobRef;
+      if (typeof jobRef !== "string") return { text: "job load missing" };
       return { toolCalls: [{ name: "reelier_agent_adapter_v0_outcome_invoke", input: { ...contractRequestInput, jobRef } }] };
     }
     if (lastUserMessage === "adapter status v0") {
