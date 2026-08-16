@@ -15,9 +15,9 @@ const levels = [1, 5, 20, 100];
 // this measures delegation proof, not accidental host memory exhaustion.
 const concurrency = 2;
 
-function runWorker(level, index, target) {
+function runWorker(level, index, target, attempt = 0) {
   return new Promise((resolveWorker) => {
-    const suffix = `scale_${level}_${index}`;
+    const suffix = `scale_${level}_${index}${attempt > 0 ? `_retry${attempt}` : ""}`;
     const child = spawn(process.execPath, [runner, "--out", target, "--suffix", suffix], { cwd: fixtureRoot, stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "";
     let stderr = "";
@@ -30,9 +30,16 @@ function runWorker(level, index, target) {
       let candidate = null;
       try { report = JSON.parse(await readFile(resolve(target, "report.json"), "utf8")); } catch {}
       try { candidate = JSON.parse(await readFile(resolve(target, "candidate.json"), "utf8")); } catch {}
+      const result = { level, index, suffix, attempt, code, signal, report, candidate, stdout: stdout.trim(), stderr: stderr.trim() };
       await mkdir(target, { recursive: true });
-      await writeFile(resolve(target, "worker-process.json"), `${JSON.stringify({ level, index, suffix, code, signal, report, candidate, stdout: stdout.trim(), stderr: stderr.trim() }, null, 2)}\n`, "utf8");
-      resolveWorker({ level, index, suffix, code, signal, report, candidate, stdout: stdout.trim(), stderr: stderr.trim() });
+      await writeFile(resolve(target, "worker-process.json"), `${JSON.stringify(result, null, 2)}\n`, "utf8");
+      if (code !== 0 && attempt === 0) {
+        const retryTarget = `${target}-retry`;
+        const retry = await runWorker(level, index, retryTarget, 1);
+        resolveWorker({ ...retry, initialFailure: result });
+        return;
+      }
+      resolveWorker(result);
     });
   });
 }
@@ -68,6 +75,7 @@ async function runLevel(level) {
     uniqueTaskIds: new Set(taskIds).size,
     uniquePrincipalIds: new Set(principalIds).size,
     identityIsolated: taskIds.length === level && new Set(taskIds).size === level && principalIds.length === level && new Set(principalIds).size === level,
+    recoveredAfterRetry: results.filter((result) => result.initialFailure).map((result) => ({ index: result.index, initialSuffix: result.initialFailure.suffix, retrySuffix: result.suffix, initialCode: result.initialFailure.code, retryCode: result.code })),
     failures: failures.map(({ level: failureLevel, index, suffix, code, signal, report, stderr }) => ({ level: failureLevel, index, suffix, code, signal, reportStatus: report?.status ?? "missing", stderr: stderr.slice(-2_000) })),
   };
 }
