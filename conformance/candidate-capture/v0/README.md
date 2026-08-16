@@ -13,28 +13,42 @@ agent-adapter reports omit `harnessId`, so their harness identity is bound by th
 instance, canonical harness-to-adapter mapping, and committed raw digest. Relabeling an identity,
 changing the raw bytes, or changing committed capture metadata invalidates the binding.
 
-`captureMode` has three values:
+`captureMode` has three values, all non-passing in v0:
 
 - `fixture`: local fixture material; always non-passing.
 - `observed`: an observation not supplied as a live black-box candidate; always non-passing.
-- `live-candidate`: a candidate actually supplied by the named harness instance. A fresh, valid
-  envelope can pass this capture boundary only.
+- `live-candidate`: a candidate asserted to have been supplied by the named harness instance. A
+  fresh, valid envelope is classified as live-candidate evidence, but the standalone capture report
+  remains `failed` because this boundary cannot authenticate the supplier or prove execution.
 
 `evidenceMode` classifies the supplied artifact as `observed` or `enforced`. It is not upgraded by
-the checker. Even a passing `live-candidate` report says only that a fresh, identity-bound candidate
-was supplied. It does not prove semantic conformance, execution, route enforcement, traffic
+the checker. A valid `live-candidate` report says only that a fresh, identity-bound candidate was
+supplied to this boundary. It does not prove semantic conformance, execution, route enforcement, traffic
 completeness, outcome correctness, or production safety; those non-claims are machine-readable in
 every output. An `enforced` label remains asserted, not verified, at this boundary.
 
-Fresh captures use canonical UTC `capturedAt`, `freshUntil`, and `evaluatedAt` timestamps. The
-freshness window must be positive and no longer than 24 hours; future-dated and stale captures are
-rejected. Use `missingCandidate: true` when no candidate exists. That produces `not-tested`, with no
-artifact or binding digest, and never fabricates candidate data.
+The input carries canonical UTC `capturedAt` and `freshUntil` timestamps. It cannot supply
+`evaluatedAt`: the checker records trusted current UTC time at runtime and evaluates freshness
+against that time. The freshness window must be positive and no longer than 24 hours; backdated
+replays, future-dated captures, invalid timestamps, and stale captures become explicit failed
+`invalid-candidate` reports. Deterministic clock entry points are named test-only helpers and are
+not used by the CLI. Use `missingCandidate: true` only when no candidate exists. That produces
+`not-tested`, with no artifact or binding digest, and never fabricates candidate data.
 
 Raw payloads are parsed only for identity and secret rejection and are never echoed into reports.
-Credential-like field names and token-shaped values cause rejection; the checker does not silently
-redact them. Remove secrets at the harness before capture. The output retains only artifact kind,
-raw digest, identity binding digest, and its own integrity digest.
+URL, URI, endpoint, header, cookie, auth, token, secret, password, API-key, access-key, and credential
+field-name variants are rejected recursively. URL-like values and common `Bearer`, `sk-`, `ghp_`,
+`xox`, `npm_`, `eyJ`, private-key, and AWS-key forms are also rejected recursively. The checker does
+not silently redact them. Remove transport data and secrets at the harness before capture. For a
+supplied invalid artifact, the output retains at most its kind and a checker-computed raw digest;
+it never retains the raw payload. Valid supplied reports retain only artifact kind, raw digest,
+identity binding digest, and their own integrity digest.
+
+Malformed, stale, identity-mismatched, digest-mismatched, and secret-bearing supplied inputs emit
+`status: "failed"`, `classification: "invalid-candidate"`, and a specific reason code. They never
+fall through to `candidate-missing` or `not-tested`. The closed standalone v0 report schema admits
+no `passed` status and binds each classification to its allowed identity, capture mode, evidence
+mode, freshness, artifact, binding, and non-claim shape.
 
 Run locally after compiling tests:
 
@@ -42,5 +56,5 @@ Run locally after compiling tests:
 node conformance/candidate-capture/v0/check.mjs <capture.json>
 ```
 
-Exit code `0` means a live candidate passed this capture boundary, `1` is non-passing or invalid,
-and `2` is missing CLI input. No package script is added by Task 5.
+Exit code `1` means supplied evidence was classified non-passing or invalid, and `2` means CLI input
+was missing. Candidate capture v0 has no exit-code-0 report. No package script is added by Task 5.
