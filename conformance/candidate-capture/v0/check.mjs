@@ -20,15 +20,18 @@ const TOKEN_PATTERNS = Object.freeze([
   /\bxox(?:[baprs]-|-)[A-Za-z0-9_-]+\b/i,
   /\bnpm_[A-Za-z0-9_-]+\b/i,
   /\beyJ[A-Za-z0-9_-]*(?:\.[A-Za-z0-9_-]+){0,2}\b/,
-  /\b(?:https?|wss?):\/\/\S+/i,
+  /\b[a-z][a-z0-9+.-]*:\/\/\S+/i,
   /\b(?:urn|file|ssh):\S+/i,
+  /\bBasic\s+[A-Za-z0-9+/]+={0,2}\b/i,
+  /\b(?:password|passwd|api[_ -]?key|access[_ -]?key|auth(?:orization)?|token|secret|credentials?)\s*[:=]\s*\S+/i,
   /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/,
   /\bAKIA[0-9A-Z]{16}\b/,
 ]);
 const SENSITIVE_KEY_WORDS = new Set([
   "url", "uri", "endpoint", "header", "headers", "cookie", "cookies", "auth",
   "authorization", "authentication", "token", "secret", "password", "passwd",
-  "credential", "credentials",
+  "credential", "credentials", "transport", "protocol", "host", "hostname", "port",
+  "socket", "connection",
 ]);
 const here = (name) => fileURLToPath(new URL(name, import.meta.url));
 const load = (name) => JSON.parse(readFileSync(here(name), "utf8"));
@@ -109,11 +112,14 @@ function sensitiveKey(key) {
     || /^(?:client)?secret$/.test(normalized);
 }
 
-function containsSensitiveData(value) {
+function containsSensitiveData(value, path = []) {
   if (typeof value === "string") return TOKEN_PATTERNS.some((pattern) => pattern.test(value));
-  if (Array.isArray(value)) return value.some(containsSensitiveData);
+  if (Array.isArray(value)) return value.some((child, index) => containsSensitiveData(child, [...path, index]));
   if (value === null || typeof value !== "object") return false;
-  return Object.entries(value).some(([key, child]) => sensitiveKey(key) || containsSensitiveData(child));
+  return Object.entries(value).some(([key, child]) => {
+    const semanticAgentHost = path.length === 1 && path[0] === "descriptor" && key === "agentHost";
+    return (!semanticAgentHost && sensitiveKey(key)) || containsSensitiveData(child, [...path, key]);
+  });
 }
 
 function assertRawIdentity(raw, input) {
@@ -283,9 +289,14 @@ export function validateCandidateCaptureReportForTest(value, originalInput, cloc
 }
 
 function main() {
-  if (process.argv.length !== 3) {
+  if (process.argv.length === 2) {
     process.stdout.write(`${JSON.stringify(missingReport())}\n`);
     process.exitCode = 2;
+    return;
+  }
+  if (process.argv.length !== 3) {
+    process.stdout.write(`${JSON.stringify(invalidReport(undefined, trustedNow(), "schema-invalid"))}\n`);
+    process.exitCode = 1;
     return;
   }
   try {
