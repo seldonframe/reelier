@@ -11,6 +11,24 @@
       "type": "array",
       "minItems": 15,
       "maxItems": 15,
+      "uniqueItems": true,
+      "allOf": [
+        { "contains": { "type": "object", "properties": { "caseId": { "const": "wrong-principal" } }, "required": ["caseId"] }, "minContains": 1, "maxContains": 1 },
+        { "contains": { "type": "object", "properties": { "caseId": { "const": "reused-parent-principal" } }, "required": ["caseId"] }, "minContains": 1, "maxContains": 1 },
+        { "contains": { "type": "object", "properties": { "caseId": { "const": "identity-injection-through-task-choices" } }, "required": ["caseId"] }, "minContains": 1, "maxContains": 1 },
+        { "contains": { "type": "object", "properties": { "caseId": { "const": "undiscovered-job" } }, "required": ["caseId"] }, "minContains": 1, "maxContains": 1 },
+        { "contains": { "type": "object", "properties": { "caseId": { "const": "unauthorized-repo-branch-target" } }, "required": ["caseId"] }, "minContains": 1, "maxContains": 1 },
+        { "contains": { "type": "object", "properties": { "caseId": { "const": "budget-overflow" } }, "required": ["caseId"] }, "minContains": 1, "maxContains": 1 },
+        { "contains": { "type": "object", "properties": { "caseId": { "const": "duplicate-retry" } }, "required": ["caseId"] }, "minContains": 1, "maxContains": 1 },
+        { "contains": { "type": "object", "properties": { "caseId": { "const": "crash-after-reservation" } }, "required": ["caseId"] }, "minContains": 1, "maxContains": 1 },
+        { "contains": { "type": "object", "properties": { "caseId": { "const": "crash-after-dispatch" } }, "required": ["caseId"] }, "minContains": 1, "maxContains": 1 },
+        { "contains": { "type": "object", "properties": { "caseId": { "const": "stale-outcome" } }, "required": ["caseId"] }, "minContains": 1, "maxContains": 1 },
+        { "contains": { "type": "object", "properties": { "caseId": { "const": "provider-ack-without-matching-post-state" } }, "required": ["caseId"] }, "minContains": 1, "maxContains": 1 },
+        { "contains": { "type": "object", "properties": { "caseId": { "const": "hidden-unwrapped-route" } }, "required": ["caseId"] }, "minContains": 1, "maxContains": 1 },
+        { "contains": { "type": "object", "properties": { "caseId": { "const": "incomplete-route-inventory" } }, "required": ["caseId"] }, "minContains": 1, "maxContains": 1 },
+        { "contains": { "type": "object", "properties": { "caseId": { "const": "malformed-coverage" } }, "required": ["caseId"] }, "minContains": 1, "maxContains": 1 },
+        { "contains": { "type": "object", "properties": { "caseId": { "const": "unavailable-coverage" } }, "required": ["caseId"] }, "minContains": 1, "maxContains": 1 }
+      ],
       "items": { "$ref": "#/$defs/case" }
     }
   },
@@ -32,6 +50,25 @@
         "incomplete-route-inventory",
         "malformed-coverage",
         "unavailable-coverage"
+      ]
+    },
+    "reasonCode": {
+      "enum": [
+        "authority-principal-mismatch",
+        "delegation-principal-not-attenuated",
+        "host-bound-identity-override",
+        "job-not-discovered",
+        "target-not-authorized",
+        "allocation-budget-exceeded",
+        "duplicate-retry-requires-reconciliation",
+        "reservation-recovery-required",
+        "dispatch-outcome-ambiguous",
+        "outcome-stale",
+        "provider-post-state-mismatch",
+        "route-unwrapped",
+        "route-inventory-incomplete",
+        "coverage-malformed",
+        "coverage-unavailable"
       ]
     },
     "claimStatus": { "enum": ["verified", "failed", "unchecked", "absent"] },
@@ -89,7 +126,7 @@
           "type": "array",
           "minItems": 1,
           "uniqueItems": true,
-          "items": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" }
+          "items": { "$ref": "#/$defs/reasonCode" }
         },
         "nonClaims": {
           "type": "array",
