@@ -27,7 +27,7 @@ test("declared authority host barrel exposes only supported composition roots as
 test("CI keeps both required matrix contexts failing when authority pack prerequisite fails", () => {
   const workflow = readFileSync(path.join(process.cwd(), ".github", "workflows", "ci.yml"), "utf8");
   const testJob = workflow.slice(workflow.indexOf("  test:"));
-  assert.match(testJob, /^  test:\r?\n    needs: \[pack-authority-host-boundary, produce-authority-factory-evidence\]\r?\n    # `always\(\)`/m);
+  assert.match(testJob, /^  test:\r?\n(?:    name: .*\r?\n)?    needs: \[pack-authority-host-boundary, produce-authority-factory-evidence\]\r?\n    # `always\(\)`/m);
   assert.match(testJob, /    if: \$\{\{ always\(\) \}\}/);
   assert.match(testJob, /- name: Enforce authority pack and factory evidence prerequisites\r?\n        if: \$\{\{ always\(\) \}\}/);
   assert.match(testJob, /needs\.pack-authority-host-boundary\.result \}\}[' ]+!= 'success'/);
