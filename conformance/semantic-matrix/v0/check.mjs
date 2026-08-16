@@ -37,13 +37,19 @@ const validateInput = ajv.compile({
         { properties: { candidate: { type: "object" }, report: { type: "object" }, missing: { const: true } }, required: ["report"], not: { anyOf: [{ properties: { candidate: { type: "object" } }, required: ["candidate"] }, { properties: { missing: { const: true } }, required: ["missing"] }] } },
         { properties: { candidate: { type: "object" }, report: { type: "object" }, missing: { const: true } }, required: ["missing"], not: { anyOf: [{ required: ["candidate"] }, { required: ["report"] }] } },
       ],
-      allOf: [{
-        if: { properties: { continuityEvidence: { type: "object" } }, required: ["continuityEvidence"] },
-        then: {
-          properties: { harnessId: { const: "eve" }, adapterPath: { const: "agent-adapter/v0" }, candidate: { type: "object" } },
-          required: ["candidate"],
+      allOf: [
+        {
+          if: { properties: { candidate: { type: "object" } }, required: ["candidate"] },
+          then: { properties: { adapterPath: { const: "agent-adapter/v0" } } },
         },
-      }],
+        {
+          if: { properties: { continuityEvidence: { type: "object" } }, required: ["continuityEvidence"] },
+          then: {
+            properties: { harnessId: { const: "eve" }, adapterPath: { const: "agent-adapter/v0" }, candidate: { type: "object" } },
+            required: ["candidate"],
+          },
+        },
+      ],
     } },
   },
 });
