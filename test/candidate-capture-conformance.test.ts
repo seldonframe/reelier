@@ -252,6 +252,41 @@ test("raw boundary recursively rejects transport, credential, and common token v
   }
 });
 
+test("raw boundary rejects sensitive identifiers encoded in JSON values and pair arrays", () => {
+  const sensitive = [
+    { pairs: [["host", "db.internal"]] },
+    { fields: [{ name: "authorization", value: "opaque" }] },
+    { nested: { label: "api_key", value: "opaque" } },
+    { names: ["refreshToken"] },
+  ];
+  for (const payload of sensitive) {
+    const rawJson = JSON.stringify({ v: "reelier.black-box-candidate/v0", descriptor: { adapterId: "codex", agentHost: "codex" }, payload });
+    const input = presentInput("codex", { artifact: { kind: "candidate", rawJson, rawDigest: digest(rawJson) } });
+    const report = runCapture(input);
+    assert.equal(report.status, "failed", JSON.stringify(payload));
+    assert.equal(report.classification, "invalid-candidate", JSON.stringify(payload));
+    assert.ok(report.reasonCodes.includes("sensitive-artifact"), JSON.stringify(payload));
+  }
+});
+
+test("raw boundary rejects every URI scheme and protocol-relative URI in JSON strings", () => {
+  const sensitive = [
+    { value: "mailto:operator@example.invalid" },
+    { value: "data:text/plain,opaque" },
+    { value: "postgres:opaque-database" },
+    { value: "Custom+Scheme.ext:opaque" },
+    { value: "//db.internal/app" },
+  ];
+  for (const payload of sensitive) {
+    const rawJson = JSON.stringify({ v: "reelier.black-box-candidate/v0", descriptor: { adapterId: "codex", agentHost: "codex" }, payload });
+    const input = presentInput("codex", { artifact: { kind: "candidate", rawJson, rawDigest: digest(rawJson) } });
+    const report = runCapture(input);
+    assert.equal(report.status, "failed", JSON.stringify(payload));
+    assert.equal(report.classification, "invalid-candidate", JSON.stringify(payload));
+    assert.ok(report.reasonCodes.includes("sensitive-artifact"), JSON.stringify(payload));
+  }
+});
+
 test("report validation detects status, digest, identity, reason, and freshness forgeries", () => {
   const input = presentInput("claude-code");
   const report = runCapture(input);
