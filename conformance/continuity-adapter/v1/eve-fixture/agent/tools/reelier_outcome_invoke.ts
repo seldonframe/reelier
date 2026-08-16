@@ -1,7 +1,7 @@
 import { defineTool } from "eve/tools";
 import { z } from "zod";
 import { continuityRuntime } from "../lib/runtime.js";
-import { recordPathCOperation } from "../lib/adapter-contract.js";
+import { callAdapterContractTool, recordPathCOperation } from "../lib/adapter-contract.js";
 
 export const MODEL_INPUT_KEYS = ["jobRef", "requestId", "sourceRefs", "choices"] as const;
 
@@ -17,6 +17,7 @@ export default defineTool({
   description: "Invoke a discovered job through the authenticated loopback Path C port.",
   inputSchema,
   async execute(input, ctx) {
+    if (process.env.REELIER_EVE_AGENT_ADAPTER_V0 === "1") return callAdapterContractTool("reelier_outcome_invoke", input, "outcomes.invoke");
     const response = await continuityRuntime(ctx).requestOutcome({ v: "reelier.outcome-request/v1", requestId: input.requestId, sourceRefs: input.sourceRefs, choices: input.choices });
     await recordPathCOperation("outcomes.invoke", input, response as unknown as Record<string, unknown>);
     return response;

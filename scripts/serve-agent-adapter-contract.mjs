@@ -44,6 +44,14 @@ const server = buildAuthorityMcpServer([{ alias: "fixture_record_state_set_v1" }
     const childPrincipalId = input?.child?.principalId;
     return { verdict: "accepted", principalId: childPrincipalId, allocationId: `${session.allocationId}_child`, effects };
   },
+  async delegationStatus(input) {
+    await record({ operation: "delegations.status", input });
+    return { grantId: input?.grantId, state: "active", principalId: `${session.principalId}_child`, allocationId: `${session.allocationId}_child`, effects: 1 };
+  },
+  async taskStatus(input) {
+    await record({ operation: "tasks.status", input });
+    return { taskId: input?.taskId, state: "active" };
+  },
   async invoke(input) {
     await record({ operation: "outcomes.invoke", input });
     return { requestId: input?.requestId ?? requestId, verdict: "refused", reasonCode: "adapter-contract-pending", lifecycleState: "refused" };

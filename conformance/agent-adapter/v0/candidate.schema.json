@@ -13,10 +13,12 @@
       "minItems": 5,
       "maxItems": 64,
       "items": {
-        "oneOf": [
+      "oneOf": [
           { "$ref": "#/$defs/jobsSearch" },
           { "$ref": "#/$defs/jobLoad" },
           { "$ref": "#/$defs/delegationRequest" },
+          { "$ref": "#/$defs/delegationStatus" },
+          { "$ref": "#/$defs/taskStatus" },
           { "$ref": "#/$defs/outcomeInvoke" },
           { "$ref": "#/$defs/outcomeStatus" }
         ]
@@ -27,8 +29,29 @@
       "minItems": 2,
       "maxItems": 2,
       "items": { "$ref": "#/$defs/coverageProbe" }
-    }
+    },
+    "liveEvidence": { "$ref": "#/$defs/liveEvidence" }
   },
+  "allOf": [
+    {
+      "if": { "properties": { "descriptor": { "type": "object", "properties": { "execution": { "const": "live-candidate" } }, "required": ["execution"] } }, "required": ["descriptor"] },
+      "then": {
+        "required": ["liveEvidence"],
+        "properties": {
+          "liveEvidence": { "$ref": "#/$defs/liveEvidence" },
+          "descriptor": { "type": "object", "properties": { "authorityContract": { "type": "object", "properties": { "status": { "const": "frozen" }, "digest": { "$ref": "#/$defs/digest" } }, "required": ["status", "digest"] } } }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "descriptor": { "type": "object", "properties": { "execution": { "const": "fixture-only" } }, "required": ["execution"] } }, "required": ["descriptor"] },
+      "then": {
+        "properties": {
+          "descriptor": { "type": "object", "properties": { "authorityContract": { "type": "object", "properties": { "status": { "const": "pending-freeze" }, "digest": { "type": "null" } }, "required": ["status", "digest"] } } }
+        }
+      }
+    }
+  ],
   "$defs": {
     "id": {
       "type": "string",
@@ -48,16 +71,16 @@
         "adapterId": { "$ref": "#/$defs/id" },
         "agentHost": { "$ref": "#/$defs/id" },
         "transport": { "enum": ["mcp-stdio", "https"] },
-        "execution": { "const": "fixture-only" },
+        "execution": { "enum": ["fixture-only", "live-candidate"] },
         "identityBinding": { "const": "host-authenticated" },
         "providerCredentialAccess": { "const": "none" },
         "authorityContract": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["status", "digest"],
-          "properties": {
-            "status": { "const": "pending-freeze" },
-            "digest": { "type": "null" }
+            "required": ["status", "digest"],
+            "properties": {
+            "status": { "enum": ["pending-freeze", "frozen"] },
+            "digest": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/digest" }] }
           }
         },
         "coverage": {
@@ -195,6 +218,55 @@
         }
       }
     },
+    "delegationStatus": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["operation", "request", "response"],
+      "properties": {
+        "operation": { "const": "delegations.status" },
+        "request": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["grantId"],
+          "properties": { "grantId": { "$ref": "#/$defs/id" } }
+        },
+        "response": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["grantId", "state", "principalId", "allocationId", "effects"],
+          "properties": {
+            "grantId": { "$ref": "#/$defs/id" },
+            "state": { "enum": ["active", "accepted", "refused"] },
+            "principalId": { "$ref": "#/$defs/id" },
+            "allocationId": { "$ref": "#/$defs/id" },
+            "effects": { "type": "integer", "minimum": 1, "maximum": 1000000 }
+          }
+        }
+      }
+    },
+    "taskStatus": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["operation", "request", "response"],
+      "properties": {
+        "operation": { "const": "tasks.status" },
+        "request": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["taskId"],
+          "properties": { "taskId": { "$ref": "#/$defs/id" } }
+        },
+        "response": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["taskId", "state"],
+          "properties": {
+            "taskId": { "$ref": "#/$defs/id" },
+            "state": { "enum": ["active", "refused"] }
+          }
+        }
+      }
+    },
     "sourceRefs": {
       "type": "object",
       "minProperties": 1,
@@ -287,6 +359,32 @@
         "rawWriteReachability": { "enum": ["absent", "unknown", "present"] },
         "topology": { "$ref": "#/$defs/claimStatus" },
         "completeness": { "$ref": "#/$defs/claimStatus" }
+      }
+    },
+    "liveEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["v", "execution", "contract", "semanticOperations", "preFreezeRefusal", "coverage", "eveProcess"],
+      "properties": {
+        "v": { "const": "reelier.agent-adapter-live-evidence/v0" },
+        "execution": { "const": "eve-process-tool-loop" },
+        "contract": {
+          "type": "object", "additionalProperties": false, "required": ["v", "digest", "bound"],
+          "properties": { "v": { "const": "reelier.adapter-contract/v1" }, "digest": { "$ref": "#/$defs/digest" }, "bound": { "const": true } }
+        },
+        "semanticOperations": {
+          "type": "array",
+          "const": ["jobs.search", "jobs.load", "delegations.request", "delegations.status", "tasks.status", "outcomes.invoke", "outcomes.status"]
+        },
+        "preFreezeRefusal": { "const": true },
+        "coverage": {
+          "type": "object", "additionalProperties": false, "required": ["mode", "topology", "completeness"],
+          "properties": { "mode": { "const": "observed" }, "topology": { "const": "unchecked" }, "completeness": { "const": "unchecked" } }
+        },
+        "eveProcess": {
+          "type": "object", "additionalProperties": false, "required": ["sessionId", "boundary"],
+          "properties": { "sessionId": { "type": "string", "minLength": 1 }, "boundary": { "const": "session.waiting" } }
+        }
       }
     }
   }

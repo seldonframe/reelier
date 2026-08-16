@@ -82,9 +82,21 @@ function semanticChecks(candidate) {
   const status = oneEvent(candidate, "outcomes.status");
   const observed = candidate.coverageProbes.filter((probe) => probe.mode === "observed");
   const enforced = candidate.coverageProbes.filter((probe) => probe.mode === "enforced");
+  const live = candidate.descriptor.execution === "live-candidate";
+  const liveOperations = candidate.transcript.map((event) => event.operation);
+  const liveEvidenceConforms = !live || (
+    candidate.liveEvidence?.execution === "eve-process-tool-loop"
+    && candidate.liveEvidence?.contract?.v === "reelier.adapter-contract/v1"
+    && candidate.liveEvidence?.contract?.bound === true
+    && candidate.liveEvidence.contract.digest === candidate.descriptor.authorityContract.digest
+    && candidate.liveEvidence.preFreezeRefusal === true
+    && JSON.stringify(liveOperations) === JSON.stringify(candidate.liveEvidence.semanticOperations)
+    && candidate.liveEvidence.semanticOperations.length === 7
+  );
 
   const operationsConform = sameSet(candidate.descriptor.operations, universalOperations)
-    && candidate.descriptor.hardCodedJobRefs.length === 0;
+    && candidate.descriptor.hardCodedJobRefs.length === 0
+    && liveEvidenceConforms;
 
   const discoveredRefs = search?.response.jobs.map((job) => job.jobRef) ?? [];
   const discoveryConforms = Boolean(

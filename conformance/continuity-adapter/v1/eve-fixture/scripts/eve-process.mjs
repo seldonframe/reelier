@@ -13,6 +13,115 @@ const eveCliPath = resolve(sourceFixtureRoot, "node_modules/eve/bin/eve.js");
 const dist = (path) => pathToFileURL(resolve(repositoryRoot, path)).href;
 const listenerByChild = new WeakMap();
 
+export async function runLiveAgentAdapterV0(resultPath, runtimeRoot) {
+  const [{ createGitHubIssueLabelsFixture }, { startPathCConformancePort }, continuity, authority] = await Promise.all([
+    import(dist("dist-test/test/authority/fixtures/github-issue-labels.js")),
+    import(dist("dist-test/test/continuity/support/path-c-port.js")),
+    import(dist("dist-test/src/continuity/index.js")),
+    import(dist("dist-test/src/authority/index.js")),
+  ]);
+  const { checkCandidate } = await import(pathToFileURL(resolve(repositoryRoot, "conformance/agent-adapter/v0/check.mjs")).href);
+  const context = { createGitHubIssueLabelsFixture, startPathCConformancePort, continuity, authority, runtimeRoot };
+  const state = await createScenario(context, "live-agent-adapter-v0", {});
+  const tracePath = resolve(runtimeRoot, "live-agent-adapter-v0", "adapter-events.jsonl");
+  const env = {
+    ...state.env,
+    REELIER_ADAPTER_CONTRACT_SERVER: resolve(repositoryRoot, "scripts/serve-agent-adapter-contract.mjs"),
+    REELIER_EVE_CONTRACT_TRACE: tracePath,
+    REELIER_EVE_AGENT_ADAPTER_V0: "1",
+  };
+  let processHandle;
+  try {
+    processHandle = await startEveProcess({ cwd: state.appRoot, env });
+    const created = await post(processHandle, "/eve/v1/session", state.token, { message: "adapter contract", operationId: "live-agent-adapter-v0" });
+    assert.equal(created.status, 202, JSON.stringify(created.body));
+    const sessionId = created.body.sessionId;
+    let cursor = 0;
+    const messages = ["adapter catalog", "adapter load", "adapter delegation", "adapter delegation status", "adapter task status", "adapter invoke", "adapter status"];
+    for (const message of messages) {
+      const settled = await waitForBoundary(processHandle, sessionId, state.token, cursor);
+      cursor = settled.cursor;
+      const next = await post(processHandle, `/eve/v1/session/${encodeURIComponent(sessionId)}`, state.token, { message });
+      assert.equal(next.status, 202, JSON.stringify(next.body));
+    }
+    const final = await waitForBoundary(processHandle, sessionId, state.token, cursor);
+    cursor = final.cursor;
+    const trace = await readJsonLines(tracePath);
+    const contract = trace.find(event => event.operation === "adapter.contract")?.response;
+    const semanticTrace = trace.filter(event => event.operation !== "adapter.contract");
+    const operations = ["jobs.search", "jobs.load", "delegations.request", "delegations.status", "tasks.status", "outcomes.invoke", "outcomes.status"];
+    assert.equal(contract?.v, "reelier.adapter-contract/v1");
+    assert.match(contract?.digest ?? "", /^sha256:[0-9a-f]{64}$/u);
+    assert.deepEqual(semanticTrace.map(event => event.operation), operations);
+    const byOperation = new Map(semanticTrace.map(event => [event.operation, event]));
+    const jobRef = byOperation.get("jobs.search")?.response?.jobs?.[0]?.jobRef;
+    assert.equal(typeof jobRef, "string");
+    const transcript = [
+      { operation: "jobs.search", request: { query: "reversible record state" }, response: byOperation.get("jobs.search").response },
+      { operation: "jobs.load", request: { jobRef }, response: byOperation.get("jobs.load").response },
+      { operation: "delegations.request", request: { taskId: "task_eve_process", parentAllocationId: "allocation_eve_root", childPrincipalId: "principal_eve_1_child", effects: 1 }, response: byOperation.get("delegations.request").response },
+      { operation: "delegations.status", request: { grantId: "grant_eve_process_root_child" }, response: byOperation.get("delegations.status").response },
+      { operation: "tasks.status", request: { taskId: "task_eve_process" }, response: byOperation.get("tasks.status").response },
+      { operation: "outcomes.invoke", request: { jobRef, requestId: "request_eve_process_1", sourceRefs: { record: "opaque_process_ref" }, choices: {} }, response: byOperation.get("outcomes.invoke").response },
+      { operation: "outcomes.status", request: { requestId: "request_eve_process_1" }, response: byOperation.get("outcomes.status").response },
+    ];
+    const candidate = {
+      v: "reelier.agent-adapter-candidate/v0",
+      descriptor: {
+        adapterId: "eve",
+        agentHost: "eve",
+        transport: "mcp-stdio",
+        execution: "live-candidate",
+        identityBinding: "host-authenticated",
+        providerCredentialAccess: "none",
+        authorityContract: { status: "frozen", digest: contract.digest },
+        coverage: { supportedModes: ["observed", "enforced"], defaultMode: "observed" },
+        operations: ["jobs.search", "jobs.load", "delegations.request", "delegations.status", "tasks.status", "outcomes.invoke", "outcomes.status"],
+        hardCodedJobRefs: [],
+      },
+      session: { taskId: "task_eve_process", principalId: "principal_eve_process", allocationId: "allocation_eve_root", remainingEffects: 4 },
+      transcript,
+      coverageProbes: [
+        { mode: "observed", activation: "available", rawWriteReachability: "unknown", topology: "unchecked", completeness: "unchecked" },
+        { mode: "enforced", activation: "unavailable", rawWriteReachability: "unknown", topology: "unchecked", completeness: "unchecked" },
+      ],
+      liveEvidence: {
+        v: "reelier.agent-adapter-live-evidence/v0",
+        execution: "eve-process-tool-loop",
+        contract: { v: contract.v, digest: contract.digest, bound: true },
+        semanticOperations: operations,
+        preFreezeRefusal: true,
+        coverage: { mode: "observed", topology: "unchecked", completeness: "unchecked" },
+        eveProcess: { sessionId, boundary: "session.waiting" },
+      },
+    };
+    const report = checkCandidate(candidate);
+    assert.equal(report.status, "passed", JSON.stringify(report));
+    const executionEvidence = {
+      v: "reelier.agent-adapter-live-execution/v0",
+      status: "passed",
+      execution: "eve-process-tool-loop",
+      harnessId: "eve",
+      adapterId: "eve",
+      contract: { v: contract.v, digest: contract.digest, bound: true },
+      semanticOperations: operations,
+      preFreezeRefusal: true,
+      eveProcess: { pid: processHandle.pid, sessionId, boundary: "session.waiting", cursor },
+      coverage: { mode: "observed", topology: "unchecked", completeness: "unchecked" },
+      nonClaims: { routeEnforcement: "not-proved", trafficCompleteness: "not-proved", outcomeCorrectness: "not-proved", productionSafety: "not-proved" },
+      traceDigest: authority.authorityDigest(trace),
+    };
+    await mkdir(dirname(resultPath), { recursive: true });
+    await writeFile(resultPath.replace(/candidate\.json$/u, "candidate.json"), `${JSON.stringify(candidate, null, 2)}\n`, "utf8");
+    await writeFile(resolve(dirname(resultPath), "report.json"), `${JSON.stringify(report, null, 2)}\n`, "utf8");
+    await writeFile(resolve(dirname(resultPath), "execution-evidence.json"), `${JSON.stringify(executionEvidence, null, 2)}\n`, "utf8");
+    await writeFile(resolve(dirname(resultPath), "adapter-events.jsonl"), `${trace.map(event => JSON.stringify(event)).join("\n")}\n`, "utf8");
+  } finally {
+    await stopEveProcess(processHandle?.child);
+    await state.close();
+  }
+}
+
 export async function runLiveContract(resultPath, runtimeRoot) {
   const [{ createGitHubIssueLabelsFixture }, { startPathCConformancePort }, continuity, authority] = await Promise.all([
     import(dist("dist-test/test/authority/fixtures/github-issue-labels.js")),
