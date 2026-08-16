@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { resolve } from "node:path";
+import { spawnSync } from "node:child_process";
 
 const matrix = await import(pathToFileURL(resolve("conformance/semantic-matrix/v0/check.mjs")).href);
 const grokBuild = JSON.parse(readFileSync(resolve("conformance/agent-adapter/v0/fixtures/grok-build-observed.json"), "utf8"));
@@ -66,4 +67,35 @@ test("semantic matrix refuses unknown harnesses and does not synthesize missing 
     v: "reelier.semantic-matrix-input/v0",
     candidates: [{ harnessId: "made-up", adapterPath: "agent-adapter/v0", candidate: grokBuild }],
   }), /closed|harness/i);
+});
+
+test("matrix report has exactly the five unique harness identities and binds status to aggregate", () => {
+  const report = matrix.runSemanticMatrix({ v: "reelier.semantic-matrix-input/v0", candidates: [] });
+  assert.deepEqual(report.harnesses.map((row: any) => row.harnessId), ["codex", "claude-code", "eve", "grok-build", "grok-bot"]);
+  assert.equal(new Set(report.harnesses.map((row: any) => row.harnessId)).size, 5);
+  assert.equal(matrix.validateSemanticMatrixReport({ ...report, status: "passed" }), false);
+  assert.equal(matrix.validateSemanticMatrixReport({ ...report, harnesses: [{ ...report.harnesses[0], harnessId: "other" }, ...report.harnesses.slice(1)] }), false);
+});
+
+test("invalid source reports cannot publish semantic checks", () => {
+  const invalid = { v: "reelier.agent-adapter-conformance-report/v0", status: "passed", adapterId: "xai.grok-build", checks: [{ id: "forged", status: "passed", detail: "forged" }] };
+  const report = matrix.runSemanticMatrix({ v: "reelier.semantic-matrix-input/v0", candidates: [{ harnessId: "grok-build", adapterPath: "agent-adapter/v0", report: invalid }] });
+  assert.equal(report.harnesses.find((row: any) => row.harnessId === "grok-build").overallStatus, "unsupported");
+  assert.equal(report.semanticChecks.some((check: any) => check.harnessId === "grok-build"), false);
+});
+
+test("listed missing evidence must be explicit and CLI failures remain schema-valid", () => {
+  assert.throws(() => matrix.runSemanticMatrix({
+    v: "reelier.semantic-matrix-input/v0",
+    candidates: [{ harnessId: "codex", adapterPath: "agent-adapter/v0" }],
+  }), /closed|missing/i);
+  for (const args of [[], [resolve("conformance/semantic-matrix/v0/missing-input.json")]]) {
+    const cli = spawnSync(process.execPath, [resolve("conformance/semantic-matrix/v0/check.mjs"), ...args], { encoding: "utf8" });
+    assert.equal(cli.status, args.length === 0 ? 2 : 1);
+    const failure = JSON.parse(cli.stdout);
+    assert.equal(matrix.validateSemanticMatrixReport(failure), true);
+    assert.equal(failure.status, "failed");
+    assert.equal(failure.harnesses.length, 5);
+    assert.ok(failure.harnesses.every((row: any) => row.reasons.length > 0));
+  }
 });
