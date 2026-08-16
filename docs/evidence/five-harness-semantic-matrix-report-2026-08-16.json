@@ -1,0 +1,206 @@
+{
+  "v": "reelier.semantic-matrix-report/v0",
+  "status": "failed",
+  "aggregate": {
+    "v": "reelier.aggregate-conformance-report/v0",
+    "status": "failed",
+    "harnesses": [
+      {
+        "harnessId": "codex",
+        "adapterPath": "agent-adapter/v0",
+        "evidenceMaturity": "unsupported",
+        "coverageStatus": "coverage-unknown",
+        "executionStatus": "not-tested",
+        "outcomeStatus": "not-tested",
+        "overallStatus": "unsupported",
+        "nonClaims": {
+          "routeEnforcement": "not-proved",
+          "agentAdapterExecution": "not-proved",
+          "liveHarnessExecution": "not-proved",
+          "outcomeCorrectness": "not-proved",
+          "productionSafety": "not-proved"
+        },
+        "reasons": [
+          "no supported conformance report was supplied"
+        ]
+      },
+      {
+        "harnessId": "claude-code",
+        "adapterPath": "agent-adapter/v0",
+        "evidenceMaturity": "unsupported",
+        "coverageStatus": "coverage-unknown",
+        "executionStatus": "not-tested",
+        "outcomeStatus": "not-tested",
+        "overallStatus": "unsupported",
+        "nonClaims": {
+          "routeEnforcement": "not-proved",
+          "agentAdapterExecution": "not-proved",
+          "liveHarnessExecution": "not-proved",
+          "outcomeCorrectness": "not-proved",
+          "productionSafety": "not-proved"
+        },
+        "reasons": [
+          "no supported conformance report was supplied"
+        ]
+      },
+      {
+        "harnessId": "eve",
+        "adapterPath": "continuity-adapter/v1/eve-fixture",
+        "evidenceMaturity": "continuity-proven",
+        "coverageStatus": "coverage-unknown",
+        "executionStatus": "not-tested",
+        "outcomeStatus": "not-tested",
+        "overallStatus": "continuity-proven",
+        "nonClaims": {
+          "routeEnforcement": "not-proved",
+          "agentAdapterExecution": "not-proved",
+          "liveHarnessExecution": "not-proved",
+          "outcomeCorrectness": "not-proved",
+          "productionSafety": "not-proved"
+        },
+        "reasons": [
+          "continuity checks passed",
+          "continuity evidence does not establish universal agent-adapter execution"
+        ]
+      },
+      {
+        "harnessId": "grok-build",
+        "adapterPath": "agent-adapter/v0",
+        "evidenceMaturity": "unsupported",
+        "coverageStatus": "coverage-unknown",
+        "executionStatus": "not-tested",
+        "outcomeStatus": "not-tested",
+        "overallStatus": "unsupported",
+        "nonClaims": {
+          "routeEnforcement": "not-proved",
+          "agentAdapterExecution": "not-proved",
+          "liveHarnessExecution": "not-proved",
+          "outcomeCorrectness": "not-proved",
+          "productionSafety": "not-proved"
+        },
+        "reasons": [
+          "no supported conformance report was supplied"
+        ]
+      },
+      {
+        "harnessId": "grok-bot",
+        "adapterPath": "agent-adapter/v0",
+        "evidenceMaturity": "unsupported",
+        "coverageStatus": "coverage-unknown",
+        "executionStatus": "not-tested",
+        "outcomeStatus": "not-tested",
+        "overallStatus": "unsupported",
+        "nonClaims": {
+          "routeEnforcement": "not-proved",
+          "agentAdapterExecution": "not-proved",
+          "liveHarnessExecution": "not-proved",
+          "outcomeCorrectness": "not-proved",
+          "productionSafety": "not-proved"
+        },
+        "reasons": [
+          "no supported conformance report was supplied"
+        ]
+      }
+    ]
+  },
+  "harnesses": [
+    {
+      "harnessId": "codex",
+      "adapterPath": "agent-adapter/v0",
+      "evidenceMaturity": "unsupported",
+      "coverageStatus": "coverage-unknown",
+      "executionStatus": "not-tested",
+      "outcomeStatus": "not-tested",
+      "overallStatus": "unsupported",
+      "nonClaims": {
+        "routeEnforcement": "not-proved",
+        "agentAdapterExecution": "not-proved",
+        "liveHarnessExecution": "not-proved",
+        "outcomeCorrectness": "not-proved",
+        "productionSafety": "not-proved"
+      },
+      "reasons": [
+        "no supported conformance report was supplied"
+      ]
+    },
+    {
+      "harnessId": "claude-code",
+      "adapterPath": "agent-adapter/v0",
+      "evidenceMaturity": "unsupported",
+      "coverageStatus": "coverage-unknown",
+      "executionStatus": "not-tested",
+      "outcomeStatus": "not-tested",
+      "overallStatus": "unsupported",
+      "nonClaims": {
+        "routeEnforcement": "not-proved",
+        "agentAdapterExecution": "not-proved",
+        "liveHarnessExecution": "not-proved",
+        "outcomeCorrectness": "not-proved",
+        "productionSafety": "not-proved"
+      },
+      "reasons": [
+        "no supported conformance report was supplied"
+      ]
+    },
+    {
+      "harnessId": "eve",
+      "adapterPath": "continuity-adapter/v1/eve-fixture",
+      "evidenceMaturity": "continuity-proven",
+      "coverageStatus": "coverage-unknown",
+      "executionStatus": "not-tested",
+      "outcomeStatus": "not-tested",
+      "overallStatus": "continuity-proven",
+      "nonClaims": {
+        "routeEnforcement": "not-proved",
+        "agentAdapterExecution": "not-proved",
+        "liveHarnessExecution": "not-proved",
+        "outcomeCorrectness": "not-proved",
+        "productionSafety": "not-proved"
+      },
+      "reasons": [
+        "continuity checks passed",
+        "continuity evidence does not establish universal agent-adapter execution"
+      ]
+    },
+    {
+      "harnessId": "grok-build",
+      "adapterPath": "agent-adapter/v0",
+      "evidenceMaturity": "unsupported",
+      "coverageStatus": "coverage-unknown",
+      "executionStatus": "not-tested",
+      "outcomeStatus": "not-tested",
+      "overallStatus": "unsupported",
+      "nonClaims": {
+        "routeEnforcement": "not-proved",
+        "agentAdapterExecution": "not-proved",
+        "liveHarnessExecution": "not-proved",
+        "outcomeCorrectness": "not-proved",
+        "productionSafety": "not-proved"
+      },
+      "reasons": [
+        "no supported conformance report was supplied"
+      ]
+    },
+    {
+      "harnessId": "grok-bot",
+      "adapterPath": "agent-adapter/v0",
+      "evidenceMaturity": "unsupported",
+      "coverageStatus": "coverage-unknown",
+      "executionStatus": "not-tested",
+      "outcomeStatus": "not-tested",
+      "overallStatus": "unsupported",
+      "nonClaims": {
+        "routeEnforcement": "not-proved",
+        "agentAdapterExecution": "not-proved",
+        "liveHarnessExecution": "not-proved",
+        "outcomeCorrectness": "not-proved",
+        "productionSafety": "not-proved"
+      },
+      "reasons": [
+        "no supported conformance report was supplied"
+      ]
+    }
+  ],
+  "semanticChecks": [],
+  "continuityEvidence": []
+}

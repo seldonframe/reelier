@@ -1,0 +1,21 @@
+{
+  "v": "reelier.candidate-capture/v0",
+  "harness": {
+    "id": "eve",
+    "instanceIdentityDigest": "sha256:4fb6889ef965917711cb9e63e56b8e317a1281f544701f460dc710eebaef494f"
+  },
+  "adapter": {
+    "id": "eve",
+    "instanceIdentityDigest": "sha256:4fb6889ef965917711cb9e63e56b8e317a1281f544701f460dc710eebaef494f"
+  },
+  "captureMode": "observed",
+  "capturedAt": "2026-08-16T11:42:04.210Z",
+  "freshUntil": "2026-08-17T11:42:04.209Z",
+  "evidenceMode": "observed",
+  "artifact": {
+    "kind": "report",
+    "rawJson": "{\"v\":\"reelier.eve-continuity-detached-capture/v1\",\"harnessId\":\"eve\",\"adapterId\":\"eve\",\"report\":{\"v\":\"reelier.continuity-eve-conformance-report/v1\",\"status\":\"passed\",\"maturity\":\"reproduced\",\"reelierCommit\":\"994785489dd6fd2b85b95e96b1ace16533094f2b\",\"eveVersion\":\"0.37.1\",\"nodeVersion\":\"v24.19.0\",\"checks\":[{\"detail\":\"public continuity adapter candidate checks passed\",\"id\":\"generic-candidate\",\"status\":\"passed\"},{\"detail\":\"real Eve kill, resume, stream, control, identity, and model matrix passed\",\"id\":\"eve-process-matrix\",\"status\":\"passed\"},{\"detail\":\"focused Path C and Continuity suites passed\",\"id\":\"focused-continuity\",\"status\":\"passed\"}],\"nonClaims\":{\"contentCorrectness\":\"not-proved\",\"grokBot\":\"not-tested\",\"productionReadiness\":\"not-proved\",\"safety\":\"not-proved\",\"topology\":\"not-proved\",\"trafficCompleteness\":\"not-proved\"},\"sourceReportRef\":\"eve-continuity-detached-report.json\"}}",
+    "rawDigest": "sha256:58cd214ca596e0bbdbe636397597e93fb15853956e9cdbd7955cb9812e3209d8"
+  },
+  "bindingDigest": "sha256:1b502011e3e9c4c5934a5015f275294ea975a43bbe94b2c12a720a31b9cb5edf"
+}
