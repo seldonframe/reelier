@@ -13,18 +13,22 @@ const ADAPTERS = Object.freeze({
   "grok-build": "xai.grok-build",
   "grok-bot": "xai.grok-bot",
 });
-const SENSITIVE_KEYS = new Set([
-  "authorization", "proxyauthorization", "apikey", "token", "authtoken", "sessiontoken",
-  "accesstoken", "refreshtoken", "idtoken",
-  "password", "passwd", "secret", "clientsecret", "privatekey", "cookie", "setcookie",
-  "credential", "credentials",
-]);
 const TOKEN_PATTERNS = Object.freeze([
   /\bBearer\s+\S+/i,
-  /\b(?:sk|gh[pousr]|xox[baprs])[-_][A-Za-z0-9_-]{16,}\b/,
-  /\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/,
+  /\bsk-[A-Za-z0-9_-]+\b/i,
+  /\bgh[pousr]_[A-Za-z0-9_-]+\b/i,
+  /\bxox(?:[baprs]-|-)[A-Za-z0-9_-]+\b/i,
+  /\bnpm_[A-Za-z0-9_-]+\b/i,
+  /\beyJ[A-Za-z0-9_-]*(?:\.[A-Za-z0-9_-]+){0,2}\b/,
+  /\b(?:https?|wss?):\/\/\S+/i,
+  /\b(?:urn|file|ssh):\S+/i,
   /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/,
   /\bAKIA[0-9A-Z]{16}\b/,
+]);
+const SENSITIVE_KEY_WORDS = new Set([
+  "url", "uri", "endpoint", "header", "headers", "cookie", "cookies", "auth",
+  "authorization", "authentication", "token", "secret", "password", "passwd",
+  "credential", "credentials",
 ]);
 const here = (name) => fileURLToPath(new URL(name, import.meta.url));
 const load = (name) => JSON.parse(readFileSync(here(name), "utf8"));
@@ -53,7 +57,6 @@ export function captureBindingDigest(input) {
     captureMode: input.captureMode,
     capturedAt: input.capturedAt,
     freshUntil: input.freshUntil,
-    evaluatedAt: input.evaluatedAt,
     evidenceMode: input.evidenceMode,
     artifact: input.artifact && { kind: input.artifact.kind, rawDigest: input.artifact.rawDigest },
   };
@@ -74,14 +77,43 @@ function parseTimestamp(value, label) {
   return timestamp;
 }
 
+class InvalidCandidateError extends TypeError {
+  constructor(code, message) {
+    super(message);
+    this.code = code;
+  }
+}
+
+function trustedNow(options) {
+  const value = options?.clock ? options.clock() : new Date();
+  if (!(value instanceof Date) || !Number.isFinite(value.getTime())) {
+    throw new TypeError("trusted candidate-capture clock returned an invalid Date");
+  }
+  return Object.freeze({ timestamp: value.getTime(), iso: value.toISOString() });
+}
+
+function sensitiveKey(key) {
+  const words = key
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter(Boolean);
+  if (words.some((word) => SENSITIVE_KEY_WORDS.has(word))) return true;
+  for (let index = 0; index < words.length - 1; index += 1) {
+    if ((words[index] === "api" || words[index] === "access") && words[index + 1] === "key") return true;
+  }
+  const normalized = words.join("");
+  return /^(?:proxy)?authorization$/.test(normalized)
+    || /^(?:api|access|private)key(?:id|value)?$/.test(normalized)
+    || /^(?:auth|session|access|refresh|id)token$/.test(normalized)
+    || /^(?:client)?secret$/.test(normalized);
+}
+
 function containsSensitiveData(value) {
   if (typeof value === "string") return TOKEN_PATTERNS.some((pattern) => pattern.test(value));
   if (Array.isArray(value)) return value.some(containsSensitiveData);
   if (value === null || typeof value !== "object") return false;
-  return Object.entries(value).some(([key, child]) => {
-    const normalized = key.toLowerCase().replace(/[^a-z0-9]/g, "");
-    return SENSITIVE_KEYS.has(normalized) || containsSensitiveData(child);
-  });
+  return Object.entries(value).some(([key, child]) => sensitiveKey(key) || containsSensitiveData(child));
 }
 
 function assertRawIdentity(raw, input) {
@@ -91,30 +123,29 @@ function assertRawIdentity(raw, input) {
     : { harnessId: raw?.harnessId, adapterId: raw?.adapterId };
   const harnessMismatch = candidate ? identity.harnessId !== input.harness.id : identity.harnessId !== undefined && identity.harnessId !== input.harness.id;
   if (harnessMismatch || identity.adapterId !== input.adapter.id) {
-    throw new TypeError("raw artifact identity does not match the bound harness and adapter");
+    throw new InvalidCandidateError("identity-invalid", "raw artifact identity does not match the bound harness and adapter");
   }
 }
 
-function validatePresentCapture(input) {
+function validatePresentCapture(input, now) {
   if (ADAPTERS[input.harness.id] !== input.adapter.id) {
-    throw new TypeError("harness and adapter identity do not match");
+    throw new InvalidCandidateError("identity-invalid", "harness and adapter identity do not match");
   }
-  const evaluated = parseTimestamp(input.evaluatedAt, "evaluatedAt");
   const captured = parseTimestamp(input.capturedAt, "capturedAt");
   const expiry = parseTimestamp(input.freshUntil, "freshUntil");
-  if (captured > evaluated) throw new TypeError("capturedAt is future-dated");
-  if (expiry <= captured || expiry - captured > MAX_FRESHNESS_MS) throw new TypeError("capture freshness window is invalid");
-  if (evaluated >= expiry) throw new TypeError("capture freshness is stale");
-  if (sha256(input.artifact.rawJson) !== input.artifact.rawDigest) throw new TypeError("raw artifact digest commitment is invalid");
-  if (captureBindingDigest(input) !== input.bindingDigest) throw new TypeError("capture identity binding digest is invalid");
+  if (captured > now.timestamp) throw new InvalidCandidateError("freshness-invalid", "capturedAt is future-dated");
+  if (expiry <= captured || expiry - captured > MAX_FRESHNESS_MS) throw new InvalidCandidateError("freshness-invalid", "capture freshness window is invalid");
+  if (now.timestamp >= expiry) throw new InvalidCandidateError("freshness-invalid", "capture freshness is stale");
+  if (sha256(input.artifact.rawJson) !== input.artifact.rawDigest) throw new InvalidCandidateError("artifact-digest-invalid", "raw artifact digest commitment is invalid");
+  if (captureBindingDigest(input) !== input.bindingDigest) throw new InvalidCandidateError("identity-invalid", "capture identity binding digest is invalid");
   let raw;
   try {
     raw = JSON.parse(input.artifact.rawJson);
   } catch {
-    throw new TypeError("raw artifact JSON is invalid");
+    throw new InvalidCandidateError("artifact-json-invalid", "raw artifact JSON is invalid");
   }
-  if (raw === null || Array.isArray(raw) || typeof raw !== "object") throw new TypeError("raw artifact must be a JSON object");
-  if (containsSensitiveData(raw)) throw new TypeError("raw artifact contains credential-like or token-shaped sensitive data; redact before capture");
+  if (raw === null || Array.isArray(raw) || typeof raw !== "object") throw new InvalidCandidateError("artifact-json-invalid", "raw artifact must be a JSON object");
+  if (containsSensitiveData(raw)) throw new InvalidCandidateError("sensitive-artifact", "raw artifact contains transport, credential-like, or token-shaped sensitive data; remove before capture");
   assertRawIdentity(raw, input);
 }
 
@@ -129,7 +160,7 @@ function nonClaimsFor(input) {
   });
 }
 
-function missingReport(input) {
+function missingReport(input, now = Object.freeze({ iso: "1970-01-01T00:00:00.000Z" })) {
   const generic = input === undefined;
   const report = {
     v: VERSION,
@@ -144,7 +175,7 @@ function missingReport(input) {
       status: "absent",
       capturedAt: null,
       freshUntil: null,
-      evaluatedAt: generic ? "1970-01-01T00:00:00.000Z" : input.evaluatedAt,
+      evaluatedAt: now.iso,
     }),
     bindingDigest: null,
     reasonCodes: Object.freeze(["candidate-missing", "not-tested"]),
@@ -154,25 +185,26 @@ function missingReport(input) {
   return Object.freeze(generic ? report : { ...report, reportDigest: captureReportDigest(report) });
 }
 
-function presentReport(input) {
-  validatePresentCapture(input);
+function presentReport(input, now) {
+  validatePresentCapture(input, now);
   const live = input.captureMode === "live-candidate";
   const classification = live ? `live-candidate-${input.evidenceMode}` : `${input.captureMode}-only`;
   const reasons = ["capture-boundary-only"];
   if (!live) reasons.push(`${input.captureMode}-capture-non-passing`, "live-harness-execution-not-proved");
   if (input.evidenceMode === "enforced") reasons.push("enforcement-asserted-not-verified");
   else reasons.push("route-enforcement-not-proved");
+  reasons.push("capture-boundary-non-passing");
   reasons.sort();
   const report = {
     v: VERSION,
-    status: live ? "passed" : "failed",
+    status: "failed",
     classification,
     harness: Object.freeze({ ...input.harness }),
     adapter: Object.freeze({ ...input.adapter }),
     captureMode: input.captureMode,
     evidenceMode: input.evidenceMode,
     artifact: Object.freeze({ kind: input.artifact.kind, rawDigest: input.artifact.rawDigest }),
-    freshness: Object.freeze({ status: "fresh", capturedAt: input.capturedAt, freshUntil: input.freshUntil, evaluatedAt: input.evaluatedAt }),
+    freshness: Object.freeze({ status: "fresh", capturedAt: input.capturedAt, freshUntil: input.freshUntil, evaluatedAt: now.iso }),
     bindingDigest: input.bindingDigest,
     reasonCodes: Object.freeze(reasons),
     nonClaims: nonClaimsFor(input),
@@ -181,21 +213,73 @@ function presentReport(input) {
   return Object.freeze({ ...report, reportDigest: captureReportDigest(report) });
 }
 
-export function captureCandidate(input) {
-  if (!validateCapture(input)) throw new TypeError(`candidate capture input is invalid (closed schema or harness/adapter identity): ${ajv.errorsText(validateCapture.errors)}`);
-  const report = input.missingCandidate === true ? missingReport(input) : presentReport(input);
+function artifactDigestOnly(input) {
+  const artifact = input?.artifact;
+  if (!artifact || !["candidate", "report"].includes(artifact.kind) || typeof artifact.rawJson !== "string") return null;
+  return Object.freeze({ kind: artifact.kind, rawDigest: sha256(artifact.rawJson) });
+}
+
+function invalidReport(input, now, code) {
+  const reasons = Object.freeze(["invalid-candidate", code].sort());
+  const report = {
+    v: VERSION,
+    status: "failed",
+    classification: "invalid-candidate",
+    harness: null,
+    adapter: null,
+    captureMode: null,
+    evidenceMode: null,
+    artifact: artifactDigestOnly(input),
+    freshness: Object.freeze({ status: "invalid", capturedAt: null, freshUntil: null, evaluatedAt: now.iso }),
+    bindingDigest: null,
+    reasonCodes: reasons,
+    nonClaims: nonClaimsFor(undefined),
+    reportDigest: null,
+  };
+  return Object.freeze({ ...report, reportDigest: captureReportDigest(report) });
+}
+
+function captureCandidateAt(input, now) {
+  if (input?.harness?.id && input?.adapter?.id && ADAPTERS[input.harness.id] !== input.adapter.id) {
+    return invalidReport(input, now, "identity-invalid");
+  }
+  if (!validateCapture(input)) return invalidReport(input, now, "schema-invalid");
+  let report;
+  try {
+    report = input.missingCandidate === true ? missingReport(input, now) : presentReport(input, now);
+  } catch (error) {
+    if (error instanceof InvalidCandidateError) report = invalidReport(input, now, error.code);
+    else if (error instanceof TypeError) report = invalidReport(input, now, "freshness-invalid");
+    else throw error;
+  }
   if (!validateReport(report)) throw new TypeError(`candidate capture report is invalid: ${ajv.errorsText(validateReport.errors)}`);
   return report;
 }
 
-export function validateCandidateCaptureReport(value, originalInput) {
+export function captureCandidate(input) {
+  return captureCandidateAt(input, trustedNow());
+}
+
+export function captureCandidateForTest(input, clock) {
+  return captureCandidateAt(input, trustedNow({ clock }));
+}
+
+function validateCandidateCaptureReportAt(value, originalInput, now) {
   if (!validateReport(value)) return false;
   if (originalInput === undefined) return JSON.stringify(canonical(value)) === JSON.stringify(canonical(missingReport()));
   try {
-    return JSON.stringify(canonical(value)) === JSON.stringify(canonical(captureCandidate(originalInput)));
+    return JSON.stringify(canonical(value)) === JSON.stringify(canonical(captureCandidateAt(originalInput, now)));
   } catch {
     return false;
   }
+}
+
+export function validateCandidateCaptureReport(value, originalInput) {
+  return validateCandidateCaptureReportAt(value, originalInput, trustedNow());
+}
+
+export function validateCandidateCaptureReportForTest(value, originalInput, clock) {
+  return validateCandidateCaptureReportAt(value, originalInput, trustedNow({ clock }));
 }
 
 function main() {
@@ -207,9 +291,10 @@ function main() {
   try {
     const report = captureCandidate(JSON.parse(readFileSync(process.argv[2], "utf8")));
     process.stdout.write(`${JSON.stringify(report)}\n`);
-    process.exitCode = report.status === "passed" ? 0 : 1;
+    process.exitCode = 1;
   } catch {
-    process.stdout.write(`${JSON.stringify(missingReport())}\n`);
+    const now = trustedNow();
+    process.stdout.write(`${JSON.stringify(invalidReport(undefined, now, "artifact-json-invalid"))}\n`);
     process.exitCode = 1;
   }
 }

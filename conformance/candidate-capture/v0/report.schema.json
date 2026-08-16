@@ -6,8 +6,8 @@
   "required": ["v", "status", "classification", "harness", "adapter", "captureMode", "evidenceMode", "artifact", "freshness", "bindingDigest", "reasonCodes", "nonClaims", "reportDigest"],
   "properties": {
     "v": { "const": "reelier.candidate-capture-report/v0" },
-    "status": { "enum": ["passed", "failed", "not-tested"] },
-    "classification": { "enum": ["fixture-only", "observed-only", "live-candidate-observed", "live-candidate-enforced", "not-tested"] },
+    "status": { "enum": ["failed", "not-tested"] },
+    "classification": { "enum": ["fixture-only", "observed-only", "live-candidate-observed", "live-candidate-enforced", "invalid-candidate", "not-tested"] },
     "harness": { "oneOf": [{ "$ref": "#/$defs/harness" }, { "type": "null" }] },
     "adapter": { "oneOf": [{ "$ref": "#/$defs/adapter" }, { "type": "null" }] },
     "captureMode": { "type": ["string", "null"], "enum": ["fixture", "observed", "live-candidate", null] },
@@ -19,18 +19,105 @@
     "nonClaims": { "$ref": "#/$defs/nonClaims" },
     "reportDigest": { "oneOf": [{ "$ref": "#/$defs/digest" }, { "type": "null" }] }
   },
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "status": { "const": "not-tested" },
+        "classification": { "const": "not-tested" },
+        "harness": { "oneOf": [{ "$ref": "#/$defs/harness" }, { "type": "null" }] },
+        "adapter": { "oneOf": [{ "$ref": "#/$defs/adapter" }, { "type": "null" }] },
+        "captureMode": { "type": "null" },
+        "evidenceMode": { "type": "null" },
+        "artifact": { "type": "null" },
+        "freshness": { "$ref": "#/$defs/absentFreshness" },
+        "bindingDigest": { "type": "null" },
+        "reasonCodes": { "const": ["candidate-missing", "not-tested"] },
+        "nonClaims": { "$ref": "#/$defs/unprovedNonClaims" },
+        "reportDigest": { "oneOf": [{ "$ref": "#/$defs/digest" }, { "type": "null" }] }
+      }
+    },
+    {
+      "type": "object",
+      "properties": {
+        "status": { "const": "failed" },
+        "classification": { "const": "invalid-candidate" },
+        "harness": { "type": "null" },
+        "adapter": { "type": "null" },
+        "captureMode": { "type": "null" },
+        "evidenceMode": { "type": "null" },
+        "artifact": { "oneOf": [{ "$ref": "#/$defs/artifact" }, { "type": "null" }] },
+        "freshness": { "$ref": "#/$defs/invalidFreshness" },
+        "bindingDigest": { "type": "null" },
+        "reasonCodes": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "uniqueItems": true,
+          "contains": { "const": "invalid-candidate" },
+          "items": { "enum": ["invalid-candidate", "schema-invalid", "identity-invalid", "freshness-invalid", "artifact-digest-invalid", "artifact-json-invalid", "sensitive-artifact"] }
+        },
+        "nonClaims": { "$ref": "#/$defs/unprovedNonClaims" },
+        "reportDigest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    {
+      "type": "object",
+      "$ref": "#/$defs/suppliedReport",
+      "properties": { "classification": { "const": "fixture-only" }, "captureMode": { "const": "fixture" } }
+    },
+    {
+      "type": "object",
+      "$ref": "#/$defs/suppliedReport",
+      "properties": { "classification": { "const": "observed-only" }, "captureMode": { "const": "observed" } }
+    },
+    {
+      "type": "object",
+      "$ref": "#/$defs/suppliedReport",
+      "properties": { "classification": { "const": "live-candidate-observed" }, "captureMode": { "const": "live-candidate" }, "evidenceMode": { "const": "observed" } }
+    },
+    {
+      "type": "object",
+      "$ref": "#/$defs/suppliedReport",
+      "properties": { "classification": { "const": "live-candidate-enforced" }, "captureMode": { "const": "live-candidate" }, "evidenceMode": { "const": "enforced" } }
+    }
+  ],
   "allOf": [
     {
-      "if": { "properties": { "status": { "const": "passed" } }, "required": ["status"] },
-      "then": { "properties": { "captureMode": { "const": "live-candidate" }, "classification": { "enum": ["live-candidate-observed", "live-candidate-enforced"] }, "freshness": { "type": "object", "properties": { "status": { "const": "fresh" } } } } }
+      "if": { "type": "object", "properties": { "harness": { "type": "object", "properties": { "id": { "const": "codex" } }, "required": ["id"] } } },
+      "then": { "type": "object", "properties": { "adapter": { "type": "object", "properties": { "id": { "const": "codex" } }, "required": ["id"] } } }
     },
     {
-      "if": { "properties": { "captureMode": { "enum": ["fixture", "observed"] } }, "required": ["captureMode"] },
-      "then": { "properties": { "status": { "const": "failed" } } }
+      "if": { "type": "object", "properties": { "harness": { "type": "object", "properties": { "id": { "const": "claude-code" } }, "required": ["id"] } } },
+      "then": { "type": "object", "properties": { "adapter": { "type": "object", "properties": { "id": { "const": "claude-code" } }, "required": ["id"] } } }
     },
     {
-      "if": { "properties": { "status": { "const": "not-tested" } }, "required": ["status"] },
-      "then": { "properties": { "classification": { "const": "not-tested" }, "artifact": { "type": "null" }, "bindingDigest": { "type": "null" }, "freshness": { "type": "object", "properties": { "status": { "const": "absent" } } } } }
+      "if": { "type": "object", "properties": { "harness": { "type": "object", "properties": { "id": { "const": "eve" } }, "required": ["id"] } } },
+      "then": { "type": "object", "properties": { "adapter": { "type": "object", "properties": { "id": { "const": "eve" } }, "required": ["id"] } } }
+    },
+    {
+      "if": { "type": "object", "properties": { "harness": { "type": "object", "properties": { "id": { "const": "grok-build" } }, "required": ["id"] } } },
+      "then": { "type": "object", "properties": { "adapter": { "type": "object", "properties": { "id": { "const": "xai.grok-build" } }, "required": ["id"] } } }
+    },
+    {
+      "if": { "type": "object", "properties": { "harness": { "type": "object", "properties": { "id": { "const": "grok-bot" } }, "required": ["id"] } } },
+      "then": { "type": "object", "properties": { "adapter": { "type": "object", "properties": { "id": { "const": "xai.grok-bot" } }, "required": ["id"] } } }
+    },
+    {
+      "if": { "type": "object", "properties": { "captureMode": { "const": "live-candidate" } }, "required": ["captureMode"] },
+      "then": { "type": "object", "properties": { "nonClaims": { "type": "object", "properties": { "liveHarnessExecution": { "const": "candidate-supplied-not-proved" } }, "required": ["liveHarnessExecution"] } } }
+    },
+    {
+      "if": { "type": "object", "properties": { "captureMode": { "enum": ["fixture", "observed"] } }, "required": ["captureMode"] },
+      "then": { "type": "object", "properties": { "nonClaims": { "type": "object", "properties": { "liveHarnessExecution": { "const": "not-proved" } }, "required": ["liveHarnessExecution"] } } }
+    },
+    {
+      "if": { "type": "object", "properties": { "evidenceMode": { "const": "enforced" } }, "required": ["evidenceMode"] },
+      "then": { "type": "object", "properties": { "nonClaims": { "type": "object", "properties": { "routeEnforcement": { "const": "asserted-not-verified" } }, "required": ["routeEnforcement"] } } }
+    },
+    {
+      "if": { "type": "object", "properties": { "evidenceMode": { "const": "observed" } }, "required": ["evidenceMode"] },
+      "then": { "type": "object", "properties": { "nonClaims": { "type": "object", "properties": { "routeEnforcement": { "const": "not-proved" } }, "required": ["routeEnforcement"] } } }
     }
   ],
   "$defs": {
@@ -61,9 +148,39 @@
       "type": "object", "additionalProperties": false,
       "required": ["status", "capturedAt", "freshUntil", "evaluatedAt"],
       "properties": {
-        "status": { "enum": ["fresh", "absent"] },
+        "status": { "enum": ["fresh", "invalid", "absent"] },
         "capturedAt": { "oneOf": [{ "$ref": "#/$defs/timestamp" }, { "type": "null" }] },
         "freshUntil": { "oneOf": [{ "$ref": "#/$defs/timestamp" }, { "type": "null" }] },
+        "evaluatedAt": { "$ref": "#/$defs/timestamp" }
+      }
+    },
+    "freshFreshness": {
+      "type": "object", "additionalProperties": false,
+      "required": ["status", "capturedAt", "freshUntil", "evaluatedAt"],
+      "properties": {
+        "status": { "const": "fresh" },
+        "capturedAt": { "$ref": "#/$defs/timestamp" },
+        "freshUntil": { "$ref": "#/$defs/timestamp" },
+        "evaluatedAt": { "$ref": "#/$defs/timestamp" }
+      }
+    },
+    "invalidFreshness": {
+      "type": "object", "additionalProperties": false,
+      "required": ["status", "capturedAt", "freshUntil", "evaluatedAt"],
+      "properties": {
+        "status": { "const": "invalid" },
+        "capturedAt": { "type": "null" },
+        "freshUntil": { "type": "null" },
+        "evaluatedAt": { "$ref": "#/$defs/timestamp" }
+      }
+    },
+    "absentFreshness": {
+      "type": "object", "additionalProperties": false,
+      "required": ["status", "capturedAt", "freshUntil", "evaluatedAt"],
+      "properties": {
+        "status": { "const": "absent" },
+        "capturedAt": { "type": "null" },
+        "freshUntil": { "type": "null" },
         "evaluatedAt": { "$ref": "#/$defs/timestamp" }
       }
     },
@@ -77,6 +194,34 @@
         "outcomeCorrectness": { "const": "not-proved" },
         "trafficCompleteness": { "const": "not-proved" },
         "productionSafety": { "const": "not-proved" }
+      }
+    },
+    "unprovedNonClaims": {
+      "type": "object", "additionalProperties": false,
+      "required": ["semanticConformance", "liveHarnessExecution", "routeEnforcement", "outcomeCorrectness", "trafficCompleteness", "productionSafety"],
+      "properties": {
+        "semanticConformance": { "const": "not-proved-by-capture" },
+        "liveHarnessExecution": { "const": "not-proved" },
+        "routeEnforcement": { "const": "not-proved" },
+        "outcomeCorrectness": { "const": "not-proved" },
+        "trafficCompleteness": { "const": "not-proved" },
+        "productionSafety": { "const": "not-proved" }
+      }
+    },
+    "suppliedReport": {
+      "type": "object",
+      "properties": {
+        "status": { "const": "failed" },
+        "harness": { "$ref": "#/$defs/harness" },
+        "adapter": { "$ref": "#/$defs/adapter" },
+        "captureMode": { "enum": ["fixture", "observed", "live-candidate"] },
+        "evidenceMode": { "enum": ["observed", "enforced"] },
+        "artifact": { "$ref": "#/$defs/artifact" },
+        "freshness": { "$ref": "#/$defs/freshFreshness" },
+        "bindingDigest": { "$ref": "#/$defs/digest" },
+        "reasonCodes": { "type": "array", "contains": { "const": "capture-boundary-non-passing" } },
+        "nonClaims": { "$ref": "#/$defs/nonClaims" },
+        "reportDigest": { "$ref": "#/$defs/digest" }
       }
     }
   }

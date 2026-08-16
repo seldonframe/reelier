@@ -3,12 +3,11 @@
   "$id": "https://reelier.dev/contracts/candidate-capture/v0/capture.schema.json",
   "type": "object",
   "additionalProperties": false,
-  "required": ["v", "harness", "adapter", "evaluatedAt"],
+  "required": ["v", "harness", "adapter"],
   "properties": {
     "v": { "const": "reelier.candidate-capture/v0" },
     "harness": { "$ref": "#/$defs/harness" },
     "adapter": { "$ref": "#/$defs/adapter" },
-    "evaluatedAt": { "$ref": "#/$defs/timestamp" },
     "captureMode": { "enum": ["fixture", "observed", "live-candidate"] },
     "capturedAt": { "$ref": "#/$defs/timestamp" },
     "freshUntil": { "$ref": "#/$defs/timestamp" },

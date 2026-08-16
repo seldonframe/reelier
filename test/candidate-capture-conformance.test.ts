@@ -49,7 +49,8 @@ function presentInput(harnessId: string, overrides: Record<string, unknown> = {}
   return merged;
 }
 
-const runCapture = (input: unknown) => capture.captureCandidate(input, { clock: testClock });
+const runCapture = (input: unknown) => capture.captureCandidateForTest(input, testClock);
+const validateReport = (report: unknown, input: unknown) => capture.validateCandidateCaptureReportForTest(report, input, testClock);
 
 function withReportDigest(report: any) {
   return { ...report, reportDigest: capture.captureReportDigest(report) };
@@ -70,7 +71,7 @@ test("all five harnesses share one transport-neutral live candidate boundary", (
     assert.equal(report.nonClaims.semanticConformance, "not-proved-by-capture");
     assert.equal(report.nonClaims.routeEnforcement, "not-proved");
     assert.ok(report.reasonCodes.includes("capture-boundary-non-passing"));
-    assert.equal(capture.validateCandidateCaptureReport(report, input, { clock: testClock }), true);
+    assert.equal(validateReport(report, input), true);
   }
 });
 
@@ -102,7 +103,7 @@ test("an explicit missing candidate is not-tested and never synthesized", () => 
   assert.equal(report.freshness.status, "absent");
   assert.deepEqual(report.reasonCodes, ["candidate-missing", "not-tested"]);
   assert.equal(report.nonClaims.liveHarnessExecution, "not-proved");
-  assert.equal(capture.validateCandidateCaptureReport(report, input, { clock: testClock }), true);
+  assert.equal(validateReport(report, input), true);
 });
 
 test("malformed supplied input emits failed invalid-candidate rather than candidate-missing", () => {
@@ -220,7 +221,7 @@ test("raw boundary recursively rejects transport, credential, and common token v
 test("report validation detects status, digest, identity, reason, and freshness forgeries", () => {
   const input = presentInput("claude-code");
   const report = runCapture(input);
-  const validates = (value: unknown) => capture.validateCandidateCaptureReport(value, input, { clock: testClock });
+  const validates = (value: unknown) => validateReport(value, input);
   assert.equal(validates({ ...report, extra: true }), false);
   assert.equal(validates({ ...report, classification: "not-tested" }), false);
   assert.equal(validates(withReportDigest({ ...report, harness: { ...report.harness, id: "codex" } })), false);
