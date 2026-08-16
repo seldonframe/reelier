@@ -109,6 +109,20 @@ test("the semantic checker rejects closed-schema and eligibility upgrades", () =
   }), false);
 });
 
+test("the standalone schema rejects an invented failure reason", () => {
+  const report = checker.buildFailureInjectionReport();
+  const cases = structuredClone(report.cases);
+  cases[0].reasonCodes = ["invented-failure-reason"];
+  assert.equal(validateSchema({ ...report, cases }), false);
+});
+
+test("the standalone schema rejects duplicated case IDs", () => {
+  const report = checker.buildFailureInjectionReport();
+  const cases = structuredClone(report.cases);
+  cases[1].caseId = cases[0].caseId;
+  assert.equal(validateSchema({ ...report, cases }), false);
+});
+
 test("the CLI emits the complete non-passing report without external inputs", () => {
   const result = spawnSync(process.execPath, [resolve("conformance/failure-injection/v0/check.mjs")], { encoding: "utf8" });
   assert.equal(result.status, 1);
