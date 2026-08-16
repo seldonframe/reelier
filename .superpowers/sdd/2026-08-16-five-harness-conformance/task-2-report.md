@@ -219,6 +219,56 @@ Verbatim output tail:
 ℹ duration_ms 2151.0089
 ```
 
+Final cross-task hardening
+
+What changed per file
+
+- `conformance/semantic-matrix/v0/check.mjs`: `validateSemanticMatrixReport` now requires matrix status to equal nested aggregate status and compares each top-level harness row's overall, evidence, coverage, execution, and outcome statuses with its canonical nested aggregate row. This applies to failed as well as passed matrices.
+- `test/semantic-matrix-conformance.test.ts`: Added a mutation regression that changes a failed matrix's top-level Codex row to a different, internally coherent failed row. Direct standalone schema validation accepts that structurally valid mutation, while the semantic checker must refuse the contradiction.
+- This report: Added final hardening scope and evidence.
+
+`conformance/semantic-matrix/v0/report.schema.json` was reviewed but unchanged. JSON Schema validates each row's closed shape; equality between duplicated rows in separate arrays is enforced by the exported semantic checker and proven by the standalone-schema/checker mutation test. Task 3 was not updated because no coverage-envelope file or result changed.
+
+RED evidence
+
+The combined focused RED command exited 1. The semantic mutation failed for the intended missing cross-array check:
+
+```text
+✖ failed matrix validation refuses schema-valid top-level rows that contradict the nested aggregate
+AssertionError: Expected values to be strictly equal:
+true !== false
+```
+
+RED commit: `e1f6c24` (`test: expose cross-task report contradictions`). GREEN implementation commit: `25a8df4` (`fix: harden conformance failure reports`).
+
+Final scoped evidence
+
+- `npm run build`: exit 0; emitted all ten listed packs.
+- `npx tsc --noEmit --pretty false`: exit 0, no output.
+- `npx tsc -p tsconfig.test.json --pretty false`: exit 0, no output.
+- Focused Tasks 1–7 plus continuity: 121 tests, 121 passed, 0 failed, exit 0.
+- `git diff --check 3ca93e7..HEAD`: exit 0, no output before report updates.
+
+Verbatim focused-suite tail:
+
+```text
+✔ failed matrix validation refuses schema-valid top-level rows that contradict the nested aggregate (2.706ms)
+ℹ tests 121
+ℹ suites 0
+ℹ pass 121
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 6244.0985
+```
+
+Deviations and open risks
+
+- No deviation from the final hardening allowlist. No external call or real harness execution occurred.
+- The existing schema remains the structural gate; cross-array equality is intentionally a semantic-checker invariant.
+- These results do not claim whole-repository green. The orchestrator-updated plan remains a pre-existing unstaged path and was preserved.
+
 Fix round 3 commit
 
 - `6a12299` — `test: strengthen passing matrix regression`

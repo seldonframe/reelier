@@ -1,6 +1,4 @@
-# Task 1 implementation report
-
-## Files changed
+Files changed
 
 - `conformance/aggregate/v0/check.mjs`
 - `conformance/aggregate/v0/report.schema.json`
@@ -161,3 +159,74 @@ Verbatim tail:
 ```
 
 Round-2 fix commit: `a3daccc570ab4d78e11d2af79e8e9c3ab2337ce7`.
+
+## Final cross-task hardening
+
+### What changed per file
+
+- `conformance/aggregate/v0/check.mjs`: Usage and parse failures now pass five explicit missing-source records through the normal aggregate classifier. The emitted failed report validates against the existing standalone schema and carries unsupported/coverage-unknown/not-tested evidence without a fake pass.
+- `test/aggregate-conformance.test.ts`: Added a process-level regression for both CLI failure paths. It compiles `report.schema.json` directly with Ajv, validates emitted JSON independently of the checker export, and requires five non-passing rows.
+- This report: Added the final hardening RED/GREEN evidence and exact scoped verification results.
+
+`conformance/aggregate/v0/report.schema.json` was reviewed but did not require a change: five explicit harness rows satisfy its existing `minItems` and closed row combinations. Task 3 files and evidence were not changed because this hardening did not alter coverage-envelope behavior.
+
+### RED verification
+
+Command:
+
+```text
+npx tsc -p tsconfig.test.json --pretty false; node --test --test-concurrency=1 dist-test/test/aggregate-conformance.test.js dist-test/test/semantic-matrix-conformance.test.js
+```
+
+The aggregate regression failed for the intended standalone-schema reason:
+
+```text
+✖ aggregate CLI usage and parse failures emit standalone-schema-valid non-passing evidence
+AssertionError: [{"instancePath":"/harnesses","schemaPath":"#/properties/harnesses/minItems","keyword":"minItems","params":{"limit":1},"message":"must NOT have fewer than 1 items"}]
+false !== true
+```
+
+RED commit: `e1f6c24` (`test: expose cross-task report contradictions`).
+
+### GREEN and final scoped verification
+
+Implementation commit: `25a8df4` (`fix: harden conformance failure reports`).
+
+Fresh emitting build, exit 0:
+
+```text
+> reelier@0.32.1 build
+> node scripts/build-authority-contract.mjs --check && node scripts/build-bootstrap-contract.mjs --check && tsc -p tsconfig.json && node scripts/build-authority-contract.mjs --copy-schemas && node scripts/build-packs.mjs
+
+built cloudflare_api_token, cloudflare_dns, github_issue_labels, gmail, gmail_labels, hubspot_slack_information_flow, neon_database, slack_channel_topic, stripe, vercel_deployment
+```
+
+`npx tsc --noEmit --pretty false` and `npx tsc -p tsconfig.test.json --pretty false` both exited 0 with no output.
+
+Focused Tasks 1–7 plus continuity command:
+
+```text
+node --test --test-concurrency=1 dist-test/test/aggregate-conformance.test.js dist-test/test/semantic-matrix-conformance.test.js dist-test/test/coverage-envelope-conformance.test.js dist-test/test/agent-adapter-conformance.test.js dist-test/test/candidate-capture-conformance.test.js dist-test/test/failure-injection-conformance.test.js dist-test/test/hermetic-outcome-conformance.test.js dist-test/test/continuity/conformance-runner.test.js
+```
+
+Verbatim tail, exit 0:
+
+```text
+✔ failed matrix validation refuses schema-valid top-level rows that contradict the nested aggregate (2.706ms)
+ℹ tests 121
+ℹ suites 0
+ℹ pass 121
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 6244.0985
+```
+
+`git diff --check 3ca93e7..HEAD` exited 0 with no output before the report update. The committed implementation/test path audit contained only the two aggregate and two semantic files authorized for final hardening. The orchestrator-updated plan remained the sole pre-existing unstaged path and was not staged or modified during implementation.
+
+### Deviations and open risks
+
+- No deviation from the hardening allowlist. The schema files were inspected but unchanged because the fixes use already-supported closed shapes plus checker-level cross-array validation.
+- No external calls, credentials, provider writes, push, merge, or publish occurred.
+- This evidence is limited to the emitting build, typechecks, and focused conformance suites above. It does not claim the whole repository is green.
