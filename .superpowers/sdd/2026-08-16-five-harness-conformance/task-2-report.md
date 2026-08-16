@@ -175,3 +175,50 @@ Verbatim output tail:
 Fix round 2 commit
 
 - `7ba7873` — `fix: require honest passing matrix rows`
+
+Fix round 3 evidence
+
+Changes were test-only. The passing-row regression now constructs and validates a fully valid matrix with five passing aggregate rows, then mutates only the matrix’s top-level rows to unsupported/not-tested while retaining nested `aggregate.status: "passed"`; the validator must reject that dishonest matrix. The mutual-exclusion regression remains and covers both candidate and report conflicts with `missing: true`.
+
+RED verification
+
+Command:
+
+```text
+npx tsc -p tsconfig.test.json; node --test dist-test/test/semantic-matrix-conformance.test.js
+```
+
+Verbatim output tail:
+
+```text
+✖ a passed matrix cannot contain unsupported top-level harness rows (0.9678ms)
+ℹ tests 7
+ℹ pass 6
+ℹ fail 1
+```
+
+GREEN verification (fail-fast compile before tests)
+
+Command:
+
+```text
+npx tsc --noEmit; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; npx tsc -p tsconfig.test.json; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; node --test dist-test/test/semantic-matrix-conformance.test.js dist-test/test/aggregate-conformance.test.js dist-test/test/agent-adapter-conformance.test.js
+```
+
+Verbatim output tail:
+
+```text
+✔ listed missing evidence must be explicit and CLI failures remain schema-valid (388.202ms)
+✔ a passed matrix cannot contain unsupported top-level harness rows (0.5223ms)
+✔ explicit missing evidence cannot coexist with a candidate or report (0.2459ms)
+ℹ tests 25
+ℹ pass 25
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ duration_ms 2151.0089
+```
+
+Fix round 3 commit
+
+- `6a12299` — `test: strengthen passing matrix regression`
