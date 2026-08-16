@@ -101,11 +101,47 @@ test("listed missing evidence must be explicit and CLI failures remain schema-va
 });
 
 test("a passed matrix cannot contain unsupported top-level harness rows", () => {
-  const report = matrix.runSemanticMatrix({ v: "reelier.semantic-matrix-input/v0", candidates: [] });
+  const passingRow = (harnessId: string) => ({
+    harnessId,
+    adapterPath: "agent-adapter/v0",
+    evidenceMaturity: "execution-proven",
+    coverageStatus: "enforced",
+    executionStatus: "execution-proven",
+    outcomeStatus: "verified",
+    overallStatus: "execution-proven",
+    nonClaims: {
+      routeEnforcement: "not-proved",
+      agentAdapterExecution: "not-proved",
+      liveHarnessExecution: "not-proved",
+      outcomeCorrectness: "not-proved",
+      productionSafety: "not-proved",
+    },
+    reasons: ["fully passing aggregate fixture"],
+  });
+  const aggregate = {
+    v: "reelier.aggregate-conformance-report/v0",
+    status: "passed",
+    harnesses: ["codex", "claude-code", "eve", "xai.grok-build", "xai.grok-bot"].map(passingRow),
+  };
+  const report = {
+    v: "reelier.semantic-matrix-report/v0",
+    status: "passed",
+    aggregate,
+    harnesses: ["codex", "claude-code", "eve", "grok-build", "grok-bot"].map(passingRow),
+    semanticChecks: [],
+  };
+  assert.equal(matrix.validateSemanticMatrixReport(report), true);
   const dishonest = {
     ...report,
-    status: "passed",
-    aggregate: { ...report.aggregate, status: "passed" },
+    harnesses: report.harnesses.map((row) => ({
+      ...row,
+      evidenceMaturity: "unsupported",
+      coverageStatus: "coverage-unknown",
+      executionStatus: "not-tested",
+      outcomeStatus: "not-tested",
+      overallStatus: "unsupported",
+      reasons: ["missing candidate"],
+    })),
   };
   assert.equal(matrix.validateSemanticMatrixReport(dishonest), false);
 });
