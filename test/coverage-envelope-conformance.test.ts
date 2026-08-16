@@ -131,7 +131,7 @@ test("catalog-only, stale, and unwrapped route evidence are explicit non-success
   assert.equal(catalogReport.status, "failed");
   assert.deepEqual(catalogReport.reasonCodes, ["catalog-only-evidence", "completeness-unchecked", "route-enforcement-absent", "route-observation-unknown", "route-routing-unknown", "topology-unchecked"]);
 
-  const stale = coverage.buildCoverageEnvelope(envelopeInput("codex", [{ ...verifiedRoute(), freshUntil: now.toISOString() }], { evaluatedAt: new Date(now.getTime() + 1).toISOString() }));
+  const stale = coverage.buildCoverageEnvelope(envelopeInput("codex", [{ ...verifiedRoute(), freshUntil: new Date(now.getTime() + 1).toISOString() }], { evaluatedAt: new Date(now.getTime() + 2).toISOString() }));
   assert.equal(stale.status, "failed");
   assert.equal(stale.freshness.status, "stale");
   assert.ok(stale.reasonCodes.includes("evidence-stale"));
@@ -144,7 +144,7 @@ test("catalog-only, stale, and unwrapped route evidence are explicit non-success
 });
 
 test("verified completeness cannot override bypasses or unknown routing", () => {
-  const direct: RouteCoverageV1 = { ...verifiedRoute(), discoverySource: "direct-http", transport: "https", observation: "uncovered", enforcement: "absent", topologyEvidenceDigest: null, reasonCodes: ["direct-http-bypass"] };
+  const direct: RouteCoverageV1 = { ...verifiedRoute(), routeId: `route_${"2".repeat(64)}`, discoverySource: "direct-http", transport: "https", observation: "uncovered", enforcement: "absent", topologyEvidenceDigest: null, reasonCodes: ["direct-http-bypass"] };
   const report = coverage.buildCoverageEnvelope(envelopeInput("codex", [verifiedRoute(), direct], {
     requestedMode: "enforced",
     claims: { topology: { status: "verified", evidenceDigest: digest("e") }, completeness: { status: "verified", evidenceDigest: digest("f") } },

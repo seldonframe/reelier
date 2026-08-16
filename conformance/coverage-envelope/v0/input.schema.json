@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://reelier.dev/contracts/coverage-envelope/v0/input.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["v", "harness", "adapter", "requestedMode", "evaluatedAt", "sources", "routes", "claims"],
+  "properties": {
+    "v": { "const": "reelier.coverage-envelope-input/v0" },
+    "harness": { "$ref": "#/$defs/harness" },
+    "adapter": { "$ref": "#/$defs/adapter" },
+    "requestedMode": { "enum": ["observed", "enforced"] },
+    "evaluatedAt": { "$ref": "#/$defs/time" },
+    "sources": { "type": "array", "minItems": 1, "maxItems": 128, "items": { "$ref": "#/$defs/source" } },
+    "routes": { "type": "array", "maxItems": 4096, "items": { "$ref": "https://reelier.dev/contracts/bootstrap/v1/route-coverage.schema.json" } },
+    "claims": {
+      "type": "object", "additionalProperties": false, "required": ["topology", "completeness"],
+      "properties": { "topology": { "$ref": "#/$defs/claim" }, "completeness": { "$ref": "#/$defs/claim" } }
+    }
+  },
+  "allOf": [
+    {
+      "if": { "type": "object", "properties": { "harness": { "type": "object", "properties": { "id": { "const": "codex" } }, "required": ["id"] } }, "required": ["harness"] },
+      "then": { "type": "object", "properties": { "adapter": { "type": "object", "properties": { "id": { "const": "reelier-codex-coverage" } }, "required": ["id"] } } }
+    },
+    {
+      "if": { "type": "object", "properties": { "harness": { "type": "object", "properties": { "id": { "const": "claude-code" } }, "required": ["id"] } }, "required": ["harness"] },
+      "then": { "type": "object", "properties": { "adapter": { "type": "object", "properties": { "id": { "const": "reelier-claude-code-coverage" } }, "required": ["id"] } } }
+    }
+  ],
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^sha256:(?!0{64}$)[0-9a-f]{64}$" },
+    "time": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$" },
+    "id": { "type": "string", "pattern": "^[A-Za-z0-9._~-]{1,128}$" },
+    "harness": {
+      "type": "object", "additionalProperties": false, "required": ["id", "instanceIdentityDigest"],
+      "properties": { "id": { "enum": ["codex", "claude-code"] }, "instanceIdentityDigest": { "$ref": "#/$defs/digest" } }
+    },
+    "adapter": {
+      "type": "object", "additionalProperties": false, "required": ["id", "digest"],
+      "properties": { "id": { "enum": ["reelier-codex-coverage", "reelier-claude-code-coverage"] }, "digest": { "$ref": "#/$defs/digest" } }
+    },
+    "source": {
+      "type": "object", "additionalProperties": false,
+      "required": ["kind", "sourceInstanceIdentityDigest", "contentDigest", "evidenceStatus", "reasonCodes"],
+      "properties": {
+        "kind": { "enum": ["host-config", "plugin-manifest"] },
+        "sourceInstanceIdentityDigest": { "$ref": "#/$defs/digest" },
+        "contentDigest": { "$ref": "#/$defs/digest" },
+        "evidenceStatus": { "enum": ["verified", "failed", "unchecked", "absent", "pending"] },
+        "reasonCodes": { "type": "array", "maxItems": 128, "uniqueItems": true, "items": { "$ref": "#/$defs/id" } }
+      }
+    },
+    "claim": {
+      "type": "object", "additionalProperties": false, "required": ["status", "evidenceDigest"],
+      "properties": {
+        "status": { "enum": ["verified", "failed", "unchecked", "absent", "pending"] },
+        "evidenceDigest": { "anyOf": [{ "$ref": "#/$defs/digest" }, { "type": "null" }] }
+      },
+      "allOf": [
+        { "if": { "type": "object", "properties": { "status": { "const": "verified" } }, "required": ["status"] }, "then": { "type": "object", "properties": { "evidenceDigest": { "$ref": "#/$defs/digest" } } } },
+        { "if": { "type": "object", "properties": { "status": { "enum": ["failed", "unchecked", "absent", "pending"] } }, "required": ["status"] }, "then": { "type": "object", "properties": { "evidenceDigest": { "type": "null" } } } }
+      ]
+    }
+  }
+}
