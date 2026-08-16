@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
@@ -103,6 +103,17 @@ test("the Grok Build candidate satisfies every universal pre-freeze semantic che
   const result = runCandidate(fixture("grok-build-observed.json"));
   assert.equal(result.status, 0);
   assert.equal(result.report.adapterId, "xai.grok-build");
+  assert.equal(result.report.status, "passed");
+  assert.deepEqual(result.report.checks.map((check) => check.id), semanticCheckIds);
+  assert.ok(result.report.checks.every((check) => check.status === "passed"));
+});
+
+test("the Eve fixture candidate satisfies the same universal pre-freeze semantic vector", () => {
+  const candidatePath = path.join(fixtureDirectory, "eve-observed.json");
+  assert.equal(existsSync(candidatePath), true, "the Eve agent-adapter fixture candidate must exist");
+  const result = runCandidate(fixture("eve-observed.json"));
+  assert.equal(result.status, 0);
+  assert.equal(result.report.adapterId, "eve");
   assert.equal(result.report.status, "passed");
   assert.deepEqual(result.report.checks.map((check) => check.id), semanticCheckIds);
   assert.ok(result.report.checks.every((check) => check.status === "passed"));

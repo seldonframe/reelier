@@ -8,6 +8,9 @@ import { spawnSync } from "node:child_process";
 const matrix = await import(pathToFileURL(resolve("conformance/semantic-matrix/v0/check.mjs")).href);
 const grokBuild = JSON.parse(readFileSync(resolve("conformance/agent-adapter/v0/fixtures/grok-build-observed.json"), "utf8"));
 const grokBot = JSON.parse(readFileSync(resolve("conformance/agent-adapter/v0/fixtures/grok-bot-observed.json"), "utf8"));
+const eveCandidate = structuredClone(grokBuild);
+eveCandidate.descriptor.adapterId = "eve";
+eveCandidate.descriptor.agentHost = "eve";
 
 const eveReport = {
   v: "reelier.continuity-eve-conformance-report/v1",
@@ -60,6 +63,67 @@ test("semantic matrix runs universal checks and preserves fixture-only Grok evid
   const grokChecks = report.semanticChecks.filter((check: any) => ["grok-build", "grok-bot"].includes(check.harnessId));
   assert.equal(grokChecks.length, 14);
   assert.ok(grokChecks.every((check: any) => check.status === "passed"));
+});
+
+test("Eve continuity evidence cannot be relabeled as agent-adapter evidence", () => {
+  const report = matrix.runSemanticMatrix({
+    v: "reelier.semantic-matrix-input/v0",
+    candidates: [{ harnessId: "eve", adapterPath: "agent-adapter/v0", report: eveReport }],
+  });
+  const eve = report.harnesses.find((row: any) => row.harnessId === "eve");
+  assert.equal(eve.overallStatus, "unsupported");
+  assert.equal(eve.executionStatus, "not-tested");
+  assert.equal(report.semanticChecks.some((check: any) => check.harnessId === "eve"), false);
+});
+
+test("Eve can select its agent candidate without hiding separate continuity evidence", () => {
+  const report = matrix.runSemanticMatrix({
+    v: "reelier.semantic-matrix-input/v0",
+    candidates: [{
+      harnessId: "eve",
+      adapterPath: "agent-adapter/v0",
+      candidate: eveCandidate,
+      continuityEvidence: { adapterPath: "continuity-adapter/v1/eve-fixture", report: eveReport },
+    }],
+  });
+  const eve = report.harnesses.find((row: any) => row.harnessId === "eve");
+  assert.equal(eve.adapterPath, "agent-adapter/v0");
+  assert.equal(eve.evidenceMaturity, "fixture-only");
+  assert.equal(eve.executionStatus, "not-tested");
+  assert.equal(eve.outcomeStatus, "not-tested");
+  assert.deepEqual(eve.nonClaims, {
+    routeEnforcement: "not-proved",
+    agentAdapterExecution: "not-proved",
+    liveHarnessExecution: "not-proved",
+    outcomeCorrectness: "not-proved",
+    productionSafety: "not-proved",
+  });
+  assert.equal(report.semanticChecks.filter((check: any) => check.harnessId === "eve").length, 7);
+  assert.ok(report.semanticChecks.filter((check: any) => check.harnessId === "eve").every((check: any) => check.status === "passed"));
+  assert.equal(report.continuityEvidence.length, 1);
+  assert.equal(report.continuityEvidence[0].harnessId, "eve");
+  assert.equal(report.continuityEvidence[0].adapterPath, "continuity-adapter/v1/eve-fixture");
+  assert.equal(report.continuityEvidence[0].evidenceMaturity, "continuity-proven");
+  assert.equal(report.continuityEvidence[0].executionStatus, "not-tested");
+  assert.equal(report.continuityEvidence[0].nonClaims.agentAdapterExecution, "not-proved");
+  assert.equal(report.status, "failed");
+});
+
+test("Eve agent candidate identity or contract mismatch refuses semantic evidence", () => {
+  const wrongIdentity = structuredClone(eveCandidate);
+  wrongIdentity.descriptor.adapterId = "xai.grok-build";
+  const wrongContract = structuredClone(eveCandidate);
+  wrongContract.descriptor.authorityContract = { status: "frozen", digest: `sha256:${"f".repeat(64)}` };
+  for (const candidate of [wrongIdentity, wrongContract]) {
+    const report = matrix.runSemanticMatrix({
+      v: "reelier.semantic-matrix-input/v0",
+      candidates: [{ harnessId: "eve", adapterPath: "agent-adapter/v0", candidate }],
+    });
+    const eve = report.harnesses.find((row: any) => row.harnessId === "eve");
+    assert.equal(eve.overallStatus, "unsupported");
+    assert.equal(eve.executionStatus, "not-tested");
+    assert.equal(report.semanticChecks.some((check: any) => check.harnessId === "eve"), false);
+  }
 });
 
 test("semantic matrix refuses unknown harnesses and does not synthesize missing candidates", () => {
@@ -129,6 +193,7 @@ test("a passed matrix cannot contain unsupported top-level harness rows", () => 
     aggregate,
     harnesses: ["codex", "claude-code", "eve", "grok-build", "grok-bot"].map(passingRow),
     semanticChecks: [],
+    continuityEvidence: [],
   };
   assert.equal(matrix.validateSemanticMatrixReport(report), true);
   const dishonest = {
