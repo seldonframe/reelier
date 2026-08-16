@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://reelier.dev/contracts/candidate-capture/v0/report.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["v", "status", "classification", "harness", "adapter", "captureMode", "evidenceMode", "artifact", "freshness", "bindingDigest", "reasonCodes", "nonClaims", "reportDigest"],
+  "properties": {
+    "v": { "const": "reelier.candidate-capture-report/v0" },
+    "status": { "enum": ["passed", "failed", "not-tested"] },
+    "classification": { "enum": ["fixture-only", "observed-only", "live-candidate-observed", "live-candidate-enforced", "not-tested"] },
+    "harness": { "oneOf": [{ "$ref": "#/$defs/harness" }, { "type": "null" }] },
+    "adapter": { "oneOf": [{ "$ref": "#/$defs/adapter" }, { "type": "null" }] },
+    "captureMode": { "type": ["string", "null"], "enum": ["fixture", "observed", "live-candidate", null] },
+    "evidenceMode": { "type": ["string", "null"], "enum": ["observed", "enforced", null] },
+    "artifact": { "oneOf": [{ "$ref": "#/$defs/artifact" }, { "type": "null" }] },
+    "freshness": { "$ref": "#/$defs/freshness" },
+    "bindingDigest": { "oneOf": [{ "$ref": "#/$defs/digest" }, { "type": "null" }] },
+    "reasonCodes": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
+    "nonClaims": { "$ref": "#/$defs/nonClaims" },
+    "reportDigest": { "oneOf": [{ "$ref": "#/$defs/digest" }, { "type": "null" }] }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "status": { "const": "passed" } }, "required": ["status"] },
+      "then": { "properties": { "captureMode": { "const": "live-candidate" }, "classification": { "enum": ["live-candidate-observed", "live-candidate-enforced"] }, "freshness": { "type": "object", "properties": { "status": { "const": "fresh" } } } } }
+    },
+    {
+      "if": { "properties": { "captureMode": { "enum": ["fixture", "observed"] } }, "required": ["captureMode"] },
+      "then": { "properties": { "status": { "const": "failed" } } }
+    },
+    {
+      "if": { "properties": { "status": { "const": "not-tested" } }, "required": ["status"] },
+      "then": { "properties": { "classification": { "const": "not-tested" }, "artifact": { "type": "null" }, "bindingDigest": { "type": "null" }, "freshness": { "type": "object", "properties": { "status": { "const": "absent" } } } } }
+    }
+  ],
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "timestamp": { "type": "string", "format": "date-time" },
+    "harness": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "instanceIdentityDigest"],
+      "properties": {
+        "id": { "enum": ["codex", "claude-code", "eve", "grok-build", "grok-bot"] },
+        "instanceIdentityDigest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "adapter": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "instanceIdentityDigest"],
+      "properties": {
+        "id": { "enum": ["codex", "claude-code", "eve", "xai.grok-build", "xai.grok-bot"] },
+        "instanceIdentityDigest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "artifact": {
+      "type": "object", "additionalProperties": false,
+      "required": ["kind", "rawDigest"],
+      "properties": { "kind": { "enum": ["candidate", "report"] }, "rawDigest": { "$ref": "#/$defs/digest" } }
+    },
+    "freshness": {
+      "type": "object", "additionalProperties": false,
+      "required": ["status", "capturedAt", "freshUntil", "evaluatedAt"],
+      "properties": {
+        "status": { "enum": ["fresh", "absent"] },
+        "capturedAt": { "oneOf": [{ "$ref": "#/$defs/timestamp" }, { "type": "null" }] },
+        "freshUntil": { "oneOf": [{ "$ref": "#/$defs/timestamp" }, { "type": "null" }] },
+        "evaluatedAt": { "$ref": "#/$defs/timestamp" }
+      }
+    },
+    "nonClaims": {
+      "type": "object", "additionalProperties": false,
+      "required": ["semanticConformance", "liveHarnessExecution", "routeEnforcement", "outcomeCorrectness", "trafficCompleteness", "productionSafety"],
+      "properties": {
+        "semanticConformance": { "const": "not-proved-by-capture" },
+        "liveHarnessExecution": { "enum": ["not-proved", "candidate-supplied-not-proved"] },
+        "routeEnforcement": { "enum": ["not-proved", "asserted-not-verified"] },
+        "outcomeCorrectness": { "const": "not-proved" },
+        "trafficCompleteness": { "const": "not-proved" },
+        "productionSafety": { "const": "not-proved" }
+      }
+    }
+  }
+}

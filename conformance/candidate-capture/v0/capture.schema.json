@@ -1,0 +1,93 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://reelier.dev/contracts/candidate-capture/v0/capture.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["v", "harness", "adapter", "evaluatedAt"],
+  "properties": {
+    "v": { "const": "reelier.candidate-capture/v0" },
+    "harness": { "$ref": "#/$defs/harness" },
+    "adapter": { "$ref": "#/$defs/adapter" },
+    "evaluatedAt": { "$ref": "#/$defs/timestamp" },
+    "captureMode": { "enum": ["fixture", "observed", "live-candidate"] },
+    "capturedAt": { "$ref": "#/$defs/timestamp" },
+    "freshUntil": { "$ref": "#/$defs/timestamp" },
+    "evidenceMode": { "enum": ["observed", "enforced"] },
+    "artifact": { "$ref": "#/$defs/artifact" },
+    "bindingDigest": { "$ref": "#/$defs/digest" },
+    "missingCandidate": { "const": true }
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "captureMode": {}, "capturedAt": {}, "freshUntil": {},
+        "evidenceMode": {}, "artifact": {}, "bindingDigest": {}
+      },
+      "required": ["captureMode", "capturedAt", "freshUntil", "evidenceMode", "artifact", "bindingDigest"],
+      "not": { "properties": { "missingCandidate": {} }, "required": ["missingCandidate"] }
+    },
+    {
+      "properties": { "missingCandidate": {} },
+      "required": ["missingCandidate"],
+      "not": { "anyOf": [
+        { "properties": { "captureMode": {} }, "required": ["captureMode"] },
+        { "properties": { "capturedAt": {} }, "required": ["capturedAt"] },
+        { "properties": { "freshUntil": {} }, "required": ["freshUntil"] },
+        { "properties": { "evidenceMode": {} }, "required": ["evidenceMode"] },
+        { "properties": { "artifact": {} }, "required": ["artifact"] },
+        { "properties": { "bindingDigest": {} }, "required": ["bindingDigest"] }
+      ] }
+    }
+  ],
+  "allOf": [
+    {
+      "if": { "properties": { "harness": { "type": "object", "properties": { "id": { "const": "codex" } }, "required": ["id"] } } },
+      "then": { "properties": { "adapter": { "type": "object", "properties": { "id": { "const": "codex" } }, "required": ["id"] } } }
+    },
+    {
+      "if": { "properties": { "harness": { "type": "object", "properties": { "id": { "const": "claude-code" } }, "required": ["id"] } } },
+      "then": { "properties": { "adapter": { "type": "object", "properties": { "id": { "const": "claude-code" } }, "required": ["id"] } } }
+    },
+    {
+      "if": { "properties": { "harness": { "type": "object", "properties": { "id": { "const": "eve" } }, "required": ["id"] } } },
+      "then": { "properties": { "adapter": { "type": "object", "properties": { "id": { "const": "eve" } }, "required": ["id"] } } }
+    },
+    {
+      "if": { "properties": { "harness": { "type": "object", "properties": { "id": { "const": "grok-build" } }, "required": ["id"] } } },
+      "then": { "properties": { "adapter": { "type": "object", "properties": { "id": { "const": "xai.grok-build" } }, "required": ["id"] } } }
+    },
+    {
+      "if": { "properties": { "harness": { "type": "object", "properties": { "id": { "const": "grok-bot" } }, "required": ["id"] } } },
+      "then": { "properties": { "adapter": { "type": "object", "properties": { "id": { "const": "xai.grok-bot" } }, "required": ["id"] } } }
+    }
+  ],
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "timestamp": { "type": "string", "format": "date-time" },
+    "harness": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "instanceIdentityDigest"],
+      "properties": {
+        "id": { "enum": ["codex", "claude-code", "eve", "grok-build", "grok-bot"] },
+        "instanceIdentityDigest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "adapter": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "instanceIdentityDigest"],
+      "properties": {
+        "id": { "enum": ["codex", "claude-code", "eve", "xai.grok-build", "xai.grok-bot"] },
+        "instanceIdentityDigest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "artifact": {
+      "type": "object", "additionalProperties": false,
+      "required": ["kind", "rawJson", "rawDigest"],
+      "properties": {
+        "kind": { "enum": ["candidate", "report"] },
+        "rawJson": { "type": "string", "minLength": 2, "maxLength": 1048576 },
+        "rawDigest": { "$ref": "#/$defs/digest" }
+      }
+    }
+  }
+}
