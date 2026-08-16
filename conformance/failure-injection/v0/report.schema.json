@@ -1,0 +1,103 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://reelier.dev/contracts/failure-injection/v0/report.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["v", "status", "cases"],
+  "properties": {
+    "v": { "const": "reelier.failure-injection-report/v0" },
+    "status": { "const": "failed" },
+    "cases": {
+      "type": "array",
+      "minItems": 15,
+      "maxItems": 15,
+      "items": { "$ref": "#/$defs/case" }
+    }
+  },
+  "$defs": {
+    "caseId": {
+      "enum": [
+        "wrong-principal",
+        "reused-parent-principal",
+        "identity-injection-through-task-choices",
+        "undiscovered-job",
+        "unauthorized-repo-branch-target",
+        "budget-overflow",
+        "duplicate-retry",
+        "crash-after-reservation",
+        "crash-after-dispatch",
+        "stale-outcome",
+        "provider-ack-without-matching-post-state",
+        "hidden-unwrapped-route",
+        "incomplete-route-inventory",
+        "malformed-coverage",
+        "unavailable-coverage"
+      ]
+    },
+    "claimStatus": { "enum": ["verified", "failed", "unchecked", "absent"] },
+    "claims": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["authorization", "dispatch", "providerAcknowledgment", "reconciliation", "topology", "completeness"],
+      "properties": {
+        "authorization": { "$ref": "#/$defs/claimStatus" },
+        "dispatch": { "$ref": "#/$defs/claimStatus" },
+        "providerAcknowledgment": { "$ref": "#/$defs/claimStatus" },
+        "reconciliation": { "$ref": "#/$defs/claimStatus" },
+        "topology": { "$ref": "#/$defs/claimStatus" },
+        "completeness": { "$ref": "#/$defs/claimStatus" }
+      }
+    },
+    "observedResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["disposition", "lifecycleState", "claims"],
+      "properties": {
+        "disposition": { "enum": ["refused", "ambiguous", "reconciliation-required", "unsupported", "not-tested"] },
+        "lifecycleState": { "enum": ["refused", "reserved", "dispatched", "reconciling", "unsupported", "not-tested"] },
+        "claims": { "$ref": "#/$defs/claims" }
+      }
+    },
+    "nonClaim": {
+      "enum": [
+        "agent-adapter-execution-not-proved",
+        "content-correctness-not-proved",
+        "live-harness-execution-not-proved",
+        "outcome-correctness-not-proved",
+        "production-safety-not-proved",
+        "route-enforcement-not-proved",
+        "traffic-completeness-not-proved"
+      ]
+    },
+    "case": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["caseId", "harnessId", "adapterPath", "expectedLifecycle", "observedResult", "passEligibility", "reasonCodes", "nonClaims"],
+      "properties": {
+        "caseId": { "$ref": "#/$defs/caseId" },
+        "harnessId": { "const": "harness-neutral" },
+        "adapterPath": { "enum": ["agent-adapter/v0", "continuity-adapter/v1", "coverage-envelope/v0"] },
+        "expectedLifecycle": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 4,
+          "items": { "enum": ["admission", "delegation", "reservation", "dispatch", "provider-acknowledgment", "reconciliation", "coverage-evaluation", "refused", "unsupported", "not-tested"] }
+        },
+        "observedResult": { "$ref": "#/$defs/observedResult" },
+        "passEligibility": { "const": false },
+        "reasonCodes": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" }
+        },
+        "nonClaims": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/nonClaim" }
+        }
+      }
+    }
+  }
+}
