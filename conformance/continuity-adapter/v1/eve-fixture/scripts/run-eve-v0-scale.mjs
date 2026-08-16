@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, readFile, rm } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -30,6 +30,8 @@ function runWorker(level, index, target) {
       let candidate = null;
       try { report = JSON.parse(await readFile(resolve(target, "report.json"), "utf8")); } catch {}
       try { candidate = JSON.parse(await readFile(resolve(target, "candidate.json"), "utf8")); } catch {}
+      await mkdir(target, { recursive: true });
+      await writeFile(resolve(target, "worker-process.json"), `${JSON.stringify({ level, index, suffix, code, signal, report, candidate, stdout: stdout.trim(), stderr: stderr.trim() }, null, 2)}\n`, "utf8");
       resolveWorker({ level, index, suffix, code, signal, report, candidate, stdout: stdout.trim(), stderr: stderr.trim() });
     });
   });
@@ -83,6 +85,6 @@ const report = {
   contract: { v: "reelier.adapter-contract/v1", semanticOperations: ["jobs.search", "jobs.load", "delegations.request", "delegations.status", "tasks.status", "outcomes.invoke", "outcomes.status"] },
   nonClaims: { providerWrites: "not-proved", retryIdempotency: "not-proved", routeCompleteness: "not-proved", productionSafety: "not-proved" },
 };
-await import("node:fs/promises").then(({ writeFile }) => writeFile(resolve(output, "scale-report.json"), `${JSON.stringify(report, null, 2)}\n`, "utf8"));
+await writeFile(resolve(output, "scale-report.json"), `${JSON.stringify(report, null, 2)}\n`, "utf8");
 assert.equal(report.status, "passed", JSON.stringify(report));
 process.stdout.write(`${JSON.stringify({ status: report.status, levels: levelsReport.map(({ requested, completed, failed, peakConcurrency }) => ({ requested, completed, failed, peakConcurrency })), output })}\n`);

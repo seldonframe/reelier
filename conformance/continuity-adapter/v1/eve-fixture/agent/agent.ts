@@ -21,9 +21,11 @@ const outcomeInput = {
 };
 
 const adapterV0Suffix = process.env.REELIER_EVE_AGENT_ADAPTER_V0_SUFFIX ?? "";
-const adapterV0TaskId = `task_eve_process${adapterV0Suffix}`;
-const adapterV0ChildPrincipalId = `principal_eve_1_child${adapterV0Suffix}`;
-const adapterV0GrantId = `grant_eve_process_root_child${adapterV0Suffix}`;
+
+function v0Suffix(message: string): string {
+  const marker = message.indexOf("::");
+  return marker >= 0 ? message.slice(marker + 2) : adapterV0Suffix;
+}
 
 const contractRequestInput = {
   sourceRefs: { issue: "issue_1" },
@@ -69,16 +71,24 @@ export default defineAgent({
       if (typeof jobRef !== "string") return { text: "catalog discovery missing" };
       return { toolCalls: [{ name: "reelier_job_load", input: { jobId: jobRef } }] };
     }
-    if (lastUserMessage === "adapter delegation") return { toolCalls: [{ name: "reelier_delegation_request", input: { child: { principalId: adapterV0ChildPrincipalId }, effects: 1 } }] };
-    if (lastUserMessage === "adapter delegation status") return { toolCalls: [{ name: "reelier_delegation_status", input: { grantId: adapterV0GrantId } }] };
-    if (lastUserMessage === "adapter task status") return { toolCalls: [{ name: "reelier_task_status", input: { taskId: adapterV0TaskId } }] };
-    if (lastUserMessage === "adapter invoke v0") {
+    if (lastUserMessage.startsWith("adapter delegation")) {
+      const suffix = v0Suffix(lastUserMessage);
+      if (lastUserMessage.startsWith("adapter delegation status")) return { toolCalls: [{ name: "reelier_delegation_status", input: { grantId: `grant_eve_process_root_child${suffix}` } }] };
+      return { toolCalls: [{ name: "reelier_delegation_request", input: { child: { principalId: `principal_eve_1_child${suffix}` }, effects: 1 } }] };
+    }
+    if (lastUserMessage.startsWith("adapter task status")) {
+      const suffix = v0Suffix(lastUserMessage);
+      return { toolCalls: [{ name: "reelier_task_status", input: { taskId: `task_eve_process${suffix}` } }] };
+    }
+    if (lastUserMessage.startsWith("adapter invoke v0")) {
+      const suffix = v0Suffix(lastUserMessage);
       const jobRef = previousToolOutputWithJobRef(messages)?.jobRef;
       if (typeof jobRef !== "string") return { text: "job load missing" };
-      return { toolCalls: [{ name: "reelier_agent_adapter_v0_outcome_invoke", input: { ...contractRequestInput, jobRef } }] };
+      return { toolCalls: [{ name: "reelier_agent_adapter_v0_outcome_invoke", input: { ...contractRequestInput, requestId: `request_eve_process_1${suffix}`, jobRef } }] };
     }
-    if (lastUserMessage === "adapter status v0") {
-      return { toolCalls: [{ name: "reelier_agent_adapter_v0_outcome_status", input: { requestId: contractRequestInput.requestId } }] };
+    if (lastUserMessage.startsWith("adapter status v0")) {
+      const suffix = v0Suffix(lastUserMessage);
+      return { toolCalls: [{ name: "reelier_agent_adapter_v0_outcome_status", input: { requestId: `request_eve_process_1${suffix}` } }] };
     }
     if (lastUserMessage === "adapter invoke") {
       const jobRef = previousToolOutputWithJobRef(messages)?.jobRef;
