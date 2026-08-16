@@ -112,9 +112,11 @@ test("Eve can select its agent candidate without hiding separate continuity evid
 test("Eve agent candidate identity or contract mismatch refuses semantic evidence", () => {
   const wrongIdentity = structuredClone(eveCandidate);
   wrongIdentity.descriptor.adapterId = "xai.grok-build";
+  const wrongHost = structuredClone(eveCandidate);
+  wrongHost.descriptor.agentHost = "grok-build";
   const wrongContract = structuredClone(eveCandidate);
   wrongContract.descriptor.authorityContract = { status: "frozen", digest: `sha256:${"f".repeat(64)}` };
-  for (const candidate of [wrongIdentity, wrongContract]) {
+  for (const candidate of [wrongIdentity, wrongHost, wrongContract]) {
     const report = matrix.runSemanticMatrix({
       v: "reelier.semantic-matrix-input/v0",
       candidates: [{ harnessId: "eve", adapterPath: "agent-adapter/v0", candidate }],

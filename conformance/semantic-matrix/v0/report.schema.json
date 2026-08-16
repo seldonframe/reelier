@@ -3,7 +3,7 @@
   "$id": "https://reelier.dev/contracts/semantic-matrix-conformance/v0/report.schema.json",
   "type": "object",
   "additionalProperties": false,
-  "required": ["v", "status", "aggregate", "harnesses", "semanticChecks"],
+  "required": ["v", "status", "aggregate", "harnesses", "semanticChecks", "continuityEvidence"],
   "properties": {
     "v": { "const": "reelier.semantic-matrix-report/v0" },
     "status": { "enum": ["passed", "failed"] },
@@ -22,7 +22,21 @@
         { "contains": { "type": "object", "properties": { "harnessId": { "const": "grok-bot" } }, "required": ["harnessId"] }, "minContains": 1, "maxContains": 1 }
       ]
     },
-    "semanticChecks": { "type": "array", "items": { "$ref": "#/$defs/check" } }
+    "semanticChecks": { "type": "array", "items": { "$ref": "#/$defs/check" } },
+    "continuityEvidence": {
+      "type": "array", "maxItems": 1,
+      "items": { "allOf": [
+        { "$ref": "https://reelier.dev/contracts/aggregate-conformance/v0/report.schema.json#/$defs/harness" },
+        {
+          "type": "object",
+          "properties": {
+            "harnessId": { "const": "eve" },
+            "adapterPath": { "const": "continuity-adapter/v1/eve-fixture" }
+          },
+          "required": ["harnessId", "adapterPath"]
+        }
+      ] }
+    }
   },
   "$defs": {
     "check": {

@@ -24,12 +24,26 @@ const validateInput = ajv.compile({
         candidate: { type: "object" },
         report: { type: "object" },
         missing: { const: true },
+        continuityEvidence: {
+          type: "object", additionalProperties: false, required: ["adapterPath", "report"],
+          properties: {
+            adapterPath: { const: "continuity-adapter/v1/eve-fixture" },
+            report: { type: "object" },
+          },
+        },
       },
       oneOf: [
         { properties: { candidate: { type: "object" }, report: { type: "object" }, missing: { const: true } }, required: ["candidate"], not: { anyOf: [{ properties: { report: { type: "object" } }, required: ["report"] }, { properties: { missing: { const: true } }, required: ["missing"] }] } },
         { properties: { candidate: { type: "object" }, report: { type: "object" }, missing: { const: true } }, required: ["report"], not: { anyOf: [{ properties: { candidate: { type: "object" } }, required: ["candidate"] }, { properties: { missing: { const: true } }, required: ["missing"] }] } },
         { properties: { candidate: { type: "object" }, report: { type: "object" }, missing: { const: true } }, required: ["missing"], not: { anyOf: [{ required: ["candidate"] }, { required: ["report"] }] } },
       ],
+      allOf: [{
+        if: { properties: { continuityEvidence: { type: "object" } }, required: ["continuityEvidence"] },
+        then: {
+          properties: { harnessId: { const: "eve" }, adapterPath: { const: "agent-adapter/v0" }, candidate: { type: "object" } },
+          required: ["candidate"],
+        },
+      }],
     } },
   },
 });
@@ -37,6 +51,10 @@ const validateOutput = ajv.compile(JSON.parse(readFileSync(here("./report.schema
 export function validateSemanticMatrixReport(value) { return validateOutput(value); }
 
 function canonicalId(harnessId) { return ADAPTER_IDS[harnessId] ?? harnessId; }
+function candidateIdentityMatches(candidate, harnessId) {
+  return candidate?.descriptor?.adapterId === canonicalId(harnessId)
+    && candidate?.descriptor?.agentHost === harnessId;
+}
 function missingReport(harnessId, adapterPath) {
   return { harnessId: canonicalId(harnessId), adapterPath, report: null };
 }
@@ -56,6 +74,7 @@ export function runSemanticMatrix(input) {
   const supplied = new Map(input.candidates.map((entry) => [entry.harnessId, entry]));
   if (new Set(input.candidates.map((entry) => entry.harnessId)).size !== input.candidates.length) throw new TypeError("semantic matrix harnesses must be unique");
   const records = [];
+  const continuityRecords = [];
   const pendingChecks = [];
   const semanticChecks = [];
   const adapterPaths = { codex: "agent-adapter/v0", "claude-code": "agent-adapter/v0", eve: "continuity-adapter/v1/eve-fixture", "grok-build": "agent-adapter/v0", "grok-bot": "agent-adapter/v0" };
@@ -66,19 +85,29 @@ export function runSemanticMatrix(input) {
     if (entry?.candidate) report = checkCandidate(entry.candidate);
     else if (entry?.report) report = entry.report;
     if (report) {
-      const sourceValid = entry?.candidate || validAgentReport(report, harnessId) || report.v !== "reelier.agent-adapter-conformance-report/v0";
-      if (sourceValid && (entry?.candidate || validAgentReport(report, harnessId))) pendingChecks.push({ harnessId, report });
+      const candidateValid = entry?.candidate && candidateIdentityMatches(entry.candidate, harnessId);
+      const agentReportValid = validAgentReport(report, harnessId);
+      const sourceValid = entry?.candidate
+        ? candidateValid && agentReportValid
+        : agentReportValid || report.v !== "reelier.agent-adapter-conformance-report/v0";
+      if (sourceValid && agentReportValid) pendingChecks.push({ harnessId, report });
       records.push({ harnessId: canonicalId(harnessId), adapterPath, report: sourceValid ? report : { v: "reelier.invalid-source-report/v0" } });
     } else records.push(missingReport(harnessId, adapterPath));
+    if (entry?.continuityEvidence) continuityRecords.push({
+      harnessId: "eve",
+      adapterPath: entry.continuityEvidence.adapterPath,
+      report: entry.continuityEvidence.report,
+    });
   }
   const aggregate = aggregateReports(records);
   const aggregateById = new Map(aggregate.harnesses.map((row) => [row.harnessId, row]));
   const harnesses = HARNESS_IDS.map((harnessId) => ({ ...aggregateById.get(canonicalId(harnessId)), harnessId }));
+  const continuityEvidence = continuityRecords.length === 0 ? [] : aggregateReports(continuityRecords).harnesses;
   for (const source of pendingChecks) {
     const aggregateRow = aggregateById.get(canonicalId(source.harnessId));
     if (aggregateRow?.overallStatus !== "unsupported") for (const check of source.report.checks ?? []) semanticChecks.push({ harnessId: source.harnessId, id: check.id, status: check.status, detail: check.detail });
   }
-  const result = { v: VERSION, status: aggregate.status, aggregate, harnesses, semanticChecks };
+  const result = { v: VERSION, status: aggregate.status, aggregate, harnesses, semanticChecks, continuityEvidence };
   if (!validateSemanticMatrixReport(result)) throw new TypeError(`semantic matrix report is invalid: ${ajv.errorsText(validateOutput.errors)}`);
   return Object.freeze(result);
 }
