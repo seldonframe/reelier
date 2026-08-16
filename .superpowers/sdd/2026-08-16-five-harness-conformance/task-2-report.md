@@ -67,3 +67,60 @@ Concerns
 - No live harness candidates were supplied, so Codex, Claude Code, and live Grok execution remain unsupported/not-tested by design.
 - Eve input is classified from existing continuity evidence and is not upgraded to universal agent-adapter execution.
 - The command-line error fallback is intentionally a failed diagnostic object rather than a passing matrix; valid matrix output is schema-validated before emission.
+
+Fix round 1 evidence
+
+Findings addressed:
+
+- Closed the matrix schema around the canonical Task 1 aggregate schema, exact five harness identities, unique identity cardinality, aggregate-bound top-level status, and aggregate-defined evidence/status vocabulary.
+- Suppressed semantic checks until source validation and identity binding succeed; invalid agent reports become unsupported and publish no checks.
+- Changed both CLI error paths to emit a schema-valid failed five-row matrix.
+- Required explicit `missing: true` for listed input entries without a candidate or report.
+- Added focused tests for all requested fix-round cases.
+
+Fix RED verification
+
+Command:
+
+```text
+npx tsc -p tsconfig.test.json; node --test dist-test/test/semantic-matrix-conformance.test.js
+```
+
+Verbatim output tail:
+
+```text
+✖ matrix report has exactly the five unique harness identities and binds status to aggregate
+✖ invalid source reports cannot publish semantic checks
+✖ listed missing evidence must be explicit and CLI failures remain schema-valid
+ℹ tests 5
+ℹ pass 2
+ℹ fail 3
+```
+
+Fix GREEN verification (fail-fast compile before tests)
+
+Command:
+
+```text
+npx tsc --noEmit; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; npx tsc -p tsconfig.test.json; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; node --test dist-test/test/semantic-matrix-conformance.test.js dist-test/test/aggregate-conformance.test.js dist-test/test/agent-adapter-conformance.test.js
+```
+
+Verbatim output tail:
+
+```text
+✔ semantic matrix runs universal checks and preserves fixture-only Grok evidence (8.1786ms)
+✔ semantic matrix refuses unknown harnesses and does not synthesize missing candidates (0.3607ms)
+✔ matrix report has exactly the five unique harness identities and binds status to aggregate (0.8535ms)
+✔ invalid source reports cannot publish semantic checks (0.2569ms)
+✔ listed missing evidence must be explicit and CLI failures remain schema-valid (381.6446ms)
+ℹ tests 23
+ℹ pass 23
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ duration_ms 2141.7254
+```
+
+Fix commit
+
+- `140b56c` — `fix: close five-harness matrix report contract`
