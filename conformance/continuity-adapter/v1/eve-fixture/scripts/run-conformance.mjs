@@ -52,7 +52,12 @@ try {
   if (Number(process.versions.node.split(".")[0]) !== 24) throw new Error(`Node 24 is required; received ${process.version}`);
   const npmCli = process.env.npm_execpath;
   if (!npmCli) throw new Error("npm_execpath is required for the clean-checkout runner");
-  await command(process.execPath, [npmCli, "run", "build"], "root-build");
+  await command(process.execPath, [npmCli, "run", "build"], "root-build", {
+    npm_lifecycle_event: undefined,
+    npm_lifecycle_script: undefined,
+    npm_config_argv: undefined,
+    npm_command: undefined,
+  });
   await command(process.execPath, [resolve(repositoryRoot, "node_modules/typescript/bin/tsc"), "-p", resolve(repositoryRoot, "tsconfig.test.json")], "test-compile");
   const { authorityCanonicalBytes, authorityDigest } = await import("../../../../../dist/authority/index.js");
   await command(process.execPath, [resolve(repositoryRoot, "conformance/continuity-adapter/v1/check.mjs"), resolve(repositoryRoot, "conformance/continuity-adapter/v1/fixtures/core-candidate.mjs")], "generic-candidate");
@@ -93,14 +98,17 @@ try {
 }
 
 async function command(executable, args, label, extraEnv = {}) {
+  diagnostic(`${label}:start`);
   const child = spawn(executable, args, { cwd: repositoryRoot, env: { ...process.env, ...extraEnv }, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
   let output = "";
   child.stdout.on("data", (chunk) => { output = bounded(output + String(chunk)); });
   child.stderr.on("data", (chunk) => { output = bounded(output + String(chunk)); });
   const code = await new Promise((resolveExit, reject) => { child.once("error", reject); child.once("close", resolveExit); });
+  diagnostic(`${label}:exit:${code}`);
   if (code !== 0) throw new Error(`${label} exited ${code}\n${output}`);
   return output;
 }
 function bounded(value) { return value.length > 16_000 ? value.slice(-16_000) : value; }
+function diagnostic(message) { if (process.env.REELIER_EVE_CONFORMANCE_DIAGNOSTICS === "1") process.stderr.write(`[eve-conformance] ${message}\n`); }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) await main();

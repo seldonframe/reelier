@@ -624,17 +624,54 @@ async function findListeningPid(port) {
   return undefined;
 }
 async function stopDetachedListener(pid) {
-  signalProcessGroup(pid, "SIGTERM");
-  if (await waitForProcessGroupExit(pid, 1_000)) return;
-  signalProcessGroup(pid, "SIGKILL");
+  const groupId = process.platform === "linux" ? await readProcessGroupId(pid) : pid;
+  if (groupId <= 1 || groupId === process.pid) throw new Error(`refusing to signal unsafe Eve listener process group ${groupId}`);
+  signalProcessGroup(groupId, "SIGTERM");
+  if (await waitForProcessGroupExit(groupId, 1_000)) return;
+  signalProcessGroup(groupId, "SIGKILL");
   try { process.kill(pid, "SIGKILL"); } catch (error) { if (error?.code !== "ESRCH") throw error; }
-  assert.equal(await waitForProcessGroupExit(pid, 5_000), true, `Eve detached listener group ${pid} survived forced stop`);
+  assert.equal(await waitForProcessGroupExit(groupId, 5_000), true, `Eve detached listener group ${groupId} survived forced stop`);
 }
 async function waitForPath(path) { for (let attempt = 0; attempt < 600; attempt += 1) { try { await access(path); return; } catch {} await delay(50); } throw new Error(`expected crash-cut marker was not written: ${path}`); }
 function signalProcessGroup(pid, signal) { try { process.kill(-pid, signal); } catch (error) { if (error?.code !== "ESRCH") throw error; } }
 function processGroupExists(pid) { try { process.kill(-pid, 0); return true; } catch (error) { if (error?.code === "ESRCH") return false; throw error; } }
 function processExists(pid) { try { process.kill(pid, 0); return true; } catch (error) { if (error?.code === "ESRCH") return false; throw error; } }
-async function waitForProcessGroupExit(pid, timeout) { const deadline = Date.now() + timeout; while (Date.now() < deadline) { if (!processGroupExists(pid)) return true; await delay(25); } return !processGroupExists(pid); }
+async function waitForProcessGroupExit(pid, timeout) {
+  const deadline = Date.now() + timeout;
+  while (Date.now() < deadline) {
+    if (!await processGroupHasLiveMembers(pid)) return true;
+    await delay(25);
+  }
+  return !await processGroupHasLiveMembers(pid);
+}
+async function processGroupHasLiveMembers(groupId) {
+  if (process.platform !== "linux") return processGroupExists(groupId);
+  let entries;
+  try { entries = await readdir("/proc"); } catch { return processGroupExists(groupId); }
+  let sawMember = false;
+  for (const entry of entries) {
+    if (!/^\d+$/u.test(entry)) continue;
+    try {
+      const stat = await readFile(`/proc/${entry}/stat`, "utf8");
+      const close = stat.lastIndexOf(") ");
+      const fields = close < 0 ? [] : stat.slice(close + 2).trim().split(/\s+/u);
+      if (Number(fields[2]) !== groupId) continue;
+      sawMember = true;
+      if (fields[0] !== "Z" && fields[0] !== "X") return true;
+    } catch {}
+  }
+  return sawMember ? false : processGroupExists(groupId);
+}
+async function readProcessGroupId(pid) {
+  try {
+    const stat = await readFile(`/proc/${pid}/stat`, "utf8");
+    const close = stat.lastIndexOf(") ");
+    const fields = close < 0 ? [] : stat.slice(close + 2).trim().split(/\s+/u);
+    const groupId = Number(fields[2]);
+    if (Number.isInteger(groupId) && groupId > 1) return groupId;
+  } catch {}
+  return pid;
+}
 async function waitForExit(child, timeout) { if (child.exitCode !== null) return true; return new Promise((resolveExit) => { const timer = setTimeout(() => { child.off("close", close); resolveExit(false); }, timeout); timer.unref(); const close = () => { clearTimeout(timer); resolveExit(true); }; child.once("close", close); }); }
 const delay = (ms) => new Promise((resolveDelay) => setTimeout(resolveDelay, ms));
 
