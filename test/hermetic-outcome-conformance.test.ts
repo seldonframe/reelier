@@ -66,6 +66,9 @@ test("emits a deterministic closed reversible bundle using existing authority se
     assert.equal(loaded.dispatch.reservation.state, "reconciled");
     assert.equal(loaded.providerState.acknowledgment.status, "acknowledged");
     assert.equal(loaded.providerState.postStateEvidence.confidence, "exact");
+    assert.match(loaded.providerState.postStateEvidence.permitSnapshotDigest, /^sha256:[0-9a-f]{64}$/);
+    assert.match(loaded.providerState.postStateEvidence.projectionSchemaDigest, /^sha256:[0-9a-f]{64}$/);
+    assert.match(loaded.providerState.postStateEvidence.preProjectionDigest, /^sha256:[0-9a-f]{64}$/);
     assert.deepEqual(loaded.providerState.restoredState, loaded.providerState.preState);
     assert.equal(loaded.receipt.v, "reelier.authority-receipt/v1");
     assert.equal(loaded.finalReport.status, "non-passing");
@@ -129,6 +132,20 @@ test("rejects a provider post-state mismatch even when acknowledgment remains pr
     const result = checker.checkHermeticOutcomeBundle(directory);
     assert.equal(result.valid, false);
     assert.ok(result.errors.some((error: string) => /post-state|projection/i.test(error)), result.errors.join("\n"));
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("rejects an invalid exact post-state verifier signature", () => {
+  const directory = temporaryBundle();
+  try {
+    const provider = readArtifact(directory, "provider-state.json");
+    provider.postStateEvidence.signature.sig = `${"A".repeat(86)}==`;
+    writeArtifact(directory, "provider-state.json", provider);
+    const result = checker.checkHermeticOutcomeBundle(directory);
+    assert.equal(result.valid, false);
+    assert.ok(result.errors.some((error: string) => /post-state.*signature|verifier.*signature/i.test(error)), result.errors.join("\n"));
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
