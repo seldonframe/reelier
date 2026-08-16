@@ -8,9 +8,7 @@ import { spawnSync } from "node:child_process";
 const matrix = await import(pathToFileURL(resolve("conformance/semantic-matrix/v0/check.mjs")).href);
 const grokBuild = JSON.parse(readFileSync(resolve("conformance/agent-adapter/v0/fixtures/grok-build-observed.json"), "utf8"));
 const grokBot = JSON.parse(readFileSync(resolve("conformance/agent-adapter/v0/fixtures/grok-bot-observed.json"), "utf8"));
-const eveCandidate = structuredClone(grokBuild);
-eveCandidate.descriptor.adapterId = "eve";
-eveCandidate.descriptor.agentHost = "eve";
+const eveCandidate = JSON.parse(readFileSync(resolve("conformance/agent-adapter/v0/fixtures/eve-observed.json"), "utf8"));
 
 const eveReport = {
   v: "reelier.continuity-eve-conformance-report/v1",
@@ -77,6 +75,8 @@ test("Eve continuity evidence cannot be relabeled as agent-adapter evidence", ()
 });
 
 test("Eve can select its agent candidate without hiding separate continuity evidence", () => {
+  assert.equal(eveCandidate.descriptor.adapterId, "eve");
+  assert.equal(eveCandidate.descriptor.agentHost, "eve");
   const report = matrix.runSemanticMatrix({
     v: "reelier.semantic-matrix-input/v0",
     candidates: [{
@@ -109,23 +109,31 @@ test("Eve can select its agent candidate without hiding separate continuity evid
   assert.equal(report.status, "failed");
 });
 
-test("Eve agent candidate identity or contract mismatch refuses semantic evidence", () => {
-  const wrongIdentity = structuredClone(eveCandidate);
-  wrongIdentity.descriptor.adapterId = "xai.grok-build";
-  const wrongHost = structuredClone(eveCandidate);
-  wrongHost.descriptor.agentHost = "grok-build";
-  const wrongContract = structuredClone(eveCandidate);
-  wrongContract.descriptor.authorityContract = { status: "frozen", digest: `sha256:${"f".repeat(64)}` };
-  for (const candidate of [wrongIdentity, wrongHost, wrongContract]) {
+test("Eve agent candidate identity relabels refuse semantic evidence", () => {
+  const mutations = [
+    ["adapter relabel", (candidate: any) => { candidate.descriptor.adapterId = "xai.grok-build"; }],
+    ["agent host relabel", (candidate: any) => { candidate.descriptor.agentHost = "grok-build"; }],
+    ["authority contract relabel", (candidate: any) => { candidate.descriptor.authorityContract = { status: "frozen", digest: `sha256:${"f".repeat(64)}` }; }],
+  ] as const;
+  for (const [label, mutate] of mutations) {
+    const candidate = structuredClone(eveCandidate);
+    mutate(candidate);
     const report = matrix.runSemanticMatrix({
       v: "reelier.semantic-matrix-input/v0",
       candidates: [{ harnessId: "eve", adapterPath: "agent-adapter/v0", candidate }],
     });
     const eve = report.harnesses.find((row: any) => row.harnessId === "eve");
-    assert.equal(eve.overallStatus, "unsupported");
-    assert.equal(eve.executionStatus, "not-tested");
-    assert.equal(report.semanticChecks.some((check: any) => check.harnessId === "eve"), false);
+    assert.equal(eve.overallStatus, "unsupported", label);
+    assert.equal(eve.executionStatus, "not-tested", label);
+    assert.equal(report.semanticChecks.some((check: any) => check.harnessId === "eve"), false, label);
   }
+});
+
+test("Eve agent candidate cannot publish semantic evidence through the continuity path", () => {
+  assert.throws(() => matrix.runSemanticMatrix({
+    v: "reelier.semantic-matrix-input/v0",
+    candidates: [{ harnessId: "eve", adapterPath: "continuity-adapter/v1/eve-fixture", candidate: eveCandidate }],
+  }), /invalid|adapterPath|agent-adapter/i);
 });
 
 test("semantic matrix refuses unknown harnesses and does not synthesize missing candidates", () => {
