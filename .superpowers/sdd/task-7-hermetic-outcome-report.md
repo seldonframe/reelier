@@ -9,7 +9,7 @@ Files changed
 
 - `conformance/hermetic-outcome/v0/check.mjs` adds a local-only deterministic emitter and checker for exactly eight artifacts: `descriptor.json`, `delegation.json`, `coverage.json`, `dispatch.json`, `provider-state.json`, `receipt.json`, `failure-injection.json`, and `final-report.json`. The fixture uses existing Reelier delegation grants, principal, authority-cell session binding, decision context, gate event, post-state evidence, and authority receipt semantics. A fixed public fixture Ed25519 seed signs the child delegation commitment; it is test material and explicitly not a production key or credential. The checker verifies the signature, parent/child commitment chain, host-bound principal, reduced child effect/body budget, reservation, accepted dispatch, provider acknowledgment, exact post-state, rollback, receipt joins, descriptor commitments, Task 6 report digest, duplicate retry zero-effect behavior, non-passing coverage, human exception, and non-claims.
 - `conformance/hermetic-outcome/v0/bundle.schema.json` closes the aggregate bundle and every nested Task 7 artifact. It fixes discovery coverage to `status: failed`, `passEligibility: false`, and `mode: discovery-only`; fixes the final report to `status: non-passing`; and constrains existing Reelier authority artifact shapes used by the bundle.
-- `test/hermetic-outcome-conformance.test.ts` proves deterministic bytes across independent output directories, the exact closed artifact set, schema validity, reversibility, cryptographic delegation commitment, existing authority-schema conformance, host binding, attenuation, reservation/dispatch/provider/receipt evidence, and explicit human/non-claims. Regressions reject duplicate retry effects, wrong receipt/delegation linkage, post-state mismatch despite acknowledgment, a missing artifact, and any passing upgrade to discovery-only coverage.
+- `test/hermetic-outcome-conformance.test.ts` proves deterministic bytes across independent output directories, the exact closed artifact set, schema validity, reversibility, cryptographic delegation commitment, existing authority-schema conformance, host binding, attenuation, reservation/dispatch/provider/receipt evidence, and explicit human/non-claims. Regressions reject duplicate retry effects, wrong receipt/delegation linkage, post-state mismatch despite acknowledgment, invalid exact-post-state signatures, a missing artifact, and any passing upgrade to discovery-only coverage.
 - `.superpowers/sdd/task-7-hermetic-outcome-report.md` records Task 7 scope, RED/GREEN evidence, verification outputs, external escalation boundary, deviations, and remaining gaps.
 
 ## Evidence bundle
@@ -50,7 +50,7 @@ The existing-contract binding RED was committed as `1a86ddf`. It failed because 
 ℹ fail 1
 ```
 
-The GREEN implementation was committed as `1bcd169`.
+The initial GREEN implementation was committed as `1bcd169`. A final verifier audit added a RED regression in `65c2731`: the focused suite reported 6 passes and 2 failures because the exact post-state evidence lacked the complete existing field set and signature-specific rejection. The complete evidence shape and direct signature verification were committed as `7b9bded`.
 
 Fresh emitting build before focused tests (`npm run build`, exit 0), verbatim tail:
 
@@ -64,36 +64,37 @@ built cloudflare_api_token, cloudflare_dns, github_issue_labels, gmail, gmail_la
 Focused GREEN (`npx tsc -p tsconfig.test.json --pretty false` then `node --test --test-concurrency=1 dist-test/test/hermetic-outcome-conformance.test.js`, exit 0), verbatim tail:
 
 ```text
-✔ emits a deterministic closed reversible bundle using existing authority semantics (21.8736ms)
-✔ duplicate retry reuses the reservation and causes no duplicate provider effect (4.6541ms)
-✔ delegation and host binding remain valid existing Reelier authority artifacts (6.2478ms)
-✔ rejects wrong receipt to delegation linkage (6.5781ms)
-✔ rejects a provider post-state mismatch even when acknowledgment remains present (6.2616ms)
-✔ rejects a missing artifact from the closed bundle (4.2017ms)
-✔ discovery-only coverage stays explicit and non-passing (6.9975ms)
-ℹ tests 7
+✔ emits a deterministic closed reversible bundle using existing authority semantics (24.4855ms)
+✔ duplicate retry reuses the reservation and causes no duplicate provider effect (5.2639ms)
+✔ delegation and host binding remain valid existing Reelier authority artifacts (6.859ms)
+✔ rejects wrong receipt to delegation linkage (6.7424ms)
+✔ rejects a provider post-state mismatch even when acknowledgment remains present (7.0293ms)
+✔ rejects an invalid exact post-state verifier signature (8.2132ms)
+✔ rejects a missing artifact from the closed bundle (6.238ms)
+✔ discovery-only coverage stays explicit and non-passing (7.0508ms)
+ℹ tests 8
 ℹ suites 0
-ℹ pass 7
+ℹ pass 8
 ℹ fail 0
 ℹ cancelled 0
 ℹ skipped 0
 ℹ todo 0
-ℹ duration_ms 301.2958
+ℹ duration_ms 323.5228
 ```
 
 Relevant Task 1–7 conformance suites (exit 0), verbatim tail:
 
 ```text
-✔ a passed matrix cannot contain unsupported top-level harness rows (0.5329ms)
-✔ explicit missing evidence cannot coexist with a candidate or report (0.2567ms)
-ℹ tests 69
+✔ a passed matrix cannot contain unsupported top-level harness rows (0.6866ms)
+✔ explicit missing evidence cannot coexist with a candidate or report (0.3444ms)
+ℹ tests 70
 ℹ suites 0
-ℹ pass 69
+ℹ pass 70
 ℹ fail 0
 ℹ cancelled 0
 ℹ skipped 0
 ℹ todo 0
-ℹ duration_ms 4869.7046
+ℹ duration_ms 4831.9149
 ```
 
 Package contract checks (exit 0), verbatim output:
