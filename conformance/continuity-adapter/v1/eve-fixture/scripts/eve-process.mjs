@@ -37,7 +37,7 @@ export async function runLiveAgentAdapterV0(resultPath, runtimeRoot) {
     assert.equal(created.status, 202, JSON.stringify(created.body));
     const sessionId = created.body.sessionId;
     let cursor = 0;
-    const messages = ["adapter catalog", "adapter load", "adapter delegation", "adapter delegation status", "adapter task status", "adapter invoke", "adapter status"];
+    const messages = ["adapter catalog", "adapter load", "adapter delegation", "adapter delegation status", "adapter task status", "adapter invoke v0", "adapter status v0"];
     for (const message of messages) {
       const settled = await waitForBoundary(processHandle, sessionId, state.token, cursor);
       cursor = settled.cursor;
