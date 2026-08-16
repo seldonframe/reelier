@@ -14,7 +14,8 @@ const ADAPTERS = Object.freeze({
   "grok-bot": "xai.grok-bot",
 });
 const SENSITIVE_KEYS = new Set([
-  "authorization", "proxyauthorization", "apikey", "accesstoken", "refreshtoken", "idtoken",
+  "authorization", "proxyauthorization", "apikey", "token", "authtoken", "sessiontoken",
+  "accesstoken", "refreshtoken", "idtoken",
   "password", "passwd", "secret", "clientsecret", "privatekey", "cookie", "setcookie",
   "credential", "credentials",
 ]);
@@ -84,10 +85,12 @@ function containsSensitiveData(value) {
 }
 
 function assertRawIdentity(raw, input) {
-  const identity = input.artifact.kind === "candidate"
+  const candidate = input.artifact.kind === "candidate";
+  const identity = candidate
     ? { harnessId: raw?.descriptor?.agentHost, adapterId: raw?.descriptor?.adapterId }
     : { harnessId: raw?.harnessId, adapterId: raw?.adapterId };
-  if (identity.harnessId !== input.harness.id || identity.adapterId !== input.adapter.id) {
+  const harnessMismatch = candidate ? identity.harnessId !== input.harness.id : identity.harnessId !== undefined && identity.harnessId !== input.harness.id;
+  if (harnessMismatch || identity.adapterId !== input.adapter.id) {
     throw new TypeError("raw artifact identity does not match the bound harness and adapter");
   }
 }

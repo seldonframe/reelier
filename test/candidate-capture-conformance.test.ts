@@ -127,7 +127,6 @@ test("harness, adapter, raw artifact identity, and instance binding mismatches r
 test("raw report identity is bound and its exact bytes are committed", () => {
   const rawJson = JSON.stringify({
     v: "reelier.agent-adapter-conformance-report/v0",
-    harnessId: "grok-bot",
     adapterId: "xai.grok-bot",
     status: "passed",
     checks: [],
@@ -158,6 +157,8 @@ test("credential-like fields and token-shaped values are rejected rather than re
   const sensitive = [
     { authorization: "Bearer opaque" },
     { apiKey: "not-even-a-real-key" },
+    { authToken: "placeholder" },
+    { nested: { sessionToken: "placeholder" } },
     { nested: { password: "placeholder" } },
     { value: "ghp_abcdefghijklmnopqrstuvwxyz0123456789" },
     { value: "-----BEGIN PRIVATE KEY-----" },

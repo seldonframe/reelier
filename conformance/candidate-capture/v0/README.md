@@ -8,8 +8,10 @@ UTF-8 SHA-256 digest and submits both through `capture.schema.json`.
 The envelope binds the harness and harness-instance digests to the canonical adapter and
 adapter-instance digests, capture timestamps, evidence mode, artifact kind, and raw digest. A
 candidate raw object identifies itself at `descriptor.agentHost` and `descriptor.adapterId`; a
-report identifies itself at `harnessId` and `adapterId`. Relabeling either identity, changing the raw
-bytes, or changing committed capture metadata invalidates the binding.
+report identifies its adapter at `adapterId` and, when present, its harness at `harnessId`. Existing
+agent-adapter reports omit `harnessId`, so their harness identity is bound by the outer harness
+instance, canonical harness-to-adapter mapping, and committed raw digest. Relabeling an identity,
+changing the raw bytes, or changing committed capture metadata invalidates the binding.
 
 `captureMode` has three values:
 
