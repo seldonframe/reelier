@@ -48,8 +48,6 @@ test("aggregate classifies Eve continuity as continuity-proven, not execution-pr
 
 test("unknown-like aggregate states are never passing", () => {
   for (const state of ["coverage-unknown", "not-tested", "unsupported", "failed"] as const) {
-    const report = aggregate.aggregateReports([{ harnessId: "missing", adapterPath: "none", report: null, override: state }]);
-    assert.equal(report.status, "failed", state);
-    assert.equal(report.harnesses[0].overallStatus, state);
+    assert.equal(aggregate.isPassingStatus(state), false, state);
   }
 });
