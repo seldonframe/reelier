@@ -45,29 +45,28 @@ export function buildCoverageEnvelope(input) {
   }));
   const freshness = freshnessFor(inventory, sources, input.evaluatedAt);
   const reasonCodes = reasonsFor(input, inventory, freshness, { unwrappedRoutes, directHttpRoutes, privateHostRoutes });
-  const eligible = reasonCodes.length === 0 && input.requestedMode === "enforced";
-  if (!eligible && input.requestedMode === "enforced") reasonCodes.push("enforced-mode-refused");
-  if (!eligible && input.requestedMode === "observed" && reasonCodes.length === 0) reasonCodes.push("observed-mode-non-authorizing");
   reasonCodes.sort();
   const report = Object.freeze({
     v: "reelier.coverage-envelope-report/v0",
-    status: eligible ? "passed" : "failed",
+    status: "failed",
     harness: Object.freeze({ ...input.harness }),
     adapter: Object.freeze({ ...input.adapter }),
     sources: Object.freeze(sources),
     inventory: Object.freeze(inventory), wrappedRoutes, unwrappedRoutes, directHttpRoutes, privateHostRoutes,
-    mode: eligible ? "enforced" : "observed", freshness: Object.freeze(freshness),
+    mode: "observed", freshness: Object.freeze(freshness),
     claims: Object.freeze({ topology: Object.freeze({ ...input.claims.topology }), completeness: Object.freeze({ ...input.claims.completeness }) }),
     reasonCodes: Object.freeze(reasonCodes), nonClaims: NON_CLAIMS,
+    provenance: Object.freeze({ status: "asserted", adapter: "asserted", sources: "asserted", routeEvidenceDigest: input.routeEvidenceDigest }),
   });
-  const committedReport = Object.freeze({ ...report, provenanceDigest: provenanceDigest(report) });
+  const committedReport = Object.freeze({ ...report, integrityDigest: integrityDigest(report) });
   if (!validateCoverageEnvelopeReport(committedReport)) throw new TypeError(`coverage envelope report is invalid: ${ajv.errorsText(validateReport.errors)}`);
   return committedReport;
 }
 
 function validateSemantics(input) {
   assertBuiltinAdapter(input.harness, input.adapter);
-  const evaluatedAt = Date.parse(input.evaluatedAt);
+  const evaluatedAt = parseCanonicalTimestamp(input.evaluatedAt, "coverage evaluation");
+  if (input.routeEvidenceDigest !== routeEvidenceDigest(input.routes)) throw new TypeError("coverage route evidence commitment is invalid");
   const routeIds = new Set();
   const sourceIdentities = new Set();
   for (const source of input.sources) {
@@ -111,6 +110,7 @@ function freshnessFor(inventory, sources, evaluatedAt) {
 function reasonsFor(input, inventory, freshness, subsets) {
   const reasons = new Set();
   reasons.add("discovery-is-non-authorizing");
+  reasons.add("provenance-asserted-only");
   if (inventory.length === 0) reasons.add("no-routes-discovered");
   if (freshness.status === "stale") reasons.add("evidence-stale");
   if (freshness.status === "absent" && inventory.length > 0) reasons.add("source-freshness-absent");
@@ -142,19 +142,25 @@ function assertBuiltinAdapter(harness, adapter) {
 function assertFreshnessInterval(observedAt, freshUntil, evaluatedAt, label) {
   if (observedAt === undefined && freshUntil === undefined) return;
   if (observedAt === undefined || freshUntil === undefined) throw new TypeError(`${label} freshness interval is incomplete`);
-  const observed = Date.parse(observedAt);
-  const expiry = Date.parse(freshUntil);
+  const observed = parseCanonicalTimestamp(observedAt, `${label} observation`);
+  const expiry = parseCanonicalTimestamp(freshUntil, `${label} freshness expiry`);
   if (observed > evaluatedAt) throw new TypeError(`${label} observation is future-dated`);
   if (expiry <= observed || expiry - observed > MAX_FRESHNESS_MS) throw new TypeError(`${label} freshness interval is invalid`);
 }
 
+function parseCanonicalTimestamp(value, label) {
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp) || new Date(timestamp).toISOString() !== value) throw new TypeError(`${label} timestamp is invalid`);
+  return timestamp;
+}
+
 function validateReportSemantics(report) {
   if (report.harness === null || report.adapter === null) {
-    if (report.status !== "failed" || report.mode !== "observed" || report.harness !== null || report.adapter !== null || report.sources.length !== 0 || report.inventory.length !== 0 || report.provenanceDigest !== null) throw new TypeError("coverage refusal report is inconsistent");
+    if (JSON.stringify(canonical(report)) !== JSON.stringify(canonical(failureReport()))) throw new TypeError("coverage refusal report is inconsistent");
     return;
   }
   assertBuiltinAdapter(report.harness, report.adapter);
-  const evaluatedAt = Date.parse(report.freshness.evaluatedAt);
+  const evaluatedAt = parseCanonicalTimestamp(report.freshness.evaluatedAt, "coverage evaluation");
   const sourceIdentities = new Set();
   for (const source of report.sources) {
     if (sourceIdentities.has(source.sourceInstanceIdentityDigest)) throw new TypeError("coverage source identities are duplicated");
@@ -162,6 +168,8 @@ function validateReportSemantics(report) {
     assertFreshnessInterval(source.observedAt ?? undefined, source.freshUntil ?? undefined, evaluatedAt, "coverage source");
   }
   const ids = new Set();
+  const orderedIds = routeIds(report.inventory);
+  if (JSON.stringify(report.inventory.map((route) => route.routeId)) !== JSON.stringify(orderedIds)) throw new TypeError("coverage inventory order is inconsistent");
   for (const route of report.inventory) {
     if (route.hostId !== report.harness.id || ids.has(route.routeId) || route.routing !== routingFor(route)) throw new TypeError("coverage route mapping is inconsistent");
     ids.add(route.routeId);
@@ -180,8 +188,12 @@ function validateReportSemantics(report) {
   const expectedFreshness = freshnessFor(report.inventory, report.sources, report.freshness.evaluatedAt);
   if (JSON.stringify(report.freshness) !== JSON.stringify(expectedFreshness)) throw new TypeError("coverage freshness is inconsistent");
   for (const claim of Object.values(report.claims)) if ((claim.status === "verified") !== (claim.evidenceDigest !== null)) throw new TypeError("coverage claim evidence is inconsistent");
-  if (report.status !== "failed" || report.mode !== "observed" || !report.reasonCodes.includes("discovery-is-non-authorizing")) throw new TypeError("discovery coverage cannot authorize execution");
-  if (report.provenanceDigest !== provenanceDigest(report)) throw new TypeError("coverage report provenance is invalid");
+  const expectedReasons = reasonsFor(report, report.inventory, report.freshness, mappings);
+  if (JSON.stringify(report.reasonCodes) !== JSON.stringify(expectedReasons)) throw new TypeError("coverage reasons are inconsistent");
+  if (report.status !== "failed" || report.mode !== "observed") throw new TypeError("discovery coverage cannot authorize execution");
+  const expectedProvenance = { status: "asserted", adapter: "asserted", sources: "asserted", routeEvidenceDigest: routeEvidenceDigest(report.inventory) };
+  if (JSON.stringify(report.provenance) !== JSON.stringify(expectedProvenance)) throw new TypeError("coverage provenance claim is inconsistent");
+  if (report.integrityDigest !== integrityDigest(report)) throw new TypeError("coverage report integrity is invalid");
 }
 
 function canonical(value) {
@@ -190,9 +202,18 @@ function canonical(value) {
   return value;
 }
 
-function provenanceDigest(report) {
-  const payload = { v: "reelier.coverage-envelope-provenance/v0", harness: report.harness, adapter: report.adapter, sources: report.sources, inventory: report.inventory, claims: report.claims };
-  return `sha256:${createHash("sha256").update(JSON.stringify(canonical(payload)), "utf8").digest("hex")}`;
+function routeEvidenceDigest(routes) {
+  const evidence = [...routes]
+    .sort((left, right) => Buffer.from(left.routeId).compare(Buffer.from(right.routeId)))
+    .map((route) => [route.routeId, route.evidenceDigest]);
+  return `sha256:${createHash("sha256").update(JSON.stringify({ v: "reelier.route-evidence-commitment/v0", evidence }), "utf8").digest("hex")}`;
+}
+
+function integrityDigest(report) {
+  const { integrityDigest: ignored, ...payload } = report;
+  void ignored;
+  const envelope = { v: "reelier.coverage-envelope-integrity/v0", report: payload };
+  return `sha256:${createHash("sha256").update(JSON.stringify(canonical(envelope)), "utf8").digest("hex")}`;
 }
 
 function failureReport() {
@@ -203,7 +224,7 @@ function failureReport() {
     wrappedRoutes: [], unwrappedRoutes: [], directHttpRoutes: [], privateHostRoutes: [], mode: "observed",
     freshness: { status: "absent", evaluatedAt: "1970-01-01T00:00:00.000Z", oldestObservedAt: null, freshUntil: null },
     claims: { topology: { status: "absent", evidenceDigest: null }, completeness: { status: "absent", evidenceDigest: null } },
-    reasonCodes: ["input-unavailable", "no-routes-discovered"], nonClaims: NON_CLAIMS, provenanceDigest: null,
+    reasonCodes: ["input-unavailable", "no-routes-discovered"], nonClaims: NON_CLAIMS, provenance: null, integrityDigest: null,
   };
 }
 

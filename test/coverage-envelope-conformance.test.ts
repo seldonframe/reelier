@@ -102,6 +102,19 @@ function routeEvidenceDigest(routes: readonly RouteCoverageV1[]) {
   return `sha256:${createHash("sha256").update(JSON.stringify({ v: "reelier.route-evidence-commitment/v0", evidence }), "utf8").digest("hex")}`;
 }
 
+function canonical(value: any): any {
+  if (Array.isArray(value)) return value.map(canonical);
+  if (value !== null && typeof value === "object") return Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonical(value[key])]));
+  return value;
+}
+
+function withIntegrity(report: any) {
+  const { integrityDigest: ignored, ...payload } = report;
+  void ignored;
+  const integrityDigest = `sha256:${createHash("sha256").update(JSON.stringify(canonical({ v: "reelier.coverage-envelope-integrity/v0", report: payload })), "utf8").digest("hex")}`;
+  return { ...payload, integrityDigest };
+}
+
 function freshSource(kind: "host-config" | "plugin-manifest", identity: string, content: string) {
   return {
     kind, sourceInstanceIdentityDigest: digest(identity), contentDigest: digest(content), evidenceStatus: "verified",
@@ -146,7 +159,7 @@ test("catalog-only, stale, and unwrapped route evidence are explicit non-success
   const catalog: RouteCoverageV1 = { ...verifiedRoute(), discoverySource: "openapi", transport: "https", observation: "unknown", replay: "candidate", outcome: "unknown", enforcement: "absent", topologyEvidenceDigest: null, reasonCodes: ["catalog-is-non-authorizing"] };
   const catalogReport = coverage.buildCoverageEnvelope(envelopeInput("codex", [catalog]));
   assert.equal(catalogReport.status, "failed");
-  assert.deepEqual(catalogReport.reasonCodes, ["catalog-only-evidence", "completeness-unchecked", "discovery-is-non-authorizing", "route-enforcement-absent", "route-observation-unknown", "route-routing-unknown", "source-freshness-absent", "topology-unchecked"]);
+  assert.deepEqual(catalogReport.reasonCodes, ["catalog-only-evidence", "completeness-unchecked", "discovery-is-non-authorizing", "provenance-asserted-only", "route-enforcement-absent", "route-observation-unknown", "route-routing-unknown", "source-freshness-absent", "topology-unchecked"]);
 
   const stale = coverage.buildCoverageEnvelope(envelopeInput("codex", [{ ...verifiedRoute(), freshUntil: new Date(now.getTime() + 1).toISOString() }], {
     evaluatedAt: new Date(now.getTime() + 2).toISOString(), sources: [freshSource("host-config", "a", "b")],
@@ -214,7 +227,7 @@ test("the input contract binds built-in adapter identity and adapter-produced ro
   const report = coverage.buildCoverageEnvelope(envelopeInput("codex", [verifiedRoute()]));
   assert.match(report.integrityDigest, /^sha256:[0-9a-f]{64}$/);
   assert.equal(coverage.validateCoverageEnvelopeReport({ ...report, harness: { ...report.harness, instanceIdentityDigest: digest("8") } }), false);
-  assert.equal(coverage.validateCoverageEnvelopeReport({ ...report, inventory: [{ ...report.inventory[0], evidenceDigest: digest("f") }] }), false);
+  assert.equal(coverage.validateCoverageEnvelopeReport(withIntegrity({ ...report, inventory: [{ ...report.inventory[0], evidenceDigest: digest("f") }] })), false);
 });
 
 test("source freshness is bounded and future-dated route or source observations are rejected", () => {
@@ -242,7 +255,7 @@ test("report validation recomputes reasons, route mappings, evidence, claims, an
   assert.equal(coverage.validateCoverageEnvelopeReport({ ...report, wrappedRoutes: [] }), false);
   assert.equal(coverage.validateCoverageEnvelopeReport({ ...report, directHttpRoutes: [report.inventory[0].routeId] }), false);
   assert.equal(coverage.validateCoverageEnvelopeReport({ ...report, claims: { ...report.claims, topology: { status: "verified", evidenceDigest: null } } }), false);
-  assert.equal(coverage.validateCoverageEnvelopeReport({ ...report, reasonCodes: report.reasonCodes.filter((reason: string) => reason !== "source-freshness-absent") }), false);
+  assert.equal(coverage.validateCoverageEnvelopeReport(withIntegrity({ ...report, reasonCodes: report.reasonCodes.filter((reason: string) => reason !== "source-freshness-absent") })), false);
   assert.equal(coverage.validateCoverageEnvelopeReport({ ...report, status: "passed", mode: "enforced", reasonCodes: [] }), false);
   assert.equal(coverage.validateCoverageEnvelopeReport({ ...report, provenance: { ...report.provenance, status: "verified" } }), false);
 });
