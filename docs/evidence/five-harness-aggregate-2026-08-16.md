@@ -1,48 +1,81 @@
-# Five-harness aggregate — 2026-08-16
+# Five-harness aggregate - 2026-08-16
 
-The aggregate semantic matrix was rerun from the explicit manifest at
-`docs/evidence/agent-adapter-mcp-probes-2026-08-16/manifest.json`. The public Reelier MCP
-authority channel was exercised hermetically for all five harness identities, and every semantic
-vector passed. The aggregate remains `failed` intentionally: those probes prove the public channel
-and pre-freeze refusal semantics, not that the corresponding external harness dispatched through
-that channel.
+The semantic matrix was rerun from the explicit manifest at
+`docs/evidence/agent-adapter-mcp-probes-2026-08-16/manifest.json` after the clean Linux suite
+was repaired and reproduced.
 
-| Harness | Evidence attached | Aggregate status | What is proved | What remains unproved |
-| --- | --- | --- | --- | --- |
-| Codex | Hermetic public-MCP probe plus genuine Codex init/up observation | `observed-only` / `not-tested` | Public semantic vector; real Codex Linux init/up run and suite result | Codex semantic adapter execution, governed execution, route completeness |
-| Claude Code | Hermetic public-MCP probe plus genuine live route/authority observation | `observed-only` / `not-tested` | Public semantic vector; real route inventory and Linux-only refusal | Claude Code semantic adapter execution, governed execution, route completeness |
-| Eve | Hermetic public-MCP probe, detached continuity capture, and real Eve 0.37.1 process/tool-loop capture | `process-boundary` / `not-tested` | Shared contract binding, dynamic job discovery/load, attenuated delegation, authenticated Path C dispatch, one reservation, one verified receipt, and status read | External Eve-host adapter coverage and production topology; semantic matrix remains non-passing because this evidence is not the v0 candidate surface |
-| Grok Build | Hermetic public-MCP probe; Grok Build CLI not installed or targetable | `fixture-only` / `not-tested` | Public semantic vector only | External Grok Build adapter execution, governed execution, completeness |
-| Grok Bot | Hermetic public-MCP probe plus real session response and machine-checked capture | `fixture-only` / `not-tested` | Public semantic vector; external session honestly reported no local Reelier repository or adapter contract | External adapter execution, dispatch refusal, enforcement, coverage, outcome |
+The aggregate remains `failed` intentionally. The five rows are still fixture-only or observed-only
+adapter evidence; the process-boundary probes prove that the shared Reelier contract is callable,
+not that each external harness invoked it. No `unknown`, `unchecked`, `absent`, or `not-tested`
+state is upgraded to success.
 
-The Grok Bot capture is classified `observed-only` and is non-passing by design. Its response says
-the session stopped without simulating evidence. The aggregate therefore preserves the distinction
-between a real observation and a successful Reelier adapter execution.
+| Harness | Current result | What is proved | What remains unproved |
+| --- | --- | --- | --- |
+| Codex | `fixture-only` / `not-tested` | Shared semantic vector and genuine Codex init/up observation | Codex invoking the live adapter, governed execution, route completeness |
+| Claude Code | `fixture-only` / `not-tested` | Shared semantic vector and genuine route/authority observation | Claude Code invoking the live adapter, governed execution, route completeness |
+| Eve | `fixture-only` / `not-tested` in the v0 matrix | Real Eve 0.37.1 process/tool loop, shared contract binding, dynamic job discovery/load, attenuated delegation, authenticated Path C dispatch, reservation, receipt, and continuity | External Eve-host adapter coverage and production topology; the v0 candidate surface remains non-passing |
+| Grok Build | `fixture-only` / `not-tested` | Shared semantic vector | Live Grok Build adapter execution and coverage; the local CLI was unavailable |
+| Grok Bot | `fixture-only` / `not-tested` | Shared semantic vector and a real session observation that did not simulate Reelier evidence | Live adapter execution, governed refusal, enforcement, coverage, outcome |
 
-The Codex and Claude Code observations are also non-passing by design. Codex performed a genuine
-repository/init-up verification but did not invoke the shared semantic adapter. Claude Code
-performed a genuine route/authority probe but the Authority Cell refused on Windows before the
-semantic channel became callable. Neither observation upgrades the live adapter gate.
+## Clean Linux verification
 
-The process-boundary probes for all five identities now exist under
-`docs/evidence/agent-adapter-process-probes-2026-08-16/`. They all bind the same frozen Adapter
-Contract v1 digest and pass the local refusal vector. They do not prove that Codex, Claude Code,
-Eve, Grok Build, or Grok Bot themselves invoked the server. Codex's desktop task confirmed the
-configured MCP server was not dynamically registered; Grok Build remains unavailable locally; and
-the real Grok Bot capture remains an explicit unsupported/not-tested result.
+Fresh Node 24 Linux clone, dependency install, Reelier build, Eve fixture install, and the full
+repository test suite completed:
 
-The disposable GitHub branch/readback/retry/protected-main test has not started. The approved
-target is `fixlyai/soloproof`; its `main` branch currently has no protection, so branch push/readback
-can be tested first and protected-main requires an explicit repository protection setup.
+```text
+tests     3448
+passed    3440
+failed    0
+cancelled 0
+skipped   8   (platform-specific)
+exit      0
+```
 
-Verification in this pass:
+The two blockers found in the first run were fixed: the Eve fixture now declares its isolated MCP
+SDK dependency, Linux detached-process cleanup resolves the actual process group, and the cleanup
+test distinguishes a killed zombie from a live descendant. The N100 authority convergence case
+then passed in the full suite.
 
-- focused conformance: 54 passed, 0 failed;
-- clean Linux suite from the conformance worktree: 3,427 passed, 5 failed, 8 skipped. The failures
-  are authority bootstrap readiness, two ledger/process-isolation timing cases, Eve package/native
-  process startup/cleanup cases, and are not promoted to adapter success.
-- a corrected clean-install attempt rebuilt Reelier before installing the Eve fixture, fixing the
-  `reelier/continuity` package-resolution error; the Eve process-boundary matrix then exceeded its
-  bounded runtime and the isolated live-contract attempt failed Eve health startup in Docker.
-- the Windows-host Eve capture is independently machine-checked and passed; Linux reproducibility
-  remains blocked by the explicit process startup/cleanup failures above.
+## GitHub Path A live-proxy proof
+
+Separate from the five-row semantic aggregate, the existing Reelier live proxy was exercised against
+the approved disposable repository `fixlyai/soloproof` and branch
+`reelier/conformance-20260816`.
+
+- exactly one provider write changed the predetermined file;
+- the exact commit, tree, blob, and UTF-8 content were read back;
+- the same request key returned `duplicate` with effect delta `0`;
+- the persisted artifact checker passed 20 checks and the focused tests passed 6/6;
+- the live trace is classified as Reelier Path A (`mcp --wrap`), not Path C.
+
+Evidence: `docs/evidence/github-live-proxy-conformance-2026-08-16/`.
+
+The Path A evidence does not claim complete write coverage, semantic content safety, a Linux
+Authority Cell, pull-request creation, review, or merge.
+
+## Protected-main substrate result
+
+The separate disposable GitHub substrate test also completed against `fixlyai/soloproof`:
+
+- direct push to protected `main` was rejected;
+- exact branch readback and retry were proved;
+- a normal PR merge was blocked while one approval was required;
+- a temporary zero-approval policy profile merged through the protected PR path;
+- protection was restored with administrator enforcement and one required approval.
+
+This substrate result used raw Git/GitHub operations, not a Reelier Authority Cell. It therefore
+proves GitHub branch protection and readback behavior, not Reelier-governed protected-main merge.
+
+## Acceptance status
+
+The current honest claim is:
+
+> Reelier has one shared delegation contract, a reproduced Eve process/tool-loop proof, a real
+> Path A live-proxy GitHub write with exact readback and safe retry, and a clean Linux suite. The
+> remaining four harnesses are not yet live contract executions, and Path C/protected-main merge
+> authority is not yet proven.
+
+The next gate is to attach genuine external Codex, Claude Code, Grok Build, and Grok Bot contract
+invocations (or record explicit unsupported results), then run the bounded 1 -> 5 -> 20 -> 100
+scale experiment. Do not claim universal harness coverage or autonomous protected-main merging
+until those boundaries have their own machine-checked evidence.
