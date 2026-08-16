@@ -22,8 +22,16 @@ test("real Eve 0.37.1 preserves Reelier continuity across process and session bo
       root,
     ], { stdio: ["ignore", "pipe", "pipe"] });
     let diagnostics = "";
-    run.stdout?.on("data", (chunk) => { diagnostics += String(chunk); });
-    run.stderr?.on("data", (chunk) => { diagnostics += String(chunk); });
+    run.stdout?.on("data", (chunk) => {
+      const text = String(chunk);
+      diagnostics += text;
+      if (process.env.REELIER_EVE_MATRIX_DIAGNOSTICS === "1") process.stderr.write(`[eve-child:stdout] ${text}`);
+    });
+    run.stderr?.on("data", (chunk) => {
+      const text = String(chunk);
+      diagnostics += text;
+      if (process.env.REELIER_EVE_MATRIX_DIAGNOSTICS === "1") process.stderr.write(`[eve-child:stderr] ${text}`);
+    });
     const code = await new Promise<number | null>((resolveExit, reject) => {
       run.once("error", reject);
       run.once("close", resolveExit);
