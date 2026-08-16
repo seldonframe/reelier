@@ -5,22 +5,20 @@ import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import test from "node:test";
 
-test("Linux Eve cleanup kills a SIGTERM-resistant descendant after its launcher exits", { skip: process.platform === "linux" ? false : "requires POSIX process groups" }, async () => {
+test("Linux Eve cleanup kills a SIGTERM-resistant detached descendant while its launcher is alive", { skip: process.platform === "linux" ? false : "requires POSIX process groups" }, async () => {
   const moduleUrl = pathToFileURL(resolve("conformance/continuity-adapter/v1/eve-fixture/scripts/eve-process.mjs")).href;
   const { stopEveProcess } = await import(moduleUrl) as { stopEveProcess(child: ReturnType<typeof spawn>): Promise<void> };
   const leader = spawn(process.execPath, ["--input-type=module", "--eval", [
     'import { spawn } from "node:child_process";',
-    'const descendant = spawn(process.execPath, ["--input-type=module", "--eval", "process.on(\\"SIGTERM\\", () => {});process.send?.(\\"ready\\");setInterval(() => {}, 1_000)"], { stdio: ["inherit", "inherit", "inherit", "ipc"] });',
-    'descendant.once("message", () => { process.stdout.write(`${descendant.pid}\\n`); process.exit(0); });',
+    'const descendant = spawn(process.execPath, ["--input-type=module", "--eval", "process.on(\\"SIGTERM\\", () => {});process.send?.(\\"ready\\");setInterval(() => {}, 1_000)"], { stdio: ["inherit", "inherit", "inherit", "ipc"], detached: true });',
+    'descendant.once("message", () => { process.stdout.write(`${descendant.pid}\\n`); setInterval(() => {}, 1_000); });',
   ].join("")], { detached: true, stdio: ["ignore", "pipe", "pipe"] });
   assert.ok(leader.pid);
   const leaderPid = leader.pid;
-  const leaderExit = once(leader, "exit");
   try {
     const descendantPid = Number(String((await once(leader.stdout!, "data"))[0]).trim());
     assert.equal(Number.isSafeInteger(descendantPid) && descendantPid > 0, true);
-    await leaderExit;
-    assert.notEqual(leader.exitCode, null);
+    assert.equal(leader.exitCode, null);
     assert.equal(processExists(descendantPid), true);
 
     const closePromise = once(leader, "close").then(() => true);

@@ -81,11 +81,15 @@ export async function stopEveProcess(child) {
         exited = await forcedExit;
       }
     } else {
+      const descendantGroups = await snapshotDescendantGroups(exactPid);
       signalProcessGroup(exactPid, "SIGTERM");
+      signalGroups(descendantGroups, "SIGTERM");
       if (!await waitForProcessGroupExit(exactPid, 5_000)) {
         signalProcessGroup(exactPid, "SIGKILL");
       }
+      signalGroups(descendantGroups, "SIGKILL");
       assert.equal(await waitForProcessGroupExit(exactPid, 5_000), true, `Eve process group ${exactPid} survived forced stop`);
+      assert.equal(await waitForPidsExit(descendantGroups.pids, 5_000), true, `Eve descendant process tree survived forced stop`);
       const launcherExit = waitForExit(child, 5_000);
       closeLauncherStreams(child);
       exited = await launcherExit;
@@ -526,6 +530,38 @@ async function forceCloseListener(baseUrl) {
 async function waitForPath(path) { for (let attempt = 0; attempt < 600; attempt += 1) { try { await access(path); return; } catch {} await delay(50); } throw new Error(`expected crash-cut marker was not written: ${path}`); }
 function signalProcessGroup(pid, signal) { try { process.kill(-pid, signal); } catch (error) { if (error?.code !== "ESRCH") throw error; } }
 function processGroupExists(pid) { try { process.kill(-pid, 0); return true; } catch (error) { if (error?.code === "ESRCH") return false; throw error; } }
+async function snapshotDescendantGroups(rootPid) {
+  const records = new Map();
+  let entries;
+  try { entries = await readdir("/proc", { withFileTypes: true }); } catch { return { pids: [], groups: new Set() }; }
+  await Promise.all(entries.filter((entry) => /^\d+$/u.test(entry.name)).map(async (entry) => {
+    try {
+      const text = await readFile(`/proc/${entry.name}/stat`, "utf8");
+      const closing = text.lastIndexOf(")");
+      const fields = text.slice(closing + 2).split(" ");
+      const pid = Number(entry.name);
+      const parent = Number(fields[1]);
+      const group = Number(fields[2]);
+      if (Number.isSafeInteger(pid) && Number.isSafeInteger(parent) && Number.isSafeInteger(group)) records.set(pid, { parent, group });
+    } catch {}
+  }));
+  const pids = [];
+  const groups = new Set();
+  const pending = [rootPid];
+  while (pending.length > 0) {
+    const parent = pending.shift();
+    for (const [pid, record] of records) {
+      if (record.parent !== parent || pids.includes(pid)) continue;
+      pids.push(pid);
+      groups.add(record.group);
+      pending.push(pid);
+    }
+  }
+  return { pids, groups };
+}
+function signalGroups(snapshot, signal) { for (const group of snapshot.groups) signalProcessGroup(group, signal); }
+async function waitForPidsExit(pids, timeout) { const deadline = Date.now() + timeout; while (Date.now() < deadline) { if (pids.every((pid) => !processExists(pid))) return true; await delay(25); } return pids.every((pid) => !processExists(pid)); }
+function processExists(pid) { try { process.kill(pid, 0); return true; } catch (error) { if (error?.code === "ESRCH") return false; throw error; } }
 async function waitForProcessGroupExit(pid, timeout) { const deadline = Date.now() + timeout; while (Date.now() < deadline) { if (!processGroupExists(pid)) return true; await delay(25); } return !processGroupExists(pid); }
 async function waitForExit(child, timeout) {
   if (child.exitCode !== null || child.signalCode !== null) return true;
