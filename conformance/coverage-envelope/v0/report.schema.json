@@ -65,10 +65,10 @@
       "properties": { "status": { "enum": ["verified", "failed", "unchecked", "absent", "pending"] }, "evidenceDigest": { "anyOf": [{ "$ref": "#/$defs/digest" }, { "type": "null" }] } }
     },
     "provenance": {
-      "type": "object", "additionalProperties": false, "required": ["status", "adapter", "sources", "routeEvidenceDigest"],
+      "type": "object", "additionalProperties": false, "required": ["status", "adapter", "sources", "routeEvidenceDigest", "inputCommitmentDigest"],
       "properties": {
         "status": { "const": "asserted" }, "adapter": { "const": "asserted" }, "sources": { "const": "asserted" },
-        "routeEvidenceDigest": { "$ref": "#/$defs/digest" }
+        "routeEvidenceDigest": { "$ref": "#/$defs/digest" }, "inputCommitmentDigest": { "$ref": "#/$defs/digest" }
       }
     },
     "routeIds": { "type": "array", "maxItems": 4096, "uniqueItems": true, "items": { "$ref": "#/$defs/id" } },
