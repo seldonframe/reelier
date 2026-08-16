@@ -12,6 +12,9 @@ const aggregate = await import(pathToFileURL(resolve("conformance/aggregate/v0/c
 const Ajv2020 = createRequire(import.meta.url)("ajv/dist/2020").default;
 const aggregateSchema = JSON.parse(readFileSync(resolve("conformance/aggregate/v0/report.schema.json"), "utf8"));
 const validateStandaloneAggregate = new Ajv2020({ allErrors: true, strict: true }).compile(aggregateSchema);
+const validateStandaloneAgentSource = new Ajv2020({ allErrors: true, strict: true }).compile(
+  aggregateSchema.$defs.agentAdapterSourceReport ?? {},
+);
 
 const agentCandidate = JSON.parse(readFileSync(resolve("conformance/agent-adapter/v0/fixtures/grok-build-observed.json"), "utf8"));
 const agentReport = agent.checkCandidate(agentCandidate);
@@ -80,6 +83,22 @@ test("aggregate rejects an agent report with an unexpected top-level property", 
   const report = aggregate.aggregateReports([{ harnessId: "xai.grok-build", adapterPath: "agent-adapter/v0", report: forged }]);
   assert.equal(report.harnesses[0].overallStatus, "unsupported");
   assert.equal(report.status, "failed");
+});
+
+test("aggregate closes the agent-adapter source report check vector", () => {
+  const mutations = [
+    ["invented id", (report: any) => { report.checks[0].id = "invented-passing-check"; }],
+    ["duplicate and missing id", (report: any) => { report.checks[1].id = report.checks[0].id; }],
+    ["wrong passing detail", (report: any) => { report.checks[0].detail = "invented passing detail"; }],
+    ["inconsistent source status", (report: any) => { report.status = "failed"; }],
+  ] as const;
+  for (const [label, mutate] of mutations) {
+    const forged = structuredClone(agentReport);
+    mutate(forged);
+    assert.equal(validateStandaloneAgentSource(forged), false, label);
+    const report = aggregate.aggregateReports([{ harnessId: "xai.grok-build", adapterPath: "agent-adapter/v0", report: forged }]);
+    assert.equal(report.harnesses[0].overallStatus, "unsupported", label);
+  }
 });
 
 test("unknown-like aggregate states are never passing", () => {
