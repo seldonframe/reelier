@@ -280,6 +280,9 @@ test("report validation rejects a recomputed route status upgrade without the or
     ...report.inventory[0], observation: "observed", enforcement: "verified",
     topologyEvidenceDigest: digest("d"), reasonCodes: ["wrapped-route-observed"], routing: "wrapped",
   };
+  const { routing: ignoredRouting, ...forgedRoute } = upgradedRoute;
+  void ignoredRouting;
+  const forgedInput = { ...input, routes: [forgedRoute], routeEvidenceDigest: routeEvidenceDigest([forgedRoute as RouteCoverageV1]) };
   const upgraded = withIntegrity({
     ...report,
     inventory: [upgradedRoute],
@@ -288,6 +291,11 @@ test("report validation rejects a recomputed route status upgrade without the or
       "completeness-unchecked", "discovery-is-non-authorizing", "provenance-asserted-only",
       "source-freshness-absent", "topology-unchecked",
     ],
+    provenance: {
+      ...report.provenance,
+      routeEvidenceDigest: forgedInput.routeEvidenceDigest,
+      inputCommitmentDigest: inputCommitmentDigest(forgedInput),
+    },
   });
 
   assert.equal(coverage.validateCoverageEnvelopeReport(upgraded, input), false);
@@ -296,10 +304,13 @@ test("report validation rejects a recomputed route status upgrade without the or
 test("report validation rejects a recomputed claim upgrade without the original input commitment", () => {
   const input = envelopeInput("codex", [verifiedRoute()]);
   const report = coverage.buildCoverageEnvelope(input);
+  const forgedClaims = { ...report.claims, topology: { status: "verified", evidenceDigest: digest("e") } };
+  const forgedInput = { ...input, claims: forgedClaims };
   const upgraded = withIntegrity({
     ...report,
-    claims: { ...report.claims, topology: { status: "verified", evidenceDigest: digest("e") } },
+    claims: forgedClaims,
     reasonCodes: report.reasonCodes.filter((reason: string) => reason !== "topology-unchecked"),
+    provenance: { ...report.provenance, inputCommitmentDigest: inputCommitmentDigest(forgedInput) },
   });
 
   assert.equal(coverage.validateCoverageEnvelopeReport(upgraded, input), false);
