@@ -36,13 +36,16 @@ not used by the CLI. Use `missingCandidate: true` only when no candidate exists.
 `not-tested`, with no artifact or binding digest, and never fabricates candidate data.
 
 Raw payloads are parsed only for identity and secret rejection and are never echoed into reports.
-URL, URI, endpoint, header, cookie, auth, token, secret, password, API-key, access-key, and credential
-field-name variants are rejected recursively. URL-like values and common `Bearer`, `sk-`, `ghp_`,
-`xox`, `npm_`, `eyJ`, private-key, and AWS-key forms are also rejected recursively. The checker does
-not silently redact them. Remove transport data and secrets at the harness before capture. For a
-supplied invalid artifact, the output retains at most its kind and a checker-computed raw digest;
-it never retains the raw payload. Valid supplied reports retain only artifact kind, raw digest,
-identity binding digest, and their own integrity digest.
+URL, URI, endpoint, transport, protocol, host, port, socket, connection, header, cookie, auth, token,
+secret, password, API-key, access-key, and credential field-name variants are rejected recursively.
+The required candidate identity field `descriptor.agentHost` is the only host-key exception. Any
+`scheme://` value, connection URI, and common `Basic`, `Bearer`, `sk-`, `ghp_`, `xox`, `npm_`,
+`eyJ`, credential-assignment, private-key, or AWS-key form is also rejected recursively. The checker
+does not silently redact them. Remove transport data and secrets at the harness before capture. For
+a supplied invalid artifact, the output retains at most its kind and a checker-computed raw digest;
+it never retains the raw payload. Valid semantic reports with none of those fields remain accepted
+at this non-passing boundary and retain only artifact kind, raw digest, identity binding digest, and
+their own integrity digest.
 
 Malformed, stale, identity-mismatched, digest-mismatched, and secret-bearing supplied inputs emit
 `status: "failed"`, `classification: "invalid-candidate"`, and a specific reason code. They never
@@ -56,5 +59,7 @@ Run locally after compiling tests:
 node conformance/candidate-capture/v0/check.mjs <capture.json>
 ```
 
-Exit code `1` means supplied evidence was classified non-passing or invalid, and `2` means CLI input
-was missing. Candidate capture v0 has no exit-code-0 report. No package script is added by Task 5.
+Exit code `1` means supplied evidence or the invocation was classified non-passing or invalid, and
+`2` means no candidate path argument was supplied. Extra arguments are invalid-candidate, never
+candidate-missing. Candidate capture v0 has no exit-code-0 report. No package script is added by
+Task 5.
