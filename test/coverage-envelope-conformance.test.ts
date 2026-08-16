@@ -256,7 +256,8 @@ test("report validation recomputes reasons, route mappings, evidence, claims, an
   assert.equal(coverage.validateCoverageEnvelopeReport({ ...report, directHttpRoutes: [report.inventory[0].routeId] }), false);
   assert.equal(coverage.validateCoverageEnvelopeReport({ ...report, claims: { ...report.claims, topology: { status: "verified", evidenceDigest: null } } }), false);
   assert.equal(coverage.validateCoverageEnvelopeReport(withIntegrity({ ...report, reasonCodes: report.reasonCodes.filter((reason: string) => reason !== "source-freshness-absent") })), false);
-  assert.equal(coverage.validateCoverageEnvelopeReport({ ...report, status: "passed", mode: "enforced", reasonCodes: [] }), false);
+  assert.equal(coverage.validateCoverageEnvelopeReport(withIntegrity({ ...report, status: "passed", mode: "enforced", reasonCodes: [] })), false);
+  assert.equal(coverage.validateCoverageEnvelopeReport(withIntegrity({ ...report, sources: [{ ...report.sources[0], evidenceStatus: "failed" }] })), false);
   assert.equal(coverage.validateCoverageEnvelopeReport({ ...report, provenance: { ...report.provenance, status: "verified" } }), false);
 });
 
