@@ -40,11 +40,6 @@ round-4 edit because it already closes `requestedMode` to `observed`. No `src/` 
 credential, provider, push, merge, formatter, or codemod was used. The pre-existing untracked
 `docs/superpowers/plans/2026-08-16-five-harness-conformance.md` remains untouched.
 
-Logical commits:
-
-- `1b672f3 test: expose recomputed coverage upgrades`
-- `4b8279d fix: bind coverage reports to original semantics`
-
 ## Test results
 
 ### RED — emitting build followed by the focused 12-test suite
@@ -102,18 +97,18 @@ Exit codes: `0`, `0`
 Verbatim focused-suite output:
 
 ```text
-✔ Codex and Claude discovery rows map to an observed envelope without gaining enforcement (25.9151ms)
-✔ catalog-only, stale, and unwrapped route evidence are explicit non-success (1.7518ms)
-✔ discovery-only completeness claims cannot override bypasses or unknown routing (0.5464ms)
-✔ unknown, uncovered, unchecked, absent, and pending evidence never passes (1.3268ms)
-✔ the discovery-only contract rejects an enforced request and labels asserted provenance honestly (1.2628ms)
-✔ the input contract binds built-in adapter identity and adapter-produced route evidence (1.0397ms)
-✔ source freshness is bounded and future-dated route or source observations are rejected (0.9752ms)
-✔ report validation recomputes reasons, route mappings, evidence, claims, and status invariants (0.973ms)
-✔ report validation rejects a recomputed route status upgrade without the original adapter input (0.5074ms)
-✔ report validation rejects a recomputed claim upgrade without the original input commitment (0.5375ms)
-✔ bypass reasons override conflicting wrapped evidence (0.3921ms)
-✔ CLI refusal remains a closed schema-valid non-success envelope (148.8016ms)
+✔ Codex and Claude discovery rows map to an observed envelope without gaining enforcement (24.779ms)
+✔ catalog-only, stale, and unwrapped route evidence are explicit non-success (1.6613ms)
+✔ discovery-only completeness claims cannot override bypasses or unknown routing (0.5785ms)
+✔ unknown, uncovered, unchecked, absent, and pending evidence never passes (1.4223ms)
+✔ the discovery-only contract rejects an enforced request and labels asserted provenance honestly (1.4106ms)
+✔ the input contract binds built-in adapter identity and adapter-produced route evidence (1.0675ms)
+✔ source freshness is bounded and future-dated route or source observations are rejected (0.9181ms)
+✔ report validation recomputes reasons, route mappings, evidence, claims, and status invariants (1.7182ms)
+✔ report validation rejects a recomputed route status upgrade without the original adapter input (0.6097ms)
+✔ report validation rejects a recomputed claim upgrade without the original input commitment (0.5994ms)
+✔ bypass reasons override conflicting wrapped evidence (0.4868ms)
+✔ CLI refusal remains a closed schema-valid non-success envelope (145.084ms)
 ℹ tests 12
 ℹ suites 0
 ℹ pass 12
@@ -121,7 +116,7 @@ Verbatim focused-suite output:
 ℹ cancelled 0
 ℹ skipped 0
 ℹ todo 0
-ℹ duration_ms 484.0515
+ℹ duration_ms 464.3571
 ```
 
 ### Source and test typechecks
@@ -150,7 +145,6 @@ Exit code: `0`
 Verbatim output:
 
 ```text
-warning: in the working copy of '.superpowers/sdd/task-3-coverage-envelope-brief.md', LF will be replaced by CRLF the next time Git touches it
 warning: in the working copy of '.superpowers/sdd/task-3-coverage-envelope-report.md', LF will be replaced by CRLF the next time Git touches it
 ```
 
