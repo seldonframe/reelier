@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
+import { createHash } from "node:crypto";
 
 const checker = await import(pathToFileURL(resolve("conformance/hermetic-outcome/v0/check.mjs")).href);
 const schema = JSON.parse(readFileSync(resolve("conformance/hermetic-outcome/v0/bundle.schema.json"), "utf8"));
@@ -39,6 +40,16 @@ function writeArtifact(directory: string, name: string, value: unknown) {
   writeFileSync(join(directory, name), `${JSON.stringify(value)}\n`, "utf8");
 }
 
+function canonical(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonical);
+  if (value !== null && typeof value === "object") return Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonical((value as Record<string, unknown>)[key])]));
+  return value;
+}
+
+function artifactDigest(value: unknown) {
+  return `sha256:${createHash("sha256").update(JSON.stringify(canonical(value)), "utf8").digest("hex")}`;
+}
+
 test("emits a deterministic closed reversible bundle using existing authority semantics", () => {
   const left = temporaryBundle();
   const right = temporaryBundle();
@@ -57,13 +68,21 @@ test("emits a deterministic closed reversible bundle using existing authority se
     assert.equal(delegation.principal.v, "reelier.principal/v1");
     assert.equal(delegation.sessionBinding.v, "reelier.authority-cell-session-binding/v1");
     assert.equal(delegation.sessionBinding.principalId, delegation.childGrant.grantee);
+    assert.equal(delegation.principal.id, delegation.childGrant.grantee);
     assert.equal(delegation.childGrant.parentDigest, delegation.parentCommitmentDigest);
+    assert.equal(delegation.parentCommitmentDigest, artifactDigest(delegation.parentGrant));
     assert.ok(delegation.childGrant.constraints.limits.maxEffectsPerWindow < delegation.parentGrant.constraints.limits.maxEffectsPerWindow);
+    assert.ok(delegation.childGrant.constraints.limits.maxEffectsPerSourceTrigger < delegation.parentGrant.constraints.limits.maxEffectsPerSourceTrigger);
+    assert.ok(delegation.childGrant.constraints.limits.maxBodyBytes < delegation.parentGrant.constraints.limits.maxBodyBytes);
+    assert.deepEqual(delegation.parentGrant.constraints.definitionAliases, ["hermetic_state_reset_v1", "hermetic_state_set_v1"]);
+    assert.deepEqual(delegation.childGrant.constraints.definitionAliases, ["hermetic_state_set_v1"]);
     assert.equal(delegation.signature.alg, "ed25519");
 
     assert.equal(loaded.dispatch.gateEvent.v, "reelier.gate-event/v1");
     assert.equal(loaded.dispatch.gateEvent.verdict, "accepted");
     assert.equal(loaded.dispatch.reservation.state, "reconciled");
+    assert.equal(loaded.dispatch.reservation.idempotencyKey, loaded.dispatch.decisionContext.requestKey);
+    assert.deepEqual(loaded.dispatch.attempts.map((attempt: any) => attempt.requestKey), [loaded.dispatch.decisionContext.requestKey, loaded.dispatch.decisionContext.requestKey]);
     assert.equal(loaded.providerState.acknowledgment.status, "acknowledged");
     assert.equal(loaded.providerState.postStateEvidence.confidence, "exact");
     assert.match(loaded.providerState.postStateEvidence.permitSnapshotDigest, /^sha256:[0-9a-f]{64}$/);
@@ -73,6 +92,12 @@ test("emits a deterministic closed reversible bundle using existing authority se
     assert.equal(loaded.receipt.v, "reelier.authority-receipt/v1");
     assert.equal(loaded.finalReport.status, "non-passing");
     assert.equal(loaded.finalReport.outcomeEvidence, "verified");
+    assert.equal(loaded.finalReport.receiptDigest, artifactDigest(loaded.receipt));
+    assert.equal(loaded.finalReport.delegationDigest, artifactDigest(loaded.delegation));
+    assert.equal(loaded.finalReport.providerStateDigest, artifactDigest(loaded.providerState));
+    assert.equal(loaded.finalReport.dispatchDigest, artifactDigest(loaded.dispatch));
+    assert.equal(loaded.finalReport.coverageDigest, artifactDigest(loaded.coverage));
+    assert.equal(loaded.finalReport.failureInjectionDigest, artifactDigest(loaded.failureInjection));
     assert.ok(loaded.finalReport.humanExceptions.includes("github-live-escalation-requires-operator"));
     assert.ok(loaded.finalReport.nonClaims.includes("production-safety-not-proved"));
   } finally {
@@ -149,6 +174,52 @@ test("rejects an invalid exact post-state verifier signature", () => {
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
+});
+
+test("rejects every tampered artifact join with a relationship-specific error", async (t) => {
+  const wrongDigest = `sha256:${"f".repeat(64)}`;
+  const cases: Array<{
+    name: string;
+    artifact: string;
+    mutate: (value: any) => void;
+    error: RegExp;
+  }> = [
+    { name: "final report receipt digest", artifact: "final-report.json", mutate: (value) => { value.receiptDigest = wrongDigest; }, error: /final report receipt digest/i },
+    { name: "final report delegation digest", artifact: "final-report.json", mutate: (value) => { value.delegationDigest = wrongDigest; }, error: /final report delegation digest/i },
+    { name: "final report provider-state digest", artifact: "final-report.json", mutate: (value) => { value.providerStateDigest = wrongDigest; }, error: /final report provider-state digest/i },
+    { name: "final report dispatch digest", artifact: "final-report.json", mutate: (value) => { value.dispatchDigest = wrongDigest; }, error: /final report dispatch digest/i },
+    { name: "final report coverage digest", artifact: "final-report.json", mutate: (value) => { value.coverageDigest = wrongDigest; }, error: /final report coverage digest/i },
+    { name: "final report failure-injection digest", artifact: "final-report.json", mutate: (value) => { value.failureInjectionDigest = wrongDigest; }, error: /final report failure-injection digest/i },
+    { name: "gate-event digest", artifact: "dispatch.json", mutate: (value) => { value.gateEvent.eventId = "gate_event_tampered"; }, error: /gate event digest/i },
+    { name: "provider response acknowledgment digest", artifact: "provider-state.json", mutate: (value) => { value.acknowledgment.providerEventId = "provider_event_tampered"; }, error: /provider response digest.*acknowledgment/i },
+    { name: "acknowledgment reservation", artifact: "provider-state.json", mutate: (value) => { value.acknowledgment.reservationId = "reservation_tampered"; }, error: /acknowledgment reservation.*dispatch reservation/i },
+    { name: "post-state dispatch digest", artifact: "provider-state.json", mutate: (value) => { value.postStateEvidence.dispatchRequestDigest = wrongDigest; }, error: /post-state dispatch request digest/i },
+    { name: "post-state permit digest", artifact: "provider-state.json", mutate: (value) => { value.postStateEvidence.permitSnapshotDigest = wrongDigest; }, error: /post-state permit snapshot digest/i },
+    { name: "parent grant commitment", artifact: "delegation.json", mutate: (value) => { value.parentGrant.grantee = "principal_tampered"; }, error: /parent commitment digest/i },
+    { name: "principal to child binding", artifact: "delegation.json", mutate: (value) => { value.principal.id = "principal_tampered"; }, error: /principal id.*child grantee/i },
+    { name: "principal to session binding", artifact: "delegation.json", mutate: (value) => { value.sessionBinding.principalId = "principal_tampered"; }, error: /principal id.*session principal/i },
+    { name: "max effects per window attenuation", artifact: "delegation.json", mutate: (value) => { value.childGrant.constraints.limits.maxEffectsPerWindow = 3; }, error: /maxEffectsPerWindow attenuation/i },
+    { name: "max effects per source trigger attenuation", artifact: "delegation.json", mutate: (value) => { value.childGrant.constraints.limits.maxEffectsPerSourceTrigger = 3; }, error: /maxEffectsPerSourceTrigger attenuation/i },
+    { name: "source-trigger allowlist attenuation", artifact: "delegation.json", mutate: (value) => { value.childGrant.constraints.definitionAliases.push("unapproved_source_trigger_v1"); }, error: /source-trigger allowlist attenuation/i },
+    { name: "max body bytes attenuation", artifact: "delegation.json", mutate: (value) => { value.childGrant.constraints.limits.maxBodyBytes = 4096; }, error: /maxBodyBytes attenuation/i },
+    { name: "original attempt request key", artifact: "dispatch.json", mutate: (value) => { value.attempts[0].requestKey = wrongDigest; }, error: /dispatch attempt request key.*decision context/i },
+    { name: "retry attempt request key", artifact: "dispatch.json", mutate: (value) => { value.attempts[1].requestKey = wrongDigest; }, error: /dispatch attempt request key.*decision context/i },
+    { name: "reservation idempotency key", artifact: "dispatch.json", mutate: (value) => { value.reservation.idempotencyKey = wrongDigest; }, error: /reservation idempotency key.*request key/i },
+  ];
+
+  for (const item of cases) await t.test(item.name, () => {
+    const directory = temporaryBundle();
+    try {
+      const artifact = readArtifact(directory, item.artifact);
+      item.mutate(artifact);
+      writeArtifact(directory, item.artifact, artifact);
+      const result = checker.checkHermeticOutcomeBundle(directory);
+      assert.equal(result.valid, false);
+      assert.ok(result.errors.some((error: string) => item.error.test(error)), result.errors.join("\n"));
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
 });
 
 test("rejects a missing artifact from the closed bundle", () => {
