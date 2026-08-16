@@ -92,7 +92,11 @@ function buildCore() {
   const decisionContextDigest = digest(decisionContext);
   const gateEvent = Object.freeze({ v: "reelier.gate-event/v1", eventId: "gate_event_fixture_1", at: AT, verdict: "accepted", reasonCode: "accepted", decisionContextDigest });
   const gateEventDigest = digest(gateEvent);
-  const postStateUnsigned = { v: "reelier.certification-post-state-evidence/v1", requestId: "request_fixture_1", dispatchRequestDigest: dispatchedRequestDigest, expectedProjectionDigest: digest(postState), observedProjectionDigest: digest(postState), observationMethod: "hermetic-authoritative-read", observedAt: AT, confidence: "exact", signerId: "reconciliation_fixture" };
+  const postStateUnsigned = {
+    v: "reelier.certification-post-state-evidence/v1", requestId: "request_fixture_1", dispatchRequestDigest: dispatchedRequestDigest, permitSnapshotDigest: digest(gateEvent),
+    expectedProjectionDigest: digest(postState), preSourceBundleDigest: null, projectionSchemaId: "reelier.hermetic-provider-state-projection/v0", projectionSchemaDigest: digest({ resourceId: "string", value: ["off", "on"], revision: "integer" }),
+    preProjectionDigest: digest(preState), observedProjectionDigest: digest(postState), observationMethod: "hermetic-authoritative-read", observedAt: AT, confidence: "exact", signerId: "operator_fixture",
+  };
   const postStateEvidence = Object.freeze({ ...postStateUnsigned, signature: signature(postStateUnsigned) });
   const providerState = Object.freeze({ v: "reelier.hermetic-provider-state/v0", preState, postState, restoredState: preState, acknowledgment, postStateEvidence, providerEffectCount: 1, rollbackEffectCount: 1 });
   const dispatch = Object.freeze({
@@ -179,6 +183,10 @@ export function checkHermeticOutcomeBundle(directory) {
 
   const expectedPostDigest = digest(bundle.providerState?.postState);
   if (bundle.providerState?.postStateEvidence?.expectedProjectionDigest !== expectedPostDigest || bundle.providerState?.postStateEvidence?.observedProjectionDigest !== expectedPostDigest || !same(bundle.providerState?.postState, expected.providerState.postState)) errors.push("provider post-state projection mismatch");
+  const { signature: postSignature, ...postStateUnsigned } = bundle.providerState?.postStateEvidence ?? {};
+  let postSignatureValid = false;
+  try { postSignatureValid = verify(null, bytes(postStateUnsigned), createPublicKey({ key: Buffer.from(bundle.delegation.publicKey, "base64"), format: "der", type: "spki" }), Buffer.from(postSignature.sig, "base64")); } catch { postSignatureValid = false; }
+  if (!postSignatureValid) errors.push("post-state verifier signature is invalid");
   if (!same(bundle.providerState?.restoredState, bundle.providerState?.preState)) errors.push("reversible transition did not restore pre-state");
   const attempts = bundle.dispatch?.attempts ?? [];
   if (attempts.length !== 2 || attempts[0]?.reservationId !== attempts[1]?.reservationId || attempts[1]?.decision !== "duplicate" || attempts[1]?.providerEffectDelta !== 0 || bundle.providerState?.providerEffectCount !== 1) errors.push("duplicate retry produced or could hide a duplicate effect");

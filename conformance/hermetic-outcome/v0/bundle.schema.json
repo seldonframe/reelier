@@ -118,7 +118,16 @@
       "properties": {
         "v": { "const": "reelier.hermetic-provider-state/v0" }, "preState": { "$ref": "#/$defs/state" }, "postState": { "$ref": "#/$defs/state" }, "restoredState": { "$ref": "#/$defs/state" },
         "acknowledgment": { "type": "object", "additionalProperties": false, "required": ["v", "status", "providerEventId", "reservationId"], "properties": { "v": { "const": "reelier.provider-acknowledgment/v1" }, "status": { "const": "acknowledged" }, "providerEventId": { "$ref": "#/$defs/id" }, "reservationId": { "$ref": "#/$defs/id" } } },
-        "postStateEvidence": { "type": "object", "additionalProperties": false, "required": ["v", "requestId", "dispatchRequestDigest", "expectedProjectionDigest", "observedProjectionDigest", "observationMethod", "observedAt", "confidence", "signerId", "signature"], "properties": { "v": { "const": "reelier.certification-post-state-evidence/v1" }, "requestId": { "$ref": "#/$defs/id" }, "dispatchRequestDigest": { "$ref": "#/$defs/digest" }, "expectedProjectionDigest": { "$ref": "#/$defs/digest" }, "observedProjectionDigest": { "$ref": "#/$defs/digest" }, "observationMethod": { "const": "hermetic-authoritative-read" }, "observedAt": { "$ref": "#/$defs/time" }, "confidence": { "const": "exact" }, "signerId": { "$ref": "#/$defs/id" }, "signature": { "$ref": "#/$defs/signature" } } },
+        "postStateEvidence": {
+          "type": "object", "additionalProperties": false,
+          "required": ["v", "requestId", "dispatchRequestDigest", "permitSnapshotDigest", "expectedProjectionDigest", "preSourceBundleDigest", "projectionSchemaId", "projectionSchemaDigest", "preProjectionDigest", "observedProjectionDigest", "observationMethod", "observedAt", "confidence", "signerId", "signature"],
+          "properties": {
+            "v": { "const": "reelier.certification-post-state-evidence/v1" }, "requestId": { "$ref": "#/$defs/id" }, "dispatchRequestDigest": { "$ref": "#/$defs/digest" }, "permitSnapshotDigest": { "$ref": "#/$defs/digest" },
+            "expectedProjectionDigest": { "$ref": "#/$defs/digest" }, "preSourceBundleDigest": { "type": "null" }, "projectionSchemaId": { "const": "reelier.hermetic-provider-state-projection/v0" }, "projectionSchemaDigest": { "$ref": "#/$defs/digest" },
+            "preProjectionDigest": { "$ref": "#/$defs/digest" }, "observedProjectionDigest": { "$ref": "#/$defs/digest" }, "observationMethod": { "const": "hermetic-authoritative-read" }, "observedAt": { "$ref": "#/$defs/time" }, "confidence": { "const": "exact" },
+            "signerId": { "const": "operator_fixture" }, "signature": { "$ref": "#/$defs/signature" }
+          }
+        },
         "providerEffectCount": { "const": 1 }, "rollbackEffectCount": { "const": 1 }
       }
     },
