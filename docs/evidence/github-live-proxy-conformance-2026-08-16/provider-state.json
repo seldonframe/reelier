@@ -1,0 +1,43 @@
+{
+  "v": "reelier.github-live-proxy-provider-state/v1",
+  "before": {
+    "repository": "fixlyai/soloproof",
+    "branch": "reelier/conformance-20260816",
+    "path": "reelier-conformance-proof.txt",
+    "head": "0200626832a4a5e384cb426002a60e7a5d53dea0",
+    "tree": "364495623c584d37b8b09c4b1e4bcce9a7a393e5",
+    "blob": "050e2fb5914abde1d15c88f8b44f89eeed382e50",
+    "contentSha256": "sha256:6cbf9419311cda70c32454d76bff96bd63ce27f050e8713d54effa57b040b078",
+    "contentUtf8": "Reelier disposable conformance proof\noperation: deterministic branch push/readback/retry\nscope: one predetermined file\n"
+  },
+  "afterFirstDispatch": {
+    "repository": "fixlyai/soloproof",
+    "branch": "reelier/conformance-20260816",
+    "path": "reelier-conformance-proof.txt",
+    "head": "7b87fce12741f422cf6e8156bec92ed8563ce93f",
+    "tree": "6fad1e9c183c04c3e054f36f2230552aeba70040",
+    "blob": "b52105bca1c44f7be4cd2836bdbf0a52dc549fb0",
+    "contentSha256": "sha256:36ad30608b8d3ea95c4d50e9f8ea87204975be4a758eb5b3e6cf4b78b9965dc0",
+    "contentUtf8": "Reelier Path A live-proxy conformance proof\nrepository=fixlyai/soloproof\nbranch=reelier/conformance-20260816\nrequestKey=github-live-proxy-20260816-1\n"
+  },
+  "afterRetry": {
+    "repository": "fixlyai/soloproof",
+    "branch": "reelier/conformance-20260816",
+    "path": "reelier-conformance-proof.txt",
+    "head": "7b87fce12741f422cf6e8156bec92ed8563ce93f",
+    "tree": "6fad1e9c183c04c3e054f36f2230552aeba70040",
+    "blob": "b52105bca1c44f7be4cd2836bdbf0a52dc549fb0",
+    "contentSha256": "sha256:36ad30608b8d3ea95c4d50e9f8ea87204975be4a758eb5b3e6cf4b78b9965dc0",
+    "contentUtf8": "Reelier Path A live-proxy conformance proof\nrepository=fixlyai/soloproof\nbranch=reelier/conformance-20260816\nrequestKey=github-live-proxy-20260816-1\n"
+  },
+  "finalRead": {
+    "repository": "fixlyai/soloproof",
+    "branch": "reelier/conformance-20260816",
+    "path": "reelier-conformance-proof.txt",
+    "head": "7b87fce12741f422cf6e8156bec92ed8563ce93f",
+    "tree": "6fad1e9c183c04c3e054f36f2230552aeba70040",
+    "blob": "b52105bca1c44f7be4cd2836bdbf0a52dc549fb0",
+    "contentSha256": "sha256:36ad30608b8d3ea95c4d50e9f8ea87204975be4a758eb5b3e6cf4b78b9965dc0",
+    "contentUtf8": "Reelier Path A live-proxy conformance proof\nrepository=fixlyai/soloproof\nbranch=reelier/conformance-20260816\nrequestKey=github-live-proxy-20260816-1\n"
+  }
+}

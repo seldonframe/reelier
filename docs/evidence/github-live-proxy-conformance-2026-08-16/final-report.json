@@ -1,0 +1,22 @@
+{
+  "v": "reelier.github-live-proxy-final-report/v1",
+  "status": "passed",
+  "artifactDigests": {
+    "descriptor": "sha256:6af7b7c3b2045404f0f456069f6eba66cafb82b7f7295bff33d851ac0aad62d5",
+    "delegation": "sha256:f29f88cf14b20d5e3c35d0d968993f45b687bb164fa41f5dc8013a7dd84a18db",
+    "coverage": "sha256:b569086e06b2acdcbeadadfb1a0710c74de54524f0e083521d00c8096db3a0af",
+    "dispatch": "sha256:81cdb9a1b49474476368a50dc60b3db45dcd691e4cfa033cb3adb9aa860e014d",
+    "providerState": "sha256:fc280253e3a2cfdf39481e9019071242b3f69d635649c63c86cc306ea915d21e",
+    "receipt": "sha256:1d48000f99c04566b6fe73d953018b20a23e496f3e1706bd93aa8da92491781c"
+  },
+  "claims": {
+    "pathALiveProxyTrafficRecorded": "proved",
+    "exactBranchHeadTreeBlobReadback": "proved",
+    "sameKeyRetryNoSecondProviderWrite": "proved",
+    "pathCAuthorityCell": "not-proved",
+    "completeWriteCoverage": "not-proved",
+    "semanticContentSafety": "not-proved",
+    "protectedMainInteraction": "not-attempted",
+    "pullRequestCreationOrMerge": "not-attempted"
+  }
+}

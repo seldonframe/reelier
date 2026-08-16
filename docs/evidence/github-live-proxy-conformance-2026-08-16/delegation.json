@@ -1,0 +1,17 @@
+{
+  "v": "reelier.github-live-proxy-delegation/v1",
+  "task": "update-one-predetermined-file-and-read-back-exact-git-state",
+  "allowed": {
+    "repository": "fixlyai/soloproof",
+    "branch": "reelier/conformance-20260816",
+    "path": "reelier-conformance-proof.txt",
+    "providerWriteBudget": 1
+  },
+  "prohibited": [
+    "any-other-repository",
+    "main",
+    "branch-creation",
+    "pull-request-creation",
+    "pull-request-merge"
+  ]
+}

@@ -1,0 +1,15 @@
+{
+  "v": "reelier.github-live-proxy-dispatch/v1",
+  "requestKey": "github-live-proxy-20260816-1",
+  "providerWriteCount": 1,
+  "first": {
+    "disposition": "written",
+    "effectDelta": 1,
+    "commit": "7b87fce12741f422cf6e8156bec92ed8563ce93f"
+  },
+  "retry": {
+    "disposition": "duplicate",
+    "effectDelta": 0,
+    "commit": "7b87fce12741f422cf6e8156bec92ed8563ce93f"
+  }
+}

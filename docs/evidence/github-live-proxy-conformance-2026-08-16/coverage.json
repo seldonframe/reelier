@@ -1,0 +1,20 @@
+{
+  "v": "reelier.github-live-proxy-coverage/v1",
+  "mode": "observed-live-mcp-traffic",
+  "topology": "client -> Reelier Path A live proxy -> disposable GitHub MCP server -> process-local gh api -> GitHub",
+  "exposedTools": [
+    "github_read_conformance_state",
+    "github_put_conformance_file",
+    "reelier_start_recording",
+    "reelier_note",
+    "reelier_stop_recording"
+  ],
+  "expectedCalls": [
+    "github_read_conformance_state",
+    "github_put_conformance_file",
+    "github_put_conformance_file",
+    "github_read_conformance_state"
+  ],
+  "completeness": "not-proved",
+  "trafficOutsideThisProxy": "not-observed"
+}

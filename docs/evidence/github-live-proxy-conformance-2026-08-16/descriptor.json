@@ -1,0 +1,10 @@
+{
+  "v": "reelier.github-live-proxy-descriptor/v1",
+  "classification": "path-a-live-proxy",
+  "execution": "live",
+  "repository": "fixlyai/soloproof",
+  "branch": "reelier/conformance-20260816",
+  "path": "reelier-conformance-proof.txt",
+  "requestKey": "github-live-proxy-20260816-1",
+  "proxy": "dist/cli.js mcp --allow-writes --wrap <disposable-github-mcp-server>"
+}
