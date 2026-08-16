@@ -1,0 +1,185 @@
+{
+  "v": "reelier.agent-adapter-candidate/v0",
+  "descriptor": {
+    "adapterId": "eve",
+    "agentHost": "eve",
+    "transport": "mcp-stdio",
+    "execution": "live-candidate",
+    "identityBinding": "host-authenticated",
+    "providerCredentialAccess": "none",
+    "authorityContract": {
+      "status": "frozen",
+      "digest": "sha256:7f46242b26d9c921f4e1ec9de6418ac5fc8c03d70c4415c25e799ae0e73a1512"
+    },
+    "coverage": {
+      "supportedModes": [
+        "observed",
+        "enforced"
+      ],
+      "defaultMode": "observed"
+    },
+    "operations": [
+      "jobs.search",
+      "jobs.load",
+      "delegations.request",
+      "delegations.status",
+      "tasks.status",
+      "outcomes.invoke",
+      "outcomes.status"
+    ],
+    "hardCodedJobRefs": []
+  },
+  "session": {
+    "taskId": "task_eve_process_scale_100_5",
+    "principalId": "principal_eve_process_scale_100_5",
+    "allocationId": "allocation_eve_root_scale_100_5",
+    "remainingEffects": 4
+  },
+  "transcript": [
+    {
+      "operation": "jobs.search",
+      "request": {
+        "query": "reversible record state"
+      },
+      "response": {
+        "jobs": [
+          {
+            "jobRef": "job_process_record_state",
+            "title": "Process-boundary record state"
+          }
+        ]
+      }
+    },
+    {
+      "operation": "jobs.load",
+      "request": {
+        "jobRef": "job_process_record_state"
+      },
+      "response": {
+        "jobRef": "job_process_record_state",
+        "definitionAliases": [
+          "fixture_record_state_set_v1"
+        ],
+        "requestSchemaDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      }
+    },
+    {
+      "operation": "delegations.request",
+      "request": {
+        "taskId": "task_eve_process_scale_100_5",
+        "parentAllocationId": "allocation_eve_root_scale_100_5",
+        "childPrincipalId": "principal_eve_1_child_scale_100_5",
+        "effects": 1
+      },
+      "response": {
+        "verdict": "accepted",
+        "principalId": "principal_eve_1_child_scale_100_5",
+        "allocationId": "allocation_eve_root_scale_100_5_child",
+        "effects": 1
+      }
+    },
+    {
+      "operation": "delegations.status",
+      "request": {
+        "grantId": "grant_eve_process_root_child_scale_100_5"
+      },
+      "response": {
+        "grantId": "grant_eve_process_root_child_scale_100_5",
+        "state": "active",
+        "principalId": "principal_eve_1_child_scale_100_5",
+        "allocationId": "allocation_eve_root_scale_100_5_child",
+        "effects": 1
+      }
+    },
+    {
+      "operation": "tasks.status",
+      "request": {
+        "taskId": "task_eve_process_scale_100_5"
+      },
+      "response": {
+        "taskId": "task_eve_process_scale_100_5",
+        "state": "active"
+      }
+    },
+    {
+      "operation": "outcomes.invoke",
+      "request": {
+        "jobRef": "job_process_record_state",
+        "requestId": "request_eve_process_1_scale_100_5",
+        "sourceRefs": {
+          "record": "opaque_process_ref"
+        },
+        "choices": {}
+      },
+      "response": {
+        "requestId": "request_eve_process_1_scale_100_5",
+        "verdict": "refused",
+        "reasonCode": "adapter-contract-pending",
+        "lifecycleState": "refused"
+      }
+    },
+    {
+      "operation": "outcomes.status",
+      "request": {
+        "requestId": "request_eve_process_1_scale_100_5"
+      },
+      "response": {
+        "requestId": "request_eve_process_1_scale_100_5",
+        "lifecycleState": "refused",
+        "pass": false,
+        "claims": {
+          "authorization": "unchecked",
+          "dispatch": "absent",
+          "providerAcknowledgment": "absent",
+          "reconciliation": "absent",
+          "topology": "unchecked",
+          "completeness": "unchecked"
+        }
+      }
+    }
+  ],
+  "coverageProbes": [
+    {
+      "mode": "observed",
+      "activation": "available",
+      "rawWriteReachability": "unknown",
+      "topology": "unchecked",
+      "completeness": "unchecked"
+    },
+    {
+      "mode": "enforced",
+      "activation": "unavailable",
+      "rawWriteReachability": "unknown",
+      "topology": "unchecked",
+      "completeness": "unchecked"
+    }
+  ],
+  "liveEvidence": {
+    "v": "reelier.agent-adapter-live-evidence/v0",
+    "execution": "eve-process-tool-loop",
+    "contract": {
+      "v": "reelier.adapter-contract/v1",
+      "digest": "sha256:7f46242b26d9c921f4e1ec9de6418ac5fc8c03d70c4415c25e799ae0e73a1512",
+      "bound": true
+    },
+    "semanticOperations": [
+      "jobs.search",
+      "jobs.load",
+      "delegations.request",
+      "delegations.status",
+      "tasks.status",
+      "outcomes.invoke",
+      "outcomes.status"
+    ],
+    "preFreezeRefusal": true,
+    "coverage": {
+      "mode": "observed",
+      "topology": "unchecked",
+      "completeness": "unchecked"
+    },
+    "eveProcess": {
+      "sessionId": "wrun_01M05R03DGPHZRRYZ7679MTDEE",
+      "boundary": "session.waiting"
+    }
+  }
+}

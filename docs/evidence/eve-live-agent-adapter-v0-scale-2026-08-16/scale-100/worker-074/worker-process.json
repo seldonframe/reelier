@@ -1,0 +1,12 @@
+{
+  "level": 100,
+  "index": 74,
+  "suffix": "scale_100_74",
+  "attempt": 0,
+  "code": 1,
+  "signal": null,
+  "report": null,
+  "candidate": null,
+  "stdout": "",
+  "stderr": "live Eve v0 adapter execution failed: Error: Eve session did not reach a boundary\n    at waitForBoundary (file:///tmp/reelier/conformance/continuity-adapter/v1/eve-fixture/scripts/eve-process.mjs:678:9)\n    at async runLiveAgentAdapterV0 (file:///tmp/reelier/conformance/continuity-adapter/v1/eve-fixture/scripts/eve-process.mjs:57:23)\n    at async file:///tmp/reelier/conformance/continuity-adapter/v1/eve-fixture/scripts/run-live-agent-adapter-v0.mjs:16:3"
+}

@@ -1,0 +1,40 @@
+{
+  "v": "reelier.agent-adapter-live-execution/v0",
+  "status": "passed",
+  "execution": "eve-process-tool-loop",
+  "harnessId": "eve",
+  "adapterId": "eve",
+  "contract": {
+    "v": "reelier.adapter-contract/v1",
+    "digest": "sha256:7f46242b26d9c921f4e1ec9de6418ac5fc8c03d70c4415c25e799ae0e73a1512",
+    "bound": true
+  },
+  "semanticOperations": [
+    "jobs.search",
+    "jobs.load",
+    "delegations.request",
+    "delegations.status",
+    "tasks.status",
+    "outcomes.invoke",
+    "outcomes.status"
+  ],
+  "preFreezeRefusal": true,
+  "eveProcess": {
+    "pid": 8517,
+    "sessionId": "wrun_01M05R6GZ8NBS3JA352TT4MBD4",
+    "boundary": "session.waiting",
+    "cursor": 97
+  },
+  "coverage": {
+    "mode": "observed",
+    "topology": "unchecked",
+    "completeness": "unchecked"
+  },
+  "nonClaims": {
+    "routeEnforcement": "not-proved",
+    "trafficCompleteness": "not-proved",
+    "outcomeCorrectness": "not-proved",
+    "productionSafety": "not-proved"
+  },
+  "traceDigest": "sha256:d5512febc9b7a2adc692f897b1695594a450a0cf13ff992c544de45d440803bf"
+}

@@ -1,0 +1,78 @@
+{
+  "v": "reelier.eve-live-agent-adapter-v0-scale/v0",
+  "status": "passed",
+  "harnessId": "eve",
+  "execution": "eve-process-tool-loop",
+  "levels": [
+    {
+      "requested": 1,
+      "completed": 1,
+      "failed": 0,
+      "peakConcurrency": 1,
+      "uniqueTaskIds": 1,
+      "uniquePrincipalIds": 1,
+      "identityIsolated": true,
+      "recoveredAfterRetry": [],
+      "failures": []
+    },
+    {
+      "requested": 5,
+      "completed": 5,
+      "failed": 0,
+      "peakConcurrency": 2,
+      "uniqueTaskIds": 5,
+      "uniquePrincipalIds": 5,
+      "identityIsolated": true,
+      "recoveredAfterRetry": [],
+      "failures": []
+    },
+    {
+      "requested": 20,
+      "completed": 20,
+      "failed": 0,
+      "peakConcurrency": 2,
+      "uniqueTaskIds": 20,
+      "uniquePrincipalIds": 20,
+      "identityIsolated": true,
+      "recoveredAfterRetry": [],
+      "failures": []
+    },
+    {
+      "requested": 100,
+      "completed": 100,
+      "failed": 0,
+      "peakConcurrency": 2,
+      "uniqueTaskIds": 100,
+      "uniquePrincipalIds": 100,
+      "identityIsolated": true,
+      "recoveredAfterRetry": [
+        {
+          "index": 74,
+          "initialSuffix": "scale_100_74",
+          "retrySuffix": "scale_100_74_retry1",
+          "initialCode": 1,
+          "retryCode": 0
+        }
+      ],
+      "failures": []
+    }
+  ],
+  "contract": {
+    "v": "reelier.adapter-contract/v1",
+    "semanticOperations": [
+      "jobs.search",
+      "jobs.load",
+      "delegations.request",
+      "delegations.status",
+      "tasks.status",
+      "outcomes.invoke",
+      "outcomes.status"
+    ]
+  },
+  "nonClaims": {
+    "providerWrites": "not-proved",
+    "retryIdempotency": "not-proved",
+    "routeCompleteness": "not-proved",
+    "productionSafety": "not-proved"
+  }
+}
