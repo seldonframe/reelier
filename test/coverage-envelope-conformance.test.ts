@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { pathToFileURL } from "node:url";
 import { resolve } from "node:path";
+import { spawnSync } from "node:child_process";
 import {
   BUILTIN_ROUTE_ADAPTERS,
   createClaudeCodeRouteDiscoverySnapshotV1,
@@ -182,4 +183,13 @@ test("only a fresh fully verified envelope can retain enforced mode and pass", (
 test("the input contract is exact and binds adapter identity to the harness", () => {
   assert.throws(() => coverage.buildCoverageEnvelope({ ...envelopeInput("codex", [verifiedRoute()]), surprise: true }), /invalid|additional/i);
   assert.throws(() => coverage.buildCoverageEnvelope({ ...envelopeInput("codex", [verifiedRoute()]), adapter: { id: "reelier-claude-code-coverage", digest: BUILTIN_ROUTE_ADAPTERS.claudeCode.sourceDigest } }), /identity|invalid/i);
+});
+
+test("CLI refusal remains a closed schema-valid non-success envelope", () => {
+  const cli = spawnSync(process.execPath, [resolve("conformance/coverage-envelope/v0/check.mjs")], { encoding: "utf8" });
+  assert.equal(cli.status, 2);
+  const report = JSON.parse(cli.stdout);
+  assert.equal(report.status, "failed");
+  assert.equal(coverage.validateCoverageEnvelopeReport(report), true);
+  assert.ok(report.reasonCodes.includes("no-routes-discovered"));
 });
