@@ -137,9 +137,11 @@ test("catalog-only, stale, and unwrapped route evidence are explicit non-success
   const catalog: RouteCoverageV1 = { ...verifiedRoute(), discoverySource: "openapi", transport: "https", observation: "unknown", replay: "candidate", outcome: "unknown", enforcement: "absent", topologyEvidenceDigest: null, reasonCodes: ["catalog-is-non-authorizing"] };
   const catalogReport = coverage.buildCoverageEnvelope(envelopeInput("codex", [catalog]));
   assert.equal(catalogReport.status, "failed");
-  assert.deepEqual(catalogReport.reasonCodes, ["catalog-only-evidence", "completeness-unchecked", "route-enforcement-absent", "route-observation-unknown", "route-routing-unknown", "topology-unchecked"]);
+  assert.deepEqual(catalogReport.reasonCodes, ["catalog-only-evidence", "completeness-unchecked", "discovery-is-non-authorizing", "route-enforcement-absent", "route-observation-unknown", "route-routing-unknown", "source-freshness-absent", "topology-unchecked"]);
 
-  const stale = coverage.buildCoverageEnvelope(envelopeInput("codex", [{ ...verifiedRoute(), freshUntil: new Date(now.getTime() + 1).toISOString() }], { evaluatedAt: new Date(now.getTime() + 2).toISOString() }));
+  const stale = coverage.buildCoverageEnvelope(envelopeInput("codex", [{ ...verifiedRoute(), freshUntil: new Date(now.getTime() + 1).toISOString() }], {
+    evaluatedAt: new Date(now.getTime() + 2).toISOString(), sources: [freshSource("host-config", "a", "b")],
+  }));
   assert.equal(stale.status, "failed");
   assert.equal(stale.freshness.status, "stale");
   assert.ok(stale.reasonCodes.includes("evidence-stale"));

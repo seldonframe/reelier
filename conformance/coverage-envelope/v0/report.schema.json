@@ -3,13 +3,13 @@
   "$id": "https://reelier.dev/contracts/coverage-envelope/v0/report.schema.json",
   "type": "object",
   "additionalProperties": false,
-  "required": ["v", "status", "harness", "adapter", "sources", "inventory", "wrappedRoutes", "unwrappedRoutes", "directHttpRoutes", "privateHostRoutes", "mode", "freshness", "claims", "reasonCodes", "nonClaims"],
+  "required": ["v", "status", "harness", "adapter", "sources", "inventory", "wrappedRoutes", "unwrappedRoutes", "directHttpRoutes", "privateHostRoutes", "mode", "freshness", "claims", "reasonCodes", "nonClaims", "provenanceDigest"],
   "properties": {
     "v": { "const": "reelier.coverage-envelope-report/v0" },
     "status": { "enum": ["passed", "failed"] },
-    "harness": { "$ref": "#/$defs/harness" },
-    "adapter": { "$ref": "#/$defs/adapter" },
-    "sources": { "type": "array", "minItems": 1, "maxItems": 128, "items": { "$ref": "#/$defs/source" } },
+    "harness": { "anyOf": [{ "$ref": "#/$defs/harness" }, { "type": "null" }] },
+    "adapter": { "anyOf": [{ "$ref": "#/$defs/adapter" }, { "type": "null" }] },
+    "sources": { "type": "array", "maxItems": 128, "items": { "$ref": "#/$defs/source" } },
     "inventory": { "type": "array", "maxItems": 4096, "items": { "$ref": "#/$defs/route" } },
     "wrappedRoutes": { "$ref": "#/$defs/routeIds" },
     "unwrappedRoutes": { "$ref": "#/$defs/routeIds" },
@@ -30,6 +30,7 @@
       "properties": { "topology": { "$ref": "#/$defs/claim" }, "completeness": { "$ref": "#/$defs/claim" } }
     },
     "reasonCodes": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/aggregateReason" } },
+    "provenanceDigest": { "anyOf": [{ "$ref": "#/$defs/digest" }, { "type": "null" }] },
     "nonClaims": {
       "type": "object", "additionalProperties": false,
       "required": ["governedExecution", "trafficCompleteness", "providerOutcome", "safety"],
@@ -48,6 +49,7 @@
         "type": "object",
         "properties": {
           "mode": { "const": "enforced" },
+          "harness": { "$ref": "#/$defs/harness" }, "adapter": { "$ref": "#/$defs/adapter" }, "provenanceDigest": { "$ref": "#/$defs/digest" },
           "sources": { "type": "array", "items": { "type": "object", "properties": { "evidenceStatus": { "const": "verified" } } } },
           "inventory": { "type": "array", "minItems": 1, "items": { "type": "object", "properties": { "observation": { "const": "observed" }, "enforcement": { "const": "verified" }, "routing": { "const": "wrapped" } } } },
           "unwrappedRoutes": { "type": "array", "maxItems": 0 }, "directHttpRoutes": { "type": "array", "maxItems": 0 }, "privateHostRoutes": { "type": "array", "maxItems": 0 },
@@ -67,10 +69,12 @@
     "harness": { "type": "object", "additionalProperties": false, "required": ["id", "instanceIdentityDigest"], "properties": { "id": { "enum": ["codex", "claude-code"] }, "instanceIdentityDigest": { "$ref": "#/$defs/digest" } } },
     "adapter": { "type": "object", "additionalProperties": false, "required": ["id", "digest"], "properties": { "id": { "enum": ["reelier-codex-coverage", "reelier-claude-code-coverage"] }, "digest": { "$ref": "#/$defs/digest" } } },
     "source": {
-      "type": "object", "additionalProperties": false, "required": ["kind", "sourceInstanceIdentityDigest", "contentDigest", "evidenceStatus", "reasonCodes"],
+      "type": "object", "additionalProperties": false, "required": ["kind", "sourceInstanceIdentityDigest", "contentDigest", "evidenceStatus", "observedAt", "freshUntil", "reasonCodes"],
       "properties": {
         "kind": { "enum": ["host-config", "plugin-manifest"] }, "sourceInstanceIdentityDigest": { "$ref": "#/$defs/digest" }, "contentDigest": { "$ref": "#/$defs/digest" },
         "evidenceStatus": { "enum": ["verified", "failed", "unchecked", "absent", "pending"] },
+        "observedAt": { "anyOf": [{ "$ref": "#/$defs/time" }, { "type": "null" }] },
+        "freshUntil": { "anyOf": [{ "$ref": "#/$defs/time" }, { "type": "null" }] },
         "reasonCodes": { "type": "array", "maxItems": 128, "uniqueItems": true, "items": { "$ref": "#/$defs/id" } }
       }
     },
@@ -97,10 +101,10 @@
     },
     "aggregateReason": {
       "enum": [
-        "catalog-only-evidence", "completeness-absent", "completeness-contradicted-by-inventory", "completeness-failed", "completeness-pending", "completeness-unchecked",
+        "catalog-only-evidence", "completeness-absent", "completeness-contradicted-by-inventory", "completeness-failed", "completeness-pending", "completeness-unchecked", "discovery-is-non-authorizing",
         "coverage-source-absent", "coverage-source-failed", "coverage-source-pending", "coverage-source-unchecked", "direct-http-unwrapped", "enforced-mode-refused", "evidence-stale",
-        "no-routes-discovered", "observed-mode-non-authorizing", "private-host-unwrapped", "route-enforcement-absent", "route-enforcement-failed", "route-enforcement-unchecked",
-        "route-observation-unknown", "route-partially-observed", "route-routing-unknown", "route-uncovered", "topology-absent", "topology-failed", "topology-pending", "topology-unchecked"
+        "input-unavailable", "no-routes-discovered", "observed-mode-non-authorizing", "private-host-unwrapped", "route-enforcement-absent", "route-enforcement-failed", "route-enforcement-unchecked",
+        "route-observation-unknown", "route-partially-observed", "route-routing-unknown", "route-uncovered", "source-freshness-absent", "topology-absent", "topology-failed", "topology-pending", "topology-unchecked"
       ]
     }
   }

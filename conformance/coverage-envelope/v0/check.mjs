@@ -1,4 +1,5 @@
 import Ajv2020 from "ajv/dist/2020.js";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -8,6 +9,11 @@ const ajv = new Ajv2020({ allErrors: true, strict: true });
 ajv.addSchema(load("../../../contract/bootstrap/v1/route-coverage.schema.json"));
 const validateInput = ajv.compile(load("./input.schema.json"));
 const validateReport = ajv.compile(load("./report.schema.json"));
+const MAX_FRESHNESS_MS = 24 * 60 * 60_000;
+const BUILTIN_ADAPTERS = Object.freeze({
+  codex: Object.freeze({ id: "reelier-codex-coverage", digest: "sha256:505974436216762ba42d59cd2be53a1bba01c1222bcd5c96ee218ec0fc585694" }),
+  "claude-code": Object.freeze({ id: "reelier-claude-code-coverage", digest: "sha256:2c74152ded212870e3211de9cae509ac80487abab629168e7e4c0768e87423ec" }),
+});
 
 const NON_CLAIMS = Object.freeze({
   governedExecution: "not-proved-by-discovery",
@@ -19,7 +25,8 @@ const NON_CLAIMS = Object.freeze({
 const UNWRAPPED_REASONS = new Set(["route-unwrapped", "plugin-private", "direct-http-bypass", "writable-browser-bypass", "host-private"]);
 
 export function validateCoverageEnvelopeReport(value) {
-  return validateReport(value);
+  if (!validateReport(value)) return false;
+  try { validateReportSemantics(value); return true; } catch { return false; }
 }
 
 export function buildCoverageEnvelope(input) {
@@ -32,7 +39,11 @@ export function buildCoverageEnvelope(input) {
   const unwrappedRoutes = routeIds(inventory.filter((route) => route.routing === "unwrapped"));
   const directHttpRoutes = routeIds(inventory.filter((route) => route.discoverySource === "direct-http"));
   const privateHostRoutes = routeIds(inventory.filter((route) => route.discoverySource === "host-private" || route.reasonCodes.includes("plugin-private")));
-  const freshness = freshnessFor(inventory, input.evaluatedAt);
+  const sources = input.sources.map((source) => Object.freeze({
+    ...source, observedAt: source.observedAt ?? null, freshUntil: source.freshUntil ?? null,
+    reasonCodes: Object.freeze([...source.reasonCodes].sort()),
+  }));
+  const freshness = freshnessFor(inventory, sources, input.evaluatedAt);
   const reasonCodes = reasonsFor(input, inventory, freshness, { unwrappedRoutes, directHttpRoutes, privateHostRoutes });
   const eligible = reasonCodes.length === 0 && input.requestedMode === "enforced";
   if (!eligible && input.requestedMode === "enforced") reasonCodes.push("enforced-mode-refused");
@@ -43,28 +54,32 @@ export function buildCoverageEnvelope(input) {
     status: eligible ? "passed" : "failed",
     harness: Object.freeze({ ...input.harness }),
     adapter: Object.freeze({ ...input.adapter }),
-    sources: Object.freeze(input.sources.map((source) => Object.freeze({ ...source, reasonCodes: Object.freeze([...source.reasonCodes].sort()) }))),
+    sources: Object.freeze(sources),
     inventory: Object.freeze(inventory), wrappedRoutes, unwrappedRoutes, directHttpRoutes, privateHostRoutes,
     mode: eligible ? "enforced" : "observed", freshness: Object.freeze(freshness),
     claims: Object.freeze({ topology: Object.freeze({ ...input.claims.topology }), completeness: Object.freeze({ ...input.claims.completeness }) }),
     reasonCodes: Object.freeze(reasonCodes), nonClaims: NON_CLAIMS,
   });
-  if (!validateReport(report)) throw new TypeError(`coverage envelope report is invalid: ${ajv.errorsText(validateReport.errors)}`);
-  return report;
+  const committedReport = Object.freeze({ ...report, provenanceDigest: provenanceDigest(report) });
+  if (!validateCoverageEnvelopeReport(committedReport)) throw new TypeError(`coverage envelope report is invalid: ${ajv.errorsText(validateReport.errors)}`);
+  return committedReport;
 }
 
 function validateSemantics(input) {
+  assertBuiltinAdapter(input.harness, input.adapter);
+  const evaluatedAt = Date.parse(input.evaluatedAt);
   const routeIds = new Set();
   const sourceIdentities = new Set();
   for (const source of input.sources) {
     if (sourceIdentities.has(source.sourceInstanceIdentityDigest)) throw new TypeError("coverage source instance identities must be unique");
     sourceIdentities.add(source.sourceInstanceIdentityDigest);
+    assertFreshnessInterval(source.observedAt, source.freshUntil, evaluatedAt, "coverage source");
   }
   for (const route of input.routes) {
     if (route.hostId !== input.harness.id) throw new TypeError("coverage route harness identity is invalid");
     if (routeIds.has(route.routeId)) throw new TypeError("coverage route inventory contains duplicate route IDs");
     routeIds.add(route.routeId);
-    if (Date.parse(route.freshUntil) <= Date.parse(route.observedAt)) throw new TypeError("coverage route freshness interval is invalid");
+    assertFreshnessInterval(route.observedAt, route.freshUntil, evaluatedAt, "coverage route");
     if (route.enforcement === "verified" && route.topologyEvidenceDigest === null) throw new TypeError("verified route enforcement requires topology evidence");
     if (route.enforcement !== "verified" && route.topologyEvidenceDigest !== null) throw new TypeError("unverified route cannot carry topology evidence");
   }
@@ -73,8 +88,8 @@ function validateSemantics(input) {
 }
 
 function routingFor(route) {
-  if (route.observation === "observed" && route.reasonCodes.includes("wrapped-route-observed")) return "wrapped";
   if (route.observation === "uncovered" || ["direct-http", "writable-browser", "host-private"].includes(route.discoverySource) || route.reasonCodes.some((reason) => UNWRAPPED_REASONS.has(reason))) return "unwrapped";
+  if (route.observation === "observed" && route.reasonCodes.includes("wrapped-route-observed")) return "wrapped";
   return "unknown";
 }
 
@@ -82,17 +97,23 @@ function routeIds(routes) {
   return Object.freeze(routes.map((route) => route.routeId).sort((left, right) => Buffer.from(left).compare(Buffer.from(right))));
 }
 
-function freshnessFor(inventory, evaluatedAt) {
-  if (inventory.length === 0) return { status: "absent", evaluatedAt, oldestObservedAt: null, freshUntil: null };
-  const oldestObservedAt = inventory.map((route) => route.observedAt).sort()[0];
-  const freshUntil = inventory.map((route) => route.freshUntil).sort()[0];
+function freshnessFor(inventory, sources, evaluatedAt) {
+  const observations = [...inventory.map((route) => route.observedAt), ...sources.flatMap((source) => source.observedAt === null ? [] : [source.observedAt])];
+  const expiries = [...inventory.map((route) => route.freshUntil), ...sources.flatMap((source) => source.freshUntil === null ? [] : [source.freshUntil])];
+  if (inventory.length === 0 || sources.some((source) => source.observedAt === null || source.freshUntil === null)) {
+    return { status: "absent", evaluatedAt, oldestObservedAt: observations.sort()[0] ?? null, freshUntil: null };
+  }
+  const oldestObservedAt = observations.sort()[0];
+  const freshUntil = expiries.sort()[0];
   return { status: Date.parse(evaluatedAt) < Date.parse(freshUntil) ? "fresh" : "stale", evaluatedAt, oldestObservedAt, freshUntil };
 }
 
 function reasonsFor(input, inventory, freshness, subsets) {
   const reasons = new Set();
+  reasons.add("discovery-is-non-authorizing");
   if (inventory.length === 0) reasons.add("no-routes-discovered");
   if (freshness.status === "stale") reasons.add("evidence-stale");
+  if (freshness.status === "absent" && inventory.length > 0) reasons.add("source-freshness-absent");
   for (const source of input.sources) if (source.evidenceStatus !== "verified") reasons.add(`coverage-source-${source.evidenceStatus}`);
   for (const route of inventory) {
     if (route.reasonCodes.includes("catalog-is-non-authorizing")) reasons.add("catalog-only-evidence");
@@ -113,20 +134,76 @@ function reasonsFor(input, inventory, freshness, subsets) {
   return [...reasons].sort();
 }
 
+function assertBuiltinAdapter(harness, adapter) {
+  const expected = BUILTIN_ADAPTERS[harness.id];
+  if (!expected || adapter.id !== expected.id || adapter.digest !== expected.digest) throw new TypeError("coverage adapter digest lacks built-in provenance");
+}
+
+function assertFreshnessInterval(observedAt, freshUntil, evaluatedAt, label) {
+  if (observedAt === undefined && freshUntil === undefined) return;
+  if (observedAt === undefined || freshUntil === undefined) throw new TypeError(`${label} freshness interval is incomplete`);
+  const observed = Date.parse(observedAt);
+  const expiry = Date.parse(freshUntil);
+  if (observed > evaluatedAt) throw new TypeError(`${label} observation is future-dated`);
+  if (expiry <= observed || expiry - observed > MAX_FRESHNESS_MS) throw new TypeError(`${label} freshness interval is invalid`);
+}
+
+function validateReportSemantics(report) {
+  if (report.harness === null || report.adapter === null) {
+    if (report.status !== "failed" || report.mode !== "observed" || report.harness !== null || report.adapter !== null || report.sources.length !== 0 || report.inventory.length !== 0 || report.provenanceDigest !== null) throw new TypeError("coverage refusal report is inconsistent");
+    return;
+  }
+  assertBuiltinAdapter(report.harness, report.adapter);
+  const evaluatedAt = Date.parse(report.freshness.evaluatedAt);
+  const sourceIdentities = new Set();
+  for (const source of report.sources) {
+    if (sourceIdentities.has(source.sourceInstanceIdentityDigest)) throw new TypeError("coverage source identities are duplicated");
+    sourceIdentities.add(source.sourceInstanceIdentityDigest);
+    assertFreshnessInterval(source.observedAt ?? undefined, source.freshUntil ?? undefined, evaluatedAt, "coverage source");
+  }
+  const ids = new Set();
+  for (const route of report.inventory) {
+    if (route.hostId !== report.harness.id || ids.has(route.routeId) || route.routing !== routingFor(route)) throw new TypeError("coverage route mapping is inconsistent");
+    ids.add(route.routeId);
+    assertFreshnessInterval(route.observedAt, route.freshUntil, evaluatedAt, "coverage route");
+    if ((route.enforcement === "verified") !== (route.topologyEvidenceDigest !== null)) throw new TypeError("coverage route enforcement evidence is inconsistent");
+  }
+  if (report.inventory.some((route) => route.discoverySource === "host-config") && !report.sources.some((source) => source.kind === "host-config")) throw new TypeError("host config source evidence is missing");
+  if (report.inventory.some((route) => route.discoverySource === "plugin-manifest") && !report.sources.some((source) => source.kind === "plugin-manifest")) throw new TypeError("plugin source evidence is missing");
+  const mappings = {
+    wrappedRoutes: routeIds(report.inventory.filter((route) => route.routing === "wrapped")),
+    unwrappedRoutes: routeIds(report.inventory.filter((route) => route.routing === "unwrapped")),
+    directHttpRoutes: routeIds(report.inventory.filter((route) => route.discoverySource === "direct-http")),
+    privateHostRoutes: routeIds(report.inventory.filter((route) => route.discoverySource === "host-private" || route.reasonCodes.includes("plugin-private"))),
+  };
+  for (const [field, expected] of Object.entries(mappings)) if (JSON.stringify(report[field]) !== JSON.stringify(expected)) throw new TypeError(`coverage ${field} mapping is inconsistent`);
+  const expectedFreshness = freshnessFor(report.inventory, report.sources, report.freshness.evaluatedAt);
+  if (JSON.stringify(report.freshness) !== JSON.stringify(expectedFreshness)) throw new TypeError("coverage freshness is inconsistent");
+  for (const claim of Object.values(report.claims)) if ((claim.status === "verified") !== (claim.evidenceDigest !== null)) throw new TypeError("coverage claim evidence is inconsistent");
+  if (report.status !== "failed" || report.mode !== "observed" || !report.reasonCodes.includes("discovery-is-non-authorizing")) throw new TypeError("discovery coverage cannot authorize execution");
+  if (report.provenanceDigest !== provenanceDigest(report)) throw new TypeError("coverage report provenance is invalid");
+}
+
+function canonical(value) {
+  if (Array.isArray(value)) return value.map(canonical);
+  if (value !== null && typeof value === "object") return Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonical(value[key])]));
+  return value;
+}
+
+function provenanceDigest(report) {
+  const payload = { v: "reelier.coverage-envelope-provenance/v0", harness: report.harness, adapter: report.adapter, sources: report.sources, inventory: report.inventory, claims: report.claims };
+  return `sha256:${createHash("sha256").update(JSON.stringify(canonical(payload)), "utf8").digest("hex")}`;
+}
+
 function failureReport() {
   return {
     v: "reelier.coverage-envelope-report/v0", status: "failed",
-    harness: { id: "codex", instanceIdentityDigest: `sha256:${"1".repeat(64)}` },
-    adapter: { id: "reelier-codex-coverage", digest: `sha256:${"2".repeat(64)}` },
-    sources: [{
-      kind: "host-config", sourceInstanceIdentityDigest: `sha256:${"3".repeat(64)}`,
-      contentDigest: `sha256:${"4".repeat(64)}`, evidenceStatus: "absent", reasonCodes: ["input-unavailable"],
-    }],
+    harness: null, adapter: null, sources: [],
     inventory: [],
     wrappedRoutes: [], unwrappedRoutes: [], directHttpRoutes: [], privateHostRoutes: [], mode: "observed",
     freshness: { status: "absent", evaluatedAt: "1970-01-01T00:00:00.000Z", oldestObservedAt: null, freshUntil: null },
     claims: { topology: { status: "absent", evidenceDigest: null }, completeness: { status: "absent", evidenceDigest: null } },
-    reasonCodes: ["no-routes-discovered"], nonClaims: NON_CLAIMS,
+    reasonCodes: ["input-unavailable", "no-routes-discovered"], nonClaims: NON_CLAIMS, provenanceDigest: null,
   };
 }
 

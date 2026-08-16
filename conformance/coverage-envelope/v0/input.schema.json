@@ -20,11 +20,11 @@
   "allOf": [
     {
       "if": { "type": "object", "properties": { "harness": { "type": "object", "properties": { "id": { "const": "codex" } }, "required": ["id"] } }, "required": ["harness"] },
-      "then": { "type": "object", "properties": { "adapter": { "type": "object", "properties": { "id": { "const": "reelier-codex-coverage" } }, "required": ["id"] } } }
+      "then": { "type": "object", "properties": { "adapter": { "type": "object", "properties": { "id": { "const": "reelier-codex-coverage" }, "digest": { "const": "sha256:505974436216762ba42d59cd2be53a1bba01c1222bcd5c96ee218ec0fc585694" } }, "required": ["id", "digest"] } } }
     },
     {
       "if": { "type": "object", "properties": { "harness": { "type": "object", "properties": { "id": { "const": "claude-code" } }, "required": ["id"] } }, "required": ["harness"] },
-      "then": { "type": "object", "properties": { "adapter": { "type": "object", "properties": { "id": { "const": "reelier-claude-code-coverage" } }, "required": ["id"] } } }
+      "then": { "type": "object", "properties": { "adapter": { "type": "object", "properties": { "id": { "const": "reelier-claude-code-coverage" }, "digest": { "const": "sha256:2c74152ded212870e3211de9cae509ac80487abab629168e7e4c0768e87423ec" } }, "required": ["id", "digest"] } } }
     }
   ],
   "$defs": {
@@ -47,8 +47,11 @@
         "sourceInstanceIdentityDigest": { "$ref": "#/$defs/digest" },
         "contentDigest": { "$ref": "#/$defs/digest" },
         "evidenceStatus": { "enum": ["verified", "failed", "unchecked", "absent", "pending"] },
+        "observedAt": { "$ref": "#/$defs/time" },
+        "freshUntil": { "$ref": "#/$defs/time" },
         "reasonCodes": { "type": "array", "maxItems": 128, "uniqueItems": true, "items": { "$ref": "#/$defs/id" } }
-      }
+      },
+      "dependentRequired": { "observedAt": ["freshUntil"], "freshUntil": ["observedAt"] }
     },
     "claim": {
       "type": "object", "additionalProperties": false, "required": ["status", "evidenceDigest"],
