@@ -21,7 +21,9 @@ function row(harnessId, adapterPath, values, reasons) {
 export function validateAggregateReport(value) { return validateReport(value); }
 
 function validAgentReport(report) {
-  if (!report || report.v !== "reelier.agent-adapter-conformance-report/v0" || !["passed", "failed"].includes(report.status) || !(typeof report.adapterId === "string" || report.adapterId === null) || !Array.isArray(report.checks) || report.checks.length === 0) return false;
+  const keys = report && typeof report === "object" ? Object.keys(report) : [];
+  const expectedKeys = ["v", "status", "adapterId", "checks"];
+  if (!report || keys.length !== expectedKeys.length || expectedKeys.some((key) => !keys.includes(key)) || report.v !== "reelier.agent-adapter-conformance-report/v0" || !["passed", "failed"].includes(report.status) || !(typeof report.adapterId === "string" || report.adapterId === null) || !Array.isArray(report.checks) || report.checks.length === 0) return false;
   if (report.status === "passed" && report.checks.some((check) => check?.status !== "passed")) return false;
   return report.checks.every((check) => check && Object.keys(check).length === 3 && typeof check.id === "string" && ["passed", "failed"].includes(check.status) && typeof check.detail === "string" && check.detail.length > 0);
 }

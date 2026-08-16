@@ -118,3 +118,46 @@ Verbatim tail:
 ```
 
 Fix commit: `a8efd3c37acaa022b40a232da86626c9b2c64973`.
+
+## Review fix round 2
+
+Closed the remaining source-validation gap in `validAgentReport()`: agent-adapter v0 reports now require exactly the four top-level keys `v`, `status`, `adapterId`, and `checks`. Existing nested closed checks remain enforced for every check record, including exact nested keys and allowed status values. Added a regression that injects `unexpected: true` and verifies the aggregate classifies the source as unsupported and the aggregate as failed.
+
+### Fix RED
+
+Command:
+
+```text
+npx tsc -p tsconfig.test.json; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; node --test dist-test/test/aggregate-conformance.test.js
+```
+
+Observed failure before implementation:
+
+```text
+✖ aggregate rejects an agent report with an unexpected top-level property
+AssertionError: actual 'fixture-only' expected 'unsupported'
+```
+
+### Fix GREEN
+
+Fail-fast command:
+
+```text
+npx tsc -p tsconfig.test.json; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; node --test dist-test/test/aggregate-conformance.test.js dist-test/test/agent-adapter-conformance.test.js dist-test/test/continuity/conformance-runner.test.js
+```
+
+Exact result: 28 tests passed, 0 failed.
+
+Verbatim tail:
+
+```text
+ℹ tests 28
+ℹ suites 0
+ℹ pass 28
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ duration_ms 2167.3582
+```
+
+Round-2 fix commit: recorded after this report update.

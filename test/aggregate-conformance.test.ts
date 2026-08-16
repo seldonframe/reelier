@@ -70,6 +70,13 @@ test("aggregate validates source contracts and binds source identity", () => {
   assert.equal(rejected.harnesses[0].overallStatus, "unsupported");
 });
 
+test("aggregate rejects an agent report with an unexpected top-level property", () => {
+  const forged = { ...agentReport, unexpected: true };
+  const report = aggregate.aggregateReports([{ harnessId: "xai.grok-build", adapterPath: "agent-adapter/v0", report: forged }]);
+  assert.equal(report.harnesses[0].overallStatus, "unsupported");
+  assert.equal(report.status, "failed");
+});
+
 test("unknown-like aggregate states are never passing", () => {
   for (const state of ["unknown", "uncovered", "unchecked", "absent", "pending", "not-tested", "unsupported", "failed", "continuity-only"] as const) {
     assert.equal(aggregate.isPassingStatus(state), false, state);
