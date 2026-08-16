@@ -70,12 +70,15 @@ export async function stopEveProcess(child) {
     if (process.platform === "win32") {
       const treeStop = spawn("taskkill", ["/PID", String(exactPid), "/T"], { stdio: "ignore", windowsHide: true });
       await new Promise((resolveExit) => treeStop.once("close", resolveExit));
+      const gracefulExit = waitForExit(child, 5_000);
       closeLauncherStreams(child);
-      exited = await waitForExit(child, 5_000);
+      exited = await gracefulExit;
       if (!exited) {
         const forceTree = spawn("taskkill", ["/PID", String(exactPid), "/T", "/F"], { stdio: "ignore", windowsHide: true });
         await new Promise((resolveExit) => forceTree.once("close", resolveExit));
+        const forcedExit = waitForExit(child, 5_000);
         closeLauncherStreams(child);
+        exited = await forcedExit;
       }
     } else {
       signalProcessGroup(exactPid, "SIGTERM");
@@ -83,8 +86,9 @@ export async function stopEveProcess(child) {
         signalProcessGroup(exactPid, "SIGKILL");
       }
       assert.equal(await waitForProcessGroupExit(exactPid, 5_000), true, `Eve process group ${exactPid} survived forced stop`);
+      const launcherExit = waitForExit(child, 5_000);
       closeLauncherStreams(child);
-      exited = await waitForExit(child, 5_000);
+      exited = await launcherExit;
     }
     assert.equal(exited || await waitForExit(child, 5_000), true, `exact Eve PID ${exactPid} survived graceful stop`);
   } finally {
