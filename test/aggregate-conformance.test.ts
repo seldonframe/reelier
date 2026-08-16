@@ -11,33 +11,67 @@ const aggregate = await import(pathToFileURL(resolve("conformance/aggregate/v0/c
 const agentCandidate = JSON.parse(readFileSync(resolve("conformance/agent-adapter/v0/fixtures/grok-build-observed.json"), "utf8"));
 const agentReport = agent.checkCandidate(agentCandidate);
 
-const eveReport = await continuity.checkContinuityAdapterCandidate(pathToFileURL(resolve("conformance/continuity-adapter/v1/fixtures/core-candidate.mjs")).href);
+const genuineEveReport = {
+  v: "reelier.continuity-eve-conformance-report/v1",
+  status: "passed",
+  maturity: "reproduced",
+  reelierCommit: "a".repeat(40),
+  authorityAdapterContractDigest: `sha256:${"b".repeat(64)}`,
+  eveVersion: "0.37.1",
+  nodeVersion: "v24.9.0",
+  checks: [
+    { id: "generic-candidate", status: "passed", detail: "public continuity adapter candidate checks passed" },
+    { id: "eve-process-matrix", status: "passed", detail: "real Eve process matrix passed" },
+    { id: "focused-continuity", status: "passed", detail: "focused continuity suites passed" },
+  ],
+  artifacts: { ledgerHeadDigest: `sha256:${"c".repeat(64)}`, receiptGraphDigest: `sha256:${"d".repeat(64)}`, reportDigest: `sha256:${"e".repeat(64)}` },
+  nonClaims: { contentCorrectness: "not-proved", grokBot: "not-tested", productionReadiness: "not-proved", safety: "not-proved", topology: "not-proved", trafficCompleteness: "not-proved" },
+};
 
 test("aggregate preserves fixture-only v0 evidence without making it pass", () => {
-  const report = aggregate.aggregateReports([{ harnessId: "grok-build", adapterPath: "agent-adapter/v0", report: agentReport }]);
+  const report = aggregate.aggregateReports([{ harnessId: "xai.grok-build", adapterPath: "agent-adapter/v0", report: agentReport }]);
   const row = report.harnesses[0];
   assert.equal(report.status, "failed");
   assert.equal(row.evidenceMaturity, "fixture-only");
   assert.equal(row.coverageStatus, "observed-only");
   assert.equal(row.executionStatus, "not-tested");
   assert.equal(row.outcomeStatus, "not-tested");
-  assert.ok(row.nonClaims.includes("observed route discovery is not write enforcement"));
+  assert.equal(row.nonClaims.routeEnforcement, "not-proved");
   assert.ok(row.reasons.length > 0);
 });
 
 test("aggregate classifies Eve continuity as continuity-proven, not execution-proven", () => {
-  const report = aggregate.aggregateReports([{ harnessId: "eve", adapterPath: "continuity-adapter/v1", report: eveReport }]);
+  const report = aggregate.aggregateReports([{ harnessId: "eve", adapterPath: "continuity-adapter/v1/eve-fixture", report: genuineEveReport }]);
   const row = report.harnesses[0];
   assert.equal(row.evidenceMaturity, "continuity-proven");
   assert.equal(row.coverageStatus, "coverage-unknown");
   assert.equal(row.executionStatus, "not-tested");
   assert.equal(row.outcomeStatus, "not-tested");
   assert.equal(report.status, "failed");
-  assert.ok(row.nonClaims.includes("continuity does not prove universal agent-adapter execution"));
+  assert.equal(row.nonClaims.agentAdapterExecution, "not-proved");
+});
+
+test("aggregate rejects empty, contradictory, and dishonest passing reports", () => {
+  const validRow = aggregate.aggregateReports([{ harnessId: "xai.grok-build", adapterPath: "agent-adapter/v0", report: agentReport }]).harnesses[0];
+  const base = { v: "reelier.aggregate-conformance-report/v0", status: "failed", harnesses: [validRow] };
+  assert.equal(aggregate.validateAggregateReport({ ...base, harnesses: [] }), false);
+  assert.equal(aggregate.validateAggregateReport({ ...base, status: "passed" }), false);
+  assert.equal(aggregate.validateAggregateReport({ ...base, harnesses: [{ ...validRow, overallStatus: "execution-proven" }] }), false);
+  assert.equal(aggregate.validateAggregateReport({ ...base, status: "passed", harnesses: [{ ...validRow, evidenceMaturity: "execution-proven", coverageStatus: "enforced", executionStatus: "execution-proven", outcomeStatus: "verified", overallStatus: "execution-proven" }] }), true);
+});
+
+test("aggregate validates source contracts and binds source identity", () => {
+  const mismatched = aggregate.aggregateReports([{ harnessId: "other-adapter", adapterPath: "agent-adapter/v0", report: agentReport }]);
+  assert.equal(mismatched.harnesses[0].overallStatus, "unsupported");
+  const forged = structuredClone(agentReport);
+  forged.status = "passed";
+  forged.checks[0].status = "failed";
+  const rejected = aggregate.aggregateReports([{ harnessId: "xai.grok-build", adapterPath: "agent-adapter/v0", report: forged }]);
+  assert.equal(rejected.harnesses[0].overallStatus, "unsupported");
 });
 
 test("unknown-like aggregate states are never passing", () => {
-  for (const state of ["coverage-unknown", "not-tested", "unsupported", "failed"] as const) {
+  for (const state of ["unknown", "uncovered", "unchecked", "absent", "pending", "not-tested", "unsupported", "failed", "continuity-only"] as const) {
     assert.equal(aggregate.isPassingStatus(state), false, state);
   }
 });

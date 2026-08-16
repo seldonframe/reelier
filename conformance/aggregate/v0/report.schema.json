@@ -7,25 +7,59 @@
   "properties": {
     "v": { "const": "reelier.aggregate-conformance-report/v0" },
     "status": { "enum": ["passed", "failed"] },
-    "harnesses": { "type": "array", "items": { "$ref": "#/$defs/harness" } }
+    "harnesses": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/harness" } }
   },
+  "allOf": [{
+    "if": { "type": "object", "properties": { "status": { "const": "passed" } }, "required": ["status"] },
+    "then": { "type": "object", "properties": { "harnesses": { "type": "array", "items": { "$ref": "#/$defs/passingHarness" } } } }
+  }],
   "$defs": {
-    "status": { "enum": ["fixture-only", "observed-only", "continuity-proven", "execution-proven", "coverage-unknown", "not-tested", "unsupported", "failed", "enforced", "verified"] },
-    "harness": {
-      "type": "object",
-      "additionalProperties": false,
+    "evidence": { "enum": ["fixture-only", "continuity-only", "continuity-proven", "execution-proven", "unsupported", "failed"] },
+    "coverage": { "enum": ["observed-only", "coverage-unknown", "unknown", "uncovered", "unchecked", "enforced", "unsupported", "failed"] },
+    "execution": { "enum": ["execution-proven", "unknown", "unchecked", "pending", "not-tested", "unsupported", "failed"] },
+    "outcome": { "enum": ["verified", "unknown", "unchecked", "absent", "pending", "not-tested", "unsupported", "failed"] },
+    "overall": { "enum": ["fixture-only", "continuity-only", "continuity-proven", "execution-proven", "unknown", "uncovered", "unchecked", "absent", "pending", "not-tested", "unsupported", "failed"] },
+    "nonClaims": {
+      "type": "object", "additionalProperties": false,
+      "required": ["routeEnforcement", "agentAdapterExecution", "liveHarnessExecution", "outcomeCorrectness", "productionSafety"],
+      "properties": {
+        "routeEnforcement": { "const": "not-proved" },
+        "agentAdapterExecution": { "const": "not-proved" },
+        "liveHarnessExecution": { "const": "not-proved" },
+        "outcomeCorrectness": { "const": "not-proved" },
+        "productionSafety": { "const": "not-proved" }
+      }
+    },
+    "harnessProperties": {
+      "type": "object", "additionalProperties": false,
       "required": ["harnessId", "adapterPath", "evidenceMaturity", "coverageStatus", "executionStatus", "outcomeStatus", "overallStatus", "nonClaims", "reasons"],
       "properties": {
         "harnessId": { "type": "string", "minLength": 1 },
         "adapterPath": { "type": "string", "minLength": 1 },
-        "evidenceMaturity": { "$ref": "#/$defs/status" },
-        "coverageStatus": { "$ref": "#/$defs/status" },
-        "executionStatus": { "$ref": "#/$defs/status" },
-        "outcomeStatus": { "$ref": "#/$defs/status" },
-        "overallStatus": { "$ref": "#/$defs/status" },
-        "nonClaims": { "type": "array", "items": { "type": "string", "minLength": 1 } },
-        "reasons": { "type": "array", "items": { "type": "string", "minLength": 1 } }
+        "evidenceMaturity": { "$ref": "#/$defs/evidence" },
+        "coverageStatus": { "$ref": "#/$defs/coverage" },
+        "executionStatus": { "$ref": "#/$defs/execution" },
+        "outcomeStatus": { "$ref": "#/$defs/outcome" },
+        "overallStatus": { "$ref": "#/$defs/overall" },
+        "nonClaims": { "$ref": "#/$defs/nonClaims" },
+        "reasons": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } }
       }
+    },
+    "harness": {
+      "allOf": [
+        { "$ref": "#/$defs/harnessProperties" },
+        { "if": { "type": "object", "properties": { "overallStatus": { "const": "fixture-only" } }, "required": ["overallStatus"] }, "then": { "type": "object", "properties": { "evidenceMaturity": { "const": "fixture-only" }, "coverageStatus": { "const": "observed-only" }, "executionStatus": { "const": "not-tested" }, "outcomeStatus": { "const": "not-tested" } } } },
+        { "if": { "type": "object", "properties": { "overallStatus": { "const": "continuity-proven" } }, "required": ["overallStatus"] }, "then": { "type": "object", "properties": { "evidenceMaturity": { "const": "continuity-proven" }, "coverageStatus": { "const": "coverage-unknown" }, "executionStatus": { "const": "not-tested" }, "outcomeStatus": { "const": "not-tested" } } } },
+        { "if": { "type": "object", "properties": { "overallStatus": { "const": "unsupported" } }, "required": ["overallStatus"] }, "then": { "type": "object", "properties": { "evidenceMaturity": { "const": "unsupported" }, "coverageStatus": { "const": "coverage-unknown" }, "executionStatus": { "const": "not-tested" }, "outcomeStatus": { "const": "not-tested" } } } },
+        { "if": { "type": "object", "properties": { "overallStatus": { "const": "failed" } }, "required": ["overallStatus"] }, "then": { "type": "object", "properties": { "evidenceMaturity": { "const": "failed" }, "coverageStatus": { "const": "failed" }, "executionStatus": { "const": "failed" }, "outcomeStatus": { "const": "failed" } } } }
+        ,{ "if": { "type": "object", "properties": { "overallStatus": { "const": "execution-proven" } }, "required": ["overallStatus"] }, "then": { "type": "object", "properties": { "evidenceMaturity": { "const": "execution-proven" }, "coverageStatus": { "const": "enforced" }, "executionStatus": { "const": "execution-proven" }, "outcomeStatus": { "const": "verified" } } } }
+      ]
+    },
+    "passingHarness": {
+      "allOf": [
+        { "$ref": "#/$defs/harnessProperties" },
+        { "type": "object", "properties": { "evidenceMaturity": { "const": "execution-proven" }, "coverageStatus": { "const": "enforced" }, "executionStatus": { "const": "execution-proven" }, "outcomeStatus": { "const": "verified" }, "overallStatus": { "const": "execution-proven" } } }
+      ]
     }
   }
 }

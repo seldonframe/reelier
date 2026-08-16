@@ -6,19 +6,31 @@ const VERSION = "reelier.aggregate-conformance-report/v0";
 const here = (name) => fileURLToPath(new URL(name, import.meta.url));
 const ajv = new Ajv2020({ allErrors: true, strict: true });
 const validateReport = ajv.compile(JSON.parse(readFileSync(here("./report.schema.json"), "utf8")));
+const validateContinuity = ajv.compile(JSON.parse(readFileSync(here("../../continuity-adapter/v1/report.schema.json"), "utf8")));
+const validateEve = ajv.compile(JSON.parse(readFileSync(here("../../continuity-adapter/v1/eve-fixture/conformance-report.schema.json"), "utf8")));
 
-const NON_CLAIMS = Object.freeze([
-  "observed route discovery is not write enforcement",
-  "continuity does not prove universal agent-adapter execution",
-  "fixture evidence is not live harness execution",
-  "outcome correctness and production safety are not proved",
-]);
+const NON_CLAIMS = Object.freeze({ routeEnforcement: "not-proved", agentAdapterExecution: "not-proved", liveHarnessExecution: "not-proved", outcomeCorrectness: "not-proved", productionSafety: "not-proved" });
 
 const PASSING = new Set(["execution-proven", "enforced", "verified"]);
 export function isPassingStatus(status) { return PASSING.has(status); }
 
 function row(harnessId, adapterPath, values, reasons) {
   return Object.freeze({ harnessId, adapterPath, ...values, nonClaims: NON_CLAIMS, reasons: Object.freeze(reasons) });
+}
+
+export function validateAggregateReport(value) { return validateReport(value); }
+
+function validAgentReport(report) {
+  if (!report || report.v !== "reelier.agent-adapter-conformance-report/v0" || !["passed", "failed"].includes(report.status) || !(typeof report.adapterId === "string" || report.adapterId === null) || !Array.isArray(report.checks) || report.checks.length === 0) return false;
+  if (report.status === "passed" && report.checks.some((check) => check?.status !== "passed")) return false;
+  return report.checks.every((check) => check && Object.keys(check).length === 3 && typeof check.id === "string" && ["passed", "failed"].includes(check.status) && typeof check.detail === "string" && check.detail.length > 0);
+}
+
+function sourceIsValid(record, report) {
+  if (report?.v === "reelier.agent-adapter-conformance-report/v0") return validAgentReport(report) && record.harnessId === report.adapterId && record.adapterPath === "agent-adapter/v0";
+  if (report?.v === "reelier.continuity-adapter-conformance-report/v1") return validateContinuity(report) && (report.harnessId === null || report.harnessId === record.harnessId) && record.adapterPath === "continuity-adapter/v1";
+  if (report?.v === "reelier.continuity-eve-conformance-report/v1") return validateEve(report) && record.harnessId === "eve" && record.adapterPath === "continuity-adapter/v1/eve-fixture";
+  return false;
 }
 
 function classify(record) {
@@ -28,6 +40,9 @@ function classify(record) {
       evidenceMaturity: "unsupported", coverageStatus: "coverage-unknown", executionStatus: "not-tested", outcomeStatus: "not-tested", overallStatus: "unsupported",
     }, ["no supported conformance report was supplied"]);
   }
+  if (!sourceIsValid(record, report)) return row(record.harnessId ?? "unknown", record.adapterPath ?? "unknown", {
+    evidenceMaturity: "unsupported", coverageStatus: "coverage-unknown", executionStatus: "not-tested", outcomeStatus: "not-tested", overallStatus: "unsupported",
+  }, ["source report failed its closed contract or identity binding"]);
   if (report.v === "reelier.agent-adapter-conformance-report/v0") {
     const failed = report.status !== "passed";
     return row(record.harnessId, record.adapterPath, {
