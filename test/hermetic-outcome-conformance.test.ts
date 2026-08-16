@@ -68,6 +68,8 @@ test("emits a deterministic closed reversible bundle using existing authority se
     assert.equal(delegation.principal.v, "reelier.principal/v1");
     assert.equal(delegation.sessionBinding.v, "reelier.authority-cell-session-binding/v1");
     assert.equal(delegation.sessionBinding.principalId, delegation.childGrant.grantee);
+    assert.equal(delegation.sessionBinding.grantId, delegation.childGrant.grantId);
+    assert.equal(delegation.childGrant.grantor, delegation.parentGrant.grantee);
     assert.equal(delegation.principal.id, delegation.childGrant.grantee);
     assert.equal(delegation.childGrant.parentDigest, delegation.parentCommitmentDigest);
     assert.equal(delegation.parentCommitmentDigest, artifactDigest(delegation.parentGrant));
@@ -81,8 +83,11 @@ test("emits a deterministic closed reversible bundle using existing authority se
     assert.equal(loaded.dispatch.gateEvent.v, "reelier.gate-event/v1");
     assert.equal(loaded.dispatch.gateEvent.verdict, "accepted");
     assert.equal(loaded.dispatch.reservation.state, "reconciled");
+    assert.deepEqual(loaded.dispatch.attempts.map((attempt: any) => attempt.reservationId), [loaded.dispatch.reservation.id, loaded.dispatch.reservation.id]);
     assert.equal(loaded.dispatch.reservation.idempotencyKey, loaded.dispatch.decisionContext.requestKey);
     assert.deepEqual(loaded.dispatch.attempts.map((attempt: any) => attempt.requestKey), [loaded.dispatch.decisionContext.requestKey, loaded.dispatch.decisionContext.requestKey]);
+    assert.equal(loaded.dispatch.dispatchedRequestDigest, loaded.dispatch.decisionContext.requestDigest);
+    assert.equal(artifactDigest(loaded.dispatch.authorizedRequest), loaded.dispatch.decisionContext.requestDigest);
     assert.equal(loaded.providerState.acknowledgment.status, "acknowledged");
     assert.equal(loaded.providerState.postStateEvidence.confidence, "exact");
     assert.match(loaded.providerState.postStateEvidence.permitSnapshotDigest, /^sha256:[0-9a-f]{64}$/);
@@ -111,7 +116,7 @@ test("duplicate retry reuses the reservation and causes no duplicate provider ef
   try {
     const bundle = checker.loadHermeticOutcomeBundle(directory);
     assert.equal(bundle.dispatch.attempts.length, 2);
-    assert.deepEqual(bundle.dispatch.attempts.map((attempt: any) => attempt.reservationId), [bundle.dispatch.reservation.reservationId, bundle.dispatch.reservation.reservationId]);
+    assert.deepEqual(bundle.dispatch.attempts.map((attempt: any) => attempt.reservationId), [bundle.dispatch.reservation.id, bundle.dispatch.reservation.id]);
     assert.deepEqual(bundle.dispatch.attempts.map((attempt: any) => attempt.decision), ["dispatched", "duplicate"]);
     assert.equal(bundle.dispatch.attempts[1].providerEffectDelta, 0);
     assert.equal(bundle.providerState.providerEffectCount, 1);
@@ -196,8 +201,12 @@ test("rejects every tampered artifact join with a relationship-specific error", 
     { name: "post-state dispatch digest", artifact: "provider-state.json", mutate: (value) => { value.postStateEvidence.dispatchRequestDigest = wrongDigest; }, error: /post-state dispatch request digest/i },
     { name: "post-state permit digest", artifact: "provider-state.json", mutate: (value) => { value.postStateEvidence.permitSnapshotDigest = wrongDigest; }, error: /post-state permit snapshot digest/i },
     { name: "parent grant commitment", artifact: "delegation.json", mutate: (value) => { value.parentGrant.grantee = "principal_tampered"; }, error: /parent commitment digest/i },
+    { name: "parent to child principal", artifact: "delegation.json", mutate: (value) => { value.childGrant.grantor = "principal_tampered"; }, error: /child grantor.*parent grantee/i },
     { name: "principal to child binding", artifact: "delegation.json", mutate: (value) => { value.principal.id = "principal_tampered"; }, error: /principal id.*child grantee/i },
     { name: "principal to session binding", artifact: "delegation.json", mutate: (value) => { value.sessionBinding.principalId = "principal_tampered"; }, error: /principal id.*session principal/i },
+    { name: "session to signed child grant id", artifact: "delegation.json", mutate: (value) => { value.sessionBinding.grantId = "grant_tampered"; }, error: /session grant id.*child grant id/i },
+    { name: "decision requester to session principal", artifact: "dispatch.json", mutate: (value) => { value.decisionContext.requester = "principal_tampered"; }, error: /decision requester.*session principal/i },
+    { name: "decision capability id to child grant", artifact: "dispatch.json", mutate: (value) => { value.decisionContext.capabilityId = "grant_tampered"; }, error: /decision capability id.*child grant id/i },
     { name: "max effects per window attenuation", artifact: "delegation.json", mutate: (value) => { value.childGrant.constraints.limits.maxEffectsPerWindow = 3; }, error: /maxEffectsPerWindow attenuation/i },
     { name: "max effects per source trigger attenuation", artifact: "delegation.json", mutate: (value) => { value.childGrant.constraints.limits.maxEffectsPerSourceTrigger = 3; }, error: /maxEffectsPerSourceTrigger attenuation/i },
     { name: "source-trigger allowlist attenuation", artifact: "delegation.json", mutate: (value) => { value.childGrant.constraints.definitionAliases.push("unapproved_source_trigger_v1"); }, error: /source-trigger allowlist attenuation/i },
@@ -205,6 +214,9 @@ test("rejects every tampered artifact join with a relationship-specific error", 
     { name: "original attempt request key", artifact: "dispatch.json", mutate: (value) => { value.attempts[0].requestKey = wrongDigest; }, error: /dispatch attempt request key.*decision context/i },
     { name: "retry attempt request key", artifact: "dispatch.json", mutate: (value) => { value.attempts[1].requestKey = wrongDigest; }, error: /dispatch attempt request key.*decision context/i },
     { name: "reservation idempotency key", artifact: "dispatch.json", mutate: (value) => { value.reservation.idempotencyKey = wrongDigest; }, error: /reservation idempotency key.*request key/i },
+    { name: "attempt references a different self-authored reservation", artifact: "dispatch.json", mutate: (value) => { value.attempts[0].reservationId = "reservation_other"; value.attempts[1].reservationId = "reservation_other"; }, error: /dispatch attempt reservation id.*actual reservation/i },
+    { name: "unrelated dispatched request", artifact: "dispatch.json", mutate: (value) => { value.dispatchedRequestDigest = wrongDigest; }, error: /dispatched request digest.*authorized decision context/i },
+    { name: "authorized request body", artifact: "dispatch.json", mutate: (value) => { value.authorizedRequest = { v: "reelier.hermetic-provider-request/v0", resourceId: "fixture_switch", value: "off", idempotencyKey: value.decisionContext.requestKey }; }, error: /authorized request digest.*decision context/i },
   ];
 
   for (const item of cases) await t.test(item.name, () => {
@@ -229,6 +241,22 @@ test("rejects a missing artifact from the closed bundle", () => {
     const result = checker.checkHermeticOutcomeBundle(directory);
     assert.equal(result.valid, false);
     assert.ok(result.errors.some((error: string) => /missing.*provider-state\.json/i.test(error)), result.errors.join("\n"));
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("rejects contradictory post-state even when observed and expected digests copy it", () => {
+  const directory = temporaryBundle();
+  try {
+    const provider = readArtifact(directory, "provider-state.json");
+    provider.postState.value = "off";
+    provider.postStateEvidence.expectedProjectionDigest = artifactDigest(provider.postState);
+    provider.postStateEvidence.observedProjectionDigest = artifactDigest(provider.postState);
+    writeArtifact(directory, "provider-state.json", provider);
+    const result = checker.checkHermeticOutcomeBundle(directory);
+    assert.equal(result.valid, false);
+    assert.ok(result.errors.some((error: string) => /post-state.*authorized effect|authorized.*post-state/i.test(error)), result.errors.join("\n"));
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
