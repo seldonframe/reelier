@@ -81,7 +81,7 @@ test("authority serve host composition binds stdio resolver, bound runtime, and 
     async composeStdio(_config, _registry, createRuntime) { calls.push("compose"); return { executionContext, runtime: await createRuntime(executionContext) }; },
     async createStdioBoundRuntime(_config, context) { calls.push("bound-runtime"); assert.deepEqual(context, executionContext); return { outcome: async () => ({ requestId: "", verdict: "refused" as const, reasonCode: "unused", lifecycleState: "refused" }), status: async () => ({ requestId: "", verdict: "refused" as const, reasonCode: "unused", lifecycleState: "refused" }) } as never; },
     async createLocalRuntime() { calls.push("unbound-runtime"); throw new Error("must not use unbound runtime"); },
-    createHostServer(_config, _runtime, options) { calls.push("host-server"); assert.deepEqual(options.stdioExecutionContext, executionContext); return server as never; },
+    createHostServer(_config, _runtime, options) { calls.push("host-server"); assert.deepEqual(options?.stdioExecutionContext, executionContext); return server as never; },
   });
   assert.equal(result, server);
   assert.deepEqual(calls, ["compose", "bound-runtime", "host-server"]);

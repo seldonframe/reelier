@@ -30,6 +30,10 @@ export async function resolveAuthorityServeStdioExecutionContext(config: Authori
 }
 
 function resolveEnvironment(reference: string, env: Readonly<Record<string, string | undefined>>): string { const value = env[reference.slice(4)]; if (!value || value.includes("\0") || /[\r\n]/.test(value)) throw new Error("unavailable"); return value; }
+export function validatePrivateStdioCredentialFileMetadata(metadata: Readonly<{ uid: number; mode: number }>, effectiveUid: number): void {
+  if (!Number.isSafeInteger(effectiveUid) || effectiveUid < 0 || !Number.isSafeInteger(metadata.uid) || metadata.uid !== effectiveUid) throw new TypeError("stdio principal credential file owner is not the effective host UID");
+  if (!Number.isSafeInteger(metadata.mode) || (metadata.mode & 0o077) !== 0) throw new TypeError("stdio principal credential file permissions are not private");
+}
 async function readStableCredential(file: string): Promise<string> {
   const resolved = path.resolve(file), canonical = await realpath(resolved);
   const normalize = (value: string) => process.platform === "win32" ? value.toLowerCase() : value;
@@ -38,8 +42,12 @@ async function readStableCredential(file: string): Promise<string> {
   try {
     const before = await handle.stat();
     if (!before.isFile() || before.size > 4096) throw new Error("credential file is invalid");
+    const effectiveUid = process.platform === "linux" ? effectiveHostUid() : undefined;
+    if (effectiveUid !== undefined) validatePrivateStdioCredentialFileMetadata(before, effectiveUid);
     const bytes = await handle.readFile(); const after = await handle.stat(); const current = await lstat(resolved);
-    if (current.isSymbolicLink() || before.dev !== after.dev || before.ino !== after.ino || before.size !== after.size || before.mtimeMs !== after.mtimeMs || before.dev !== current.dev || before.ino !== current.ino) throw new Error("credential file changed");
+    if (effectiveUid !== undefined) { validatePrivateStdioCredentialFileMetadata(after, effectiveUid); validatePrivateStdioCredentialFileMetadata(current, effectiveUid); }
+    if (current.isSymbolicLink() || before.dev !== after.dev || before.ino !== after.ino || before.size !== after.size || before.mtimeMs !== after.mtimeMs || before.uid !== after.uid || before.mode !== after.mode || before.dev !== current.dev || before.ino !== current.ino || before.uid !== current.uid || before.mode !== current.mode) throw new Error("credential file changed");
     const value = bytes.toString("utf8").trim(); if (!value || value.includes("\0") || /[\r\n]/.test(value)) throw new Error("credential file is invalid"); return value;
   } finally { await handle.close(); }
 }
+function effectiveHostUid(): number { if (typeof process.geteuid !== "function") throw new Error("effective host UID is unavailable"); return process.geteuid(); }

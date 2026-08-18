@@ -6,12 +6,12 @@ import { randomBytes } from "node:crypto";
 import { signAuthorityDigest, verifyAuthoritySignature } from "./crypto.js";
 import { authorityDigest } from "./wire.js";
 import { loadAuthorityHostConfig, validateAuthorityHostConfig } from "./host/config.js";
-import { createAuthorityHostServer, type AuthorityHostRuntime } from "./host/server.js";
+import { createAuthorityHostServer, type AuthorityHostRuntime, type AuthorityHostServer } from "./host/server.js";
 import { firstPartyPacks } from "../packs/index.js";
 import { verifyAuthorityReceiptBundle } from "./verify.js";
 import { createArtifactStore } from "./host/artifacts.js";
 import { runFirstPartyPackConformance } from "../packs/conformance.js";
-import { createLocalAuthorityRuntime, createStdioBoundLocalAuthorityRuntime } from "./host/local.js";
+import { createLocalAuthorityRuntime, createStdioBoundLocalAuthorityRuntime, type LocalAuthorityRuntime, type LocalAuthorityRuntimeOptions } from "./host/local.js";
 import { CERTIFICATION_TARGET_PACKAGE_VERSION, createCertificationPreflight } from "./host/certification.js";
 import { verifyReleaseEvidenceManifest } from "./host/release-evidence.js";
 import { inspectCertificationResourceIdentifiers, inspectCertificationSecretReferences, parseCertificationOperatorConfig, probePinnedCodexBinary } from "./host/certification-config.js";
@@ -19,7 +19,7 @@ import { createFounderCertificationSourceAdapter } from "./host/founder-source-a
 import { createFounderJsonHttpsDispatchAdapter } from "./host/founder-dispatch-adapter.js";
 import { createCodexDogfoodPlan } from "./host/codex-dogfood.js";
 import { launchCodexDogfood, materializeCodexDogfood, probeCodexLogin } from "./host/codex-launcher.js";
-import { createFilePrincipalRegistry } from "./host/principal-registry.js";
+import { createFilePrincipalRegistry, type PrincipalRegistry } from "./host/principal-registry.js";
 import { createDelegationAuthority } from "./host/delegation-service.js";
 import { activateCodexPrincipalSessions } from "./host/codex-session-activation.js";
 import { runTopologyProbeCommand } from "./host/topology-probe-command.js";
@@ -40,6 +40,7 @@ import { authorityCellConnectionPathnameConfinement, defaultAuthorityCellConnect
 import { loadAuthorityCellConnection } from "./client/config.js";
 import { checkAuthorityCellLive } from "./client/http.js";
 import { composeAuthorityServeStdioRuntime } from "./host/stdio-context.js";
+import type { AuthorityExecutionContextV1 } from "./types.js";
 
 interface AuthorityClientRuntime {
   readonly platform?: NodeJS.Platform;
@@ -298,30 +299,13 @@ async function authorityServe(args: Readonly<{ opts: Record<string, string> }>):
     } : {}),
     ...(delegation ? { delegation } : {}),
   };
-  const composed = serveMode.transport === "stdio" ? await composeAuthorityServeStdioRuntime(loaded.config, principalRegistry, context => context ? createStdioBoundLocalAuthorityRuntime(loaded.config, context, localRuntimeOptions) : createLocalAuthorityRuntime(loaded.config, localRuntimeOptions)) : undefined;
-  const stdioExecutionContext = composed?.executionContext;
-  const authorityRuntime = composed?.runtime ?? await createLocalAuthorityRuntime(loaded.config, localRuntimeOptions);
-  const runtime: AuthorityHostRuntime = {
-    directOutcomeAliases: authorityRuntime.directOutcomeAliases,
-    requiresAuthenticatedExecutionContext: authorityRuntime.requiresAuthenticatedExecutionContext,
-    outcome: authorityRuntime.outcome,
-    status: authorityRuntime.status,
-    jobsSearch: authorityRuntime.jobsSearch,
-    jobLoad: authorityRuntime.jobLoad,
-    invoke: authorityRuntime.invoke,
-    delegationRequest: authorityRuntime.delegationRequest,
-    delegationStatus: authorityRuntime.delegationStatus,
-    taskCreate: authorityRuntime.taskCreate,
-    taskStatus: authorityRuntime.taskStatus,
-    async artifactStage(input) {
+  const server = await composeAuthorityServeHost(loaded.config, serveMode.transport, principalRegistry, localRuntimeOptions, async input => {
       const value = input as Record<string, unknown>;
       const requestId = typeof value?.requestId === "string" ? value.requestId : "";
       if (typeof value?.text !== "string" || value.mediaType !== "text/plain") return { requestId, verdict: "refused", reasonCode: "invalid-artifact", lifecycleState: "refused" };
       const staged = await artifactStore.stage({ mediaType: "text/plain", bytes: Buffer.from(value.text, "utf8"), sourceBinding: typeof value.sourceBinding === "string" ? value.sourceBinding : undefined });
       return { requestId, verdict: "accepted", reasonCode: "staged", lifecycleState: "staged", commitment: staged.commitment };
-    },
-  };
-  const server = createAuthorityHostServer(loaded.config, runtime, { ...(principalRegistry ? { principalRegistry } : {}), ...(stdioExecutionContext ? { stdioExecutionContext } : {}) });
+  });
   if (serveMode.transport === "http") {
     await server.startHttp(serveMode.port, serveMode.host);
     console.error(JSON.stringify({ status: "ready", transport: "http", host: serveMode.host, port: serveMode.port }));
@@ -329,6 +313,24 @@ async function authorityServe(args: Readonly<{ opts: Record<string, string> }>):
     await server.startStdio();
   }
   return 0;
+}
+
+export interface AuthorityServeHostCompositionDependencies {
+  readonly composeStdio: (config: import("./host/config.js").AuthorityHostConfig, registry: PrincipalRegistry | undefined, createRuntime: (context: AuthorityExecutionContextV1 | undefined) => Promise<LocalAuthorityRuntime>) => Promise<Readonly<{ executionContext: AuthorityExecutionContextV1 | undefined; runtime: LocalAuthorityRuntime }>>;
+  readonly createStdioBoundRuntime: typeof createStdioBoundLocalAuthorityRuntime;
+  readonly createLocalRuntime: typeof createLocalAuthorityRuntime;
+  readonly createHostServer: typeof createAuthorityHostServer;
+}
+
+const authorityServeHostDependencies: AuthorityServeHostCompositionDependencies = { composeStdio: composeAuthorityServeStdioRuntime, createStdioBoundRuntime: createStdioBoundLocalAuthorityRuntime, createLocalRuntime: createLocalAuthorityRuntime, createHostServer: createAuthorityHostServer };
+
+/** Package-internal production composition boundary. It creates but never starts the host server. */
+export async function composeAuthorityServeHost(config: import("./host/config.js").AuthorityHostConfig, transport: "stdio" | "http", principalRegistry: PrincipalRegistry | undefined, localRuntimeOptions: LocalAuthorityRuntimeOptions, artifactStage?: NonNullable<AuthorityHostRuntime["artifactStage"]>, dependencies: AuthorityServeHostCompositionDependencies = authorityServeHostDependencies): Promise<AuthorityHostServer> {
+  const composed = transport === "stdio" ? await dependencies.composeStdio(config, principalRegistry, context => context ? dependencies.createStdioBoundRuntime(config, context, localRuntimeOptions) : dependencies.createLocalRuntime(config, localRuntimeOptions)) : undefined;
+  const executionContext = composed?.executionContext;
+  const authorityRuntime = composed?.runtime ?? await dependencies.createLocalRuntime(config, localRuntimeOptions);
+  const runtime: AuthorityHostRuntime = { directOutcomeAliases: authorityRuntime.directOutcomeAliases, requiresAuthenticatedExecutionContext: authorityRuntime.requiresAuthenticatedExecutionContext, outcome: authorityRuntime.outcome, status: authorityRuntime.status, jobsSearch: authorityRuntime.jobsSearch, jobLoad: authorityRuntime.jobLoad, invoke: authorityRuntime.invoke, delegationRequest: authorityRuntime.delegationRequest, delegationStatus: authorityRuntime.delegationStatus, taskCreate: authorityRuntime.taskCreate, taskStatus: authorityRuntime.taskStatus, ...(artifactStage ? { artifactStage } : {}) };
+  return dependencies.createHostServer(config, runtime, { ...(principalRegistry ? { principalRegistry } : {}), ...(executionContext ? { stdioExecutionContext: executionContext } : {}) });
 }
 
 async function authorityCertify(args: Readonly<{ positional: string[]; flags: Set<string>; opts: Record<string, string> }>): Promise<number> {
