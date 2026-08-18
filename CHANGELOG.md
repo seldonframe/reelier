@@ -77,9 +77,9 @@ All notable changes to `reelier`. Dates are release dates.
 
 ### Fixed
 
-- **Subcommand help is now read-only.** Every dispatched command accepts
-  `--help` and `-h` before argument parsing or handler dispatch, prints the
-  top-level usage text, and exits 0 without initializing local state,
+- **Subcommand help is now read-only.** Every dispatched command accepts a
+  sole `--help` or `-h` argument before parsing or handler dispatch, prints
+  the top-level usage text, and exits 0 without initializing local state,
   connections, servers, or credentials.
 - **`reelier install` wrapped only the top-level `mcpServers` of `~/.claude.json`
   and silently left the project-scoped ones unwrapped inside the file it had

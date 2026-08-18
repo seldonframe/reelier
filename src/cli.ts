@@ -4591,6 +4591,18 @@ const USAGE =
   "           reports every config it could NOT revert rather than skipping it. Both take --config <path> to target\n" +
   "           one file and --dry-run to see the plan; uninstall exits 1 if any config is left unreverted.";
 
+// Keep this inventory aligned with main()'s dispatch switch. Its dedicated
+// process-level contract test extracts both surfaces and fails on drift.
+const HELP_DISPATCH_COMMANDS = new Set([
+  "run", "bench", "baseline", "cost", "prices", "mcp", "serve", "trace", "compile", "manifest", "resolve",
+  "approve", "push", "get", "verify", "diff", "ci", "policy", "authority", "init", "up", "discover", "connections",
+  "connect", "deploy", "doctor", "bridge", "coverage", "from-session", "scan", "install", "uninstall", "login", "logout", "whoami",
+]);
+
+function isReadOnlySubcommandHelp(cmd: string | undefined, rest: string[]): boolean {
+  return cmd !== undefined && HELP_DISPATCH_COMMANDS.has(cmd) && rest.length === 1 && (rest[0] === "--help" || rest[0] === "-h");
+}
+
 async function main(): Promise<number> {
   const [, , cmd, ...rest] = process.argv;
 
@@ -4607,10 +4619,10 @@ async function main(): Promise<number> {
     console.log(USAGE);
     return 0;
   }
-  // Help is a read-only product contract. Check it before parsing arguments
-  // or dispatching, because some handlers initialize connections, servers,
-  // credentials, or local state as part of their normal command path.
-  if (rest.includes("--help") || rest.includes("-h")) {
+  // Help is a read-only product contract. Recognize only the exact
+  // `<known-command> --help|-h` grammar before parsing or dispatching; flags
+  // in option values and unknown commands retain their ordinary behavior.
+  if (isReadOnlySubcommandHelp(cmd, rest)) {
     console.log(USAGE);
     return 0;
   }
