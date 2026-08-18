@@ -262,7 +262,7 @@ test("release operation plan closes every Git, PR, merge, check, package, and ta
   const release = releaseInputs();
   assert.equal(release.operationPlan.value.candidateTreeDigest, release.candidateManifest.value.candidateTreeDigest);
   assert.deepEqual(release.operationPlan.value.files.map(file => file.path), ["CHANGELOG.md", "src/cli.ts", "test/cli-subcommand-help.test.ts"]);
-  assert.equal(parseSignedReleaseOperationPlanV1(release.operationPlan), release.operationPlan);
+  assert.deepEqual(parseSignedReleaseOperationPlanV1(release.operationPlan), release.operationPlan);
   assert.throws(() => parseSignedReleaseOperationPlanV1({ ...release.operationPlan, value: { ...release.operationPlan.value, repository: "attacker/repo" } }), /digest|signature|repository|release/i);
   assert.throws(() => createSignedReleaseOperationPlanV1({ ...release.operationPlan.value, files: release.operationPlan.value.files.map((file, index) => index === 0 ? { ...file, contentDigest: digest("f") } : file) }, signer), /tree.*digest|content|candidate/i);
 });

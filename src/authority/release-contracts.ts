@@ -64,6 +64,33 @@ export interface StagedCandidateManifestV1 {
   readonly workflowCommitments: readonly Readonly<{ digest: string; path: string }>[];
 }
 
+export interface ReleaseOperationPlanV1 {
+  readonly v: "reelier.release-operation-plan/v1";
+  readonly baseCommit: string;
+  readonly candidateBranch: string;
+  readonly candidateTreeDigest: string;
+  readonly commit: Readonly<{
+    author: ReleaseGitIdentityV1;
+    committer: ReleaseGitIdentityV1;
+    message: string;
+    parentSha: string;
+  }>;
+  readonly destinationBranch: "main";
+  readonly expectedCommitSha: string;
+  readonly expectedTreeSha: string;
+  readonly files: readonly ReleaseCandidateFileV1[];
+  readonly npmPreflight: Readonly<{ packageName: "reelier"; version: "0.32.1"; versionMustBeAbsent: true }>;
+  readonly pullRequest: Readonly<{ base: "main"; body: string; draft: true; head: "reelier/release/0.32.1"; title: string }>;
+  readonly repository: "seldonframe/reelier";
+  readonly requiredChecks: readonly string[];
+  readonly squash: Readonly<{ commitMessage: string; commitTitle: string }>;
+  readonly tag: "v0.32.1";
+  readonly workflowCommitments: readonly Readonly<{ digest: string; path: string }>[];
+}
+
+export interface ReleaseGitIdentityV1 { readonly date: string; readonly email: string; readonly name: string }
+export interface ReleaseCandidateFileV1 { readonly blobSha: string; readonly contentDigest: string; readonly mode: "100644"; readonly path: string }
+
 export interface ReleasePolicyV1 {
   readonly v: "reelier.release-policy/v1";
   readonly allowedPaths: readonly string[];
@@ -91,6 +118,7 @@ export interface ReleaseAuthorizationBundleV1 {
   readonly issuedAt: string;
   readonly jobCardDigest: string;
   readonly missionDigest: string;
+  readonly operationPlanDigest: string;
   readonly packDigest: string;
   readonly policyDigest: string;
   readonly receiptGraphMakerBinding: ReleaseReceiptGraphMakerBindingV1;
@@ -143,6 +171,7 @@ export interface SignedReleaseArtifactV1<T, V extends string> {
 }
 
 export type SignedStagedCandidateManifestV1 = SignedReleaseArtifactV1<StagedCandidateManifestV1, "reelier.signed-staged-candidate-manifest/v1">;
+export type SignedReleaseOperationPlanV1 = SignedReleaseArtifactV1<ReleaseOperationPlanV1, "reelier.signed-release-operation-plan/v1">;
 export type SignedReleasePolicyV1 = SignedReleaseArtifactV1<ReleasePolicyV1, "reelier.signed-release-policy/v1">;
 export type SignedReleaseAuthorizationBundleV1 = SignedReleaseArtifactV1<ReleaseAuthorizationBundleV1, "reelier.signed-release-authorization-bundle/v1">;
 export type SignedReleaseReceiptGraphV1 = SignedReleaseArtifactV1<ReleaseReceiptGraphV1, "reelier.signed-release-receipt-graph/v1">;
@@ -151,7 +180,7 @@ export type SignedReleaseVerifierEvidenceV1 = SignedReleaseArtifactV1<ReleaseVer
 export interface ReleaseContractSignerV1 { readonly signerId: string; readonly privateKey: KeyObject }
 export interface ReleaseContractVerifierV1 { readonly publicKeySpkiBase64: string; readonly signerId: string }
 export interface ReleaseEvidenceVerificationV1 { readonly evidence: unknown; readonly verifier: ReleaseContractVerifierV1 }
-export interface VerifiedReleaseAuthorizationV1 { readonly authorization: SignedReleaseAuthorizationBundleV1; readonly candidateManifest: SignedStagedCandidateManifestV1; readonly policy: SignedReleasePolicyV1 }
+export interface VerifiedReleaseAuthorizationV1 { readonly authorization: SignedReleaseAuthorizationBundleV1; readonly candidateManifest: SignedStagedCandidateManifestV1; readonly operationPlan: SignedReleaseOperationPlanV1; readonly policy: SignedReleasePolicyV1 }
 export interface VerifiedReleaseReceiptGraphV1 { readonly evaluation: Readonly<{ completeness: "unchecked"; status: "verified" | "incomplete"; success: boolean }>; readonly graph: SignedReleaseReceiptGraphV1 }
 interface InternalReleaseContractVerifierV1 { readonly publicKey: KeyObject; readonly publicKeySpkiDigest: string; readonly signerId: string }
 const verifiedAuthorizations = new WeakSet<object>();
@@ -168,6 +197,10 @@ export function createSignedStagedCandidateManifestV1(value: StagedCandidateMani
   return signRelease(parseStagedCandidateManifestV1(value), signer, "reelier.signed-staged-candidate-manifest/v1", "release-authorization");
 }
 
+export function createSignedReleaseOperationPlanV1(value: ReleaseOperationPlanV1, signer: ReleaseContractSignerV1): SignedReleaseOperationPlanV1 {
+  return signRelease(parseReleaseOperationPlanV1(value), signer, "reelier.signed-release-operation-plan/v1", "release-authorization");
+}
+
 export function createSignedReleasePolicyV1(value: ReleasePolicyV1, signer: ReleaseContractSignerV1): SignedReleasePolicyV1 {
   return signRelease(parseReleasePolicyV1(value), signer, "reelier.signed-release-policy/v1", "release-authorization");
 }
@@ -182,6 +215,10 @@ export function createSignedReleaseReceiptGraphV1(value: ReleaseReceiptGraphV1, 
 
 export function parseSignedStagedCandidateManifestV1(value: unknown): SignedStagedCandidateManifestV1 {
   return parseSignedRelease(value, "reelier.signed-staged-candidate-manifest/v1", parseStagedCandidateManifestV1);
+}
+
+export function parseSignedReleaseOperationPlanV1(value: unknown): SignedReleaseOperationPlanV1 {
+  return parseSignedRelease(value, "reelier.signed-release-operation-plan/v1", parseReleaseOperationPlanV1);
 }
 
 export function parseSignedReleasePolicyV1(value: unknown): SignedReleasePolicyV1 {
@@ -213,18 +250,21 @@ export function parseCanonicalSignedReleaseReceiptGraphV1(json: string): SignedR
 }
 
 export function verifyReleaseAuthorizationBundleV1(
-  input: Readonly<{ authorization: unknown; candidateManifest: unknown; policy: unknown }>,
+  input: Readonly<{ authorization: unknown; candidateManifest: unknown; operationPlan: unknown; policy: unknown }>,
   verifier: ReleaseContractVerifierV1,
   now: Date,
   qualityEvidence: readonly ReleaseEvidenceVerificationV1[],
 ): VerifiedReleaseAuthorizationV1 {
   const verificationTime = snapshotVerificationTime(now, "release authorization verification clock");
-  const inputs = exact(input, ["authorization", "candidateManifest", "policy"], "release authorization inputs");
+  const inputs = exact(input, ["authorization", "candidateManifest", "operationPlan", "policy"], "release authorization inputs");
   const trustedVerifier = parseReleaseContractVerifierInput(verifier, "release authorization verifier");
   const authorization = verifySigned(parseSignedReleaseAuthorizationBundleV1(inputs.authorization), trustedVerifier, "release-authorization");
   const candidateManifest = verifySigned(parseSignedStagedCandidateManifestV1(inputs.candidateManifest), trustedVerifier, "release-authorization");
+  const operationPlan = verifySigned(parseSignedReleaseOperationPlanV1(inputs.operationPlan), trustedVerifier, "release-authorization");
   const policy = verifySigned(parseSignedReleasePolicyV1(inputs.policy), trustedVerifier, "release-authorization");
   if (authorization.value.stagedCandidateManifestDigest !== candidateManifest.digest) throw new TypeError("release authorization candidate manifest digest mismatch");
+  if (authorization.value.operationPlanDigest !== operationPlan.digest) throw new TypeError("release authorization operation plan digest mismatch");
+  if (candidateManifest.value.candidateTreeDigest !== operationPlan.value.candidateTreeDigest || candidateManifest.value.candidateCommit !== operationPlan.value.expectedCommitSha || !equalStrings(candidateManifest.value.workflowCommitments.map(item => `${item.path}:${item.digest}`), operationPlan.value.workflowCommitments.map(item => `${item.path}:${item.digest}`))) throw new TypeError("release operation plan does not match the staged candidate manifest");
   if (authorization.value.policyDigest !== policy.digest) throw new TypeError("release authorization policy digest mismatch");
   if (verificationTime < Date.parse(authorization.value.issuedAt)) throw new TypeError("release authorization is not yet valid before issuedAt");
   if (verificationTime >= Date.parse(authorization.value.expiresAt)) throw new TypeError("release authorization is expired");
@@ -234,7 +274,7 @@ export function verifyReleaseAuthorizationBundleV1(
   if (!equalStrings(candidateManifest.value.changedPaths, policy.value.allowedPaths)) throw new TypeError("release candidate paths do not equal policy allowed paths");
   if (!equalStrings(authorization.value.effectAllocations.map(item => item.effect), policy.value.effectAllocations)) throw new TypeError("release effect allocations do not equal policy effects");
   verifyQualityEvidence(candidateManifest, authorization, qualityEvidence, verificationTime);
-  const verified = deepFreeze({ authorization, candidateManifest, policy });
+  const verified = deepFreeze({ authorization, candidateManifest, operationPlan, policy });
   verifiedAuthorizations.add(verified);
   return verified;
 }
@@ -280,6 +320,49 @@ function parseStagedCandidateManifestV1(value: unknown): StagedCandidateManifest
   return normalize(item);
 }
 
+function parseReleaseOperationPlanV1(value: unknown): ReleaseOperationPlanV1 {
+  const item = exact(value, ["baseCommit", "candidateBranch", "candidateTreeDigest", "commit", "destinationBranch", "expectedCommitSha", "expectedTreeSha", "files", "npmPreflight", "pullRequest", "repository", "requiredChecks", "squash", "tag", "v", "workflowCommitments"], "release operation plan") as unknown as ReleaseOperationPlanV1;
+  if (item.v !== "reelier.release-operation-plan/v1" || item.repository !== "seldonframe/reelier" || item.baseCommit !== RELEASE_BASE || item.candidateBranch !== RELEASE_BRANCH || item.destinationBranch !== "main" || item.tag !== "v0.32.1") throw new TypeError("release operation plan identity or ref is invalid");
+  requireCommit(item.expectedCommitSha, "release expected commit");
+  requireCommit(item.expectedTreeSha, "release expected tree");
+  requireDigest(item.candidateTreeDigest, "release candidate tree");
+  if (!Array.isArray(item.files) || item.files.length !== RELEASE_PATHS.length) throw new TypeError("release operation plan files must be complete");
+  const files = item.files.map((raw, index) => {
+    const file = exact(raw, ["blobSha", "contentDigest", "mode", "path"], "release operation file") as unknown as ReleaseCandidateFileV1;
+    if (file.path !== RELEASE_PATHS[index] || file.mode !== "100644") throw new TypeError("release operation file path or mode is invalid");
+    requireCommit(file.blobSha, "release operation blob");
+    requireDigest(file.contentDigest, "release operation content");
+    return file;
+  });
+  const computedTreeDigest = authorityDigest({ v: "reelier.release-candidate-tree/v1", files });
+  if (computedTreeDigest !== item.candidateTreeDigest) throw new TypeError("release candidate tree digest does not match exact file paths, modes, blob SHAs, and content digests");
+  const commit = exact(item.commit, ["author", "committer", "message", "parentSha"], "release operation commit");
+  if (commit.parentSha !== RELEASE_BASE || !boundedText(commit.message, 1, 512)) throw new TypeError("release operation commit parent or message is invalid");
+  parseGitIdentity(commit.author, "release commit author");
+  parseGitIdentity(commit.committer, "release commit committer");
+  const pullRequest = exact(item.pullRequest, ["base", "body", "draft", "head", "title"], "release pull request");
+  if (pullRequest.base !== "main" || pullRequest.head !== RELEASE_BRANCH || pullRequest.draft !== true || !boundedText(pullRequest.title, 1, 256) || !boundedText(pullRequest.body, 1, 16_384)) throw new TypeError("release pull request plan is invalid");
+  const squash = exact(item.squash, ["commitMessage", "commitTitle"], "release squash metadata");
+  if (!boundedText(squash.commitTitle, 1, 256) || !boundedText(squash.commitMessage, 1, 16_384)) throw new TypeError("release squash metadata is invalid");
+  const npm = exact(item.npmPreflight, ["packageName", "version", "versionMustBeAbsent"], "release npm preflight");
+  if (npm.packageName !== "reelier" || npm.version !== "0.32.1" || npm.versionMustBeAbsent !== true) throw new TypeError("release npm preflight is invalid");
+  if (!Array.isArray(item.requiredChecks) || item.requiredChecks.length === 0 || item.requiredChecks.length > 32 || item.requiredChecks.some(check => !boundedText(check, 1, 128)) || !equalStrings(item.requiredChecks, [...item.requiredChecks].sort(compareText)) || new Set(item.requiredChecks).size !== item.requiredChecks.length) throw new TypeError("release required checks must be a sorted unique bounded set");
+  if (!Array.isArray(item.workflowCommitments) || item.workflowCommitments.length !== RELEASE_WORKFLOWS.length) throw new TypeError("release operation workflow commitments must be complete");
+  item.workflowCommitments.forEach((raw, index) => {
+    const workflow = exact(raw, ["digest", "path"], "release operation workflow commitment");
+    if (workflow.path !== RELEASE_WORKFLOWS[index]) throw new TypeError("release operation workflow path is invalid");
+    requireDigest(workflow.digest, "release operation workflow");
+  });
+  return normalize(item);
+}
+
+function parseGitIdentity(value: unknown, label: string): ReleaseGitIdentityV1 {
+  const identity = exact(value, ["date", "email", "name"], label) as unknown as ReleaseGitIdentityV1;
+  requireTime(identity.date, `${label} date`);
+  if (!boundedText(identity.name, 1, 128) || !boundedText(identity.email, 3, 254) || !/^[^\s@]+@[^\s@]+$/.test(identity.email)) throw new TypeError(`${label} is invalid`);
+  return identity;
+}
+
 function parseReleasePolicyV1(value: unknown): ReleasePolicyV1 {
   const item = exact(value, ["allowedPaths", "destinations", "effectAllocations", "expirySeconds", "forbiddenChangeClasses", "maxChangedBytes", "maxChangedFiles", "v"], "release policy") as unknown as ReleasePolicyV1;
   if (item.v !== "reelier.release-policy/v1" || item.expirySeconds !== 43_200 || item.maxChangedFiles !== 3 || item.maxChangedBytes !== 65_536) throw new TypeError("release policy limits are invalid");
@@ -291,9 +374,9 @@ function parseReleasePolicyV1(value: unknown): ReleasePolicyV1 {
 }
 
 function parseReleaseAuthorizationBundleV1(value: unknown): ReleaseAuthorizationBundleV1 {
-  const item = exact(value, ["authorityCellDigest", "effectAllocations", "evidenceVerifierBindings", "expiresAt", "issuedAt", "jobCardDigest", "missionDigest", "packDigest", "policyDigest", "receiptGraphMakerBinding", "rootGrantDigest", "stagedCandidateManifestDigest", "taskDigest", "v"], "release authorization bundle") as unknown as ReleaseAuthorizationBundleV1;
+  const item = exact(value, ["authorityCellDigest", "effectAllocations", "evidenceVerifierBindings", "expiresAt", "issuedAt", "jobCardDigest", "missionDigest", "operationPlanDigest", "packDigest", "policyDigest", "receiptGraphMakerBinding", "rootGrantDigest", "stagedCandidateManifestDigest", "taskDigest", "v"], "release authorization bundle") as unknown as ReleaseAuthorizationBundleV1;
   if (item.v !== "reelier.release-authorization-bundle/v1") throw new TypeError("release authorization bundle version is invalid");
-  for (const [label, value] of [["authority cell", item.authorityCellDigest], ["Job Card", item.jobCardDigest], ["mission", item.missionDigest], ["pack", item.packDigest], ["policy", item.policyDigest], ["root grant", item.rootGrantDigest], ["candidate manifest", item.stagedCandidateManifestDigest], ["task", item.taskDigest]] as const) requireDigest(value, label);
+  for (const [label, value] of [["authority cell", item.authorityCellDigest], ["Job Card", item.jobCardDigest], ["mission", item.missionDigest], ["operation plan", item.operationPlanDigest], ["pack", item.packDigest], ["policy", item.policyDigest], ["root grant", item.rootGrantDigest], ["candidate manifest", item.stagedCandidateManifestDigest], ["task", item.taskDigest]] as const) requireDigest(value, label);
   const issuedAt = requireTime(item.issuedAt, "release authorization issuedAt");
   const expiresAt = requireTime(item.expiresAt, "release authorization expiresAt");
   if (expiresAt - issuedAt !== 43_200_000) throw new TypeError("release authorization expiry must be exactly 12-hour");
@@ -621,6 +704,8 @@ function snapshotVerificationTime(now: Date, label: string): number {
 }
 
 function normalize<T>(value: T): T { return deepFreeze(JSON.parse(authorityCanonicalBytes(value).toString("utf8")) as T); }
+function boundedText(value: unknown, minimum: number, maximum: number): value is string { return typeof value === "string" && value.length >= minimum && value.length <= maximum && !value.includes("\0"); }
+function compareText(left: string, right: string): number { return left < right ? -1 : left > right ? 1 : 0; }
 function deepFreeze<T>(value: T): T {
   if (value && typeof value === "object" && !Object.isFrozen(value)) {
     Object.freeze(value);
