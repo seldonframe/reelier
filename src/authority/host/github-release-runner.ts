@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type { KeyObject } from "node:crypto";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
+import { isProxy } from "node:util/types";
 import { authorityDigest } from "../wire.js";
 import { assertVerifiedReleaseAuthorizationV1, type ReleaseContractSignerV1, type ReleaseProviderEffectV1, type VerifiedReleaseAuthorizationV1 } from "../release-contracts.js";
 import type { DispatchAdapter, DispatchOutcome, DispatchRequestState } from "./dispatch.js";
@@ -267,7 +268,7 @@ function failure(reason: string, reconciliationStatus: "not-applied" | "conflict
 function sha256(bytes: Uint8Array): string { return `sha256:${createHash("sha256").update(bytes).digest("hex")}`; }
 function gitBlobSha(bytes: Uint8Array): string { return createHash("sha1").update(`blob ${bytes.byteLength}\0`).update(bytes).digest("hex"); }
 function validateRequest(request: unknown): asserts request is GitHubReleaseRunRequestV1 { const value = exactRecord(request, ["alias", "allocationId", "authorizationHandle", "requestId", "semanticsDigest"], "GitHub release request"); if (!(String(value.alias) in ALIASES) || !/^[a-z0-9][a-z0-9-]{7,127}$/.test(String(value.allocationId)) || !/^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$/.test(String(value.authorizationHandle)) || !/^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$/.test(String(value.requestId)) || !DIGEST.test(String(value.semanticsDigest))) throw new TypeError("GitHub release request is invalid"); }
-function isPlain(value: unknown): value is Record<string, unknown> { if (!value || typeof value !== "object" || Array.isArray(value) || Object.getPrototypeOf(value) !== Object.prototype || Reflect.ownKeys(value).some(key => typeof key !== "string")) return false; return Object.values(Object.getOwnPropertyDescriptors(value)).every(descriptor => "value" in descriptor && descriptor.enumerable); }
+function isPlain(value: unknown): value is Record<string, unknown> { if (!value || typeof value !== "object" || isProxy(value) || Array.isArray(value) || Object.getPrototypeOf(value) !== Object.prototype || Reflect.ownKeys(value).some(key => typeof key !== "string")) return false; return Object.values(Object.getOwnPropertyDescriptors(value)).every(descriptor => "value" in descriptor && descriptor.enumerable); }
 function exactRecord(value: unknown, keys: readonly string[], label: string): Record<string, unknown> { if (!isPlain(value) || Object.keys(value).sort().join("\0") !== [...keys].sort().join("\0")) throw new TypeError(`${label} is not a closed inert record`); return Object.freeze(Object.fromEntries(keys.map(key => [key, value[key]]))); }
 function parseSha(value: unknown, label: string): Readonly<{ sha: string }> { const item = exactRecord(value, ["sha"], label); if (!GIT_SHA.test(String(item.sha))) throw new TypeError(`${label} SHA is invalid`); return Object.freeze({ sha: String(item.sha) }); }
 function parseRef(value: unknown): Readonly<{ sha: string }> | null { if (value === null) return null; return parseSha(value, "ref"); }

@@ -1,4 +1,5 @@
 import { authorityDigest } from "../../authority/wire.js";
+import { isProxy } from "node:util/types";
 import type { PackReconciliationResult, ProviderResponse } from "../types.js";
 import { githubReleaseRecipeId } from "./manifest.js";
 
@@ -15,7 +16,7 @@ export function reconcileGitHubRelease(input: Readonly<{ response: ProviderRespo
 }
 function result(status: PackReconciliationResult["status"], projectionDigest: string | null, reasonCode: string): PackReconciliationResult { return Object.freeze({ status, recipeId: githubReleaseRecipeId, projectionDigest, reasonCode }); }
 function inertRecord(value: unknown, shapes: readonly (readonly string[])[]): Readonly<Record<string, unknown>> | null {
-  if (!value || typeof value !== "object" || Array.isArray(value) || Object.getPrototypeOf(value) !== Object.prototype || Reflect.ownKeys(value).some(key => typeof key !== "string")) return null;
+  if (!value || typeof value !== "object" || isProxy(value) || Array.isArray(value) || Object.getPrototypeOf(value) !== Object.prototype || Reflect.ownKeys(value).some(key => typeof key !== "string")) return null;
   const descriptors = Object.getOwnPropertyDescriptors(value), keys = Object.keys(descriptors).sort();
   if (!shapes.some(shape => [...shape].sort().join("\0") === keys.join("\0"))) return null;
   if (Object.values(descriptors).some(descriptor => !("value" in descriptor) || !descriptor.enumerable)) return null;

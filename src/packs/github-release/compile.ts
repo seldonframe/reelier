@@ -1,4 +1,5 @@
 import { authorityCanonicalBytes, authorityDigest } from "../../authority/wire.js";
+import { isProxy } from "node:util/types";
 import type { StaticPackCompileInput, StaticPackDefinition } from "../../authority/pack.js";
 import { githubReleaseAliases, githubReleaseDefinitionDigests, githubReleaseEffects, githubReleasePackDigest, githubReleasePolicySchemaId, githubReleaseProjectionSchemaId, githubReleaseReadEndpointId, githubReleaseRecipeId, githubReleaseRiskClass, type GitHubReleaseEffect, type GitHubReleaseProjection } from "./manifest.js";
 
@@ -31,7 +32,7 @@ function compile(input: StaticPackCompileInput, effect: GitHubReleaseEffect): un
 }
 
 function inertRecord(value: unknown, keys: readonly string[], label: string): Readonly<Record<string, unknown>> {
-  if (!value || typeof value !== "object" || Array.isArray(value) || Object.getPrototypeOf(value) !== Object.prototype || Reflect.ownKeys(value).some(key => typeof key !== "string")) throw new TypeError(`${label} must be a closed inert record`);
+  if (!value || typeof value !== "object" || isProxy(value) || Array.isArray(value) || Object.getPrototypeOf(value) !== Object.prototype || Reflect.ownKeys(value).some(key => typeof key !== "string")) throw new TypeError(`${label} must be a closed inert record`);
   const descriptors = Object.getOwnPropertyDescriptors(value), actual = Object.keys(descriptors).sort();
   if (actual.join("\0") !== [...keys].sort().join("\0") || Object.values(descriptors).some(descriptor => !("value" in descriptor) || !descriptor.enumerable)) throw new TypeError(`${label} must be a closed inert record`);
   return Object.freeze(Object.fromEntries(keys.map(key => [key, descriptors[key]!.value])));
