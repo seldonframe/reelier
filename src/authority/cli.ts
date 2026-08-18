@@ -299,19 +299,15 @@ async function authorityServe(args: Readonly<{ opts: Record<string, string> }>):
     } : {}),
     ...(delegation ? { delegation } : {}),
   };
+  const serveRuntime = authorityServeTestRuntime ?? authorityServeRuntimeDefaults;
   const server = await composeAuthorityServeHost(loaded.config, serveMode.transport, principalRegistry, localRuntimeOptions, async input => {
       const value = input as Record<string, unknown>;
       const requestId = typeof value?.requestId === "string" ? value.requestId : "";
       if (typeof value?.text !== "string" || value.mediaType !== "text/plain") return { requestId, verdict: "refused", reasonCode: "invalid-artifact", lifecycleState: "refused" };
       const staged = await artifactStore.stage({ mediaType: "text/plain", bytes: Buffer.from(value.text, "utf8"), sourceBinding: typeof value.sourceBinding === "string" ? value.sourceBinding : undefined });
       return { requestId, verdict: "accepted", reasonCode: "staged", lifecycleState: "staged", commitment: staged.commitment };
-  });
-  if (serveMode.transport === "http") {
-    await server.startHttp(serveMode.port, serveMode.host);
-    console.error(JSON.stringify({ status: "ready", transport: "http", host: serveMode.host, port: serveMode.port }));
-  } else {
-    await server.startStdio();
-  }
+  }, serveRuntime.hostCompositionDependencies);
+  await serveRuntime.startHost(server, serveMode);
   return 0;
 }
 
@@ -323,6 +319,32 @@ export interface AuthorityServeHostCompositionDependencies {
 }
 
 const authorityServeHostDependencies: AuthorityServeHostCompositionDependencies = { composeStdio: composeAuthorityServeStdioRuntime, createStdioBoundRuntime: createStdioBoundLocalAuthorityRuntime, createLocalRuntime: createLocalAuthorityRuntime, createHostServer: createAuthorityHostServer };
+
+interface AuthorityServeRuntime {
+  readonly hostCompositionDependencies: AuthorityServeHostCompositionDependencies;
+  readonly startHost: (server: AuthorityHostServer, mode: AuthorityServeMode) => Promise<void>;
+}
+
+const authorityServeRuntimeDefaults: AuthorityServeRuntime = Object.freeze({
+  hostCompositionDependencies: authorityServeHostDependencies,
+  async startHost(server: AuthorityHostServer, mode: AuthorityServeMode) {
+    if (mode.transport === "http") {
+      await server.startHttp(mode.port, mode.host);
+      console.error(JSON.stringify({ status: "ready", transport: "http", host: mode.host, port: mode.port }));
+    } else {
+      await server.startStdio();
+    }
+  },
+});
+
+let authorityServeTestRuntime: AuthorityServeRuntime | undefined;
+
+/** Internal test seam. It is intentionally absent from the public package exports. */
+export function __testSetAuthorityServeRuntime(runtime: AuthorityServeRuntime | undefined): () => void {
+  const previous = authorityServeTestRuntime;
+  authorityServeTestRuntime = runtime;
+  return () => { authorityServeTestRuntime = previous; };
+}
 
 /** Package-internal production composition boundary. It creates but never starts the host server. */
 export async function composeAuthorityServeHost(config: import("./host/config.js").AuthorityHostConfig, transport: "stdio" | "http", principalRegistry: PrincipalRegistry | undefined, localRuntimeOptions: LocalAuthorityRuntimeOptions, artifactStage?: NonNullable<AuthorityHostRuntime["artifactStage"]>, dependencies: AuthorityServeHostCompositionDependencies = authorityServeHostDependencies): Promise<AuthorityHostServer> {

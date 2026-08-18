@@ -47,7 +47,10 @@ async function readStableCredential(file: string): Promise<string> {
     const bytes = await handle.readFile(); const after = await handle.stat(); const current = await lstat(resolved);
     if (effectiveUid !== undefined) { validatePrivateStdioCredentialFileMetadata(after, effectiveUid); validatePrivateStdioCredentialFileMetadata(current, effectiveUid); }
     if (current.isSymbolicLink() || before.dev !== after.dev || before.ino !== after.ino || before.size !== after.size || before.mtimeMs !== after.mtimeMs || before.uid !== after.uid || before.mode !== after.mode || before.dev !== current.dev || before.ino !== current.ino || before.uid !== current.uid || before.mode !== current.mode) throw new Error("credential file changed");
-    const value = bytes.toString("utf8").trim(); if (!value || value.includes("\0") || /[\r\n]/.test(value)) throw new Error("credential file is invalid"); return value;
+    const decoded = bytes.toString("utf8");
+    const value = decoded.endsWith("\r\n") ? decoded.slice(0, -2) : decoded.endsWith("\n") ? decoded.slice(0, -1) : decoded;
+    if (!value || value.trim() !== value || value.includes("\0") || /[\r\n]/.test(value)) throw new Error("credential file is invalid");
+    return value;
   } finally { await handle.close(); }
 }
 function effectiveHostUid(): number { if (typeof process.geteuid !== "function") throw new Error("effective host UID is unavailable"); return process.geteuid(); }

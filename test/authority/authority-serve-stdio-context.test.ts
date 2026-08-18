@@ -132,6 +132,7 @@ test("authority serve command dispatch uses production host composition with the
     const configFile = path.join(root, "authority.json");
     const registry = createFilePrincipalRegistry({ tenant: "tenant_1", file: registryFile });
     const issued = await registry.issue({ principalId: "agent_1", taskId: "task_1", grantId: "grant_1", grantDigest: digest, allocationId: "root", runtimeSessionId: "session_1", jobId: "production_release", authorityCellId: "cell_1", expiresAt: "2099-01-01T00:00:00.000Z" });
+    const executionContext = { v: "reelier.authority-execution-context/v1" as const, taskId: "task_1", principalId: "agent_1", grantId: "grant_1", grantDigest: digest, allocationId: "root", runtimeSessionId: "session_1", jobId: "production_release", authorityCellId: "cell_1" };
     await writeFile(credentialFile, `${issued.token}\n`, { mode: 0o600 });
     await writeFile(configFile, JSON.stringify({ ...base, ledgerDir: "ledger", decisionDir: "decisions", receiptDir: "receipts", gateKeyFile: "keys/local-gate.pem", ingress: { principalRegistryFile: registryFile, stdioPrincipalCredentialRef: `file:${credentialFile}` } }), { mode: 0o600 });
 
@@ -140,9 +141,9 @@ test("authority serve command dispatch uses production host composition with the
     const restoreRuntime = __testSetAuthorityServeRuntime({
       hostCompositionDependencies: {
         composeStdio: composeAuthorityServeStdioRuntime,
-        async createStdioBoundRuntime(_config, context) { calls.push("bound-runtime"); assert.deepEqual(context, issued.context); return { outcome: async () => ({ requestId: "", verdict: "refused" as const, reasonCode: "unused", lifecycleState: "refused" }), status: async () => ({ requestId: "", verdict: "refused" as const, reasonCode: "unused", lifecycleState: "refused" }) } as never; },
+        async createStdioBoundRuntime(_config, context) { calls.push("bound-runtime"); assert.deepEqual(context, executionContext); return { outcome: async () => ({ requestId: "", verdict: "refused" as const, reasonCode: "unused", lifecycleState: "refused" }), status: async () => ({ requestId: "", verdict: "refused" as const, reasonCode: "unused", lifecycleState: "refused" }) } as never; },
         async createLocalRuntime() { calls.push("unbound-runtime"); throw new Error("must not use unbound runtime"); },
-        createHostServer(_config, _runtime, options) { calls.push("host-server"); assert.deepEqual(options?.stdioExecutionContext, issued.context); return server as never; },
+        createHostServer(_config, _runtime, options) { calls.push("host-server"); assert.deepEqual(options?.stdioExecutionContext, executionContext); return server as never; },
       },
       async startHost(composed, mode) { calls.push("no-start"); assert.equal(composed, server); assert.deepEqual(mode, { transport: "stdio" }); },
     });
