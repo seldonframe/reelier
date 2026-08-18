@@ -98,11 +98,15 @@ function releaseReceiptGraph(status: ReleaseEvidenceStatus = "verified") {
       interruptions: { count: 0, evidenceDigests: [] as string[], status },
       postReleaseReview: lane("2"),
     },
-    installedChecks: { linux: lane("3"), windows: lane("4") },
+    installedChecks: {
+      linux: { ...lane("3"), freshUntil: "2026-08-18T17:15:00.000Z", observedAt: "2026-08-18T16:45:00.000Z" },
+      windows: { ...lane("4"), freshUntil: "2026-08-18T17:15:00.000Z", observedAt: "2026-08-18T16:40:00.000Z" },
+    },
     mcpRegistry: { version: lane("5") },
     merge: { exactSha: lane("6") },
     npm: { integrity: lane("7"), provenance: lane("8") },
     tag: { immutableRef: lane("9") },
+    verifiedAt: "2026-08-18T17:00:00.000Z",
   };
 }
 
@@ -130,15 +134,15 @@ test("release authorization binds the exact reviewed release and is deterministi
 test("release authorization rejects tampering, wrong links, and a non-12-hour or expired grant", () => {
   const release = releaseInputs();
   const tampered = structuredClone(release);
-  tampered.authorization.value.taskDigest = digest("c");
+  (tampered.authorization.value as any).taskDigest = digest("c");
   assert.throws(() => verifyReleaseAuthorizationBundleV1(tampered, verifier, new Date("2026-08-18T06:00:00.000Z")), /digest|signature|tamper/i);
 
   const wrongLink = structuredClone(release);
-  wrongLink.authorization.value.policyDigest = digest("d");
+  (wrongLink.authorization.value as any).policyDigest = digest("d");
   assert.throws(() => verifyReleaseAuthorizationBundleV1(wrongLink, verifier, new Date("2026-08-18T06:00:00.000Z")), /digest|policy/i);
 
   const wrongDuration = structuredClone(release.authorization);
-  wrongDuration.value.expiresAt = "2026-08-18T18:00:00.000Z";
+  (wrongDuration.value as any).expiresAt = "2026-08-18T18:00:00.000Z";
   assert.throws(() => parseSignedReleaseAuthorizationBundleV1(wrongDuration), /12-hour|expiry/i);
   assert.throws(() => verifyReleaseAuthorizationBundleV1(release, verifier, new Date("2026-08-18T17:00:00.000Z")), /expired/i);
 });
@@ -156,15 +160,15 @@ test("closed release parsing rejects unknown fields, accessors, prototypes, inva
   assert.throws(() => parseSignedReleaseAuthorizationBundleV1(prototype), /prototype|exact|canonical/i);
 
   const duplicateSet = structuredClone(release.policy);
-  duplicateSet.value.allowedPaths = ["CHANGELOG.md", "CHANGELOG.md", "src/cli.ts"];
+  (duplicateSet.value as any).allowedPaths = ["CHANGELOG.md", "CHANGELOG.md", "src/cli.ts"];
   assert.throws(() => verifyReleaseAuthorizationBundleV1({ ...release, policy: duplicateSet }, verifier, new Date("2026-08-18T06:00:00.000Z")), /sorted|unique|allowed/i);
 
   const invalidDigest = structuredClone(release.authorization);
-  invalidDigest.value.missionDigest = "sha256:ABC";
+  (invalidDigest.value as any).missionDigest = "sha256:ABC";
   assert.throws(() => parseSignedReleaseAuthorizationBundleV1(invalidDigest), /digest/i);
 
   const invalidRef = structuredClone(release.candidateManifest);
-  invalidRef.value.branch = "refs/heads/main";
+  (invalidRef.value as any).branch = "refs/heads/main";
   assert.throws(() => verifyReleaseAuthorizationBundleV1({ ...release, candidateManifest: invalidRef }, verifier, new Date("2026-08-18T06:00:00.000Z")), /branch|candidate/i);
 });
 
@@ -173,7 +177,7 @@ test("canonical JSON parsing rejects duplicate keys and every noncanonical byte 
   const canonical = JSON.stringify(release.authorization);
   assert.deepEqual(parseCanonicalSignedReleaseAuthorizationBundleV1(canonical), release.authorization);
   assert.throws(() => parseCanonicalSignedReleaseAuthorizationBundleV1(` ${canonical}`), /canonical/i);
-  assert.throws(() => parseCanonicalSignedReleaseAuthorizationBundleV1(canonical.replace('{"digest"', '{"digest":"sha256:${"0".repeat(64)}","digest"')), /duplicate/i);
+  assert.throws(() => parseCanonicalSignedReleaseAuthorizationBundleV1(canonical.replace('{"digest"', `{"digest":"sha256:${"0".repeat(64)}","digest"`)), /duplicate/i);
   const reordered = `{"v":"${release.authorization.v}","digest":"${release.authorization.digest}","signature":${JSON.stringify(release.authorization.signature)},"signerId":"${release.authorization.signerId}","value":${JSON.stringify(release.authorization.value)}}`;
   assert.throws(() => parseCanonicalSignedReleaseAuthorizationBundleV1(reordered), /canonical/i);
 });
@@ -195,7 +199,7 @@ test("receipt graph rejects upgraded completeness, lane aliasing, duplicates, an
   const release = releaseInputs();
   const signed = createSignedReleaseReceiptGraphV1(releaseReceiptGraph(), signer);
   const completeness = structuredClone(signed);
-  completeness.value.completeness = "verified" as "unchecked";
+  (completeness.value as any).completeness = "verified";
   assert.throws(() => parseSignedReleaseReceiptGraphV1(completeness), /completeness/i);
 
   const aliased = releaseReceiptGraph();
@@ -207,6 +211,10 @@ test("receipt graph rejects upgraded completeness, lane aliasing, duplicates, an
   assert.throws(() => createSignedReleaseReceiptGraphV1(duplicateException, signer), /sorted|unique|duplicate/i);
 
   const tampered = structuredClone(signed);
-  tampered.value.npm.integrity.status = "failed";
+  (tampered.value.npm.integrity as any).status = "failed";
   assert.throws(() => verifyReleaseReceiptGraphV1(tampered, verifier, release.authorization.digest), /digest|signature|tamper/i);
+
+  const staleInstalledCheck = releaseReceiptGraph();
+  staleInstalledCheck.installedChecks.windows.freshUntil = "2026-08-18T16:59:59.999Z";
+  assert.throws(() => createSignedReleaseReceiptGraphV1(staleInstalledCheck, signer), /fresh|Windows|installed/i);
 });
