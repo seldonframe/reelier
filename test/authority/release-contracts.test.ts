@@ -24,7 +24,9 @@ const digest = (character: string): string => `sha256:${character.repeat(64)}`;
 const sha = (character: string): string => character.repeat(40);
 const keyPair = generateKeyPairSync("ed25519");
 const signer = { signerId: "release-authority-2026", privateKey: keyPair.privateKey };
-const verifier = { signerId: signer.signerId, publicKey: keyPair.publicKey };
+const graphKeyPair = generateKeyPairSync("ed25519");
+const graphSigner = { signerId: "release-graph-maker-2026", privateKey: graphKeyPair.privateKey };
+const graphVerificationNow = new Date("2026-08-18T16:55:00.000Z");
 const trustedLaneSigners: ReadonlyArray<readonly [ReleaseEvidenceLaneV1, string]> = [
   ["ci-coverage", "quality-coverage-verifier"], ["ci-full-tests", "quality-full-tests-verifier"], ["ci-mutation", "quality-mutation-verifier"],
   ["candidate-branch", "receipt-candidate-branch"], ["candidate-pull-request", "receipt-candidate-pr"], ["ghcr-immutable-manifest", "receipt-ghcr-manifest"], ["ghcr-tags", "receipt-ghcr-tags"],
@@ -33,9 +35,13 @@ const trustedLaneSigners: ReadonlyArray<readonly [ReleaseEvidenceLaneV1, string]
   ["npm-integrity", "receipt-npm-integrity"], ["npm-provenance", "receipt-npm-provenance"], ["tag-immutable-ref", "receipt-tag-ref"],
 ];
 const trustedEvidenceKeys = new Map(trustedLaneSigners.map(([lane, signerId]) => [lane, { signerId, pair: generateKeyPairSync("ed25519") }]));
+function keySpkiBase64(key: typeof keyPair.publicKey): string { return key.export({ format: "der", type: "spki" }).toString("base64"); }
+function keySpkiDigest(key: typeof keyPair.publicKey): string { return `sha256:${createHash("sha256").update(key.export({ format: "der", type: "spki" })).digest("hex")}`; }
+function evidenceVerifier(signerId: string, publicKey: typeof keyPair.publicKey) { return { signerId, publicKeySpkiBase64: keySpkiBase64(publicKey) }; }
+const verifier = evidenceVerifier(signer.signerId, keyPair.publicKey);
+const graphVerifier = evidenceVerifier(graphSigner.signerId, graphKeyPair.publicKey);
 const spkiDigest = (lane: ReleaseEvidenceLaneV1): string => {
-  const key = trustedEvidenceKeys.get(lane)!.pair.publicKey.export({ format: "der", type: "spki" });
-  return `sha256:${createHash("sha256").update(key).digest("hex")}`;
+  return keySpkiDigest(trustedEvidenceKeys.get(lane)!.pair.publicKey);
 };
 
 function releaseInputs() {
@@ -95,6 +101,7 @@ function releaseInputs() {
     missionDigest: digest("f"),
     packDigest: digest("0"),
     policyDigest: policy.digest,
+    receiptGraphMakerBinding: { publicKeySpkiDigest: keySpkiDigest(graphKeyPair.publicKey), signerId: graphSigner.signerId },
     rootGrantDigest: digest("1"),
     stagedCandidateManifestDigest: candidateManifest.digest,
     taskDigest: digest("2"),
@@ -129,7 +136,7 @@ function signedEvidence(
     freshUntil: null,
     lane,
     observation: "workflow-run",
-    observedAt: "2026-08-18T16:50:00.000Z",
+    observedAt: "2026-08-18T05:30:00.000Z",
     resultValue: null,
     status: "verified",
     subjectDigest: digest("f"),
@@ -137,7 +144,7 @@ function signedEvidence(
     workflowPath: null,
     ...overrides,
   }, { signerId, privateKey: pair.privateKey });
-  return { evidence, verifier: { signerId, publicKey: pair.publicKey } };
+  return { evidence, verifier: evidenceVerifier(signerId, pair.publicKey) };
 }
 
 function resignEvidence(input: ReleaseEvidenceVerificationV1, changes: Partial<ReleaseVerifierEvidenceV1>, signingLane?: ReleaseEvidenceLaneV1): ReleaseEvidenceVerificationV1 {
@@ -146,7 +153,7 @@ function resignEvidence(input: ReleaseEvidenceVerificationV1, changes: Partial<R
   const trusted = trustedEvidenceKeys.get(lane)!;
   return {
     evidence: createSignedReleaseVerifierEvidenceV1({ ...current.value, ...changes }, { signerId: trusted.signerId, privateKey: trusted.pair.privateKey }),
-    verifier: { signerId: trusted.signerId, publicKey: trusted.pair.publicKey },
+    verifier: evidenceVerifier(trusted.signerId, trusted.pair.publicKey),
   };
 }
 
@@ -172,7 +179,7 @@ function releaseReceiptGraph(status: ReleaseEvidenceStatus = "verified") {
     merge: { exactSha: lane("6") },
     npm: { integrity: lane("7"), provenance: lane("8") },
     tag: { immutableRef: lane("9") },
-    verifiedAt: "2026-08-18T17:00:00.000Z",
+    verifiedAt: "2026-08-18T16:55:00.000Z",
   };
 }
 
@@ -312,14 +319,14 @@ test("receipt graph keeps every evidence lane distinct and succeeds only when al
   const release = releaseInputs();
   const authorization = verifyAuthorization(release);
   const value = releaseReceiptGraph();
-  const signed = createSignedReleaseReceiptGraphV1(value, signer);
-  const verified = verifyReleaseReceiptGraphV1(signed, verifier, authorization, receiptEvidence(value));
+  const signed = createSignedReleaseReceiptGraphV1(value, graphSigner);
+  const verified = verifyReleaseReceiptGraphV1(signed, graphVerifier, authorization, receiptEvidence(value), graphVerificationNow);
   assert.deepEqual(verified.evaluation, { completeness: "unchecked", status: "verified", success: true });
 
   for (const nonSuccess of ["failed", "pending", "absent", "unchecked", "ambiguity"] as const) {
     const value = releaseReceiptGraph(nonSuccess);
-    const graph = createSignedReleaseReceiptGraphV1(value, signer);
-    const parsed = verifyReleaseReceiptGraphV1(graph, verifier, authorization, receiptEvidence(value));
+    const graph = createSignedReleaseReceiptGraphV1(value, graphSigner);
+    const parsed = verifyReleaseReceiptGraphV1(graph, graphVerifier, authorization, receiptEvidence(value), graphVerificationNow);
     assert.deepEqual(parsed.evaluation, { completeness: "unchecked", status: "incomplete", success: false });
   }
 });
@@ -347,17 +354,17 @@ test("each required receipt lane independently prevents success when it is not v
   for (const select of selectors) {
     const value = releaseReceiptGraph();
     select(value).status = "failed";
-    const graph = createSignedReleaseReceiptGraphV1(value, signer);
-    const parsed = verifyReleaseReceiptGraphV1(graph, verifier, authorization, receiptEvidence(value));
+    const graph = createSignedReleaseReceiptGraphV1(value, graphSigner);
+    const parsed = verifyReleaseReceiptGraphV1(graph, graphVerifier, authorization, receiptEvidence(value), graphVerificationNow);
     assert.equal(parsed.evaluation.success, false);
   }
 });
 
 test("digest-shaped maker assertions and empty zero-event lists are not verifier evidence", () => {
   const release = releaseInputs();
-  const signed = createSignedReleaseReceiptGraphV1(releaseReceiptGraph(), signer);
+  const signed = createSignedReleaseReceiptGraphV1(releaseReceiptGraph(), graphSigner);
   assert.throws(
-    () => verifyReleaseReceiptGraphV1(signed, verifier, verifyAuthorization(release), []),
+    () => verifyReleaseReceiptGraphV1(signed, graphVerifier, verifyAuthorization(release), [], graphVerificationNow),
     /evidence|verifier|signed|missing/i,
   );
 });
@@ -392,7 +399,7 @@ test("quality evidence refuses wrong head, workflow, signature, alias, and attac
   const original = release.qualityEvidence[0].evidence as ReturnType<typeof createSignedReleaseVerifierEvidenceV1>;
   const attackerEvidence = createSignedReleaseVerifierEvidenceV1(original.value, { signerId: "attacker-quality-verifier", privateKey: attacker.privateKey });
   const attackerSet = [...release.qualityEvidence];
-  attackerSet[0] = { evidence: attackerEvidence, verifier: { signerId: "attacker-quality-verifier", publicKey: attacker.publicKey } };
+  attackerSet[0] = { evidence: attackerEvidence, verifier: evidenceVerifier("attacker-quality-verifier", attacker.publicKey) };
   assert.throws(() => verify(attackerSet), /trusted|signer|binding/i);
 
   const accessor = [...release.qualityEvidence];
@@ -406,67 +413,150 @@ test("evidence verification rejects nested key accessors without invoking them",
   let keyReads = 0;
   const original = poisoned[0];
   const verifierWithKeyAccessor = { signerId: "quality-coverage-verifier" } as Record<string, unknown>;
-  Object.defineProperty(verifierWithKeyAccessor, "publicKey", {
+  Object.defineProperty(verifierWithKeyAccessor, "publicKeySpkiBase64", {
     enumerable: true,
     get: () => {
       keyReads += 1;
-      throw new Error("invoked attacker key accessor");
+      const selected = keyReads % 2 === 1 ? trustedEvidenceKeys.get("ci-coverage")!.pair.publicKey : keyPair.publicKey;
+      return keySpkiBase64(selected);
     },
   });
   poisoned[0] = { evidence: original.evidence, verifier: verifierWithKeyAccessor } as any;
 
   assert.throws(
     () => verifyReleaseAuthorizationBundleV1(authorizationInput(release), verifier, new Date("2026-08-18T06:00:00.000Z"), poisoned),
-    error => error instanceof TypeError && !/invoked attacker/.test(error.message),
+    error => error instanceof TypeError,
   );
   assert.equal(keyReads, 0);
+
+  let proxyReads = 0;
+  const proxied = [...release.qualityEvidence];
+  proxied[0] = {
+    evidence: original.evidence,
+    verifier: new Proxy(evidenceVerifier("quality-coverage-verifier", trustedEvidenceKeys.get("ci-coverage")!.pair.publicKey), {
+      get: (target, property, receiver) => {
+        proxyReads += 1;
+        return Reflect.get(target, property, receiver);
+      },
+    }),
+  };
+  assert.doesNotThrow(() => verifyReleaseAuthorizationBundleV1(authorizationInput(release), verifier, new Date("2026-08-18T06:00:00.000Z"), proxied));
+  assert.equal(proxyReads, 0);
+
+  let arrayProxyReads = 0;
+  const proxiedArray = new Proxy(release.qualityEvidence, {
+    get: (target, property, receiver) => {
+      arrayProxyReads += 1;
+      return Reflect.get(target, property, receiver);
+    },
+  });
+  assert.doesNotThrow(() => verifyReleaseAuthorizationBundleV1(authorizationInput(release), verifier, new Date("2026-08-18T06:00:00.000Z"), proxiedArray));
+  assert.equal(arrayProxyReads, 0);
+
+  let customExportCalls = 0;
+  const customExport = [...release.qualityEvidence];
+  customExport[0] = {
+    evidence: original.evidence,
+    verifier: {
+      ...evidenceVerifier("quality-coverage-verifier", trustedEvidenceKeys.get("ci-coverage")!.pair.publicKey),
+      export: () => { customExportCalls += 1; return keySpkiBase64(keyPair.publicKey); },
+    },
+  } as any;
+  assert.throws(
+    () => verifyReleaseAuthorizationBundleV1(authorizationInput(release), verifier, new Date("2026-08-18T06:00:00.000Z"), customExport),
+    /exact|verifier|descriptor/i,
+  );
+  assert.equal(customExportCalls, 0);
+
+  const noncanonical = [...release.qualityEvidence];
+  noncanonical[0] = {
+    evidence: original.evidence,
+    verifier: { signerId: "quality-coverage-verifier", publicKeySpkiBase64: `${keySpkiBase64(trustedEvidenceKeys.get("ci-coverage")!.pair.publicKey)}=` },
+  };
+  assert.throws(
+    () => verifyReleaseAuthorizationBundleV1(authorizationInput(release), verifier, new Date("2026-08-18T06:00:00.000Z"), noncanonical),
+    /base64|canonical|spki/i,
+  );
+});
+
+test("authorization and graph verifiers reject key-switch accessors without invoking them", () => {
+  const release = releaseInputs();
+  const switchingVerifier = (signerId: string, first: typeof keyPair.publicKey, second: typeof keyPair.publicKey) => {
+    let reads = 0;
+    const value = { signerId } as Record<string, unknown>;
+    Object.defineProperty(value, "publicKeySpkiBase64", {
+      enumerable: true,
+      get: () => {
+        reads += 1;
+        return keySpkiBase64(reads % 2 === 1 ? first : second);
+      },
+    });
+    return { reads: () => reads, value };
+  };
+
+  const authorizationSwitch = switchingVerifier(signer.signerId, keyPair.publicKey, graphKeyPair.publicKey);
+  assert.throws(
+    () => verifyReleaseAuthorizationBundleV1(authorizationInput(release), authorizationSwitch.value as any, new Date("2026-08-18T06:00:00.000Z"), release.qualityEvidence),
+    /accessor|exact|descriptor|verifier/i,
+  );
+  assert.equal(authorizationSwitch.reads(), 0);
+
+  const authorization = verifyAuthorization(release);
+  const value = releaseReceiptGraph();
+  const graph = createSignedReleaseReceiptGraphV1(value, graphSigner);
+  const graphSwitch = switchingVerifier(graphSigner.signerId, graphKeyPair.publicKey, keyPair.publicKey);
+  assert.throws(
+    () => verifyReleaseReceiptGraphV1(graph, graphSwitch.value as any, authorization, receiptEvidence(value), graphVerificationNow),
+    /accessor|exact|descriptor|verifier/i,
+  );
+  assert.equal(graphSwitch.reads(), 0);
 });
 
 test("receipt evidence resolves complete signed lanes and refuses missing, duplicate, wrong lane, authorization, subject, signer, and tampering", () => {
   const release = releaseInputs();
   const authorization = verifyAuthorization(release);
   const value = releaseReceiptGraph();
-  const graph = createSignedReleaseReceiptGraphV1(value, signer);
+  const graph = createSignedReleaseReceiptGraphV1(value, graphSigner);
   const evidence = receiptEvidence(value);
-  assert.equal(verifyReleaseReceiptGraphV1(graph, verifier, authorization, evidence).evaluation.success, true);
+  assert.equal(verifyReleaseReceiptGraphV1(graph, graphVerifier, authorization, evidence, graphVerificationNow).evaluation.success, true);
   assert.equal((evidence.find(item => (item.evidence as any).value.lane === "human-exceptions")!.evidence as any).value.count, 0);
   assert.equal((evidence.find(item => (item.evidence as any).value.lane === "human-interruptions")!.evidence as any).value.count, 0);
-  assert.throws(() => verifyReleaseReceiptGraphV1(graph, verifier, structuredClone(authorization), evidence), /verified authorization|trusted evidence/i);
+  assert.throws(() => verifyReleaseReceiptGraphV1(graph, graphVerifier, structuredClone(authorization), evidence, graphVerificationNow), /verified authorization|trusted evidence/i);
 
-  assert.throws(() => verifyReleaseReceiptGraphV1(graph, verifier, authorization, evidence.slice(1)), /missing|incomplete/i);
-  assert.throws(() => verifyReleaseReceiptGraphV1(graph, verifier, authorization, [evidence[0], evidence[0], ...evidence.slice(2)]), /duplicate|alias|missing/i);
+  assert.throws(() => verifyReleaseReceiptGraphV1(graph, graphVerifier, authorization, evidence.slice(1), graphVerificationNow), /missing|incomplete/i);
+  assert.throws(() => verifyReleaseReceiptGraphV1(graph, graphVerifier, authorization, [evidence[0], evidence[0], ...evidence.slice(2)], graphVerificationNow), /duplicate|alias|missing/i);
 
   const wrongLane = [...evidence];
   wrongLane[0] = resignEvidence(wrongLane[0], { lane: "candidate-pull-request" });
-  assert.throws(() => verifyReleaseReceiptGraphV1(graph, verifier, authorization, wrongLane), /lane|trusted|binding|duplicate/i);
+  assert.throws(() => verifyReleaseReceiptGraphV1(graph, graphVerifier, authorization, wrongLane, graphVerificationNow), /lane|trusted|binding|duplicate/i);
 
   const wrongAuthorization = [...evidence];
   wrongAuthorization[1] = resignEvidence(wrongAuthorization[1], { authorizationBundleDigest: digest("0") });
-  assert.throws(() => verifyReleaseReceiptGraphV1(graph, verifier, authorization, wrongAuthorization), /authorization/i);
+  assert.throws(() => verifyReleaseReceiptGraphV1(graph, graphVerifier, authorization, wrongAuthorization, graphVerificationNow), /authorization/i);
 
   const wrongSubject = [...evidence];
   wrongSubject[2] = resignEvidence(wrongSubject[2], { subjectDigest: digest("0") });
-  assert.throws(() => verifyReleaseReceiptGraphV1(graph, verifier, authorization, wrongSubject), /subject/i);
+  assert.throws(() => verifyReleaseReceiptGraphV1(graph, graphVerifier, authorization, wrongSubject, graphVerificationNow), /subject/i);
 
   const wrongTrustedLane = [...evidence];
   wrongTrustedLane[3] = resignEvidence(wrongTrustedLane[3], {}, "ghcr-immutable-manifest");
-  assert.throws(() => verifyReleaseReceiptGraphV1(graph, verifier, authorization, wrongTrustedLane), /signer|trusted|binding/i);
+  assert.throws(() => verifyReleaseReceiptGraphV1(graph, graphVerifier, authorization, wrongTrustedLane, graphVerificationNow), /signer|trusted|binding/i);
 
   const attacker = generateKeyPairSync("ed25519");
   const original = evidence[4].evidence as ReturnType<typeof createSignedReleaseVerifierEvidenceV1>;
   const attackerEvidence = createSignedReleaseVerifierEvidenceV1(original.value, { signerId: "attacker-receipt-verifier", privateKey: attacker.privateKey });
   const attackerSet = [...evidence];
-  attackerSet[4] = { evidence: attackerEvidence, verifier: { signerId: "attacker-receipt-verifier", publicKey: attacker.publicKey } };
-  assert.throws(() => verifyReleaseReceiptGraphV1(graph, verifier, authorization, attackerSet), /signer|trusted|binding/i);
+  attackerSet[4] = { evidence: attackerEvidence, verifier: evidenceVerifier("attacker-receipt-verifier", attacker.publicKey) };
+  assert.throws(() => verifyReleaseReceiptGraphV1(graph, graphVerifier, authorization, attackerSet, graphVerificationNow), /signer|trusted|binding/i);
 
   const tampered = structuredClone(evidence);
   (tampered[5].evidence as any).value.count = 1;
-  assert.throws(() => verifyReleaseReceiptGraphV1(graph, verifier, authorization, tampered), /digest|tamper/i);
+  assert.throws(() => verifyReleaseReceiptGraphV1(graph, graphVerifier, authorization, tampered, graphVerificationNow), /digest|tamper/i);
 
   const makerKey = trustedEvidenceKeys.get("candidate-branch")!;
   const makerGraph = createSignedReleaseReceiptGraphV1(value, { signerId: makerKey.signerId, privateKey: makerKey.pair.privateKey });
   assert.throws(
-    () => verifyReleaseReceiptGraphV1(makerGraph, { signerId: makerKey.signerId, publicKey: makerKey.pair.publicKey }, authorization, evidence),
+    () => verifyReleaseReceiptGraphV1(makerGraph, evidenceVerifier(makerKey.signerId, makerKey.pair.publicKey), authorization, evidence, graphVerificationNow),
     /independent|maker|signer|trusted/i,
   );
 });
@@ -509,40 +599,44 @@ test("candidate manifest freezes the complete production workflow path set and p
 
 test("receipt graph rejects upgraded completeness, lane aliasing, duplicates, and tampering", () => {
   const release = releaseInputs();
-  const signed = createSignedReleaseReceiptGraphV1(releaseReceiptGraph(), signer);
+  const signed = createSignedReleaseReceiptGraphV1(releaseReceiptGraph(), graphSigner);
   const completeness = structuredClone(signed);
   (completeness.value as any).completeness = "verified";
   assert.throws(() => parseSignedReleaseReceiptGraphV1(completeness), /completeness/i);
 
   const aliased = releaseReceiptGraph();
   aliased.candidate.pullRequest.evidenceDigest = aliased.candidate.branch.evidenceDigest;
-  assert.throws(() => createSignedReleaseReceiptGraphV1(aliased, signer), /duplicate|distinct/i);
+  assert.throws(() => createSignedReleaseReceiptGraphV1(aliased, graphSigner), /duplicate|distinct/i);
 
   const duplicateException = releaseReceiptGraph();
   duplicateException.human.exceptions = { count: 2, evidenceDigests: [digest("a"), digest("a")], status: "verified" };
-  assert.throws(() => createSignedReleaseReceiptGraphV1(duplicateException, signer), /sorted|unique|duplicate/i);
+  assert.throws(() => createSignedReleaseReceiptGraphV1(duplicateException, graphSigner), /sorted|unique|duplicate/i);
 
   const missingAuthorization = releaseReceiptGraph();
   missingAuthorization.human.authorization.count = 0;
-  assert.throws(() => createSignedReleaseReceiptGraphV1(missingAuthorization, signer), /authorization count/i);
+  assert.throws(() => createSignedReleaseReceiptGraphV1(missingAuthorization, graphSigner), /authorization count/i);
 
   const aliasedHumanEvidence = releaseReceiptGraph();
   aliasedHumanEvidence.human.exceptions = { count: 1, evidenceDigests: [digest("a")], status: "verified" };
   aliasedHumanEvidence.human.interruptions = { count: 1, evidenceDigests: [digest("a")], status: "verified" };
-  assert.throws(() => createSignedReleaseReceiptGraphV1(aliasedHumanEvidence, signer), /duplicate|distinct/i);
+  assert.throws(() => createSignedReleaseReceiptGraphV1(aliasedHumanEvidence, graphSigner), /duplicate|distinct/i);
 
   const tampered = structuredClone(signed);
   (tampered.value.npm.integrity as any).status = "failed";
   const authorization = verifyAuthorization(release);
-  assert.throws(() => verifyReleaseReceiptGraphV1(tampered, verifier, authorization, receiptEvidence(releaseReceiptGraph())), /digest|signature|tamper/i);
+  assert.throws(() => verifyReleaseReceiptGraphV1(tampered, graphVerifier, authorization, receiptEvidence(releaseReceiptGraph()), graphVerificationNow), /digest|signature|tamper/i);
 
   const invalidSignature = structuredClone(signed);
   (invalidSignature.signature as any).sig = Buffer.alloc(64).toString("base64");
-  assert.throws(() => verifyReleaseReceiptGraphV1(invalidSignature, verifier, authorization, receiptEvidence(releaseReceiptGraph())), /signature/i);
+  assert.throws(() => verifyReleaseReceiptGraphV1(invalidSignature, graphVerifier, authorization, receiptEvidence(releaseReceiptGraph()), graphVerificationNow), /signature/i);
 
   const staleInstalledCheck = releaseReceiptGraph();
-  staleInstalledCheck.installedChecks.windows.freshUntil = "2026-08-18T16:59:59.999Z";
-  assert.throws(() => createSignedReleaseReceiptGraphV1(staleInstalledCheck, signer), /fresh|Windows|installed/i);
+  staleInstalledCheck.installedChecks.windows.freshUntil = "2026-08-18T16:54:59.999Z";
+  assert.throws(() => createSignedReleaseReceiptGraphV1(staleInstalledCheck, graphSigner), /fresh|Windows|installed/i);
+
+  const reversedInstalledCheck = releaseReceiptGraph();
+  reversedInstalledCheck.installedChecks.windows.freshUntil = "2026-08-18T16:39:59.999Z";
+  assert.throws(() => createSignedReleaseReceiptGraphV1(reversedInstalledCheck, graphSigner), /fresh|Windows|installed/i);
 });
 
 test("authorization rejects the authorization key reused by an evidence signer alias", () => {
@@ -563,12 +657,45 @@ test("authorization rejects the authorization key reused by an evidence signer a
   const qualityEvidence = [...release.qualityEvidence];
   qualityEvidence[0] = {
     evidence: aliasedEvidence,
-    verifier: { signerId: "authorization-key-alias", publicKey: keyPair.publicKey },
+    verifier: evidenceVerifier("authorization-key-alias", keyPair.publicKey),
   };
 
   assert.throws(
     () => verifyReleaseAuthorizationBundleV1({ ...authorizationInput(release), authorization }, verifier, new Date("2026-08-18T06:00:00.000Z"), qualityEvidence),
     /key|independent|maker|separat|spki/i,
+  );
+});
+
+test("authorization permits one evidence-checker key explicitly bound to multiple lanes", () => {
+  const release = releaseInputs();
+  const authorizationValue = structuredClone(release.authorization.value);
+  const shared = trustedEvidenceKeys.get("ci-coverage")!;
+  (authorizationValue.evidenceVerifierBindings as any)[1] = {
+    lane: "ci-full-tests",
+    publicKeySpkiDigest: keySpkiDigest(shared.pair.publicKey),
+    signerId: "quality-full-tests-shared-key",
+  };
+  const authorization = createSignedReleaseAuthorizationBundleV1(authorizationValue, signer);
+  const original = release.qualityEvidence[1].evidence as ReturnType<typeof createSignedReleaseVerifierEvidenceV1>;
+  const evidence = [...release.qualityEvidence];
+  evidence[1] = {
+    evidence: createSignedReleaseVerifierEvidenceV1(original.value, { signerId: "quality-full-tests-shared-key", privateKey: shared.pair.privateKey }),
+    verifier: evidenceVerifier("quality-full-tests-shared-key", shared.pair.publicKey),
+  };
+  assert.doesNotThrow(() => verifyReleaseAuthorizationBundleV1({ ...authorizationInput(release), authorization }, verifier, new Date("2026-08-18T06:00:00.000Z"), evidence));
+});
+
+test("authorization refuses a graph-maker key reused by an evidence-checker alias", () => {
+  const release = releaseInputs();
+  const authorizationValue = structuredClone(release.authorization.value);
+  const checker = trustedEvidenceKeys.get("candidate-branch")!;
+  (authorizationValue as any).receiptGraphMakerBinding = {
+    publicKeySpkiDigest: keySpkiDigest(checker.pair.publicKey),
+    signerId: "graph-maker-checker-key-alias",
+  };
+  assert.throws(
+    () => createSignedReleaseAuthorizationBundleV1(authorizationValue, signer),
+    /graph|maker|checker|separate|spki/i,
   );
 });
 
@@ -580,20 +707,20 @@ test("receipt verification rejects arbitrary graph keys and graph-maker key alia
   const arbitrary = generateKeyPairSync("ed25519");
   const arbitraryGraph = createSignedReleaseReceiptGraphV1(value, { signerId: "arbitrary-graph-maker", privateKey: arbitrary.privateKey });
   assert.throws(
-    () => verifyReleaseReceiptGraphV1(arbitraryGraph, { signerId: "arbitrary-graph-maker", publicKey: arbitrary.publicKey }, authorization, evidence),
+    () => verifyReleaseReceiptGraphV1(arbitraryGraph, evidenceVerifier("arbitrary-graph-maker", arbitrary.publicKey), authorization, evidence, graphVerificationNow),
     /bound|graph|maker|trusted/i,
   );
 
   const authorizationAliasGraph = createSignedReleaseReceiptGraphV1(value, { signerId: "authorization-graph-alias", privateKey: keyPair.privateKey });
   assert.throws(
-    () => verifyReleaseReceiptGraphV1(authorizationAliasGraph, { signerId: "authorization-graph-alias", publicKey: keyPair.publicKey }, authorization, evidence),
+    () => verifyReleaseReceiptGraphV1(authorizationAliasGraph, evidenceVerifier("authorization-graph-alias", keyPair.publicKey), authorization, evidence, graphVerificationNow),
     /key|independent|maker|separat|spki/i,
   );
 
   const checker = trustedEvidenceKeys.get("candidate-branch")!;
   const aliasGraph = createSignedReleaseReceiptGraphV1(value, { signerId: "graph-maker-key-alias", privateKey: checker.pair.privateKey });
   assert.throws(
-    () => verifyReleaseReceiptGraphV1(aliasGraph, { signerId: "graph-maker-key-alias", publicKey: checker.pair.publicKey }, authorization, evidence),
+    () => verifyReleaseReceiptGraphV1(aliasGraph, evidenceVerifier("graph-maker-key-alias", checker.pair.publicKey), authorization, evidence, graphVerificationNow),
     /key|independent|maker|separat|spki/i,
   );
 });
@@ -619,8 +746,8 @@ test("receipt graph chronology uses explicit current time and permits historical
     value.verifiedAt = verifiedAt;
     value.installedChecks.linux.observedAt = verifiedAt;
     value.installedChecks.windows.observedAt = verifiedAt;
-    const signed = createSignedReleaseReceiptGraphV1(value, signer);
-    return (verifyReleaseReceiptGraphV1 as any)(signed, verifier, authorization, receiptEvidence(value), new Date(now));
+    const signed = createSignedReleaseReceiptGraphV1(value, graphSigner);
+    return verifyReleaseReceiptGraphV1(signed, graphVerifier, authorization, receiptEvidence(value), new Date(now));
   };
   assert.doesNotThrow(() => verifyGraphAt("2026-08-18T05:00:00.000Z", "2026-08-18T05:00:00.000Z"));
   assert.doesNotThrow(() => verifyGraphAt("2026-08-18T16:59:59.999Z", "2026-08-19T05:00:00.000Z"));
@@ -634,12 +761,12 @@ test("every receipt evidence observation is between authorization issue and grap
   const authorization = verifyAuthorization(release);
   const value = releaseReceiptGraph();
   value.verifiedAt = "2026-08-18T16:55:00.000Z";
-  const graph = createSignedReleaseReceiptGraphV1(value, signer);
+  const graph = createSignedReleaseReceiptGraphV1(value, graphSigner);
   const evidence = receiptEvidence(value);
   const verify = (observedAt: string) => {
     const changed = [...evidence];
     changed[0] = resignEvidence(changed[0], { observedAt });
-    return (verifyReleaseReceiptGraphV1 as any)(graph, verifier, authorization, changed, new Date("2026-08-18T16:55:00.000Z"));
+    return verifyReleaseReceiptGraphV1(graph, graphVerifier, authorization, changed, new Date("2026-08-18T16:55:00.000Z"));
   };
   assert.doesNotThrow(() => verify("2026-08-18T05:00:00.000Z"));
   assert.doesNotThrow(() => verify("2026-08-18T16:55:00.000Z"));

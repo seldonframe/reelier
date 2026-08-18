@@ -1,4 +1,4 @@
-import { createHash, KeyObject } from "node:crypto";
+import { createHash, createPublicKey, KeyObject } from "node:crypto";
 import { signAuthorityDigest, verifyAuthoritySignature } from "./crypto.js";
 import type { AuthoritySignature, AuthoritySignaturePurpose } from "./types.js";
 import { authorityCanonicalBytes, authorityDigest } from "./wire.js";
@@ -92,9 +92,15 @@ export interface ReleaseAuthorizationBundleV1 {
   readonly missionDigest: string;
   readonly packDigest: string;
   readonly policyDigest: string;
+  readonly receiptGraphMakerBinding: ReleaseReceiptGraphMakerBindingV1;
   readonly rootGrantDigest: string;
   readonly stagedCandidateManifestDigest: string;
   readonly taskDigest: string;
+}
+
+export interface ReleaseReceiptGraphMakerBindingV1 {
+  readonly publicKeySpkiDigest: string;
+  readonly signerId: string;
 }
 
 export interface ReleaseEvidenceVerifierBindingV1 {
@@ -142,10 +148,11 @@ export type SignedReleaseReceiptGraphV1 = SignedReleaseArtifactV1<ReleaseReceipt
 export type SignedReleaseVerifierEvidenceV1 = SignedReleaseArtifactV1<ReleaseVerifierEvidenceV1, "reelier.signed-release-verifier-evidence/v1">;
 
 export interface ReleaseContractSignerV1 { readonly signerId: string; readonly privateKey: KeyObject }
-export interface ReleaseContractVerifierV1 { readonly signerId: string; readonly publicKey: KeyObject }
+export interface ReleaseContractVerifierV1 { readonly publicKeySpkiBase64: string; readonly signerId: string }
 export interface ReleaseEvidenceVerificationV1 { readonly evidence: unknown; readonly verifier: ReleaseContractVerifierV1 }
 export interface VerifiedReleaseAuthorizationV1 { readonly authorization: SignedReleaseAuthorizationBundleV1; readonly candidateManifest: SignedStagedCandidateManifestV1; readonly policy: SignedReleasePolicyV1 }
 export interface VerifiedReleaseReceiptGraphV1 { readonly evaluation: Readonly<{ completeness: "unchecked"; status: "verified" | "incomplete"; success: boolean }>; readonly graph: SignedReleaseReceiptGraphV1 }
+interface InternalReleaseContractVerifierV1 { readonly publicKey: KeyObject; readonly publicKeySpkiDigest: string; readonly signerId: string }
 const verifiedAuthorizations = new WeakSet<object>();
 
 export function createSignedReleaseVerifierEvidenceV1(value: ReleaseVerifierEvidenceV1, signer: ReleaseContractSignerV1): SignedReleaseVerifierEvidenceV1 {
@@ -211,27 +218,38 @@ export function verifyReleaseAuthorizationBundleV1(
   qualityEvidence: readonly ReleaseEvidenceVerificationV1[],
 ): VerifiedReleaseAuthorizationV1 {
   exact(input, ["authorization", "candidateManifest", "policy"], "release authorization inputs");
-  const authorization = verifySigned(parseSignedReleaseAuthorizationBundleV1(input.authorization), verifier, "release-authorization");
-  const candidateManifest = verifySigned(parseSignedStagedCandidateManifestV1(input.candidateManifest), verifier, "release-authorization");
-  const policy = verifySigned(parseSignedReleasePolicyV1(input.policy), verifier, "release-authorization");
+  const trustedVerifier = parseReleaseContractVerifierInput(verifier, "release authorization verifier");
+  const authorization = verifySigned(parseSignedReleaseAuthorizationBundleV1(input.authorization), trustedVerifier, "release-authorization");
+  const candidateManifest = verifySigned(parseSignedStagedCandidateManifestV1(input.candidateManifest), trustedVerifier, "release-authorization");
+  const policy = verifySigned(parseSignedReleasePolicyV1(input.policy), trustedVerifier, "release-authorization");
   if (authorization.value.stagedCandidateManifestDigest !== candidateManifest.digest) throw new TypeError("release authorization candidate manifest digest mismatch");
   if (authorization.value.policyDigest !== policy.digest) throw new TypeError("release authorization policy digest mismatch");
   if (!Number.isFinite(now.getTime()) || now.getTime() < Date.parse(authorization.value.issuedAt)) throw new TypeError("release authorization is not yet valid before issuedAt");
   if (now.getTime() >= Date.parse(authorization.value.expiresAt)) throw new TypeError("release authorization is expired");
+  const authorizationKeyDigest = trustedVerifier.publicKeySpkiDigest;
+  if (authorization.value.receiptGraphMakerBinding.publicKeySpkiDigest === authorizationKeyDigest || authorization.value.evidenceVerifierBindings.some(binding => binding.publicKeySpkiDigest === authorizationKeyDigest)) throw new TypeError("release authorization signer, receipt graph maker, and evidence checker keys must be separate by SPKI digest");
   if (candidateManifest.value.changedPaths.length > policy.value.maxChangedFiles || candidateManifest.value.changedBytes > policy.value.maxChangedBytes) throw new TypeError("release candidate exceeds policy size limits");
   if (!equalStrings(candidateManifest.value.changedPaths, policy.value.allowedPaths)) throw new TypeError("release candidate paths do not equal policy allowed paths");
   if (!equalStrings(authorization.value.effectAllocations.map(item => item.effect), policy.value.effectAllocations)) throw new TypeError("release effect allocations do not equal policy effects");
-  verifyQualityEvidence(candidateManifest, authorization, qualityEvidence);
+  verifyQualityEvidence(candidateManifest, authorization, qualityEvidence, now.getTime());
   const verified = deepFreeze({ authorization, candidateManifest, policy });
   verifiedAuthorizations.add(verified);
   return verified;
 }
 
-export function verifyReleaseReceiptGraphV1(value: unknown, verifier: ReleaseContractVerifierV1, authorization: VerifiedReleaseAuthorizationV1, evidence: readonly ReleaseEvidenceVerificationV1[]): VerifiedReleaseReceiptGraphV1 {
+export function verifyReleaseReceiptGraphV1(value: unknown, verifier: ReleaseContractVerifierV1, authorization: VerifiedReleaseAuthorizationV1, evidence: readonly ReleaseEvidenceVerificationV1[], now: Date): VerifiedReleaseReceiptGraphV1 {
   if (!authorization || !verifiedAuthorizations.has(authorization)) throw new TypeError("release receipt verification requires a verified authorization and trusted evidence bindings");
   const authorizationBundleDigest = authorization.authorization.digest;
-  const graph = verifySigned(parseSignedReleaseReceiptGraphV1(value), verifier, "release-receipt");
+  const trustedVerifier = parseReleaseContractVerifierInput(verifier, "release receipt graph verifier");
+  const graph = verifySigned(parseSignedReleaseReceiptGraphV1(value), trustedVerifier, "release-receipt");
+  const makerBinding = authorization.authorization.value.receiptGraphMakerBinding;
+  if (graph.signerId !== makerBinding.signerId || trustedVerifier.publicKeySpkiDigest !== makerBinding.publicKeySpkiDigest) throw new TypeError("release receipt graph verifier does not match the authorization-bound graph maker");
   if (graph.value.authorizationBundleDigest !== authorizationBundleDigest) throw new TypeError("release receipt graph authorization digest mismatch");
+  const nowTime = now instanceof Date ? now.getTime() : Number.NaN;
+  const graphTime = Date.parse(graph.value.verifiedAt);
+  const issuedAt = Date.parse(authorization.authorization.value.issuedAt);
+  const expiresAt = Date.parse(authorization.authorization.value.expiresAt);
+  if (!Number.isFinite(nowTime) || graphTime < issuedAt || graphTime >= expiresAt || graphTime > nowTime) throw new TypeError("release receipt graph verifiedAt is outside authorization chronology or in the verification future");
   verifyReceiptEvidence(graph, authorization.authorization, evidence);
   const success = requiredStatuses(graph.value).every(status => status === "verified");
   return deepFreeze({ evaluation: { completeness: "unchecked" as const, status: success ? "verified" as const : "incomplete" as const, success }, graph });
@@ -271,7 +289,7 @@ function parseReleasePolicyV1(value: unknown): ReleasePolicyV1 {
 }
 
 function parseReleaseAuthorizationBundleV1(value: unknown): ReleaseAuthorizationBundleV1 {
-  const item = exact(value, ["authorityCellDigest", "effectAllocations", "evidenceVerifierBindings", "expiresAt", "issuedAt", "jobCardDigest", "missionDigest", "packDigest", "policyDigest", "rootGrantDigest", "stagedCandidateManifestDigest", "taskDigest", "v"], "release authorization bundle") as unknown as ReleaseAuthorizationBundleV1;
+  const item = exact(value, ["authorityCellDigest", "effectAllocations", "evidenceVerifierBindings", "expiresAt", "issuedAt", "jobCardDigest", "missionDigest", "packDigest", "policyDigest", "receiptGraphMakerBinding", "rootGrantDigest", "stagedCandidateManifestDigest", "taskDigest", "v"], "release authorization bundle") as unknown as ReleaseAuthorizationBundleV1;
   if (item.v !== "reelier.release-authorization-bundle/v1") throw new TypeError("release authorization bundle version is invalid");
   for (const [label, value] of [["authority cell", item.authorityCellDigest], ["Job Card", item.jobCardDigest], ["mission", item.missionDigest], ["pack", item.packDigest], ["policy", item.policyDigest], ["root grant", item.rootGrantDigest], ["candidate manifest", item.stagedCandidateManifestDigest], ["task", item.taskDigest]] as const) requireDigest(value, label);
   const issuedAt = requireTime(item.issuedAt, "release authorization issuedAt");
@@ -294,6 +312,10 @@ function parseReleaseAuthorizationBundleV1(value: unknown): ReleaseAuthorization
     requireDigest(binding.publicKeySpkiDigest, "release evidence verifier public key");
     if (binding.lane !== boundLanes[index] || typeof binding.signerId !== "string" || !SIGNER_ID.test(binding.signerId)) throw new TypeError("release evidence verifier bindings have invalid lane ordering or signer identity");
   });
+  const graphMaker = exact(item.receiptGraphMakerBinding, ["publicKeySpkiDigest", "signerId"], "release receipt graph maker binding");
+  requireDigest(graphMaker.publicKeySpkiDigest, "release receipt graph maker public key");
+  if (typeof graphMaker.signerId !== "string" || !SIGNER_ID.test(graphMaker.signerId)) throw new TypeError("release receipt graph maker signer identity is invalid");
+  if (item.evidenceVerifierBindings.some(binding => binding.publicKeySpkiDigest === graphMaker.publicKeySpkiDigest)) throw new TypeError("release receipt graph maker and evidence checker keys must be separate by SPKI digest");
   return normalize(item);
 }
 
@@ -378,7 +400,7 @@ function requiredStatuses(graph: ReleaseReceiptGraphV1): ReleaseEvidenceStatus[]
   return [graph.candidate.branch.status, graph.candidate.pullRequest.status, graph.merge.exactSha.status, graph.tag.immutableRef.status, graph.npm.integrity.status, graph.npm.provenance.status, graph.mcpRegistry.version.status, graph.ghcr.immutableManifest.status, graph.ghcr.tags.status, graph.installedChecks.windows.status, graph.installedChecks.linux.status, graph.human.authorization.status, graph.human.interruptions.status, graph.human.exceptions.status, graph.human.postReleaseReview.status];
 }
 
-function verifyQualityEvidence(candidate: SignedStagedCandidateManifestV1, authorization: SignedReleaseAuthorizationBundleV1, inputs: readonly ReleaseEvidenceVerificationV1[]): void {
+function verifyQualityEvidence(candidate: SignedStagedCandidateManifestV1, authorization: SignedReleaseAuthorizationBundleV1, inputs: readonly ReleaseEvidenceVerificationV1[], verificationTime: number): void {
   const workflow = candidate.value.workflowCommitments[0];
   const quality = candidate.value.qualityEvidence;
   const expected = [
@@ -390,6 +412,8 @@ function verifyQualityEvidence(candidate: SignedStagedCandidateManifestV1, autho
   for (const item of expected) {
     const body = evidence.get(item.lane)!.value;
     if (body.authorizationBundleDigest !== null || body.candidateCommit !== candidate.value.candidateCommit || body.workflowPath !== workflow.path || body.workflowDigest !== workflow.digest || body.observation !== "workflow-run" || body.status !== "verified" || body.subjectDigest !== item.subjectDigest || body.resultValue !== item.resultValue || body.count !== null || body.freshUntil !== null) throw new TypeError(`${item.lane} quality verifier evidence has wrong head, workflow, subject, or result`);
+    const observedAt = Date.parse(body.observedAt);
+    if (observedAt < Date.parse(authorization.value.issuedAt) || observedAt > verificationTime || observedAt >= Date.parse(authorization.value.expiresAt)) throw new TypeError(`${item.lane} quality evidence observedAt is outside authorization and verification chronology`);
   }
 }
 
@@ -412,11 +436,13 @@ function verifyReceiptEvidence(graph: SignedReleaseReceiptGraphV1, authorization
     receiptExpectation("npm-provenance", value.npm.provenance, "provider-readback"),
     receiptExpectation("tag-immutable-ref", value.tag.immutableRef, "provider-readback"),
   ] as const;
-  const evidence = verifyEvidenceSet(inputs, expected.map(item => item.lane), authorization, "release receipt", graph.signerId);
+  const evidence = verifyEvidenceSet(inputs, expected.map(item => item.lane), authorization, "release receipt");
   for (const item of expected) {
     const body = evidence.get(item.lane)!.value;
     if (body.authorizationBundleDigest !== value.authorizationBundleDigest || body.candidateCommit !== null || body.workflowPath !== null || body.workflowDigest !== null || body.lane !== item.lane || body.observation !== item.observation || body.status !== item.status || body.subjectDigest !== item.subjectDigest || body.count !== item.count || body.freshUntil !== item.freshUntil || body.resultValue !== null) throw new TypeError(`${item.lane} verifier evidence has wrong lane, authorization, subject, observation, or result`);
     if (item.freshUntil !== null && body.observedAt !== item.observedAt) throw new TypeError(`${item.lane} installed-package evidence has wrong observation time`);
+    const observedAt = Date.parse(body.observedAt);
+    if (observedAt < Date.parse(authorization.value.issuedAt) || observedAt > Date.parse(value.verifiedAt)) throw new TypeError(`${item.lane} receipt evidence observedAt is outside authorization and graph chronology`);
   }
 }
 
@@ -428,16 +454,16 @@ function countedExpectation(lane: "human-exceptions" | "human-interruptions", va
   return { lane, subjectDigest: authorityDigest({ count: value.count, evidenceDigests: value.evidenceDigests, lane }), status: value.status, observation: "human-attestation" as const, count: value.count, freshUntil: null, observedAt: null };
 }
 
-function verifyEvidenceSet(inputs: readonly ReleaseEvidenceVerificationV1[], lanes: readonly ReleaseEvidenceLaneV1[], authorization: SignedReleaseAuthorizationBundleV1, label: string, additionalMakerSignerId?: string): Map<ReleaseEvidenceLaneV1, SignedReleaseVerifierEvidenceV1> {
-  assertDenseDataArray(inputs, `${label} signed verifier evidence set`);
-  if (inputs.length !== lanes.length) throw new TypeError(`${label} signed verifier evidence set is missing or incomplete`);
+function verifyEvidenceSet(inputs: readonly ReleaseEvidenceVerificationV1[], lanes: readonly ReleaseEvidenceLaneV1[], authorization: SignedReleaseAuthorizationBundleV1, label: string): Map<ReleaseEvidenceLaneV1, SignedReleaseVerifierEvidenceV1> {
+  const inputSnapshots = snapshotDenseDataArray(inputs, `${label} signed verifier evidence set`);
+  if (inputSnapshots.length !== lanes.length) throw new TypeError(`${label} signed verifier evidence set is missing or incomplete`);
   const byLane = new Map<ReleaseEvidenceLaneV1, SignedReleaseVerifierEvidenceV1>();
   const digests = new Set<string>();
-  for (let index = 0; index < inputs.length; index += 1) {
-    const input = shallowExact(inputs[index], ["evidence", "verifier"], `${label} verification input`);
-    const artifact = verifySigned(parseSignedReleaseVerifierEvidenceV1(input.evidence), input.verifier as ReleaseContractVerifierV1, "release-evidence");
+  for (let index = 0; index < inputSnapshots.length; index += 1) {
+    const input = parseEvidenceVerificationInput(inputSnapshots[index], `${label} verification input`);
+    const artifact = verifySigned(parseSignedReleaseVerifierEvidenceV1(input.evidence), input.verifier, "release-evidence");
     const binding = authorization.value.evidenceVerifierBindings.find(item => item.lane === artifact.value.lane);
-    if (!binding || artifact.signerId !== binding.signerId || publicKeySpkiDigest((input.verifier as ReleaseContractVerifierV1).publicKey) !== binding.publicKeySpkiDigest || artifact.signerId === authorization.signerId || artifact.signerId === additionalMakerSignerId || digests.has(artifact.digest) || byLane.has(artifact.value.lane) || !lanes.includes(artifact.value.lane)) throw new TypeError(`${label} evidence is duplicate, aliased, wrong-lane, wrong-signer, not independent from its maker, or outside trusted authorization bindings`);
+    if (!binding || artifact.signerId !== binding.signerId || input.publicKeySpkiDigest !== binding.publicKeySpkiDigest || digests.has(artifact.digest) || byLane.has(artifact.value.lane) || !lanes.includes(artifact.value.lane)) throw new TypeError(`${label} evidence is duplicate, aliased, wrong-lane, wrong-signer, or outside trusted authorization bindings`);
     digests.add(artifact.digest);
     byLane.set(artifact.value.lane, artifact);
   }
@@ -445,31 +471,59 @@ function verifyEvidenceSet(inputs: readonly ReleaseEvidenceVerificationV1[], lan
   return byLane;
 }
 
-function assertDenseDataArray(value: unknown, label: string): asserts value is readonly unknown[] {
+function parseEvidenceVerificationInput(value: unknown, label: string): Readonly<{ evidence: unknown; publicKeySpkiDigest: string; verifier: InternalReleaseContractVerifierV1 }> {
+  const input = shallowExact(value, ["evidence", "verifier"], label);
+  const verifier = parseReleaseContractVerifierInput(input.verifier, `${label} verifier`);
+  return { evidence: input.evidence, publicKeySpkiDigest: verifier.publicKeySpkiDigest, verifier };
+}
+
+function parseReleaseContractVerifierInput(value: unknown, label: string): InternalReleaseContractVerifierV1 {
+  const descriptor = shallowExact(value, ["publicKeySpkiBase64", "signerId"], label);
+  if (typeof descriptor.signerId !== "string" || !SIGNER_ID.test(descriptor.signerId) || typeof descriptor.publicKeySpkiBase64 !== "string") throw new TypeError(`${label} verifier descriptor is invalid`);
+  const bytes = Buffer.from(descriptor.publicKeySpkiBase64, "base64");
+  if (bytes.length === 0 || bytes.toString("base64") !== descriptor.publicKeySpkiBase64) throw new TypeError(`${label} verifier SPKI is not canonical base64`);
+  let publicKey: KeyObject;
+  try {
+    publicKey = createPublicKey({ key: bytes, format: "der", type: "spki" });
+    const canonical = publicKey.export({ format: "der", type: "spki" });
+    if (publicKey.type !== "public" || publicKey.asymmetricKeyType !== "ed25519" || !Buffer.from(canonical).equals(bytes)) throw new TypeError("noncanonical SPKI");
+  } catch {
+    throw new TypeError(`${label} verifier SPKI is invalid or noncanonical`);
+  }
+  return { publicKey, publicKeySpkiDigest: `sha256:${createHash("sha256").update(bytes).digest("hex")}`, signerId: descriptor.signerId };
+}
+
+function snapshotDenseDataArray(value: unknown, label: string): readonly unknown[] {
   if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype) throw new TypeError(`${label} is not a plain dense array`);
   const lengthDescriptor = Object.getOwnPropertyDescriptor(value, "length");
   if (!lengthDescriptor || !("value" in lengthDescriptor) || !Number.isSafeInteger(lengthDescriptor.value) || lengthDescriptor.value < 0) throw new TypeError(`${label} has invalid length`);
   const keys = Reflect.ownKeys(value);
   if (keys.length !== lengthDescriptor.value + 1) throw new TypeError(`${label} is sparse or has custom own fields`);
+  const snapshot: unknown[] = [];
   for (let index = 0; index < lengthDescriptor.value; index += 1) {
     if (keys[index] !== String(index)) throw new TypeError(`${label} is sparse or has symbol/custom own fields`);
     const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
     if (!descriptor || !("value" in descriptor) || descriptor.enumerable !== true) throw new TypeError(`${label} contains an accessor or non-enumerable slot`);
+    snapshot.push(descriptor.value);
   }
   if (keys[keys.length - 1] !== "length") throw new TypeError(`${label} has custom own fields`);
-}
-
-function publicKeySpkiDigest(key: KeyObject): string {
-  if (!(key instanceof KeyObject) || key.type !== "public") throw new TypeError("release evidence verifier public key is invalid");
-  try { return `sha256:${createHash("sha256").update(key.export({ format: "der", type: "spki" })).digest("hex")}`; }
-  catch { throw new TypeError("release evidence verifier public key is invalid"); }
+  return snapshot;
 }
 
 function shallowExact(value: unknown, fields: readonly string[], label: string): Record<string, any> {
   if (!value || typeof value !== "object" || Array.isArray(value) || Object.getPrototypeOf(value) !== Object.prototype) throw new TypeError(`${label} is not an exact object`);
-  const keys = ownDataKeys(value, label).sort();
+  const snapshot: Record<string, unknown> = {};
+  const keys: string[] = [];
+  for (const key of Reflect.ownKeys(value)) {
+    if (typeof key === "symbol") throw new TypeError(`${label} contains a symbol field`);
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (!descriptor || !("value" in descriptor) || descriptor.enumerable !== true) throw new TypeError(`${label} contains an accessor or non-enumerable property`);
+    keys.push(key);
+    snapshot[key] = descriptor.value;
+  }
+  keys.sort();
   if (!equalStrings(keys, [...fields].sort())) throw new TypeError(`${label} is not an exact object`);
-  return value as Record<string, any>;
+  return snapshot;
 }
 
 function signRelease<T, V extends string>(value: T, signer: ReleaseContractSignerV1, version: V, purpose: AuthoritySignaturePurpose): SignedReleaseArtifactV1<T, V> {
@@ -488,7 +542,7 @@ function parseSignedRelease<T, V extends string>(value: unknown, version: V, par
   return normalize({ digest: item.digest, signature, signerId: item.signerId, v: version, value: parsedValue }) as SignedReleaseArtifactV1<T, V>;
 }
 
-function verifySigned<T, V extends string>(artifact: SignedReleaseArtifactV1<T, V>, verifier: ReleaseContractVerifierV1, purpose: AuthoritySignaturePurpose): SignedReleaseArtifactV1<T, V> {
+function verifySigned<T, V extends string>(artifact: SignedReleaseArtifactV1<T, V>, verifier: InternalReleaseContractVerifierV1, purpose: AuthoritySignaturePurpose): SignedReleaseArtifactV1<T, V> {
   if (!verifier || artifact.signerId !== verifier.signerId || !verifyAuthoritySignature(verifier.publicKey, purpose, artifact.digest, artifact.signature)) throw new TypeError("signed release artifact signature is invalid");
   return artifact;
 }
