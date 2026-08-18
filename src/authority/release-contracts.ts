@@ -265,9 +265,10 @@ function parseReleaseReceiptGraphV1(value: unknown): ReleaseReceiptGraphV1 {
   if (!Number.isSafeInteger(authorization.count) || authorization.count < 0) throw new TypeError("human authorization count is invalid");
   requireDigest(authorization.evidenceDigest, "human authorization");
   requireEvidenceStatus(authorization.status, "human authorization");
+  if (authorization.status === "verified" && authorization.count !== 1) throw new TypeError("verified human authorization count must be exactly one");
   lanes.push({ evidenceDigest: authorization.evidenceDigest, status: authorization.status });
-  parseCountedLane(human.exceptions, "human exceptions");
-  parseCountedLane(human.interruptions, "human interruptions");
+  const exceptions = parseCountedLane(human.exceptions, "human exceptions");
+  const interruptions = parseCountedLane(human.interruptions, "human interruptions");
   lanes.push(parseLane(human.postReleaseReview, "human post-release review"));
   const installed = exact(item.installedChecks, ["linux", "windows"], "installed check receipt lanes");
   lanes.push(parseFreshLane(installed.linux, "Linux installed check", verifiedAt), parseFreshLane(installed.windows, "Windows installed check", verifiedAt));
@@ -279,7 +280,7 @@ function parseReleaseReceiptGraphV1(value: unknown): ReleaseReceiptGraphV1 {
   lanes.push(parseLane(npm.integrity, "npm integrity"), parseLane(npm.provenance, "npm provenance"));
   const tag = exact(item.tag, ["immutableRef"], "tag receipt lanes");
   lanes.push(parseLane(tag.immutableRef, "immutable tag"));
-  const digests = lanes.map(lane => lane.evidenceDigest);
+  const digests = [...lanes.map(lane => lane.evidenceDigest), ...exceptions.evidenceDigests, ...interruptions.evidenceDigests];
   if (new Set(digests).size !== digests.length) throw new TypeError("release receipt evidence lanes require distinct evidence digests");
   return normalize(item);
 }
