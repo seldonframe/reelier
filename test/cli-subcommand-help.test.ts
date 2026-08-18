@@ -37,7 +37,7 @@ const NETWORK_CALLABLE_SURFACES = {
 
 const ORACLE = String.raw`
 const { syncBuiltinESMExports } = require("node:module");
-const fail = (api) => () => { throw new Error("REELIER_HELP_ORACLE side effect: " + api); };
+const fail = (api) => function () { throw new Error("REELIER_HELP_ORACLE side effect: " + api); };
 const block = (target, label, keys) => {
   for (const key of keys) if (typeof target[key] === "function") target[key] = fail(label + "." + key);
 };
@@ -47,7 +47,7 @@ const block = (target, label, keys) => {
 const net = require("node:net");
 block(net, "node:net", ["_createServerHandle", "connect", "createConnection", "createServer"]);
 block(net.Socket.prototype, "node:net.Socket", ["connect"]);
-block(net.Server.prototype, "node:net.Server", ["listen"]);
+block(net.Server.prototype, "node:net.Server", ["_listen2", "listen"]);
 const tls = require("node:tls");
 block(tls, "node:tls", ["connect", "createServer"]);
 block(tls.TLSSocket.prototype, "node:tls.TLSSocket", ["connect"]);
@@ -59,6 +59,7 @@ block(dgram.Socket.prototype, "node:dgram.Socket", [
   "setBroadcast", "setMulticastInterface", "setMulticastLoopback", "setMulticastTTL",
   "setRecvBufferSize", "setSendBufferSize", "setTTL", "unref",
 ]);
+block(dgram, "node:dgram", ["Socket"]);
 const dnsKeys = ["lookup", "lookupService", "resolve", "resolve4", "resolve6", "resolveAny", "resolveCaa", "resolveCname", "resolveMx", "resolveNaptr", "resolveNs", "resolvePtr", "resolveSoa", "resolveSrv", "resolveTlsa", "resolveTxt", "reverse"];
 const dns = require("node:dns");
 block(dns, "node:dns", dnsKeys);
@@ -140,7 +141,9 @@ test("the help oracle closes filesystem, subprocess, and low-level network escap
     ["execFileSync", `require("node:child_process").execFileSync(${JSON.stringify(process.execPath)}, ["--version"])`],
     ["direct Socket", `new (require("node:net").Socket)().connect(9, "127.0.0.1")`],
     ["raw TCP server handle", `require("node:net")._createServerHandle("127.0.0.1", 0, 4)`],
+    ["direct TCP Server _listen2", `new (require("node:net").Server)()._listen2("127.0.0.1", 0, 4, 511, undefined, 0)`],
     ["direct TLSSocket", `new (require("node:tls").TLSSocket)(new (require("node:net").Socket)()).connect(9, "127.0.0.1")`],
+    ["direct datagram Socket construction", `new (require("node:dgram").Socket)("udp4")`],
     ["direct datagram Socket", `new (require("node:dgram").Socket)("udp4").send("probe", 9, "127.0.0.1")`],
     ["raw datagram handle", `require("node:dgram")._createSocketHandle("127.0.0.1", 0, "udp4")`],
     ["datagram addMembership", `new (require("node:dgram").Socket)("udp4").addMembership("224.0.0.114")`],
