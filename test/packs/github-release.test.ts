@@ -69,4 +69,9 @@ test("GitHub release pack policy and projection refuse accessors without invokin
   const projection = Object.create(Object.prototype, { authorizationHandle: { enumerable: true, get() { invoked++; return "release_auth_1"; } } });
   assert.throws(() => definition.compile({ contract: {} as never, source: { projection } as never, choices: {}, policy, now: new Date(0), connectorAccount: { connectorId: "github", accountId: "host" } }), /projection|inert|handle/i);
   assert.equal(invoked, 0);
+  let traps = 0;
+  const proxy = new Proxy({}, { getPrototypeOf() { traps++; return Object.prototype; }, ownKeys() { traps++; return []; } });
+  assert.throws(() => definition.parsePolicy(proxy), /closed|inert|policy/i);
+  assert.equal(reconcileGitHubRelease({ response: proxy }).status, "unavailable");
+  assert.equal(traps, 0);
 });
