@@ -31,12 +31,23 @@ function releaseInputs() {
     changedBytes: 4096,
     changedPaths: ["CHANGELOG.md", "src/cli.ts", "test/cli-subcommand-help.test.ts"],
     destinationBranch: "main",
+    qualityEvidence: {
+      coverageEvidenceDigest: digest("6"),
+      fullTestEvidenceDigest: digest("7"),
+      headCommit: sha("a"),
+      mutationEvidenceDigest: digest("8"),
+      mutationScoreBasisPoints: 9_137,
+    },
     packageName: "reelier",
     packageVersion: "0.32.1",
     packedTarballDigest: digest("2"),
     repository: "seldonframe/reelier",
     tag: "v0.32.1",
-    workflowDigests: [digest("3"), digest("4"), digest("5")],
+    workflowCommitments: [
+      { digest: digest("3"), path: ".github/workflows/ci.yml" },
+      { digest: digest("4"), path: ".github/workflows/publish-ghcr.yml" },
+      { digest: digest("5"), path: ".github/workflows/publish-npm.yml" },
+    ],
   }, signer);
   const policy = createSignedReleasePolicyV1({
     v: "reelier.release-policy/v1",
@@ -50,17 +61,22 @@ function releaseInputs() {
   }, signer);
   const authorization = createSignedReleaseAuthorizationBundleV1({
     v: "reelier.release-authorization-bundle/v1",
-    authorityCellDigest: digest("6"),
-    effectAllocationIds: ["candidate-branch", "draft-pr", "exact-sha-merge", "non-force-tag"],
+    authorityCellDigest: digest("9"),
+    effectAllocations: [
+      { allocationDigest: digest("a"), allocationId: "release-candidate-branch-01", effect: "candidate-branch", maxEffects: 1 },
+      { allocationDigest: digest("b"), allocationId: "release-draft-pr-01", effect: "draft-pr", maxEffects: 1 },
+      { allocationDigest: digest("c"), allocationId: "release-exact-sha-merge-01", effect: "exact-sha-merge", maxEffects: 1 },
+      { allocationDigest: digest("d"), allocationId: "release-non-force-tag-01", effect: "non-force-tag", maxEffects: 1 },
+    ],
     expiresAt: "2026-08-18T17:00:00.000Z",
     issuedAt: "2026-08-18T05:00:00.000Z",
-    jobCardDigest: digest("7"),
-    missionDigest: digest("8"),
-    packDigest: digest("9"),
+    jobCardDigest: digest("e"),
+    missionDigest: digest("f"),
+    packDigest: digest("0"),
     policyDigest: policy.digest,
-    rootGrantDigest: digest("a"),
+    rootGrantDigest: digest("1"),
     stagedCandidateManifestDigest: candidateManifest.digest,
-    taskDigest: digest("b"),
+    taskDigest: digest("2"),
   }, signer);
   return { authorization, candidateManifest, policy };
 }
@@ -100,6 +116,9 @@ test("release authorization binds the exact reviewed release and is deterministi
   assert.equal(verified.authorization.value.stagedCandidateManifestDigest, verified.candidateManifest.digest);
   assert.equal(verified.candidateManifest.value.repository, "seldonframe/reelier");
   assert.equal(verified.candidateManifest.value.baseCommit, "e600ad5c2dc5e1bde0714915e7a84980c8d5602b");
+  assert.equal(verified.candidateManifest.value.qualityEvidence.headCommit, verified.candidateManifest.value.candidateCommit);
+  assert.ok(verified.candidateManifest.value.qualityEvidence.mutationScoreBasisPoints >= 9_000);
+  assert.deepEqual(verified.authorization.value.effectAllocations.map(item => item.maxEffects), [1, 1, 1, 1]);
   assert.deepEqual(verified.policy.value.allowedPaths, ["CHANGELOG.md", "src/cli.ts", "test/cli-subcommand-help.test.ts"]);
   assert.ok(Object.isFrozen(verified.authorization.value));
   assert.ok(Object.isFrozen(verified.policy.value.allowedPaths));
