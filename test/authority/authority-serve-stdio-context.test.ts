@@ -79,12 +79,22 @@ test("stdio credential files accept exact token bytes with at most one terminal 
 
 test("stdio credential resolver rejects an actual group-readable file on Linux", { skip: process.platform !== "linux" }, async () => {
   const credentialRoot = await mkdtemp(path.join(os.tmpdir(), "reelier-stdio-principal-mode-"));
+  const context = { tenant: "tenant_1", principalId: "agent_1", taskId: "task_1", grantId: "grant_1", grantDigest: digest, allocationId: "root", runtimeSessionId: "session_1", jobId: "production_release", authorityCellId: "cell_1", expiresAt: "2099-01-01T00:00:00.000Z", sessionTokenDigest: digest };
+  let resolveCalls = 0;
+  const registry: PrincipalRegistry = {
+    async resolve(token) { resolveCalls++; assert.equal(token, "rat_exact"); return context; },
+    async issue() { throw new Error("unused"); }, async revoke() {}, async revokeTask() {},
+  };
   try {
     const credentialFile = path.join(credentialRoot, "principal.token");
     await writeFile(credentialFile, "rat_exact", { mode: 0o600 });
     await chmod(credentialFile, 0o640);
     const config = validateAuthorityHostConfig({ ...base, ingress: { principalRegistryFile: "principal.jsonl", stdioPrincipalCredentialRef: `file:${credentialFile}` } });
-    await assert.rejects(() => resolveAuthorityServeStdioExecutionContext(config, {} as PrincipalRegistry), /credential|unavailable/i);
+    await assert.rejects(() => resolveAuthorityServeStdioExecutionContext(config, registry), {
+      name: "TypeError",
+      message: "stdio principal credential is unavailable",
+    });
+    assert.equal(resolveCalls, 0, "private-mode enforcement must refuse before registry resolution; without it this valid resolver succeeds");
   } finally { await rm(credentialRoot, { recursive: true, force: true }); }
 });
 
