@@ -53,6 +53,32 @@ Files touched:
 
 ## Task 5 — Four governed GitHub release Outcomes
 
+Files touched:
+
+- `docs/superpowers/plans/2026-08-18-eve-governed-production-release.md`
+- `SPEC.md`
+- `docs/specs/github-release-outcomes-v1.md`
+- `src/authority/release-contracts.ts`
+- `src/authority/host/github-release-runner.ts`
+- `src/authority/host/signed-journal.ts`
+- `src/authority/host/github-release-evidence.ts`
+- `src/authority/host/index.ts`
+- `src/authority/pack.ts`
+- `src/packs/github-release/manifest.ts`
+- `src/packs/github-release/source.ts`
+- `src/packs/github-release/compile.ts`
+- `src/packs/github-release/reconcile.ts`
+- `src/packs/github-release/index.ts`
+- `src/packs/index.ts`
+- `src/packs/semantic.ts`
+- `test/authority/github-release-runner.test.ts`
+- `test/authority/local-multi-definition-jobs.test.ts`
+- `test/authority/release-contracts.test.ts`
+- `test/authority/certification-runner-abi-v2.test.ts`
+- `test/packs/github-release.test.ts`
+- `test/packs/conformance.test.ts`
+- `test/packs-semantic.test.ts`
+
 - Add reviewed definitions for candidate publication, draft-PR ensure, exact-SHA squash merge, and non-force tag creation.
 - Implement exact Git Data/PR/ref readback reconciliation with durable crash boundaries.
 - Add hermetic provider tests for duplicates, every internal timeout point, conflicts, drift, failed checks, stale authority, tampering, and ambiguous no-resend behavior.
