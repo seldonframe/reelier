@@ -55,3 +55,18 @@ test("GitHub release reconciliation matches only a closed verified evidence proj
   assert.equal(reconcileGitHubRelease({ response: { status: 200, body: hostile } }).status, "unavailable");
   assert.equal(invoked, 0);
 });
+
+test("GitHub release pack policy and projection refuse accessors without invoking them", () => {
+  const definition = githubReleaseCandidatePublishDefinition;
+  let invoked = 0;
+  const hostilePolicy = Object.create(Object.prototype, {
+    allocationDigest: { enumerable: true, value: authorityDigest({ allocation: 1 }) }, allocationId: { enumerable: true, value: "release-candidate-branch-01" },
+    authorizationHandleDigest: { enumerable: true, value: authorityDigest({ handle: "release_auth_1" }) }, effect: { enumerable: true, get() { invoked++; return "candidate-branch"; } }, maxEffects: { enumerable: true, value: 1 },
+  });
+  assert.throws(() => definition.parsePolicy(hostilePolicy), /closed|inert|policy/i);
+  assert.equal(invoked, 0);
+  const policy = definition.parsePolicy({ allocationDigest: authorityDigest({ allocation: 1 }), allocationId: "release-candidate-branch-01", authorizationHandleDigest: authorityDigest({ handle: "release_auth_1" }), effect: "candidate-branch", maxEffects: 1 });
+  const projection = Object.create(Object.prototype, { authorizationHandle: { enumerable: true, get() { invoked++; return "release_auth_1"; } } });
+  assert.throws(() => definition.compile({ contract: {} as never, source: { projection } as never, choices: {}, policy, now: new Date(0), connectorAccount: { connectorId: "github", accountId: "host" } }), /projection|inert|handle/i);
+  assert.equal(invoked, 0);
+});
