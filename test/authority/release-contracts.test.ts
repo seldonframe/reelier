@@ -18,6 +18,7 @@ import {
   type ReleaseVerifierEvidenceV1,
 } from "../../src/authority/release-contracts.js";
 import { authorityDigest } from "../../src/authority/wire.js";
+import * as authorityPublic from "../../src/authority/index.js";
 
 const digest = (character: string): string => `sha256:${character.repeat(64)}`;
 const sha = (character: string): string => character.repeat(40);
@@ -439,6 +440,19 @@ test("receipt evidence resolves complete signed lanes and refuses missing, dupli
   const tampered = structuredClone(evidence);
   (tampered[5].evidence as any).value.count = 1;
   assert.throws(() => verifyReleaseReceiptGraphV1(graph, verifier, authorization, tampered), /digest|tamper/i);
+
+  const makerKey = trustedEvidenceKeys.get("candidate-branch")!;
+  const makerGraph = createSignedReleaseReceiptGraphV1(value, { signerId: makerKey.signerId, privateKey: makerKey.pair.privateKey });
+  assert.throws(
+    () => verifyReleaseReceiptGraphV1(makerGraph, { signerId: makerKey.signerId, publicKey: makerKey.pair.publicKey }, authorization, evidence),
+    /independent|maker|signer|trusted/i,
+  );
+});
+
+test("the installed authority public barrel exposes release evidence creation and offline verification", () => {
+  assert.equal(authorityPublic.createSignedReleaseVerifierEvidenceV1, createSignedReleaseVerifierEvidenceV1);
+  assert.equal(authorityPublic.verifyReleaseAuthorizationBundleV1, verifyReleaseAuthorizationBundleV1);
+  assert.equal(authorityPublic.verifyReleaseReceiptGraphV1, verifyReleaseReceiptGraphV1);
 });
 
 test("authorization verification refuses before issuedAt", () => {
