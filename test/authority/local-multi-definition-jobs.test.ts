@@ -153,12 +153,15 @@ test("opaque invoke converges exact retries and refuses request-id semantic conf
   };
   try {
     const runtime = await createLocalAuthorityRuntime(fixture.config, { jobCardTrustPin: fixture.trustPin, delegation: fixture.delegation, dispatchAdapter: adapter });
-    const ref = ((await runtime.jobsSearch!({}, fixture.context) as { jobs: Array<{ jobRef: string }> }).jobs[0]!).jobRef;
+    const refs = (await runtime.jobsSearch!({}, fixture.context) as { jobs: Array<{ jobRef: string }> }).jobs.map(job => job.jobRef);
+    const ref = refs[0]!;
     const request = { v: "reelier.outcome-request/v1", jobRef: ref, requestId: "request_1", sourceRefs: { thread: "thread_1" }, choices: {} };
     const first = await runtime.invoke!(request, fixture.context);
     assert.equal(first.verdict, "accepted", JSON.stringify(first));
     assert.equal(dispatches, 1);
     assert.equal((await runtime.invoke!(request, fixture.context)).verdict, "accepted");
+    assert.equal(dispatches, 1);
+    assert.equal((await runtime.invoke!({ ...request, jobRef: refs[1]! }, fixture.context)).verdict, "refused");
     assert.equal(dispatches, 1);
     const conflict = await runtime.invoke!({ ...request, sourceRefs: { thread: "thread_other" } }, fixture.context);
     assert.equal(conflict.verdict, "refused");
