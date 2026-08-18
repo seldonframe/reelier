@@ -49,10 +49,10 @@ function candidateProvider(overrides: Record<string, unknown> = {}) {
   } as any;
 }
 
-async function confirmTestPublication(runner: Awaited<ReturnType<typeof createGitHubReleaseRunner>>, requestId: string, result: { status: string; evidenceDigest: string | null }): Promise<void> {
+async function confirmTestPublication(runner: Awaited<ReturnType<typeof createGitHubReleaseRunner>>, requestId: string, result: { status: string; evidenceDigest: string | null }, phase: "dispatch" | "reconcile" = "dispatch"): Promise<void> {
   if (result.status === "verified" && result.evidenceDigest) {
     const publication = createGitHubReleaseReceiptPublication({ runner, publication: { async publish() { return { receiptRef: `receipt_${requestId}`, evidenceDigest: authorityDigest({ published: requestId }) }; } } });
-    await publication.publish({ phase: "dispatch", state: { reservation: { reservationId: requestId }, effect: { endpointId: "github.release.candidate-branch" } } as any, outcome: { kind: "acknowledged", resultDigest: result.evidenceDigest }, dispatchedRequestDigest: digest("f") });
+    await publication.publish({ phase, state: { reservation: { reservationId: requestId }, effect: { endpointId: "github.release.candidate-branch" } } as any, outcome: { kind: "acknowledged", resultDigest: result.evidenceDigest }, dispatchedRequestDigest: digest("f") });
   }
 }
 
@@ -224,8 +224,8 @@ test("release provider execution stays behind the prepared commit boundary", asy
   const prepared = await adapter.prepare!(state);
   assert.equal(releaseWrites, 0);
   const lease = createDispatchCommitLease({ reservationId: "reservation_1", allocationId: "release-candidate-branch-01", preparedDigest: materializedRequestDigest, authorityGeneration: "generation_1", authorityExpiresAt: "2099-08-18T17:00:00.000Z", absoluteDeadlineMs: prepared.description.absoluteDeadlineMs, commitGeneration: "commit_1" });
-  assert.equal((await consumePreparedDispatch(prepared, lease)).kind, "acknowledged");
-  assert.deepEqual([releaseWrites, fallbackWrites], [1, 0]);
+  assert.equal((await consumePreparedDispatch(prepared, lease)).kind, "definitive-failure");
+  assert.deepEqual([releaseWrites, fallbackWrites], [0, 0], "an unminted fake runner cannot cross the prepared boundary");
 });
 
 test("runner does not expose a forgeable receipt-publication confirmation method", async () => {
@@ -246,13 +246,13 @@ test("four-operation release saga converges after ambiguous merge and tag withou
   const root = await mkdtemp(path.join(os.tmpdir(), "reelier-release-saga-"));
   const fixture = releaseAuthorityFixture(), journalKeys = generateKeyPairSync("ed25519");
   const refs = new Map<string, string>([["heads/main", "e600ad5c2dc5e1bde0714915e7a84980c8d5602b"]]);
-  let pullRequest: any = null, mergeCalls = 0, tagCalls = 0, readyCalls = 0, treeBase: string | null = null;
+  let pullRequest: any = null, mergeCalls = 0, tagCalls = 0, readyCalls = 0, treeBase: string | null = null, loseTagReadback = false, npmPublished = false, npmChecks = 0;
   const provider = {
     createBlob: async ({ contentBase64 }: any) => ({ sha: blobSha(Buffer.from(contentBase64, "base64")) }),
     createTree: async ({ baseTreeSha }: any) => { treeBase = baseTreeSha; return { sha: gitSha("e") }; },
     createCommit: async () => ({ sha: gitSha("a") }),
-    getRef: async ({ ref }: any) => refs.has(ref) ? { sha: refs.get(ref)! } : null,
-    createRef: async ({ ref, sha }: any) => { if (refs.has(ref)) throw new Error("exists"); refs.set(ref, sha); if (ref === "tags/v0.32.1") { tagCalls += 1; throw new Error("socket lost after tag"); } return { sha }; },
+    getRef: async ({ ref }: any) => { if (ref === "tags/v0.32.1" && loseTagReadback) { loseTagReadback = false; throw { v: "reelier.github-release-provider-fault/v1", kind: "transport-uncertain", reason: "tag readback unavailable" }; } return refs.has(ref) ? { sha: refs.get(ref)! } : null; },
+    createRef: async ({ ref, sha }: any) => { if (refs.has(ref)) throw new Error("exists"); refs.set(ref, sha); if (ref === "tags/v0.32.1") { tagCalls += 1; loseTagReadback = true; throw new Error("socket lost after tag"); } return { sha }; },
     getCommit: async ({ sha }: any) => ({ sha, parentSha: "e600ad5c2dc5e1bde0714915e7a84980c8d5602b", treeSha: sha === "e600ad5c2dc5e1bde0714915e7a84980c8d5602b" ? gitSha("b") : gitSha("e") }),
     findPullRequests: async () => pullRequest ? [pullRequest] : [],
     createPullRequest: async (metadata: any) => (pullRequest = { base: metadata.base, body: metadata.body, draft: metadata.draft, head: metadata.head, headSha: gitSha("a"), mergeCommitSha: null, merged: false, number: 1, title: metadata.title }),
@@ -260,7 +260,7 @@ test("four-operation release saga converges after ambiguous merge and tag withou
     getPullRequest: async () => pullRequest,
     getChecks: async () => ["coverage", "full-tests", "mutation"].map(name => ({ name, status: "success", workflowDigest: digest("3"), workflowPath: ".github/workflows/ci.yml" })),
     mergePullRequest: async () => { mergeCalls += 1; pullRequest = { ...pullRequest, merged: true, mergeCommitSha: gitSha("9") }; refs.set("heads/main", gitSha("9")); throw new Error("socket lost after merge"); },
-    npmVersionExists: async () => false,
+    npmVersionExists: async () => { npmChecks += 1; return npmPublished; },
     readPackageManifest: async () => ({ name: "reelier", version: "0.32.1" }),
   };
   try {
@@ -277,9 +277,14 @@ test("four-operation release saga converges after ambiguous merge and tag withou
     const mergeResult = await invoke("github_release_pr_merge_v1", "merge_1");
     assert.equal(mergeResult.status, "verified");
     await confirmTestPublication(runner, "merge_1", mergeResult);
-    assert.equal((await invoke("github_release_tag_create_v1", "tag_1")).status, "verified");
+    assert.equal((await invoke("github_release_tag_create_v1", "tag_1")).status, "pending-reconciliation");
+    npmPublished = true;
+    const reconciledTag = await invoke("github_release_tag_create_v1", "tag_1", true);
+    assert.equal(reconciledTag.status, "verified", "an exact applied tag reconciles even if its workflow published npm before recovery");
+    await confirmTestPublication(runner, "tag_1", reconciledTag, "reconcile");
     assert.equal(mergeCalls, 1);
     assert.equal(tagCalls, 1);
+    assert.ok(npmChecks >= 2, "tag dispatch must recheck npm after its durable intent");
     assert.equal(readyCalls, 1);
     assert.equal(treeBase, gitSha("b"));
     assert.equal((await invoke("github_release_pr_merge_v1", "merge_1", true)).status, "verified");
@@ -385,9 +390,9 @@ test("dedicated dispatch adapter passes only host-owned allocation and durable s
   const adapter = createGitHubReleaseDispatchAdapter({ runner: { recover: async () => [], run: async request => { observed = request; return { status: "verified", phase: "candidate-verified", evidenceDigest: digest("a") }; } }, fallback: { dispatch: async () => { fallbackCalls++; return { kind: "acknowledged", resultDigest: digest("f") }; } } });
   const effect = { v: "reelier.transport-effect/v1", endpointId: "github.release.candidate-branch", method: "POST", path: "/internal/github-release", query: "", headers: { "Content-Type": "application/json" }, bodyBase64: Buffer.from(JSON.stringify({ authorizationHandle: "release_auth_1" })).toString("base64"), riskClass: "github_release", idempotency: "reconcile-only", preconditions: [], reconciliation: { recipeId: "github_release_authoritative_readback_v1" } };
   const outcome = await adapter.dispatch({ reservation: { reservationId: "reservation_1", state: "reserved" as any, intent: { effectDigest: authorityDigest(effect), effectCanonicalBase64: "", executionContext: { allocationId: "release-candidate-branch-01" } as any } }, effect, effectCanonicalBase64: "", effectDigest: authorityDigest(effect) });
-  assert.equal(outcome.kind, "acknowledged");
+  assert.equal(outcome.kind, "definitive-failure");
   assert.equal(fallbackCalls, 0);
-  assert.deepEqual(observed, { alias: "github_release_candidate_publish_v1", allocationId: "release-candidate-branch-01", authorizationHandle: "release_auth_1", requestId: "reservation_1", semanticsDigest: authorityDigest(effect) });
+  assert.equal(observed, null, "public adapter dispatch cannot bypass prepared coordinator consumption");
   assert.throws(() => createGitHubReleaseReceiptPublication({ runner: { recover: async () => [], run: async () => ({ status: "verified", phase: "candidate-verified", evidenceDigest: digest("a") }) }, publication: { publish: async () => ({ receiptRef: "receipt_reservation_1", evidenceDigest: digest("b") }) } }), /capability/i);
 });
 
@@ -420,7 +425,7 @@ test("ambiguous merge reconciles read-only after expiry and never resends", asyn
     createPullRequest: async (metadata: any) => (pr = { base: metadata.base, body: metadata.body, draft: metadata.draft, head: metadata.head, headSha: gitSha("a"), mergeCommitSha: null, merged: false, number: 1, title: metadata.title }),
     markPullRequestReady: async () => (pr = { ...pr, draft: false }),
     getPullRequest: async () => { pullRequestReads += 1; if (loseReadback && pullRequestReads >= 6) { loseReadback = false; throw { v: "reelier.github-release-provider-fault/v1", kind: "transport-uncertain", reason: "network socket unavailable" }; } return pr; },
-    getChecks: async () => ["coverage", "full-tests", "mutation"].map(name => ({ name, status: "success", workflowDigest: digest("3") })),
+    getChecks: async () => ["coverage", "full-tests", "mutation"].map(name => ({ name, status: "success", workflowDigest: digest("3"), workflowPath: ".github/workflows/ci.yml" })),
     mergePullRequest: async () => { mergeCalls++; pr = { ...pr, merged: true, mergeCommitSha: gitSha("9") }; refs.set("heads/main", gitSha("9")); throw new Error("response lost after merge"); },
     getCommit: async ({ sha }: any) => ({ sha, parentSha: "e600ad5c2dc5e1bde0714915e7a84980c8d5602b", treeSha: sha === "e600ad5c2dc5e1bde0714915e7a84980c8d5602b" ? gitSha("b") : gitSha("e") }),
   };
@@ -448,7 +453,7 @@ for (const boundary of ["createBlob", "createTree", "createCommit", "createBranc
       createRef: async ({ ref, sha }: any) => { refs.set(ref, sha); if (ref.startsWith("tags/")) tagCalls++; return { sha }; },
       getCommit: async ({ sha }: any) => ({ sha, parentSha: "e600ad5c2dc5e1bde0714915e7a84980c8d5602b", treeSha: sha === "e600ad5c2dc5e1bde0714915e7a84980c8d5602b" ? gitSha("b") : gitSha("e") }),
       findPullRequests: async () => pr ? [pr] : [], createPullRequest: async (metadata: any) => (pr = { base: metadata.base, body: metadata.body, draft: metadata.draft, head: metadata.head, headSha: gitSha("a"), mergeCommitSha: null, merged: false, number: 1, title: metadata.title }), markPullRequestReady: async () => (pr = { ...pr, draft: false }), getPullRequest: async () => pr,
-      getChecks: async () => ["coverage", "full-tests", "mutation"].map(name => ({ name, status: "success", workflowDigest: digest("3") })),
+      getChecks: async () => ["coverage", "full-tests", "mutation"].map(name => ({ name, status: "success", workflowDigest: digest("3"), workflowPath: ".github/workflows/ci.yml" })),
       mergePullRequest: async () => { mergeCalls++; pr = { ...pr, merged: true, mergeCommitSha: gitSha("9") }; refs.set("heads/main", gitSha("9")); return { merged: true, sha: gitSha("9") }; },
       readPackageManifest: async () => ({ name: "reelier", version: "0.32.1" }), npmVersionExists: async () => false,
     };
@@ -462,7 +467,7 @@ for (const boundary of ["createBlob", "createTree", "createCommit", "createBranc
         const requestId = `${boundary}_${alias}`;
         const request = { alias: alias as any, allocationId: allocations[alias]!, authorizationHandle: "release_auth_1", requestId, semanticsDigest: authorityDigest({ boundary, alias }) };
         let result: any = null;
-        for (let attempt = 0; attempt < 3 && result?.status !== "verified"; attempt++) { try { result = await governedRun(runner, request, attempt > 0 && (boundary === "mergePullRequest" || boundary === "createTagRef")); } catch { /* safe content-addressed retry */ } }
+        for (let attempt = 0; attempt < 3 && result?.status !== "verified"; attempt++) { try { const reconcile = result?.status === "pending-reconciliation" && (boundary === "mergePullRequest" || boundary === "createTagRef"); result = await governedRun(runner, request, reconcile); } catch { /* safe read/content-addressed retry */ } }
         assert.equal(result?.status, "verified", `${alias} did not reconcile at ${boundary}`);
         await confirmTestPublication(runner, requestId, result);
       }
