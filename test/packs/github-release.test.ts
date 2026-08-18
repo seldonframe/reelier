@@ -75,3 +75,13 @@ test("GitHub release pack policy and projection refuse accessors without invokin
   assert.equal(reconcileGitHubRelease({ response: proxy }).status, "unavailable");
   assert.equal(traps, 0);
 });
+
+test("GitHub release choices reject proxies without invoking traps", () => {
+  let traps = 0;
+  const choices = new Proxy({}, {
+    getPrototypeOf() { traps += 1; return Object.prototype; },
+    ownKeys() { traps += 1; return []; },
+  });
+  assert.throws(() => githubReleaseCandidatePublishDefinition.validateChoices(choices), /closed|inert|choices/i);
+  assert.equal(traps, 0);
+});

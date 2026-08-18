@@ -96,6 +96,40 @@ test("release runner refuses raw or wrong allocation authority before provider d
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
+test("release dispatch composition preserves fallback prepare and fails closed without a release runner", async () => {
+  const prepared = Object.freeze({ description: Object.freeze({}) }) as never;
+  let fallbackDispatches = 0, fallbackReconciles = 0, fallbackPrepares = 0;
+  const fallback = {
+    async prepare() { fallbackPrepares += 1; return prepared; },
+    async dispatch() { fallbackDispatches += 1; return { kind: "acknowledged" as const, resultDigest: digest("a") }; },
+    async reconcile(_state: any, outcome: any) { fallbackReconciles += 1; return outcome; },
+  };
+  const adapter = createGitHubReleaseDispatchAdapter({ runner: null, fallback } as any);
+  const ordinaryState = { effect: { endpointId: "ordinary.write" } } as any;
+  assert.equal(await adapter.prepare!(ordinaryState), prepared);
+  await adapter.dispatch(ordinaryState);
+  await adapter.reconcile!(ordinaryState, { kind: "ambiguous", resultDigest: digest("b") });
+  assert.deepEqual([fallbackPrepares, fallbackDispatches, fallbackReconciles], [1, 1, 1]);
+
+  const releaseState = {
+    reservation: { reservationId: "reservation_1", intent: { executionContext: { allocationId: "release-candidate-branch-01" } } },
+    effect: { v: "reelier.transport-effect/v1", endpointId: "github.release.candidate-branch", method: "POST", path: "/internal/github-release", query: "", headers: {}, bodyBase64: Buffer.from('{"authorizationHandle":"release_auth_1"}').toString("base64"), riskClass: "github_release", idempotency: "reconcile-only", preconditions: [], reconciliation: { recipeId: "github_release_authoritative_readback_v1" } },
+    effectDigest: digest("c"), effectCanonicalBase64: "",
+  } as any;
+  const refused = await adapter.dispatch(releaseState);
+  assert.equal(refused.kind, "definitive-failure");
+  assert.equal(fallbackDispatches, 1, "reviewed release endpoints must never reach generic HTTPS fallback");
+});
+
+test("runner does not expose a forgeable receipt-publication confirmation method", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "reelier-release-confirmation-capability-"));
+  const fixture = releaseAuthorityFixture(), keys = generateKeyPairSync("ed25519");
+  try {
+    const runner = await createGitHubReleaseRunner({ rootDir: root, journalSigner: { signerId: "release-journal-2026", privateKey: keys.privateKey, publicKey: keys.publicKey }, evidenceSigner: fixture.evidenceSigner, authorizationResolver: async () => fixture.context, provider: candidateProvider(), now: () => new Date("2026-08-18T06:00:00.000Z") });
+    assert.equal("confirmPublication" in runner, false);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 test("four-operation release saga converges after ambiguous merge and tag without resend", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "reelier-release-saga-"));
   const fixture = releaseAuthorityFixture(), journalKeys = generateKeyPairSync("ed25519");
