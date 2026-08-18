@@ -60,6 +60,7 @@ function releaseInputs() {
   const operationPlan = createSignedReleaseOperationPlanV1({
     v: "reelier.release-operation-plan/v1",
     baseCommit: "e600ad5c2dc5e1bde0714915e7a84980c8d5602b",
+    baseTreeSha: sha("b"),
     candidateBranch: "reelier/release/0.32.1",
     candidateTreeDigest,
     commit: {
@@ -84,7 +85,7 @@ function releaseInputs() {
       { digest: digest("5"), path: ".github/workflows/mcp-publish.yml" },
       { digest: digest("a"), path: ".github/workflows/npm-publish.yml" },
     ],
-  }, signer);
+  } as any, signer);
   const candidateManifest = createSignedStagedCandidateManifestV1({
     v: "reelier.staged-candidate-manifest/v1",
     baseCommit: "e600ad5c2dc5e1bde0714915e7a84980c8d5602b",
@@ -264,6 +265,7 @@ test("release operation plan closes every Git, PR, merge, check, package, and ta
   assert.deepEqual(release.operationPlan.value.files.map(file => file.path), ["CHANGELOG.md", "src/cli.ts", "test/cli-subcommand-help.test.ts"]);
   assert.equal("expectedSquashCommitSha" in release.operationPlan.value, false);
   assert.deepEqual(parseSignedReleaseOperationPlanV1(release.operationPlan), release.operationPlan);
+  assert.equal((release.operationPlan.value as any).baseTreeSha, sha("b"));
   assert.throws(() => parseSignedReleaseOperationPlanV1({ ...release.operationPlan, value: { ...release.operationPlan.value, repository: "attacker/repo" } }), /digest|signature|repository|release/i);
   assert.throws(() => createSignedReleaseOperationPlanV1({ ...release.operationPlan.value, files: release.operationPlan.value.files.map((file, index) => index === 0 ? { ...file, contentDigest: digest("f") } : file) }, signer), /tree.*digest|content|candidate/i);
 });
