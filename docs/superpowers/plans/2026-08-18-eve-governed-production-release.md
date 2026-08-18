@@ -43,6 +43,7 @@ Files touched:
 - `src/authority/types.ts`
 - `src/authority/index.ts`
 - `test/authority/release-contracts.test.ts`
+- `test/authority/package.test.ts`
 - `SPEC.md`
 - `docs/specs/release-contracts-v1.md`
 
