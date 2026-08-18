@@ -82,7 +82,7 @@ test("four-operation release saga converges after ambiguous merge and tag withou
     createBlob: async ({ contentBase64 }: any) => ({ sha: blobSha(Buffer.from(contentBase64, "base64")) }),
     createTree: async () => ({ sha: gitSha("e") }),
     createCommit: async () => ({ sha: gitSha("a") }),
-    getRef: async ({ ref }: any) => refs.has(ref) ? { sha: refs.get(ref) } : null,
+    getRef: async ({ ref }: any) => refs.has(ref) ? { sha: refs.get(ref)! } : null,
     createRef: async ({ ref, sha }: any) => { if (refs.has(ref)) throw new Error("exists"); refs.set(ref, sha); if (ref === "tags/v0.32.1") { tagCalls += 1; throw new Error("socket lost after tag"); } return { sha }; },
     getCommit: async ({ sha }: any) => sha === gitSha("a") ? { sha, parentSha: "e600ad5c2dc5e1bde0714915e7a84980c8d5602b", treeSha: gitSha("e") } : { sha, parentSha: "e600ad5c2dc5e1bde0714915e7a84980c8d5602b", treeSha: gitSha("e") },
     findPullRequests: async () => pullRequest ? [pullRequest] : [],

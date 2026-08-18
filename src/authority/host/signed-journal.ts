@@ -21,6 +21,7 @@ export interface SignedJournalEventV1 {
 export interface SignedJournal {
   append(requestId: string, semanticsDigest: string, phase: string, data: Readonly<Record<string, unknown>>): Promise<SignedJournalEventV1>;
   load(requestId: string): Promise<readonly SignedJournalEventV1[]>;
+  listRequestIds(): Promise<readonly string[]>;
 }
 
 export async function createSignedJournal(input: Readonly<{ rootDir: string; journalId: string; signerId: string; privateKey: KeyObject; publicKey: KeyObject }>): Promise<SignedJournal> {
@@ -71,7 +72,19 @@ export async function createSignedJournal(input: Readonly<{ rootDir: string; jou
       return event;
     });
   };
-  return Object.freeze({ append, load });
+  const listRequestIds = async (): Promise<readonly string[]> => {
+    const requestIds: string[] = [];
+    for (const name of await readdir(input.rootDir)) {
+      if (!/^[0-9a-f]{64}$/.test(name)) continue;
+      try {
+        const first = JSON.parse(await readFile(path.join(input.rootDir, name, "event-00000000.json"), "utf8")) as SignedJournalEventV1;
+        await load(first.requestId);
+        requestIds.push(first.requestId);
+      } catch (error: any) { if (error?.code !== "ENOENT") throw error; }
+    }
+    return Object.freeze(requestIds.sort());
+  };
+  return Object.freeze({ append, listRequestIds, load });
 }
 
 function parseEvent(value: SignedJournalEventV1, requestId: string, sequence: number, priorDigest: string | null, semanticsDigest: string | null): Omit<SignedJournalEventV1, "digest" | "signature" | "signerId"> {
