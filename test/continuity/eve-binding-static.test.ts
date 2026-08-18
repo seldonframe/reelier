@@ -31,3 +31,10 @@ test("Eve fixture is isolated and its model-facing schemas exclude authority", a
   const status = await readFile(join(fixtureRoot, "agent/tools/reelier_outcome_status.ts"), "utf8");
   assert.deepEqual(exportedSchemaKeys(status), ["requestId"]);
 });
+
+test("active Eve process conformance documentation matches the pinned fixture version", async () => {
+  const packageJson = JSON.parse(await readFile(join(fixtureRoot, "package.json"), "utf8"));
+  const readme = await readFile(resolve(fixtureRoot, "..", "README.md"), "utf8");
+  assert.match(readme, new RegExp(`^## Eve ${packageJson.dependencies.eve.replaceAll(".", "\\.")} process conformance$`, "m"));
+  assert.doesNotMatch(readme, /^## Eve 0\.37\.1 process conformance$/m);
+});

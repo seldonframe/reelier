@@ -8,7 +8,7 @@ Reports are closed records containing the v1 version, pass/fail status, reproduc
 
 Run `npm run check:continuity-adapter -- ./path/to/candidate.mjs`. The command writes one JSON report line and exits 0 on pass, 1 on failure, or 2 for incorrect usage.
 
-## Eve 0.37.1 process conformance
+## Eve 0.39.0 process conformance
 
 The Eve fixture adds a real-process matrix over Eve's public HTTP session and NDJSON stream routes. It uses Eve's local Workflow store, a temporary Reelier ledger, the deterministic `mockModel`, and the loopback-only hermetic Path C port. It makes no live model, provider, deployment, workflow-dispatch, ACP, or Grok Bot call.
 
