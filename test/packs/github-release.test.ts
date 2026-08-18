@@ -11,6 +11,7 @@ import {
   githubReleaseTagCreateAlias,
   githubReleaseTagCreateDefinition,
   githubReleasePacks,
+  reconcileGitHubRelease,
 } from "../../src/packs/github-release/index.js";
 import { firstPartyPackForAlias } from "../../src/packs/index.js";
 
@@ -42,4 +43,15 @@ test("GitHub release registers four isolated empty-choice outcomes with host-own
     assert.equal(JSON.stringify(compiled).includes("0.32.1"), false);
     assert.throws(() => definition.parsePolicy({ ...policy, effect: effect === "candidate-branch" ? "draft-pr" : "candidate-branch" }), /effect|policy/i);
   }
+});
+
+test("GitHub release reconciliation matches only a closed verified evidence projection", () => {
+  const evidenceDigest = authorityDigest({ evidence: 1 });
+  assert.equal(reconcileGitHubRelease({ response: { status: 200, body: { status: "verified", phase: "candidate-verified", evidenceDigest } } }).status, "matched");
+  assert.equal(reconcileGitHubRelease({ response: { status: 200, body: { status: "verified", phase: "candidate-verified", evidenceDigest, extra: true } } }).status, "unavailable");
+  assert.equal(reconcileGitHubRelease({ response: { status: 200, body: { status: "verified", phase: "candidate-verified", evidenceDigest: "sha256:bad" } } }).status, "unavailable");
+  let invoked = 0;
+  const hostile = Object.create(Object.prototype, { status: { enumerable: true, get() { invoked++; return "verified"; } }, phase: { enumerable: true, value: "candidate-verified" }, evidenceDigest: { enumerable: true, value: evidenceDigest } });
+  assert.equal(reconcileGitHubRelease({ response: { status: 200, body: hostile } }).status, "unavailable");
+  assert.equal(invoked, 0);
 });
