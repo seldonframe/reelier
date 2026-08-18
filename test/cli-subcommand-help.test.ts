@@ -23,26 +23,33 @@ const MAX_RSS_KIB = 256 * 1024;
 const ORACLE = String.raw`
 const { syncBuiltinESMExports } = require("node:module");
 const fail = (api) => () => { throw new Error("REELIER_HELP_ORACLE side effect: " + api); };
-globalThis.__installReelierHelpOracle = () => {
-  const block = (name, keys) => {
-    const mod = require(name);
-    for (const key of keys) if (typeof mod[key] === "function") mod[key] = fail(name + "." + key);
-  };
-  const fs = ["access", "appendFile", "chmod", "chown", "copyFile", "cp", "createReadStream", "createWriteStream", "lchmod", "lchown", "link", "lstat", "mkdir", "mkdtemp", "open", "opendir", "readdir", "readFile", "readlink", "realpath", "rename", "rm", "rmdir", "stat", "symlink", "truncate", "unlink", "utimes", "watch", "watchFile", "writeFile"];
-  const fsSync = ["accessSync", "appendFileSync", "chmodSync", "chownSync", "closeSync", "copyFileSync", "cpSync", "existsSync", "fchmodSync", "fchownSync", "fdatasyncSync", "fstatSync", "fsyncSync", "ftruncateSync", "futimesSync", "globSync", "lchmodSync", "lchownSync", "linkSync", "lstatSync", "lutimesSync", "mkdirSync", "mkdtempDisposableSync", "mkdtempSync", "openSync", "opendirSync", "readFileSync", "readSync", "readdirSync", "readlinkSync", "readvSync", "realpathSync", "renameSync", "rmSync", "rmdirSync", "statSync", "statfsSync", "symlinkSync", "truncateSync", "unlinkSync", "utimesSync", "writeFileSync", "writeSync", "writevSync"];
-  block("node:fs", fs);
-  block("node:fs/promises", fs);
-  block("node:fs", fsSync);
-  block("node:child_process", ["exec", "execFile", "fork", "spawn", "spawnSync"]);
-  block("node:net", ["connect", "createConnection", "createServer"]);
-  block("node:http", ["get", "request", "createServer"]);
-  block("node:https", ["get", "request", "createServer"]);
-  block("node:dgram", ["createSocket"]);
-  block("node:dns", ["getDefaultResultOrder", "getServers", "lookup", "lookupService", "resolve", "resolve4", "resolve6", "resolveAny", "resolveCaa", "resolveCname", "resolveMx", "resolveNaptr", "resolveNs", "resolvePtr", "resolveSoa", "resolveSrv", "resolveTxt", "reverse", "setDefaultResultOrder", "setServers"]);
-  block("node:tls", ["connect", "createServer"]);
-  globalThis.fetch = fail("global.fetch");
-  syncBuiltinESMExports();
+const block = (name, keys) => {
+  const mod = require(name);
+  for (const key of keys) if (typeof mod[key] === "function") mod[key] = fail(name + "." + key);
 };
+const fs = require("node:fs");
+// Read-only loader and import-time probes are permitted. Block every public
+// API that can mutate the filesystem or obtain a writable file descriptor;
+// openSync receives a loader-only exception because Node implements its own
+// module source reads through that public wrapper after preload hooks run.
+const fsMutation = ["appendFile", "appendFileSync", "chmod", "chmodSync", "chown", "chownSync", "copyFile", "copyFileSync", "cp", "cpSync", "createWriteStream", "fchmod", "fchmodSync", "fchown", "fchownSync", "fdatasync", "fdatasyncSync", "fsync", "fsyncSync", "ftruncate", "ftruncateSync", "futimes", "futimesSync", "lchmod", "lchmodSync", "lchown", "lchownSync", "link", "linkSync", "lutimes", "lutimesSync", "mkdir", "mkdirSync", "mkdtemp", "mkdtempSync", "mkdtempDisposableSync", "open", "rename", "renameSync", "rm", "rmSync", "rmdir", "rmdirSync", "symlink", "symlinkSync", "truncate", "truncateSync", "unlink", "unlinkSync", "utimes", "utimesSync", "write", "writeFile", "writeFileSync", "writeSync", "writev", "writevSync"];
+const loaderOpenSync = fs.openSync;
+block("node:fs", fsMutation.filter((key) => key !== "openSync"));
+fs.openSync = (...args) => {
+  if (new Error().stack.includes("node:internal/modules/")) return loaderOpenSync(...args);
+  return fail("node:fs.openSync")();
+};
+const fsp = require("node:fs/promises");
+block("node:fs/promises", fsMutation);
+block("node:child_process", ["exec", "execFile", "fork", "spawn", "spawnSync"]);
+block("node:net", ["connect", "createConnection", "createServer"]);
+block("node:http", ["get", "request", "createServer"]);
+block("node:https", ["get", "request", "createServer"]);
+block("node:dgram", ["createSocket"]);
+block("node:dns", ["getDefaultResultOrder", "getServers", "lookup", "lookupService", "resolve", "resolve4", "resolve6", "resolveAny", "resolveCaa", "resolveCname", "resolveMx", "resolveNaptr", "resolveNs", "resolvePtr", "resolveSoa", "resolveSrv", "resolveTxt", "reverse", "setDefaultResultOrder", "setServers"]);
+block("node:tls", ["connect", "createServer"]);
+globalThis.fetch = fail("global.fetch");
+syncBuiltinESMExports();
 process.once("beforeExit", () => {
   console.error("REELIER_HELP_ORACLE_MAX_RSS_KIB=" + process.resourceUsage().maxRSS);
 });
@@ -58,8 +65,7 @@ interface Invocation {
 
 function invoke(command: string, args: readonly string[], sandbox: string, oraclePath: string): Invocation {
   const home = path.join(sandbox, "home");
-  const harness = 'import { pathToFileURL } from "node:url"; const cliPath = process.argv[1]; process.argv[1] = "reelier-help-harness.mjs"; const { main } = await import(pathToFileURL(cliPath).href); globalThis.__installReelierHelpOracle(); process.argv[1] = cliPath; process.exitCode = await main();';
-  const result = spawnSync(process.execPath, ["--require", oraclePath, "--input-type=module", "-e", harness, cliPath, command, ...args], {
+  const result = spawnSync(process.execPath, ["--require", oraclePath, cliPath, command, ...args], {
     cwd: sandbox,
     // Do not let the child inherit credentials, configuration, proxy settings,
     // or an ambient home. The oracle blocks all userland filesystem, network,
@@ -88,7 +94,7 @@ test("the help oracle rejects representative synchronous filesystem writes", asy
   const target = path.join(sandbox, "sync-write.txt");
   await writeFile(oraclePath, ORACLE);
   try {
-    const result = spawnSync(process.execPath, ["--require", oraclePath, "-e", 'global.__installReelierHelpOracle(); require("node:fs").writeFileSync(process.argv[1], "mutated")', target], {
+    const result = spawnSync(process.execPath, ["--require", oraclePath, "-e", 'require("node:fs").writeFileSync(process.argv[1], "mutated")', target], {
       cwd: sandbox,
       env: { HOME: sandbox, USERPROFILE: sandbox, APPDATA: sandbox, LOCALAPPDATA: sandbox, TEMP: sandbox, TMP: sandbox, PATH: process.env.PATH ?? "" },
       encoding: "utf8",
@@ -100,6 +106,31 @@ test("the help oracle rejects representative synchronous filesystem writes", asy
     assert.notEqual(result.status, 0, "synchronous write bypassed the help oracle");
     assert.match(`${result.stdout}${result.stderr}`, /REELIER_HELP_ORACLE side effect: node:fs\.writeFileSync/);
     await assert.rejects(readFile(target), "synchronous write created its target despite the oracle");
+  } finally {
+    await rm(sandbox, { recursive: true, force: true });
+  }
+});
+
+test("the preload oracle rejects synchronous writes during transitive module loading", async () => {
+  const sandbox = await mkdtemp(path.join(os.tmpdir(), "reelier-cli-help-load-oracle-"));
+  const oraclePath = path.join(sandbox, "oracle.cjs");
+  const modulePath = path.join(sandbox, "mutating-module.cjs");
+  const target = path.join(sandbox, "load-time-write.txt");
+  await writeFile(oraclePath, ORACLE);
+  await writeFile(modulePath, 'require("node:fs").writeFileSync(process.argv[2], "mutated during module load")');
+  try {
+    const result = spawnSync(process.execPath, ["--require", oraclePath, modulePath, target], {
+      cwd: sandbox,
+      env: { HOME: sandbox, USERPROFILE: sandbox, APPDATA: sandbox, LOCALAPPDATA: sandbox, TEMP: sandbox, TMP: sandbox, PATH: process.env.PATH ?? "" },
+      encoding: "utf8",
+      timeout: 1_500,
+      windowsHide: true,
+    });
+    assert.equal(result.error, undefined, `load-time oracle did not start: ${result.error?.message}`);
+    assert.equal(result.signal, null, `load-time oracle was terminated by ${result.signal}`);
+    assert.notEqual(result.status, 0, "load-time synchronous write bypassed the preload oracle");
+    assert.match(`${result.stdout}${result.stderr}`, /REELIER_HELP_ORACLE side effect: node:fs\.writeFileSync/);
+    await assert.rejects(readFile(target), "load-time write created its target despite the oracle");
   } finally {
     await rm(sandbox, { recursive: true, force: true });
   }
