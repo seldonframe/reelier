@@ -220,3 +220,30 @@ for (const faultMethod of ["createBlob", "createTree", "createCommit"] as const)
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 }
+
+test("ambiguous merge reconciles read-only after expiry and never resends", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "reelier-release-expired-reconcile-"));
+  const fixture = releaseAuthorityFixture(), keys = generateKeyPairSync("ed25519"), refs = new Map<string, string>([["heads/main", "e600ad5c2dc5e1bde0714915e7a84980c8d5602b"]]);
+  let pr: any = null, mergeCalls = 0, loseReadback = true, expired = false;
+  const provider: any = {
+    ...candidateProvider(),
+    getRef: async ({ ref }: any) => refs.has(ref) ? { sha: refs.get(ref)! } : null,
+    createRef: async ({ ref, sha }: any) => { refs.set(ref, sha); return { sha }; },
+    findPullRequests: async () => pr ? [pr] : [],
+    createPullRequest: async (metadata: any) => (pr = { base: metadata.base, body: metadata.body, draft: metadata.draft, head: metadata.head, headSha: gitSha("a"), mergeCommitSha: null, merged: false, number: 1, title: metadata.title }),
+    getPullRequest: async () => { if (loseReadback) { loseReadback = false; throw new TypeError("network socket unavailable"); } return pr; },
+    getChecks: async () => ["coverage", "full-tests", "mutation"].map(name => ({ name, status: "success", workflowDigest: digest("3") })),
+    mergePullRequest: async () => { mergeCalls++; pr = { ...pr, merged: true, mergeCommitSha: gitSha("9") }; refs.set("heads/main", gitSha("9")); throw new Error("response lost after merge"); },
+    getCommit: async ({ sha }: any) => ({ sha, parentSha: "e600ad5c2dc5e1bde0714915e7a84980c8d5602b", treeSha: gitSha("e") }),
+  };
+  try {
+    const runner = await createGitHubReleaseRunner({ rootDir: root, journalSigner: { signerId: "release-journal-2026", privateKey: keys.privateKey, publicKey: keys.publicKey }, evidenceSigner: fixture.evidenceSigner, authorizationResolver: async () => fixture.context, provider, now: () => expired ? new Date("2026-08-18T17:00:00.000Z") : new Date("2026-08-18T06:00:00.000Z") });
+    const run = (alias: any, allocationId: string, requestId: string) => runner.run({ alias, allocationId, authorizationHandle: "release_auth_1", requestId, semanticsDigest: authorityDigest({ alias, requestId }) });
+    assert.equal((await run("github_release_candidate_publish_v1", "release-candidate-branch-01", "expired_candidate")).status, "verified");
+    assert.equal((await run("github_release_pr_ensure_v1", "release-draft-pr-01", "expired_pr")).status, "verified");
+    assert.equal((await run("github_release_pr_merge_v1", "release-exact-sha-merge-01", "expired_merge")).status, "pending-reconciliation");
+    expired = true;
+    assert.equal((await run("github_release_pr_merge_v1", "release-exact-sha-merge-01", "expired_merge")).status, "verified");
+    assert.equal(mergeCalls, 1);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
