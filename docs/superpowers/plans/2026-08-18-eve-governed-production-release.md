@@ -63,6 +63,7 @@ Files touched:
 - `src/authority/host/signed-journal.ts`
 - `src/authority/host/github-release-evidence.ts`
 - `src/authority/host/index.ts`
+- `src/authority/host/local.ts`
 - `src/authority/pack.ts`
 - `src/packs/github-release/manifest.ts`
 - `src/packs/github-release/source.ts`
