@@ -2409,6 +2409,83 @@ override file's expected shape; refreshing the bundled table itself is a
 manual code change (edit `src/prices.ts`, re-verify each source URL,
 bump the retrieval date).
 
+## 12. Governed production-release contracts
+
+Source of truth: `src/authority/release-contracts.ts` and
+`test/authority/release-contracts.test.ts`. The companion design note is
+`docs/specs/release-contracts-v1.md`.
+
+### 12.1 Closed and inert wire values
+
+**[Normative]** `StagedCandidateManifestV1`, `ReleasePolicyV1`,
+`ReleaseAuthorizationBundleV1`, `ReleaseVerifierEvidenceV1`, and
+`ReleaseReceiptGraphV1` are closed wire contracts. A conforming parser MUST
+reject unknown, inherited, symbol, non-enumerable, accessor, cyclic, or
+non-plain object state. Arrays MUST have the ordinary array prototype, every
+own key MUST be one dense numeric slot or `length`, and sparse slots and custom
+own array fields or methods MUST be rejected. Validation MUST inspect own data
+descriptors and MUST NOT invoke caller-supplied methods, accessors, or
+iterators. Signed envelopes contain exactly `digest`, `signature`, `signerId`,
+`v`, and `value`; signer IDs use the closed lower-case identifier grammar and
+signatures are canonical Ed25519 signatures in their declared authority
+purpose domain.
+
+### 12.2 Authorization and candidate closure
+
+**[Normative]** The v1 candidate fixes repository `seldonframe/reelier`, base
+`e600ad5c2dc5e1bde0714915e7a84980c8d5602b`, destination branch `main`,
+candidate branch `reelier/release/0.32.1`, tag `v0.32.1`, package
+`reelier@0.32.1`, and exactly these changed paths: `CHANGELOG.md`, `src/cli.ts`,
+and `test/cli-subcommand-help.test.ts`. The maximums are three files and 65,536
+changed bytes. The manifest MUST contain exactly these workflow paths in this
+order, each bound to its exact byte digest:
+
+1. `.github/workflows/ci.yml`
+2. `.github/workflows/docker-publish.yml`
+3. `.github/workflows/mcp-publish.yml`
+4. `.github/workflows/npm-publish.yml`
+
+Equal workflow digests are permitted because two reviewed paths MAY contain
+identical bytes; omission, substitution, duplication, or reordering of paths
+MUST refuse.
+
+The authorization binds the mission, task, Job Card, pack, policy, Authority
+Cell, root grant, staged manifest, and the four distinct one-effect allocations
+for candidate branch, draft PR, exact-SHA merge, and non-force tag. It also
+binds every required quality and receipt lane to an exact verifier signer ID
+and SHA-256 digest of that verifier's SPKI public key. The validity interval is
+exactly twelve hours. Verification MUST refuse before `issuedAt` and at or
+after `expiresAt`.
+
+### 12.3 Signed verifier evidence and success
+
+**[Normative]** Digest-shaped strings and maker-authored status fields are not
+evidence. Full-test, coverage, and mutation claims require three typed
+`ReleaseVerifierEvidenceV1` artifacts signed with the `release-evidence`
+purpose by the authorization-bound verifier for that lane. Each binds the
+exact candidate head, `.github/workflows/ci.yml` path and digest, observation
+time and workflow-run semantics, subject digest, and result. The mutation
+result MUST equal the manifest score and be at least 9,000 basis points.
+
+Every receipt lane likewise requires one typed signed verifier artifact bound
+to the exact authorization digest, lane identity, subject digest, observation
+semantics, result status, and any lane-specific count or freshness values.
+Zero exceptions and zero interruptions are positive claims and therefore MUST
+carry signed zero-count summary evidence; an empty digest list alone proves
+nothing. Offline verification MUST receive the complete evidence set and MUST
+refuse missing, duplicate, aliased, wrong-lane, wrong-authorization,
+wrong-subject, wrong-signer, untrusted-key, or tampered evidence. A caller-
+supplied public key is trusted only when its signer ID and SPKI digest equal the
+binding in a previously signature-verified authorization.
+
+Receipt success evaluation is inseparable from that verification: no public
+raw graph-to-success operation exists. The verifier returns an evaluation only
+after the graph signature, verified authorization, complete evidence set, and
+every lane-specific semantic binding pass. Any required lane whose signed
+result is not exactly `verified` yields `success: false`. Global completeness
+is always `unchecked`; neither a successful evaluation nor any individual
+evidence artifact upgrades it.
+
 ## Deviations noted
 
 This section is for the orchestrator, not part of the normative spec. No
