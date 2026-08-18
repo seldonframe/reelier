@@ -220,6 +220,11 @@ test("runner does not expose a forgeable receipt-publication confirmation method
   try {
     const runner = await createGitHubReleaseRunner({ rootDir: root, journalSigner: { signerId: "release-journal-2026", privateKey: keys.privateKey, publicKey: keys.publicKey }, evidenceSigner: fixture.evidenceSigner, authorizationResolver: async () => fixture.context, provider: candidateProvider(), now: () => new Date("2026-08-18T06:00:00.000Z") });
     assert.equal("confirmPublication" in runner, false);
+    let calls = 0;
+    const guarded = await createGitHubReleaseRunner({ rootDir: path.join(root, "guarded"), journalSigner: { signerId: "release-journal-2026", privateKey: keys.privateKey, publicKey: keys.publicKey }, evidenceSigner: fixture.evidenceSigner, authorizationResolver: async () => fixture.context, provider: candidateProvider({ getRef: async () => { calls += 1; return null; } }), now: () => new Date("2026-08-18T06:00:00.000Z") });
+    await assert.rejects(() => guarded.run({ alias: "github_release_candidate_publish_v1", allocationId: "release-candidate-branch-01", authorizationHandle: "release_auth_1", requestId: "public_bypass", semanticsDigest: authorityDigest({ public: true }) }), /coordinator|prepared|capability/i);
+    await assert.rejects(() => guarded.recover(), /coordinator|prepared|capability/i);
+    assert.equal(calls, 0, "public runner methods must not reach the provider");
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
@@ -239,7 +244,7 @@ test("four-operation release saga converges after ambiguous merge and tag withou
     createPullRequest: async (metadata: any) => (pullRequest = { base: metadata.base, body: metadata.body, draft: metadata.draft, head: metadata.head, headSha: gitSha("a"), mergeCommitSha: null, merged: false, number: 1, title: metadata.title }),
     markPullRequestReady: async () => { readyCalls += 1; pullRequest = { ...pullRequest, draft: false }; return pullRequest; },
     getPullRequest: async () => pullRequest,
-    getChecks: async () => ["coverage", "full-tests", "mutation"].map(name => ({ name, status: "success", workflowDigest: digest("3") })),
+    getChecks: async () => ["coverage", "full-tests", "mutation"].map(name => ({ name, status: "success", workflowDigest: digest("3"), workflowPath: ".github/workflows/ci.yml" })),
     mergePullRequest: async () => { mergeCalls += 1; pullRequest = { ...pullRequest, merged: true, mergeCommitSha: gitSha("9") }; refs.set("heads/main", gitSha("9")); throw new Error("socket lost after merge"); },
     npmVersionExists: async () => false,
     readPackageManifest: async () => ({ name: "reelier", version: "0.32.1" }),
@@ -454,7 +459,7 @@ for (const boundary of ["createBlob", "createTree", "createCommit", "createBranc
   });
 }
 
-for (const scenario of ["base-drift", "branch-conflict", "duplicate-pr", "failed-check", "tampered-merge-tree", "tag-conflict"] as const) {
+for (const scenario of ["base-drift", "branch-conflict", "duplicate-pr", "failed-check", "wrong-check-workflow", "tampered-merge-tree", "tampered-merge-parent", "tag-conflict"] as const) {
   test(`deterministic ${scenario} refuses without semantic widening`, async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), `reelier-release-refusal-${scenario}-`));
     const fixture = releaseAuthorityFixture(), keys = generateKeyPairSync("ed25519"), refs = new Map<string, string>([["heads/main", scenario === "base-drift" ? gitSha("7") : "e600ad5c2dc5e1bde0714915e7a84980c8d5602b"]]);
@@ -463,9 +468,9 @@ for (const scenario of ["base-drift", "branch-conflict", "duplicate-pr", "failed
     const provider: any = {
       createBlob: async ({ contentBase64 }: any) => ({ sha: blobSha(Buffer.from(contentBase64, "base64")) }), createTree: async () => ({ sha: gitSha("e") }), createCommit: async () => ({ sha: gitSha("a") }),
       getRef: async ({ ref }: any) => refs.has(ref) ? { sha: refs.get(ref)! } : null, createRef: async ({ ref, sha }: any) => { refs.set(ref, sha); if (ref.startsWith("tags/")) tagCalls++; return { sha }; },
-      getCommit: async ({ sha }: any) => ({ sha, parentSha: "e600ad5c2dc5e1bde0714915e7a84980c8d5602b", treeSha: sha === "e600ad5c2dc5e1bde0714915e7a84980c8d5602b" ? gitSha("b") : scenario === "tampered-merge-tree" && sha === gitSha("9") ? gitSha("0") : gitSha("e") }),
+      getCommit: async ({ sha }: any) => ({ sha, parentSha: scenario === "tampered-merge-parent" && sha === gitSha("9") ? gitSha("7") : "e600ad5c2dc5e1bde0714915e7a84980c8d5602b", treeSha: sha === "e600ad5c2dc5e1bde0714915e7a84980c8d5602b" ? gitSha("b") : scenario === "tampered-merge-tree" && sha === gitSha("9") ? gitSha("0") : gitSha("e") }),
       findPullRequests: async () => scenario === "duplicate-pr" && pr ? [pr, { ...pr, number: 2 }] : pr ? [pr] : [], createPullRequest: async (metadata: any) => (pr = { base: metadata.base, body: metadata.body, draft: metadata.draft, head: metadata.head, headSha: gitSha("a"), mergeCommitSha: null, merged: false, number: 1, title: metadata.title }), markPullRequestReady: async () => (pr = { ...pr, draft: false }), getPullRequest: async () => pr,
-      getChecks: async () => ["coverage", "full-tests", "mutation"].map(name => ({ name, status: scenario === "failed-check" ? "failure" : "success", workflowDigest: digest("3") })),
+      getChecks: async () => ["coverage", "full-tests", "mutation"].map(name => ({ name, status: scenario === "failed-check" ? "failure" : "success", workflowDigest: digest("3"), workflowPath: scenario === "wrong-check-workflow" ? ".github/workflows/npm-publish.yml" : ".github/workflows/ci.yml" })),
       mergePullRequest: async () => { mergeCalls++; pr = { ...pr, merged: true, mergeCommitSha: gitSha("9") }; refs.set("heads/main", gitSha("9")); return { merged: true, sha: gitSha("9") }; }, readPackageManifest: async () => ({ name: "reelier", version: "0.32.1" }), npmVersionExists: async () => false,
     };
     try {
@@ -478,9 +483,9 @@ for (const scenario of ["base-drift", "branch-conflict", "duplicate-pr", "failed
         if (scenario === "duplicate-pr") { pr = { base: "main", body: "Governed release v0.32.1", draft: true, head: "reelier/release/0.32.1", headSha: gitSha("a"), mergeCommitSha: null, merged: false, number: 1, title: "Release v0.32.1" }; await assert.rejects(() => run("github_release_pr_ensure_v1", "release-draft-pr-01", `${scenario}_pr`), /multiple|conflict/i); }
         else {
           assert.equal((await run("github_release_pr_ensure_v1", "release-draft-pr-01", `${scenario}_pr`)).status, "verified");
-          if (scenario === "failed-check") await assert.rejects(() => run("github_release_pr_merge_v1", "release-exact-sha-merge-01", `${scenario}_merge`), /checks|failed/i);
+          if (scenario === "failed-check" || scenario === "wrong-check-workflow") await assert.rejects(() => run("github_release_pr_merge_v1", "release-exact-sha-merge-01", `${scenario}_merge`), /checks|failed|workflow/i);
           else {
-            if (scenario === "tampered-merge-tree") await assert.rejects(() => run("github_release_pr_merge_v1", "release-exact-sha-merge-01", `${scenario}_merge`), /tree|tamper/i);
+            if (scenario === "tampered-merge-tree" || scenario === "tampered-merge-parent") await assert.rejects(() => run("github_release_pr_merge_v1", "release-exact-sha-merge-01", `${scenario}_merge`), /tree|parent|tamper/i);
             else { assert.equal((await run("github_release_pr_merge_v1", "release-exact-sha-merge-01", `${scenario}_merge`)).status, "verified"); refs.set("tags/v0.32.1", gitSha("8")); await assert.rejects(() => run("github_release_tag_create_v1", "release-non-force-tag-01", `${scenario}_tag`), /tag.*conflict/i); }
           }
         }
