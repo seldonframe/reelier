@@ -159,7 +159,7 @@ test("four-operation release saga converges after ambiguous merge and tag withou
     createCommit: async () => ({ sha: gitSha("a") }),
     getRef: async ({ ref }: any) => refs.has(ref) ? { sha: refs.get(ref)! } : null,
     createRef: async ({ ref, sha }: any) => { if (refs.has(ref)) throw new Error("exists"); refs.set(ref, sha); if (ref === "tags/v0.32.1") { tagCalls += 1; throw new Error("socket lost after tag"); } return { sha }; },
-    getCommit: async ({ sha }: any) => sha === gitSha("a") ? { sha, parentSha: "e600ad5c2dc5e1bde0714915e7a84980c8d5602b", treeSha: gitSha("e") } : { sha, parentSha: "e600ad5c2dc5e1bde0714915e7a84980c8d5602b", treeSha: gitSha("e") },
+    getCommit: async ({ sha }: any) => ({ sha, parentSha: "e600ad5c2dc5e1bde0714915e7a84980c8d5602b", treeSha: sha === "e600ad5c2dc5e1bde0714915e7a84980c8d5602b" ? gitSha("b") : gitSha("e") }),
     findPullRequests: async () => pullRequest ? [pullRequest] : [],
     createPullRequest: async (metadata: any) => (pullRequest = { base: metadata.base, body: metadata.body, draft: metadata.draft, head: metadata.head, headSha: gitSha("a"), mergeCommitSha: null, merged: false, number: 1, title: metadata.title }),
     markPullRequestReady: async () => { readyCalls += 1; pullRequest = { ...pullRequest, draft: false }; return pullRequest; },
@@ -204,7 +204,7 @@ test("concurrent duplicate candidate requests serialize and converge to one prov
     createTree: async () => ({ sha: gitSha("e") }), createCommit: async () => ({ sha: gitSha("a") }),
     getRef: async ({ ref }: any) => refs.has(ref) ? { sha: refs.get(ref)! } : null,
     createRef: async ({ ref, sha }: any) => { refs.set(ref, sha); return { sha }; },
-    getCommit: async ({ sha }: any) => ({ sha, parentSha: "e600ad5c2dc5e1bde0714915e7a84980c8d5602b", treeSha: gitSha("e") }),
+    getCommit: async ({ sha }: any) => ({ sha, parentSha: "e600ad5c2dc5e1bde0714915e7a84980c8d5602b", treeSha: sha === "e600ad5c2dc5e1bde0714915e7a84980c8d5602b" ? gitSha("b") : gitSha("e") }),
   };
   try {
     const runner = await createGitHubReleaseRunner({ rootDir: root, journalSigner: { signerId: "release-journal-2026", privateKey: journalKeys.privateKey, publicKey: journalKeys.publicKey }, evidenceSigner: fixture.evidenceSigner, authorizationResolver: async () => fixture.context, provider, now: () => new Date("2026-08-18T06:00:00.000Z") });
@@ -298,23 +298,25 @@ for (const faultMethod of ["createBlob", "createTree", "createCommit"] as const)
 test("ambiguous merge reconciles read-only after expiry and never resends", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "reelier-release-expired-reconcile-"));
   const fixture = releaseAuthorityFixture(), keys = generateKeyPairSync("ed25519"), refs = new Map<string, string>([["heads/main", "e600ad5c2dc5e1bde0714915e7a84980c8d5602b"]]);
-  let pr: any = null, mergeCalls = 0, loseReadback = true, expired = false;
+  let pr: any = null, mergeCalls = 0, loseReadback = false, expired = false;
   const provider: any = {
     ...candidateProvider(),
     getRef: async ({ ref }: any) => refs.has(ref) ? { sha: refs.get(ref)! } : null,
     createRef: async ({ ref, sha }: any) => { refs.set(ref, sha); return { sha }; },
     findPullRequests: async () => pr ? [pr] : [],
     createPullRequest: async (metadata: any) => (pr = { base: metadata.base, body: metadata.body, draft: metadata.draft, head: metadata.head, headSha: gitSha("a"), mergeCommitSha: null, merged: false, number: 1, title: metadata.title }),
+    markPullRequestReady: async () => (pr = { ...pr, draft: false }),
     getPullRequest: async () => { if (loseReadback) { loseReadback = false; throw new TypeError("network socket unavailable"); } return pr; },
     getChecks: async () => ["coverage", "full-tests", "mutation"].map(name => ({ name, status: "success", workflowDigest: digest("3") })),
     mergePullRequest: async () => { mergeCalls++; pr = { ...pr, merged: true, mergeCommitSha: gitSha("9") }; refs.set("heads/main", gitSha("9")); throw new Error("response lost after merge"); },
-    getCommit: async ({ sha }: any) => ({ sha, parentSha: "e600ad5c2dc5e1bde0714915e7a84980c8d5602b", treeSha: gitSha("e") }),
+    getCommit: async ({ sha }: any) => ({ sha, parentSha: "e600ad5c2dc5e1bde0714915e7a84980c8d5602b", treeSha: sha === "e600ad5c2dc5e1bde0714915e7a84980c8d5602b" ? gitSha("b") : gitSha("e") }),
   };
   try {
     const runner = await createGitHubReleaseRunner({ rootDir: root, journalSigner: { signerId: "release-journal-2026", privateKey: keys.privateKey, publicKey: keys.publicKey }, evidenceSigner: fixture.evidenceSigner, authorizationResolver: async () => fixture.context, provider, now: () => expired ? new Date("2026-08-18T17:00:00.000Z") : new Date("2026-08-18T06:00:00.000Z") });
     const run = async (alias: any, allocationId: string, requestId: string) => { const result = await runner.run({ alias, allocationId, authorizationHandle: "release_auth_1", requestId, semanticsDigest: authorityDigest({ alias, requestId }) }); await confirmTestPublication(runner, requestId, result); return result; };
     assert.equal((await run("github_release_candidate_publish_v1", "release-candidate-branch-01", "expired_candidate")).status, "verified");
     assert.equal((await run("github_release_pr_ensure_v1", "release-draft-pr-01", "expired_pr")).status, "verified");
+    loseReadback = true;
     assert.equal((await run("github_release_pr_merge_v1", "release-exact-sha-merge-01", "expired_merge")).status, "pending-reconciliation");
     expired = true;
     assert.equal((await run("github_release_pr_merge_v1", "release-exact-sha-merge-01", "expired_merge")).status, "verified");
@@ -322,7 +324,7 @@ test("ambiguous merge reconciles read-only after expiry and never resends", asyn
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
-for (const boundary of ["createBlob", "createTree", "createCommit", "createBranchRef", "getCommit", "findPullRequests", "createPullRequest", "getPullRequest", "getChecks", "mergePullRequest", "readPackageManifest", "npmVersionExists", "createTagRef"] as const) {
+for (const boundary of ["createBlob", "createTree", "createCommit", "createBranchRef", "getCommit", "findPullRequests", "createPullRequest", "markPullRequestReady", "getPullRequest", "getChecks", "mergePullRequest", "readPackageManifest", "npmVersionExists", "createTagRef"] as const) {
   test(`lost response after ${boundary} converges without duplicate merge or tag`, async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), `reelier-release-boundary-${boundary}-`));
     const fixture = releaseAuthorityFixture(), keys = generateKeyPairSync("ed25519"), refs = new Map<string, string>([["heads/main", "e600ad5c2dc5e1bde0714915e7a84980c8d5602b"]]);
@@ -331,8 +333,8 @@ for (const boundary of ["createBlob", "createTree", "createCommit", "createBranc
       createBlob: async ({ contentBase64 }: any) => ({ sha: blobSha(Buffer.from(contentBase64, "base64")) }), createTree: async () => ({ sha: gitSha("e") }), createCommit: async () => ({ sha: gitSha("a") }),
       getRef: async ({ ref }: any) => refs.has(ref) ? { sha: refs.get(ref)! } : null,
       createRef: async ({ ref, sha }: any) => { refs.set(ref, sha); if (ref.startsWith("tags/")) tagCalls++; return { sha }; },
-      getCommit: async ({ sha }: any) => ({ sha, parentSha: "e600ad5c2dc5e1bde0714915e7a84980c8d5602b", treeSha: gitSha("e") }),
-      findPullRequests: async () => pr ? [pr] : [], createPullRequest: async (metadata: any) => (pr = { base: metadata.base, body: metadata.body, draft: metadata.draft, head: metadata.head, headSha: gitSha("a"), mergeCommitSha: null, merged: false, number: 1, title: metadata.title }), getPullRequest: async () => pr,
+      getCommit: async ({ sha }: any) => ({ sha, parentSha: "e600ad5c2dc5e1bde0714915e7a84980c8d5602b", treeSha: sha === "e600ad5c2dc5e1bde0714915e7a84980c8d5602b" ? gitSha("b") : gitSha("e") }),
+      findPullRequests: async () => pr ? [pr] : [], createPullRequest: async (metadata: any) => (pr = { base: metadata.base, body: metadata.body, draft: metadata.draft, head: metadata.head, headSha: gitSha("a"), mergeCommitSha: null, merged: false, number: 1, title: metadata.title }), markPullRequestReady: async () => (pr = { ...pr, draft: false }), getPullRequest: async () => pr,
       getChecks: async () => ["coverage", "full-tests", "mutation"].map(name => ({ name, status: "success", workflowDigest: digest("3") })),
       mergePullRequest: async () => { mergeCalls++; pr = { ...pr, merged: true, mergeCommitSha: gitSha("9") }; refs.set("heads/main", gitSha("9")); return { merged: true, sha: gitSha("9") }; },
       readPackageManifest: async () => ({ name: "reelier", version: "0.32.1" }), npmVersionExists: async () => false,
@@ -367,8 +369,8 @@ for (const scenario of ["base-drift", "branch-conflict", "duplicate-pr", "failed
     const provider: any = {
       createBlob: async ({ contentBase64 }: any) => ({ sha: blobSha(Buffer.from(contentBase64, "base64")) }), createTree: async () => ({ sha: gitSha("e") }), createCommit: async () => ({ sha: gitSha("a") }),
       getRef: async ({ ref }: any) => refs.has(ref) ? { sha: refs.get(ref)! } : null, createRef: async ({ ref, sha }: any) => { refs.set(ref, sha); if (ref.startsWith("tags/")) tagCalls++; return { sha }; },
-      getCommit: async ({ sha }: any) => ({ sha, parentSha: "e600ad5c2dc5e1bde0714915e7a84980c8d5602b", treeSha: scenario === "tampered-merge-tree" && sha === gitSha("9") ? gitSha("0") : gitSha("e") }),
-      findPullRequests: async () => scenario === "duplicate-pr" && pr ? [pr, { ...pr, number: 2 }] : pr ? [pr] : [], createPullRequest: async (metadata: any) => (pr = { base: metadata.base, body: metadata.body, draft: metadata.draft, head: metadata.head, headSha: gitSha("a"), mergeCommitSha: null, merged: false, number: 1, title: metadata.title }), getPullRequest: async () => pr,
+      getCommit: async ({ sha }: any) => ({ sha, parentSha: "e600ad5c2dc5e1bde0714915e7a84980c8d5602b", treeSha: sha === "e600ad5c2dc5e1bde0714915e7a84980c8d5602b" ? gitSha("b") : scenario === "tampered-merge-tree" && sha === gitSha("9") ? gitSha("0") : gitSha("e") }),
+      findPullRequests: async () => scenario === "duplicate-pr" && pr ? [pr, { ...pr, number: 2 }] : pr ? [pr] : [], createPullRequest: async (metadata: any) => (pr = { base: metadata.base, body: metadata.body, draft: metadata.draft, head: metadata.head, headSha: gitSha("a"), mergeCommitSha: null, merged: false, number: 1, title: metadata.title }), markPullRequestReady: async () => (pr = { ...pr, draft: false }), getPullRequest: async () => pr,
       getChecks: async () => ["coverage", "full-tests", "mutation"].map(name => ({ name, status: scenario === "failed-check" ? "failure" : "success", workflowDigest: digest("3") })),
       mergePullRequest: async () => { mergeCalls++; pr = { ...pr, merged: true, mergeCommitSha: gitSha("9") }; refs.set("heads/main", gitSha("9")); return { merged: true, sha: gitSha("9") }; }, readPackageManifest: async () => ({ name: "reelier", version: "0.32.1" }), npmVersionExists: async () => false,
     };

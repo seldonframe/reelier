@@ -15,8 +15,8 @@ const LANES = Object.freeze({ "candidate-branch": "candidate-branch", "draft-pr"
 const PREDECESSOR = Object.freeze({ "candidate-branch": null, "draft-pr": "candidate-branch", "exact-sha-merge": "draft-pr", "non-force-tag": "exact-sha-merge" } as const);
 const TERMINAL = new Set(["candidate-verified", "pr-verified", "merge-verified", "tag-verified"]);
 const TRANSITIONS: Readonly<Record<string, readonly string[]>> = Object.freeze({
-  authorized: ["blob-intent", "pr-intent", "merge-intent", "tag-intent"], "blob-intent": ["blob-created"], "blob-created": ["blob-intent", "tree-intent"], "tree-intent": ["tree-created"], "tree-created": ["commit-intent"], "commit-intent": ["commit-created"], "commit-created": ["branch-intent"], "branch-intent": ["candidate-verified"],
-  "pr-intent": ["pr-created", "pr-verified"], "pr-created": ["pr-verified"], "merge-intent": ["merge-verified"], "tag-intent": ["tag-verified"],
+  authorized: ["base-tree-observed", "pr-intent", "merge-intent", "tag-intent"], "base-tree-observed": ["blob-intent"], "blob-intent": ["blob-created"], "blob-created": ["blob-intent", "tree-intent"], "tree-intent": ["tree-created"], "tree-created": ["commit-intent"], "commit-intent": ["commit-created"], "commit-created": ["branch-intent"], "branch-intent": ["candidate-verified"],
+  "pr-intent": ["pr-created"], "pr-created": ["pr-ready-intent"], "pr-ready-intent": ["pr-ready-confirmed"], "pr-ready-confirmed": ["pr-verified"], "merge-intent": ["merge-verified"], "tag-intent": ["tag-verified"],
   "candidate-verified": ["receipt-published"], "pr-verified": ["receipt-published"], "merge-verified": ["receipt-published"], "tag-verified": ["receipt-published"],
 });
 const DIGEST = /^sha256:[0-9a-f]{64}$/;
@@ -29,13 +29,14 @@ export interface GitHubReleaseAuthorizationContextV1 { readonly authorization: V
 export interface GitHubReleasePullRequestV1 { readonly number: number; readonly head: string; readonly base: string; readonly draft: boolean; readonly title: string; readonly body: string; readonly headSha: string; readonly merged: boolean; readonly mergeCommitSha: string | null }
 export interface GitHubReleaseProviderV1 {
   createBlob(input: Readonly<{ repository: string; contentBase64: string }>): Promise<unknown>;
-  createTree(input: Readonly<{ repository: string; baseCommit: string; files: readonly Readonly<{ path: string; mode: string; blobSha: string }>[] }>): Promise<unknown>;
+  createTree(input: Readonly<{ repository: string; baseTreeSha: string; files: readonly Readonly<{ path: string; mode: string; blobSha: string }>[] }>): Promise<unknown>;
   createCommit(input: Readonly<Record<string, unknown>>): Promise<unknown>;
   getRef(input: Readonly<{ repository: string; ref: string }>): Promise<unknown>;
   createRef(input: Readonly<{ repository: string; ref: string; sha: string; force: false }>): Promise<unknown>;
   getCommit(input: Readonly<{ repository: string; sha: string }>): Promise<unknown>;
   findPullRequests(input: Readonly<Record<string, unknown>>): Promise<unknown>;
   createPullRequest(input: Readonly<Record<string, unknown>>): Promise<unknown>;
+  markPullRequestReady(input: Readonly<{ repository: string; number: number }>): Promise<unknown>;
   getPullRequest(input: Readonly<{ repository: string; number: number }>): Promise<unknown>;
   getChecks(input: Readonly<{ repository: string; sha: string }>): Promise<unknown>;
   mergePullRequest(input: Readonly<Record<string, unknown>>): Promise<unknown>;
@@ -188,6 +189,9 @@ async function candidate(request: GitHubReleaseRunRequestV1, context: GitHubRele
   const refName = `heads/${plan.candidateBranch}`;
   const base = parseRef(await provider.getRef({ repository: plan.repository, ref: `heads/${plan.destinationBranch}` }));
   if (!base || base.sha !== plan.baseCommit) throw new TypeError("candidate publication base branch drifted");
+  const baseCommit = parseCommit(await provider.getCommit({ repository: plan.repository, sha: plan.baseCommit }));
+  if (!baseCommit || baseCommit.sha !== plan.baseCommit || baseCommit.treeSha !== plan.baseTreeSha) throw new TypeError("candidate publication base tree drifted");
+  await step(journal, request, "base-tree-observed", { commitSha: plan.baseCommit, treeSha: plan.baseTreeSha });
   const before = parseRef(await provider.getRef({ repository: plan.repository, ref: refName }));
   if (before && before.sha !== plan.expectedCommitSha) throw new TypeError("candidate branch ref conflicts with authorization");
   if (before && !has(initial, "branch-intent")) throw new TypeError("candidate branch exists without this authorized write intent");
@@ -196,7 +200,7 @@ async function candidate(request: GitHubReleaseRunRequestV1, context: GitHubRele
     if (!has(initial, "blob-created", "index", index)) { assertWriteLive(auth, now); await step(journal, request, "blob-intent", { index, path: file.path }); const result = await providerWrite(() => provider.createBlob({ repository: plan.repository, contentBase64: bytesBase64 }), raw => parseSha(raw, "blob")); if (result.sha !== file.blobSha) throw new TypeError("provider blob readback does not match expected Git SHA"); await step(journal, request, "blob-created", { index, sha: result.sha }); }
   }
   let events = await journal.load(request.requestId);
-  if (!has(events, "tree-created")) { assertWriteLive(auth, now); await step(journal, request, "tree-intent", {}); const tree = await providerWrite(() => provider.createTree({ repository: plan.repository, baseCommit: plan.baseCommit, files: plan.files.map(file => ({ path: file.path, mode: file.mode, blobSha: file.blobSha })) }), raw => parseSha(raw, "tree")); if (tree.sha !== plan.expectedTreeSha) throw new TypeError("provider tree SHA is not authorized"); await step(journal, request, "tree-created", { sha: tree.sha }); }
+  if (!has(events, "tree-created")) { assertWriteLive(auth, now); await step(journal, request, "tree-intent", {}); const tree = await providerWrite(() => provider.createTree({ repository: plan.repository, baseTreeSha: plan.baseTreeSha, files: plan.files.map(file => ({ path: file.path, mode: file.mode, blobSha: file.blobSha })) }), raw => parseSha(raw, "tree")); if (tree.sha !== plan.expectedTreeSha) throw new TypeError("provider tree SHA is not authorized"); await step(journal, request, "tree-created", { sha: tree.sha }); }
   events = await journal.load(request.requestId);
   if (!has(events, "commit-created")) { assertWriteLive(auth, now); await step(journal, request, "commit-intent", {}); const commit = await providerWrite(() => provider.createCommit({ repository: plan.repository, treeSha: plan.expectedTreeSha, ...plan.commit }), raw => parseSha(raw, "commit")); if (commit.sha !== plan.expectedCommitSha) throw new TypeError("provider commit SHA is not authorized"); await step(journal, request, "commit-created", { sha: commit.sha }); }
   events = await journal.load(request.requestId);
@@ -229,7 +233,18 @@ async function pullRequest(request: GitHubReleaseRunRequestV1, auth: VerifiedRel
     if (matches.length > 1) throw new TypeError("multiple release pull requests conflict after ambiguous create");
     await step(journal, request, "pr-created", { number: matches[0]!.number });
   } else if (!has(events, "pr-intent")) throw new TypeError("pull request exists without this authorized write intent");
-  const pr = matches[0]!; assertPullRequestPlan(pr, plan);
+  if (!has(await journal.load(request.requestId), "pr-created")) await step(journal, request, "pr-created", { number: matches[0]!.number });
+  let pr = matches[0]!; assertPullRequestPlan(pr, plan, pr.draft);
+  if (pr.draft) {
+    if (has(await journal.load(request.requestId), "pr-ready-intent")) return pending("pr-ready-intent");
+    await step(journal, request, "pr-ready-intent", { number: pr.number });
+    assertWriteLive(auth, now);
+    try { parsePullRequest(await provider.markPullRequestReady({ repository: plan.repository, number: pr.number })); } catch { /* exact readback below */ }
+    pr = await safeRead(() => provider.getPullRequest({ repository: plan.repository, number: pr.number }), parsePullRequest) ?? pr;
+  } else if (!has(await journal.load(request.requestId), "pr-ready-intent")) throw new TypeError("pull request became ready without this authorized transition");
+  if (pr.draft) return pending("pr-ready-intent");
+  assertPullRequestPlan(pr, plan, false);
+  await step(journal, request, "pr-ready-confirmed", { number: pr.number });
   return finish(journal, request, auth, "candidate-pull-request", "pr-verified", authorityDigest(pr), signer, now());
 }
 
@@ -237,7 +252,7 @@ async function merge(request: GitHubReleaseRunRequestV1, auth: VerifiedReleaseAu
   const plan = auth.operationPlan.value;
   const matches = parsePullRequests(await provider.findPullRequests({ repository: plan.repository, head: plan.pullRequest.head, base: plan.pullRequest.base }));
   if (matches.length !== 1) throw new TypeError("release merge requires exactly one pull request");
-  let pr = matches[0]!; assertPullRequestPlan(pr, plan);
+  let pr = matches[0]!; assertPullRequestPlan(pr, plan, false);
   let mergeSha: string | null = null;
   if (!pr.merged) {
     const base = parseRef(await provider.getRef({ repository: plan.repository, ref: `heads/${plan.destinationBranch}` }));
@@ -319,7 +334,7 @@ function parseRef(value: unknown): Readonly<{ sha: string }> | null { if (value 
 function parseCommit(value: unknown): Readonly<{ sha: string; parentSha: string; treeSha: string }> | null { if (value === null) return null; const item = exactRecord(value, ["parentSha", "sha", "treeSha"], "commit"); if (![item.sha, item.parentSha, item.treeSha].every(raw => GIT_SHA.test(String(raw)))) throw new TypeError("commit readback is invalid"); return Object.freeze({ sha: String(item.sha), parentSha: String(item.parentSha), treeSha: String(item.treeSha) }); }
 function parsePullRequest(value: unknown): GitHubReleasePullRequestV1 { const item = exactRecord(value, ["base", "body", "draft", "head", "headSha", "mergeCommitSha", "merged", "number", "title"], "pull request"); if (!Number.isSafeInteger(item.number) || Number(item.number) <= 0 || typeof item.head !== "string" || typeof item.base !== "string" || typeof item.draft !== "boolean" || typeof item.title !== "string" || typeof item.body !== "string" || !GIT_SHA.test(String(item.headSha)) || typeof item.merged !== "boolean" || !(item.mergeCommitSha === null || GIT_SHA.test(String(item.mergeCommitSha)))) throw new TypeError("pull request readback is invalid"); return Object.freeze({ number: Number(item.number), head: item.head, base: item.base, draft: item.draft, title: item.title, body: item.body, headSha: String(item.headSha), merged: item.merged, mergeCommitSha: item.mergeCommitSha === null ? null : String(item.mergeCommitSha) }); }
 function parsePullRequests(value: unknown): readonly GitHubReleasePullRequestV1[] { if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype || Object.keys(value).some((key, index) => key !== String(index))) throw new TypeError("pull request list is not closed and dense"); return Object.freeze(value.map(parsePullRequest)); }
-function assertPullRequestPlan(pr: GitHubReleasePullRequestV1, plan: VerifiedReleaseAuthorizationV1["operationPlan"]["value"]): void { if (pr.head !== plan.pullRequest.head || pr.base !== plan.pullRequest.base || pr.draft !== true || pr.title !== plan.pullRequest.title || pr.body !== plan.pullRequest.body || pr.headSha !== plan.expectedCommitSha) throw new TypeError("pull request readback does not match exact authorized metadata"); }
+function assertPullRequestPlan(pr: GitHubReleasePullRequestV1, plan: VerifiedReleaseAuthorizationV1["operationPlan"]["value"], draft: boolean): void { if (pr.head !== plan.pullRequest.head || pr.base !== plan.pullRequest.base || pr.draft !== draft || pr.title !== plan.pullRequest.title || pr.body !== plan.pullRequest.body || pr.headSha !== plan.expectedCommitSha) throw new TypeError("pull request readback does not match exact authorized metadata"); }
 function parseChecks(value: unknown): readonly Readonly<{ name: string; status: string; workflowDigest: string }>[] { if (!Array.isArray(value) || Object.keys(value).some((key, index) => key !== String(index))) throw new TypeError("checks list is not closed and dense"); return Object.freeze(value.map(raw => { const item = exactRecord(raw, ["name", "status", "workflowDigest"], "check"); if (typeof item.name !== "string" || typeof item.status !== "string" || !DIGEST.test(String(item.workflowDigest))) throw new TypeError("check readback is invalid"); return Object.freeze({ name: item.name, status: item.status, workflowDigest: String(item.workflowDigest) }); })); }
 function parseMerge(value: unknown): Readonly<{ merged: boolean; sha: string }> { const item = exactRecord(value, ["merged", "sha"], "merge result"); if (typeof item.merged !== "boolean" || !GIT_SHA.test(String(item.sha))) throw new TypeError("merge result is invalid"); return Object.freeze({ merged: item.merged, sha: String(item.sha) }); }
 function parseManifest(value: unknown): Readonly<{ name: string; version: string }> { const item = exactRecord(value, ["name", "version"], "package manifest"); if (typeof item.name !== "string" || typeof item.version !== "string") throw new TypeError("package manifest is invalid"); return Object.freeze({ name: item.name, version: item.version }); }
