@@ -16,8 +16,8 @@ const LANES = Object.freeze({ "candidate-branch": "candidate-branch", "draft-pr"
 const PREDECESSOR = Object.freeze({ "candidate-branch": null, "draft-pr": "candidate-branch", "exact-sha-merge": "draft-pr", "non-force-tag": "exact-sha-merge" } as const);
 const TERMINAL = new Set(["candidate-verified", "pr-verified", "merge-verified", "tag-verified"]);
 const TRANSITIONS: Readonly<Record<string, readonly string[]>> = Object.freeze({
-  authorized: ["base-tree-observed", "pr-intent", "merge-intent", "tag-intent"], "base-tree-observed": ["blob-intent"], "blob-intent": ["blob-created", "expired-refused"], "blob-created": ["blob-intent", "tree-intent"], "tree-intent": ["tree-created", "expired-refused"], "tree-created": ["commit-intent"], "commit-intent": ["commit-created", "expired-refused"], "commit-created": ["branch-intent"], "branch-intent": ["candidate-verified", "expired-refused"],
-  "pr-intent": ["pr-created", "expired-refused"], "pr-created": ["pr-ready-intent"], "pr-ready-intent": ["pr-ready-confirmed", "expired-refused"], "pr-ready-confirmed": ["pr-verified"], "merge-intent": ["merge-verified", "expired-refused"], "tag-intent": ["tag-verified", "expired-refused"],
+  authorized: ["base-tree-observed", "pr-intent", "merge-intent", "tag-intent"], "base-tree-observed": ["blob-intent"], "blob-intent": ["blob-created", "expired-refused"], "blob-created": ["blob-intent", "tree-intent"], "tree-intent": ["tree-created", "expired-refused"], "tree-created": ["commit-intent"], "commit-intent": ["commit-created", "expired-refused"], "commit-created": ["branch-intent"], "branch-intent": ["branch-dispatching", "expired-refused"], "branch-dispatching": ["candidate-verified", "expired-refused"],
+  "pr-intent": ["pr-dispatching", "expired-refused"], "pr-dispatching": ["pr-created", "expired-refused"], "pr-created": ["pr-ready-intent"], "pr-ready-intent": ["pr-ready-dispatching", "expired-refused"], "pr-ready-dispatching": ["pr-ready-confirmed", "expired-refused"], "pr-ready-confirmed": ["pr-verified"], "merge-intent": ["merge-dispatching", "expired-refused"], "merge-dispatching": ["merge-verified", "expired-refused"], "tag-intent": ["tag-dispatching", "expired-refused"], "tag-dispatching": ["tag-verified", "expired-refused"],
   "candidate-verified": ["receipt-published"], "pr-verified": ["receipt-published"], "merge-verified": ["receipt-published"], "tag-verified": ["receipt-published"],
 });
 const DIGEST = /^sha256:[0-9a-f]{64}$/;
@@ -201,18 +201,21 @@ async function candidate(request: GitHubReleaseRunRequestV1, context: GitHubRele
   if (before && !has(initial, "branch-intent")) throw new TypeError("candidate branch exists without this authorized write intent");
   for (let index = 0; index < plan.files.length; index += 1) {
     const file = plan.files[index], bytesBase64 = byPath.get(file.path)!;
-    if (!has(initial, "blob-created", "index", index)) { assertWriteLive(auth, now); await step(journal, request, "blob-intent", { index, path: file.path }); await assertPostIntentLive(journal, request, auth, now); const result = await providerWrite(() => provider.createBlob({ repository: plan.repository, contentBase64: bytesBase64 }), raw => parseSha(raw, "blob")); if (result.sha !== file.blobSha) throw new TypeError("provider blob readback does not match expected Git SHA"); await step(journal, request, "blob-created", { index, sha: result.sha }); }
+    if (!has(initial, "blob-created", "index", index)) { assertWriteLive(auth, now); await step(journal, request, "blob-intent", { index, path: file.path }); await assertPostIntentLive(journal, request, auth, now); await assertBaseRef(provider, plan, plan.baseCommit); const result = await providerWrite(() => provider.createBlob({ repository: plan.repository, contentBase64: bytesBase64 }), raw => parseSha(raw, "blob")); if (result.sha !== file.blobSha) throw new TypeError("provider blob readback does not match expected Git SHA"); await step(journal, request, "blob-created", { index, sha: result.sha }); }
   }
   let events = await journal.load(request.requestId);
-  if (!has(events, "tree-created")) { assertWriteLive(auth, now); await step(journal, request, "tree-intent", {}); await assertPostIntentLive(journal, request, auth, now); const tree = await providerWrite(() => provider.createTree({ repository: plan.repository, baseTreeSha: plan.baseTreeSha, files: plan.files.map(file => ({ path: file.path, mode: file.mode, blobSha: file.blobSha })) }), raw => parseSha(raw, "tree")); if (tree.sha !== plan.expectedTreeSha) throw new TypeError("provider tree SHA is not authorized"); await step(journal, request, "tree-created", { sha: tree.sha }); }
+  if (!has(events, "tree-created")) { assertWriteLive(auth, now); await step(journal, request, "tree-intent", {}); await assertPostIntentLive(journal, request, auth, now); await assertBaseRef(provider, plan, plan.baseCommit); const tree = await providerWrite(() => provider.createTree({ repository: plan.repository, baseTreeSha: plan.baseTreeSha, files: plan.files.map(file => ({ path: file.path, mode: file.mode, blobSha: file.blobSha })) }), raw => parseSha(raw, "tree")); if (tree.sha !== plan.expectedTreeSha) throw new TypeError("provider tree SHA is not authorized"); await step(journal, request, "tree-created", { sha: tree.sha }); }
   events = await journal.load(request.requestId);
-  if (!has(events, "commit-created")) { assertWriteLive(auth, now); await step(journal, request, "commit-intent", {}); await assertPostIntentLive(journal, request, auth, now); const commit = await providerWrite(() => provider.createCommit({ repository: plan.repository, treeSha: plan.expectedTreeSha, ...plan.commit }), raw => parseSha(raw, "commit")); if (commit.sha !== plan.expectedCommitSha) throw new TypeError("provider commit SHA is not authorized"); await step(journal, request, "commit-created", { sha: commit.sha }); }
+  if (!has(events, "commit-created")) { assertWriteLive(auth, now); await step(journal, request, "commit-intent", {}); await assertPostIntentLive(journal, request, auth, now); await assertBaseRef(provider, plan, plan.baseCommit); const commit = await providerWrite(() => provider.createCommit({ repository: plan.repository, treeSha: plan.expectedTreeSha, ...plan.commit }), raw => parseSha(raw, "commit")); if (commit.sha !== plan.expectedCommitSha) throw new TypeError("provider commit SHA is not authorized"); await step(journal, request, "commit-created", { sha: commit.sha }); }
   events = await journal.load(request.requestId);
   let existing = parseRef(await provider.getRef({ repository: plan.repository, ref: refName }));
   if (!existing) {
-    if (has(events, "branch-intent")) return pending("branch-intent");
-    assertWriteLive(auth, now); await step(journal, request, "branch-intent", {}); await assertPostIntentLive(journal, request, auth, now);
-    try { parseSha(await provider.createRef({ repository: plan.repository, ref: refName, sha: plan.expectedCommitSha, force: false }), "created ref"); } catch { /* authoritative readback below */ }
+    if (has(events, "branch-dispatching")) return pending("branch-dispatching");
+    if (!has(events, "branch-intent")) { assertWriteLive(auth, now); await step(journal, request, "branch-intent", {}); }
+    await assertPostIntentLive(journal, request, auth, now); await assertBaseRef(provider, plan, plan.baseCommit);
+    const atWrite = parseRef(await provider.getRef({ repository: plan.repository, ref: refName }));
+    if (atWrite && atWrite.sha !== plan.expectedCommitSha) throw new TypeError("candidate branch ref drifted immediately before provider write");
+    if (!atWrite) { await step(journal, request, "branch-dispatching", {}); await assertPostIntentLive(journal, request, auth, now); try { parseSha(await provider.createRef({ repository: plan.repository, ref: refName, sha: plan.expectedCommitSha, force: false }), "created ref"); } catch { /* authoritative readback below */ } }
     existing = await safeRead(() => provider.getRef({ repository: plan.repository, ref: refName }), parseRef);
   }
   if (!existing || existing.sha !== plan.expectedCommitSha) return pending("branch-intent");
@@ -229,9 +232,12 @@ async function pullRequest(request: GitHubReleaseRunRequestV1, auth: VerifiedRel
   let matches = parsePullRequests(await provider.findPullRequests({ repository: plan.repository, head: plan.pullRequest.head, base: plan.pullRequest.base }));
   if (matches.length > 1) throw new TypeError("multiple release pull requests conflict");
   if (matches.length === 0) {
-    if (has(events, "pr-intent")) return pending("pr-intent");
-    assertWriteLive(auth, now); await step(journal, request, "pr-intent", {}); await assertPostIntentLive(journal, request, auth, now);
-    try { parsePullRequest(await provider.createPullRequest({ repository: plan.repository, ...plan.pullRequest })); } catch { /* exact lookup below */ }
+    if (has(events, "pr-dispatching")) return pending("pr-dispatching");
+    if (!has(events, "pr-intent")) { assertWriteLive(auth, now); await step(journal, request, "pr-intent", {}); }
+    await assertPostIntentLive(journal, request, auth, now); await assertBaseRef(provider, plan, plan.baseCommit, true);
+    const atWrite = parsePullRequests(await provider.findPullRequests({ repository: plan.repository, head: plan.pullRequest.head, base: plan.pullRequest.base }));
+    if (atWrite.length > 1) throw new TypeError("multiple release pull requests conflict immediately before create");
+    if (atWrite.length === 0) { await step(journal, request, "pr-dispatching", {}); await assertPostIntentLive(journal, request, auth, now); try { parsePullRequest(await provider.createPullRequest({ repository: plan.repository, ...plan.pullRequest })); } catch { /* exact lookup below */ } }
     matches = await safeRead(() => provider.findPullRequests({ repository: plan.repository, head: plan.pullRequest.head, base: plan.pullRequest.base }), parsePullRequests) ?? [];
     if (matches.length === 0) return pending("pr-intent");
     if (matches.length > 1) throw new TypeError("multiple release pull requests conflict after ambiguous create");
@@ -240,10 +246,13 @@ async function pullRequest(request: GitHubReleaseRunRequestV1, auth: VerifiedRel
   if (!has(await journal.load(request.requestId), "pr-created")) await step(journal, request, "pr-created", { number: matches[0]!.number });
   let pr = matches[0]!; assertPullRequestPlan(pr, plan, pr.draft);
   if (pr.draft) {
-    if (has(await journal.load(request.requestId), "pr-ready-intent")) return pending("pr-ready-intent");
-    await step(journal, request, "pr-ready-intent", { number: pr.number });
-    await assertPostIntentLive(journal, request, auth, now);
-    try { parsePullRequest(await provider.markPullRequestReady({ repository: plan.repository, number: pr.number })); } catch { /* exact readback below */ }
+    const currentEvents = await journal.load(request.requestId);
+    if (has(currentEvents, "pr-ready-dispatching")) return pending("pr-ready-dispatching");
+    if (!has(currentEvents, "pr-ready-intent")) await step(journal, request, "pr-ready-intent", { number: pr.number });
+    await assertPostIntentLive(journal, request, auth, now); await assertBaseRef(provider, plan, plan.baseCommit, true);
+    const atWrite = parsePullRequest(await provider.getPullRequest({ repository: plan.repository, number: pr.number }));
+    assertPullRequestPlan(atWrite, plan, atWrite.draft);
+    if (atWrite.draft) { await step(journal, request, "pr-ready-dispatching", { number: pr.number }); await assertPostIntentLive(journal, request, auth, now); try { parsePullRequest(await provider.markPullRequestReady({ repository: plan.repository, number: pr.number })); } catch { /* exact readback below */ } }
     pr = await safeRead(() => provider.getPullRequest({ repository: plan.repository, number: pr.number }), parsePullRequest) ?? pr;
   } else if (!has(await journal.load(request.requestId), "pr-ready-intent")) throw new TypeError("pull request became ready without this authorized transition");
   if (pr.draft) return pending("pr-ready-intent");
@@ -262,10 +271,13 @@ async function merge(request: GitHubReleaseRunRequestV1, auth: VerifiedReleaseAu
     const base = parseRef(await provider.getRef({ repository: plan.repository, ref: `heads/${plan.destinationBranch}` }));
     if (!base || base.sha !== plan.baseCommit) throw new TypeError("release base branch drifted");
     const checks = parseChecks(await provider.getChecks({ repository: plan.repository, sha: plan.expectedCommitSha }));
-    const names = checks.map(check => check.name).sort();
-    if (names.join("\0") !== [...plan.requiredChecks].sort().join("\0") || checks.some(check => check.status !== "success" || !plan.workflowCommitments.some(workflow => workflow.digest === check.workflowDigest))) throw new TypeError("required release checks or workflow commitment are missing or failed");
-    if (has(events, "merge-intent")) return pending("merge-intent");
-    assertWriteLive(auth, now); await step(journal, request, "merge-intent", {}); await assertPostIntentLive(journal, request, auth, now);
+    assertChecks(checks, plan);
+    if (has(events, "merge-dispatching")) return pending("merge-dispatching");
+    if (!has(events, "merge-intent")) { assertWriteLive(auth, now); await step(journal, request, "merge-intent", {}); }
+    await assertPostIntentLive(journal, request, auth, now); await assertBaseRef(provider, plan, plan.baseCommit, true);
+    const atWritePr = parsePullRequest(await provider.getPullRequest({ repository: plan.repository, number: pr.number })); assertPullRequestPlan(atWritePr, plan, false); if (atWritePr.merged) throw new TypeError("pull request merge state changed immediately before authorized write");
+    const atWriteChecks = parseChecks(await provider.getChecks({ repository: plan.repository, sha: plan.expectedCommitSha })); assertChecks(atWriteChecks, plan);
+    await step(journal, request, "merge-dispatching", { number: pr.number }); await assertPostIntentLive(journal, request, auth, now);
     try { const result = parseMerge(await provider.mergePullRequest({ repository: plan.repository, number: pr.number, expectedHeadSha: plan.expectedCommitSha, method: "squash", ...plan.squash })); if (result.merged) mergeSha = result.sha; } catch { /* no resend; authoritative readback below */ }
     pr = await safeRead(() => provider.getPullRequest({ repository: plan.repository, number: pr.number }), parsePullRequest) ?? pr;
   } else if (!has(events, "merge-intent")) throw new TypeError("pull request was merged without this authorized write intent");
@@ -291,9 +303,12 @@ async function tag(request: GitHubReleaseRunRequestV1, auth: VerifiedReleaseAuth
   if (existing && existing.sha !== mergeSha) throw new TypeError("release tag ref conflicts");
   if (existing && !has(events, "tag-intent")) throw new TypeError("release tag exists without this authorized write intent");
   if (!existing) {
-    if (has(events, "tag-intent")) return pending("tag-intent");
-    assertWriteLive(auth, now); await step(journal, request, "tag-intent", {}); await assertPostIntentLive(journal, request, auth, now);
-    try { parseSha(await provider.createRef({ repository: plan.repository, ref, sha: mergeSha, force: false }), "created tag"); } catch { /* never resend; read below */ }
+    if (has(events, "tag-dispatching")) return pending("tag-dispatching");
+    if (!has(events, "tag-intent")) { assertWriteLive(auth, now); await step(journal, request, "tag-intent", {}); }
+    await assertPostIntentLive(journal, request, auth, now); await assertBaseRef(provider, plan, mergeSha);
+    const atWrite = parseRef(await provider.getRef({ repository: plan.repository, ref }));
+    if (atWrite && atWrite.sha !== mergeSha) throw new TypeError("release tag drifted immediately before provider write");
+    if (!atWrite) { await step(journal, request, "tag-dispatching", {}); await assertPostIntentLive(journal, request, auth, now); try { parseSha(await provider.createRef({ repository: plan.repository, ref, sha: mergeSha, force: false }), "created tag"); } catch { /* never resend; read below */ } }
     existing = await safeRead(() => provider.getRef({ repository: plan.repository, ref }), parseRef);
   }
   if (!existing || existing.sha !== mergeSha) return pending("tag-intent");
@@ -324,6 +339,7 @@ function assertLive(auth: VerifiedReleaseAuthorizationV1, now: Date): void { if 
 function assertWriteLive(auth: VerifiedReleaseAuthorizationV1, now: () => Date): void { assertLive(auth, now()); }
 async function assertPostIntentLive(journal: SignedJournal, request: GitHubReleaseRunRequestV1, auth: VerifiedReleaseAuthorizationV1, now: () => Date): Promise<void> { try { assertWriteLive(auth, now); } catch (error) { await step(journal, request, "expired-refused", { observedAt: safeNowIso(now) }); throw error; } }
 function safeNowIso(now: () => Date): string { try { const value = now(); return value instanceof Date && Number.isFinite(value.getTime()) ? value.toISOString() : "invalid-clock"; } catch { return "invalid-clock"; } }
+async function assertBaseRef(provider: GitHubReleaseProviderV1, plan: VerifiedReleaseAuthorizationV1["operationPlan"]["value"], expectedBase: string, requireCandidate = false): Promise<void> { const base = parseRef(await provider.getRef({ repository: plan.repository, ref: `heads/${plan.destinationBranch}` })); if (!base || base.sha !== expectedBase) throw new TypeError("release base branch drifted immediately before provider write"); if (requireCandidate) { const branch = parseRef(await provider.getRef({ repository: plan.repository, ref: `heads/${plan.candidateBranch}` })); if (!branch || branch.sha !== plan.expectedCommitSha) throw new TypeError("release candidate branch drifted immediately before provider write"); } }
 async function finish(journal: SignedJournal, request: GitHubReleaseRunRequestV1, auth: VerifiedReleaseAuthorizationV1, lane: keyof typeof LANES extends never ? never : any, phase: string, subjectDigest: string, signer: ReleaseContractSignerV1, now: Date, extra: Readonly<Record<string, unknown>> = {}): Promise<GitHubReleaseRunResultV1> { const evidence = createGitHubReleaseProviderEvidence({ authorization: auth, lane, observedAt: now.toISOString(), subjectDigest, signer }); await step(journal, request, phase, { ...extra, evidence, evidenceDigest: evidence.digest, subjectDigest }); return Object.freeze({ status: "verified", phase, evidenceDigest: evidence.digest }); }
 async function step(journal: SignedJournal, request: GitHubReleaseRunRequestV1, phase: string, data: Readonly<Record<string, unknown>>): Promise<void> { const events = await journal.load(request.requestId), prior = events.at(-1)?.phase; if (!prior || !TRANSITIONS[prior]?.includes(phase)) { if (events.some(event => event.phase === phase && authorityDigest(event.data) === authorityDigest(data))) return; throw new TypeError(`invalid release saga transition ${prior ?? "absent"} -> ${phase}`); } await journal.append(request.requestId, request.semanticsDigest, phase, data); }
 function has(events: readonly SignedJournalEventV1[], phase: string, key?: string, value?: unknown): boolean { return events.some(event => event.phase === phase && (key === undefined || event.data[key] === value)); }
@@ -342,6 +358,7 @@ function parsePullRequest(value: unknown): GitHubReleasePullRequestV1 { const it
 function parsePullRequests(value: unknown): readonly GitHubReleasePullRequestV1[] { if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype || Object.keys(value).some((key, index) => key !== String(index))) throw new TypeError("pull request list is not closed and dense"); return Object.freeze(value.map(parsePullRequest)); }
 function assertPullRequestPlan(pr: GitHubReleasePullRequestV1, plan: VerifiedReleaseAuthorizationV1["operationPlan"]["value"], draft: boolean): void { if (pr.head !== plan.pullRequest.head || pr.base !== plan.pullRequest.base || pr.draft !== draft || pr.title !== plan.pullRequest.title || pr.body !== plan.pullRequest.body || pr.headSha !== plan.expectedCommitSha) throw new TypeError("pull request readback does not match exact authorized metadata"); }
 function parseChecks(value: unknown): readonly Readonly<{ name: string; status: string; workflowDigest: string }>[] { if (!Array.isArray(value) || Object.keys(value).some((key, index) => key !== String(index))) throw new TypeError("checks list is not closed and dense"); return Object.freeze(value.map(raw => { const item = exactRecord(raw, ["name", "status", "workflowDigest"], "check"); if (typeof item.name !== "string" || typeof item.status !== "string" || !DIGEST.test(String(item.workflowDigest))) throw new TypeError("check readback is invalid"); return Object.freeze({ name: item.name, status: item.status, workflowDigest: String(item.workflowDigest) }); })); }
+function assertChecks(checks: readonly Readonly<{ name: string; status: string; workflowDigest: string }>[], plan: VerifiedReleaseAuthorizationV1["operationPlan"]["value"]): void { const names = checks.map(check => check.name).sort(); if (names.join("\0") !== [...plan.requiredChecks].sort().join("\0") || checks.some(check => check.status !== "success" || !plan.workflowCommitments.some(workflow => workflow.digest === check.workflowDigest))) throw new TypeError("required release checks or workflow commitment are missing or failed"); }
 function parseMerge(value: unknown): Readonly<{ merged: boolean; sha: string }> { const item = exactRecord(value, ["merged", "sha"], "merge result"); if (typeof item.merged !== "boolean" || !GIT_SHA.test(String(item.sha))) throw new TypeError("merge result is invalid"); return Object.freeze({ merged: item.merged, sha: String(item.sha) }); }
 function parseManifest(value: unknown): Readonly<{ name: string; version: string }> { const item = exactRecord(value, ["name", "version"], "package manifest"); if (typeof item.name !== "string" || typeof item.version !== "string") throw new TypeError("package manifest is invalid"); return Object.freeze({ name: item.name, version: item.version }); }
 function parseBoolean(value: unknown, label: string): boolean { if (typeof value !== "boolean") throw new TypeError(`${label} is invalid`); return value; }
