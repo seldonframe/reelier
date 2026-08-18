@@ -2430,6 +2430,15 @@ iterators. Signed envelopes contain exactly `digest`, `signature`, `signerId`,
 signatures are canonical Ed25519 signatures in their declared authority
 purpose domain.
 
+Authorization, receipt-graph, and evidence verifier inputs MUST be exact plain
+`{ signerId, publicKeySpkiBase64 }` descriptors. The SPKI field MUST be
+canonical Base64 of canonical DER for an Ed25519 public key. A verifier MUST
+copy each own data descriptor exactly once, construct one internal public key
+from the copied bytes, and use that same internal key and byte snapshot for
+signature verification and SPKI-digest comparison. It MUST NOT invoke a
+caller-owned getter, iterator, export method, proxy property read, or key-switch
+callback.
+
 ### 12.2 Authorization and candidate closure
 
 **[Normative]** The v1 candidate fixes repository `seldonframe/reelier`, base
@@ -2452,10 +2461,15 @@ MUST refuse.
 The authorization binds the mission, task, Job Card, pack, policy, Authority
 Cell, root grant, staged manifest, and the four distinct one-effect allocations
 for candidate branch, draft PR, exact-SHA merge, and non-force tag. It also
-binds every required quality and receipt lane to an exact verifier signer ID
-and SHA-256 digest of that verifier's SPKI public key. The validity interval is
-exactly twelve hours. Verification MUST refuse before `issuedAt` and at or
-after `expiresAt`.
+binds the receipt-graph maker and every required quality and receipt lane to an
+exact verifier signer ID and SHA-256 digest of that verifier's SPKI public key.
+At authorization verification, the externally supplied authorization-verifier
+SPKI digest MUST differ from the graph-maker and every evidence-checker digest;
+the graph-maker digest MUST differ from every checker digest. These are key
+separation rules, not signer-ID spelling rules: the same key under aliases MUST
+refuse. One evidence-checker key MAY be explicitly bound to multiple lanes.
+The validity interval is exactly twelve hours. Verification MUST refuse before
+`issuedAt` and at or after `expiresAt`.
 
 ### 12.3 Signed verifier evidence and success
 
@@ -2477,8 +2491,23 @@ refuse missing, duplicate, aliased, wrong-lane, wrong-authorization,
 wrong-subject, wrong-signer, untrusted-key, or tampered evidence. A caller-
 supplied public key is trusted only when its signer ID and SPKI digest equal the
 binding in a previously signature-verified authorization. A receipt-evidence
-signer MUST also be distinct from both the authorization signer and the signed
-receipt-graph maker.
+checker key MUST also be distinct by SPKI digest from both the authorization
+signer and the signed receipt-graph maker.
+
+Quality evidence MUST satisfy `issuedAt <= observedAt <= verificationNow` and
+`observedAt < expiresAt`. The receipt graph MUST be verified with an explicit
+current verification time, its caller-supplied graph verifier MUST exactly
+match the authorization-bound graph-maker signer ID and SPKI digest, and its
+signed time MUST satisfy `issuedAt <= verifiedAt < expiresAt` and
+`verifiedAt <= verificationNow`. Historical graph verification after expiry is
+therefore valid when the signed `verifiedAt` was inside the authorization
+window. Every receipt evidence artifact MUST satisfy
+`issuedAt <= observedAt <= graph.verifiedAt`. Installed lanes retain the
+additional exact observation/freshness binding and require
+`observedAt <= verifiedAt < freshUntil` when verified. Boundaries stated with
+`<=` are inclusive; expiry and freshness upper bounds stated with `<` are
+exclusive. Future, pre-issue, at/post-expiry, post-graph, and reversed
+timestamps MUST refuse.
 
 Receipt success evaluation is inseparable from that verification: no public
 raw graph-to-success operation exists. The verifier returns an evaluation only
