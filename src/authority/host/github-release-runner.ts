@@ -19,6 +19,8 @@ const TRANSITIONS: Readonly<Record<string, readonly string[]>> = Object.freeze({
 });
 const DIGEST = /^sha256:[0-9a-f]{64}$/;
 const GIT_SHA = /^[0-9a-f]{40}$/;
+class ProviderWriteAmbiguity extends Error {}
+class ReleaseRunFailure extends Error { constructor(message: string, readonly effectPossible: boolean, readonly deterministic: boolean) { super(message); } }
 
 export type GitHubReleaseAliasV1 = keyof typeof ALIASES;
 export interface GitHubReleaseAuthorizationContextV1 { readonly authorization: VerifiedReleaseAuthorizationV1; readonly fileContents: readonly Readonly<{ path: string; bytesBase64: string }>[] }
@@ -75,10 +77,16 @@ export async function createGitHubReleaseRunner(input: Readonly<{ rootDir: strin
         await journal.append(request.requestId, request.semanticsDigest, "authorized", { alias: request.alias, allocationDigest: allocation.allocationDigest, allocationId: allocation.allocationId, authorizationDigest: authorization.authorization.digest, authorizationHandle: request.authorizationHandle, effect });
         events = await journal.load(request.requestId);
       }
-      if (effect === "candidate-branch") return candidate(request, context, events, journal, input.provider, input.evidenceSigner, input.now);
-      if (effect === "draft-pr") return pullRequest(request, authorization, events, journal, input.provider, input.evidenceSigner, input.now);
-      if (effect === "exact-sha-merge") return merge(request, authorization, events, journal, input.provider, input.evidenceSigner, input.now);
-      return tag(request, authorization, events, journal, input.provider, input.evidenceSigner, input.now);
+      try {
+        if (effect === "candidate-branch") return await candidate(request, context, events, journal, input.provider, input.evidenceSigner, input.now);
+        if (effect === "draft-pr") return await pullRequest(request, authorization, events, journal, input.provider, input.evidenceSigner, input.now);
+        if (effect === "exact-sha-merge") return await merge(request, authorization, events, journal, input.provider, input.evidenceSigner, input.now);
+        return await tag(request, authorization, events, journal, input.provider, input.evidenceSigner, input.now);
+      } catch (error) {
+        const latest = await journal.load(request.requestId);
+        const effectPossible = latest.some(event => event.phase.endsWith("-intent") && event.phase !== "authorized");
+        throw new ReleaseRunFailure(error instanceof Error ? error.message : "release runner failed", effectPossible, error instanceof TypeError);
+      }
     });
   };
   const active = new Map<string, Promise<GitHubReleaseRunResultV1>>();
@@ -119,7 +127,11 @@ export function createGitHubReleaseDispatchAdapter(input: Readonly<{ runner: Git
       if (result.status === "verified") return Object.freeze({ kind: "acknowledged", resultDigest: result.evidenceDigest!, reconciliationStatus: "matched", normalizedProjectionDigest: result.evidenceDigest });
       if (result.status === "pending-reconciliation") return Object.freeze({ kind: "ambiguous", resultDigest: authorityDigest(result), reconciliationStatus: "unavailable", normalizedProjectionDigest: null });
       return failure(result.phase);
-    } catch (error) { return failure(error instanceof Error ? error.message : "release-runner-refused"); }
+    } catch (error) {
+      if (error instanceof ReleaseRunFailure) return error.deterministic ? failure(error.message, error.effectPossible ? "conflict" : "not-applied") : Object.freeze({ kind: "ambiguous", resultDigest: authorityDigest({ reason: error.message }), reconciliationStatus: "unavailable", normalizedProjectionDigest: null });
+      if (error instanceof TypeError) return failure(error.message, "not-applied");
+      return Object.freeze({ kind: "ambiguous", resultDigest: authorityDigest({ reason: error instanceof Error ? error.message : "release-runner-unavailable" }), reconciliationStatus: "unavailable", normalizedProjectionDigest: null });
+    }
   };
   return Object.freeze({
     async dispatch(state: DispatchRequestState) { return await invoke(state) ?? input.fallback.dispatch(state); },
@@ -137,12 +149,12 @@ async function candidate(request: GitHubReleaseRunRequestV1, context: GitHubRele
   if (before && !has(initial, "branch-intent")) throw new TypeError("candidate branch exists without this authorized write intent");
   for (let index = 0; index < plan.files.length; index += 1) {
     const file = plan.files[index], bytesBase64 = byPath.get(file.path)!;
-    if (!has(initial, "blob-created", "index", index)) { assertWriteLive(auth, now); await step(journal, request, "blob-intent", { index, path: file.path }); const result = parseSha(await provider.createBlob({ repository: plan.repository, contentBase64: bytesBase64 }), "blob"); if (result.sha !== file.blobSha) throw new TypeError("provider blob readback does not match expected Git SHA"); await step(journal, request, "blob-created", { index, sha: result.sha }); }
+    if (!has(initial, "blob-created", "index", index)) { assertWriteLive(auth, now); await step(journal, request, "blob-intent", { index, path: file.path }); const result = await providerWrite(() => provider.createBlob({ repository: plan.repository, contentBase64: bytesBase64 }), raw => parseSha(raw, "blob")); if (result.sha !== file.blobSha) throw new TypeError("provider blob readback does not match expected Git SHA"); await step(journal, request, "blob-created", { index, sha: result.sha }); }
   }
   let events = await journal.load(request.requestId);
-  if (!has(events, "tree-created")) { assertWriteLive(auth, now); await step(journal, request, "tree-intent", {}); const tree = parseSha(await provider.createTree({ repository: plan.repository, baseCommit: plan.baseCommit, files: plan.files.map(file => ({ path: file.path, mode: file.mode, blobSha: file.blobSha })) }), "tree"); if (tree.sha !== plan.expectedTreeSha) throw new TypeError("provider tree SHA is not authorized"); await step(journal, request, "tree-created", { sha: tree.sha }); }
+  if (!has(events, "tree-created")) { assertWriteLive(auth, now); await step(journal, request, "tree-intent", {}); const tree = await providerWrite(() => provider.createTree({ repository: plan.repository, baseCommit: plan.baseCommit, files: plan.files.map(file => ({ path: file.path, mode: file.mode, blobSha: file.blobSha })) }), raw => parseSha(raw, "tree")); if (tree.sha !== plan.expectedTreeSha) throw new TypeError("provider tree SHA is not authorized"); await step(journal, request, "tree-created", { sha: tree.sha }); }
   events = await journal.load(request.requestId);
-  if (!has(events, "commit-created")) { assertWriteLive(auth, now); await step(journal, request, "commit-intent", {}); const commit = parseSha(await provider.createCommit({ repository: plan.repository, treeSha: plan.expectedTreeSha, ...plan.commit }), "commit"); if (commit.sha !== plan.expectedCommitSha) throw new TypeError("provider commit SHA is not authorized"); await step(journal, request, "commit-created", { sha: commit.sha }); }
+  if (!has(events, "commit-created")) { assertWriteLive(auth, now); await step(journal, request, "commit-intent", {}); const commit = await providerWrite(() => provider.createCommit({ repository: plan.repository, treeSha: plan.expectedTreeSha, ...plan.commit }), raw => parseSha(raw, "commit")); if (commit.sha !== plan.expectedCommitSha) throw new TypeError("provider commit SHA is not authorized"); await step(journal, request, "commit-created", { sha: commit.sha }); }
   events = await journal.load(request.requestId);
   let existing = parseRef(await provider.getRef({ repository: plan.repository, ref: refName }));
   if (!existing) {
@@ -251,7 +263,7 @@ async function finish(journal: SignedJournal, request: GitHubReleaseRunRequestV1
 async function step(journal: SignedJournal, request: GitHubReleaseRunRequestV1, phase: string, data: Readonly<Record<string, unknown>>): Promise<void> { const events = await journal.load(request.requestId), prior = events.at(-1)?.phase; if (!prior || !TRANSITIONS[prior]?.includes(phase)) { if (events.some(event => event.phase === phase && authorityDigest(event.data) === authorityDigest(data))) return; throw new TypeError(`invalid release saga transition ${prior ?? "absent"} -> ${phase}`); } await journal.append(request.requestId, request.semanticsDigest, phase, data); }
 function has(events: readonly SignedJournalEventV1[], phase: string, key?: string, value?: unknown): boolean { return events.some(event => event.phase === phase && (key === undefined || event.data[key] === value)); }
 function pending(phase: string): GitHubReleaseRunResultV1 { return Object.freeze({ status: "pending-reconciliation", phase, evidenceDigest: null }); }
-function failure(reason: string): DispatchOutcome { return Object.freeze({ kind: "definitive-failure", resultDigest: authorityDigest({ reason }), reconciliationStatus: "not-applied", normalizedProjectionDigest: null }); }
+function failure(reason: string, reconciliationStatus: "not-applied" | "conflict" = "not-applied"): DispatchOutcome { return Object.freeze({ kind: "definitive-failure", resultDigest: authorityDigest({ reason }), reconciliationStatus, normalizedProjectionDigest: null }); }
 function sha256(bytes: Uint8Array): string { return `sha256:${createHash("sha256").update(bytes).digest("hex")}`; }
 function gitBlobSha(bytes: Uint8Array): string { return createHash("sha1").update(`blob ${bytes.byteLength}\0`).update(bytes).digest("hex"); }
 function validateRequest(request: unknown): asserts request is GitHubReleaseRunRequestV1 { const value = exactRecord(request, ["alias", "allocationId", "authorizationHandle", "requestId", "semanticsDigest"], "GitHub release request"); if (!(String(value.alias) in ALIASES) || !/^[a-z0-9][a-z0-9-]{7,127}$/.test(String(value.allocationId)) || !/^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$/.test(String(value.authorizationHandle)) || !/^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$/.test(String(value.requestId)) || !DIGEST.test(String(value.semanticsDigest))) throw new TypeError("GitHub release request is invalid"); }
@@ -268,3 +280,4 @@ function parseMerge(value: unknown): Readonly<{ merged: boolean; sha: string }> 
 function parseManifest(value: unknown): Readonly<{ name: string; version: string }> { const item = exactRecord(value, ["name", "version"], "package manifest"); if (typeof item.name !== "string" || typeof item.version !== "string") throw new TypeError("package manifest is invalid"); return Object.freeze({ name: item.name, version: item.version }); }
 function parseBoolean(value: unknown, label: string): boolean { if (typeof value !== "boolean") throw new TypeError(`${label} is invalid`); return value; }
 async function safeRead<T>(read: () => Promise<unknown>, parse: (value: unknown) => T): Promise<T | null> { let raw: unknown; try { raw = await read(); } catch { return null; } return parse(raw); }
+async function providerWrite<T>(write: () => Promise<unknown>, parse: (value: unknown) => T): Promise<T> { let raw: unknown; try { raw = await write(); } catch (error) { throw new ProviderWriteAmbiguity(error instanceof Error ? error.message : "provider write response is ambiguous"); } return parse(raw); }
