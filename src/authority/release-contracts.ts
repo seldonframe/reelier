@@ -412,7 +412,7 @@ function verifyReceiptEvidence(graph: SignedReleaseReceiptGraphV1, authorization
     receiptExpectation("npm-provenance", value.npm.provenance, "provider-readback"),
     receiptExpectation("tag-immutable-ref", value.tag.immutableRef, "provider-readback"),
   ] as const;
-  const evidence = verifyEvidenceSet(inputs, expected.map(item => item.lane), authorization, "release receipt");
+  const evidence = verifyEvidenceSet(inputs, expected.map(item => item.lane), authorization, "release receipt", graph.signerId);
   for (const item of expected) {
     const body = evidence.get(item.lane)!.value;
     if (body.authorizationBundleDigest !== value.authorizationBundleDigest || body.candidateCommit !== null || body.workflowPath !== null || body.workflowDigest !== null || body.lane !== item.lane || body.observation !== item.observation || body.status !== item.status || body.subjectDigest !== item.subjectDigest || body.count !== item.count || body.freshUntil !== item.freshUntil || body.resultValue !== null) throw new TypeError(`${item.lane} verifier evidence has wrong lane, authorization, subject, observation, or result`);
@@ -428,7 +428,7 @@ function countedExpectation(lane: "human-exceptions" | "human-interruptions", va
   return { lane, subjectDigest: authorityDigest({ count: value.count, evidenceDigests: value.evidenceDigests, lane }), status: value.status, observation: "human-attestation" as const, count: value.count, freshUntil: null, observedAt: null };
 }
 
-function verifyEvidenceSet(inputs: readonly ReleaseEvidenceVerificationV1[], lanes: readonly ReleaseEvidenceLaneV1[], authorization: SignedReleaseAuthorizationBundleV1, label: string): Map<ReleaseEvidenceLaneV1, SignedReleaseVerifierEvidenceV1> {
+function verifyEvidenceSet(inputs: readonly ReleaseEvidenceVerificationV1[], lanes: readonly ReleaseEvidenceLaneV1[], authorization: SignedReleaseAuthorizationBundleV1, label: string, additionalMakerSignerId?: string): Map<ReleaseEvidenceLaneV1, SignedReleaseVerifierEvidenceV1> {
   assertDenseDataArray(inputs, `${label} signed verifier evidence set`);
   if (inputs.length !== lanes.length) throw new TypeError(`${label} signed verifier evidence set is missing or incomplete`);
   const byLane = new Map<ReleaseEvidenceLaneV1, SignedReleaseVerifierEvidenceV1>();
@@ -437,7 +437,7 @@ function verifyEvidenceSet(inputs: readonly ReleaseEvidenceVerificationV1[], lan
     const input = shallowExact(inputs[index], ["evidence", "verifier"], `${label} verification input`);
     const artifact = verifySigned(parseSignedReleaseVerifierEvidenceV1(input.evidence), input.verifier as ReleaseContractVerifierV1, "release-evidence");
     const binding = authorization.value.evidenceVerifierBindings.find(item => item.lane === artifact.value.lane);
-    if (!binding || artifact.signerId !== binding.signerId || publicKeySpkiDigest((input.verifier as ReleaseContractVerifierV1).publicKey) !== binding.publicKeySpkiDigest || artifact.signerId === authorization.signerId || digests.has(artifact.digest) || byLane.has(artifact.value.lane) || !lanes.includes(artifact.value.lane)) throw new TypeError(`${label} evidence is duplicate, aliased, wrong-lane, wrong-signer, or outside trusted authorization bindings`);
+    if (!binding || artifact.signerId !== binding.signerId || publicKeySpkiDigest((input.verifier as ReleaseContractVerifierV1).publicKey) !== binding.publicKeySpkiDigest || artifact.signerId === authorization.signerId || artifact.signerId === additionalMakerSignerId || digests.has(artifact.digest) || byLane.has(artifact.value.lane) || !lanes.includes(artifact.value.lane)) throw new TypeError(`${label} evidence is duplicate, aliased, wrong-lane, wrong-signer, not independent from its maker, or outside trusted authorization bindings`);
     digests.add(artifact.digest);
     byLane.set(artifact.value.lane, artifact);
   }

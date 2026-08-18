@@ -2476,7 +2476,9 @@ nothing. Offline verification MUST receive the complete evidence set and MUST
 refuse missing, duplicate, aliased, wrong-lane, wrong-authorization,
 wrong-subject, wrong-signer, untrusted-key, or tampered evidence. A caller-
 supplied public key is trusted only when its signer ID and SPKI digest equal the
-binding in a previously signature-verified authorization.
+binding in a previously signature-verified authorization. A receipt-evidence
+signer MUST also be distinct from both the authorization signer and the signed
+receipt-graph maker.
 
 Receipt success evaluation is inseparable from that verification: no public
 raw graph-to-success operation exists. The verifier returns an evaluation only
