@@ -146,7 +146,7 @@ test("release provider execution stays behind the prepared commit boundary", asy
   const projection = { v: "reelier.materialized-http-request/v1" as const, method: "POST" as const, origin: "https://api.github.test", normalizedPath: "/internal/github-release", normalizedQuery: "", reviewedHeaders: {}, bodyDigest: digest("a") };
   const materializedRequestDigest = materializedHttpRequestDigest(projection);
   const fallback = {
-    async prepare() { return createPreparedDispatch({ description: { v: "reelier.prepared-dispatch-description/v1", routeDigest: digest("b"), materializedRequestDigest, projection, authorityGeneration: "generation_1", authorityExpiresAt: "2026-08-18T17:00:00.000Z", absoluteDeadlineMs: 60_000, reservationId: "reservation_1", allocationId: "release-candidate-branch-01" }, monotonicNow: () => 0, wallClockNow: () => Date.parse("2026-08-18T06:00:00.000Z"), send: async () => { fallbackWrites += 1; return { kind: "acknowledged", resultDigest: digest("c") }; } }); },
+    async prepare() { return createPreparedDispatch({ description: { v: "reelier.prepared-dispatch-description/v1", routeDigest: digest("b"), materializedRequestDigest, projection, authorityGeneration: "generation_1", authorityExpiresAt: "2099-08-18T17:00:00.000Z", absoluteDeadlineMs: performance.now() + 60_000, reservationId: "reservation_1", allocationId: "release-candidate-branch-01" }, send: async () => { fallbackWrites += 1; return { kind: "acknowledged", resultDigest: digest("c") }; } }); },
     async dispatch() { fallbackWrites += 1; return { kind: "acknowledged" as const, resultDigest: digest("d") }; },
   };
   const runner = { recover: async () => [], run: async () => { releaseWrites += 1; return { status: "verified" as const, phase: "candidate-verified", evidenceDigest: digest("e") }; } };
@@ -155,7 +155,7 @@ test("release provider execution stays behind the prepared commit boundary", asy
   const state = { reservation: { reservationId: "reservation_1", state: "reserved", intent: { executionContext: { allocationId: "release-candidate-branch-01" } } }, effect, effectDigest: digest("f"), effectCanonicalBase64: "" } as any;
   const prepared = await adapter.prepare!(state);
   assert.equal(releaseWrites, 0);
-  const lease = createDispatchCommitLease({ reservationId: "reservation_1", allocationId: "release-candidate-branch-01", preparedDigest: materializedRequestDigest, authorityGeneration: "generation_1", authorityExpiresAt: "2026-08-18T17:00:00.000Z", absoluteDeadlineMs: 60_000, commitGeneration: "commit_1" });
+  const lease = createDispatchCommitLease({ reservationId: "reservation_1", allocationId: "release-candidate-branch-01", preparedDigest: materializedRequestDigest, authorityGeneration: "generation_1", authorityExpiresAt: "2099-08-18T17:00:00.000Z", absoluteDeadlineMs: prepared.description.absoluteDeadlineMs, commitGeneration: "commit_1" });
   assert.equal((await consumePreparedDispatch(prepared, lease)).kind, "acknowledged");
   assert.deepEqual([releaseWrites, fallbackWrites], [1, 0]);
 });

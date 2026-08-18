@@ -6,6 +6,7 @@ import { isProxy } from "node:util/types";
 import { authorityDigest } from "../wire.js";
 import { assertVerifiedReleaseAuthorizationV1, type ReleaseContractSignerV1, type ReleaseProviderEffectV1, type VerifiedReleaseAuthorizationV1 } from "../release-contracts.js";
 import type { DispatchAdapter, DispatchOutcome, DispatchPublication, DispatchRequestState } from "./dispatch.js";
+import { createPreparedDispatch, describePreparedDispatch } from "./prepared-dispatch.js";
 import { createSignedJournal, type SignedJournal, type SignedJournalEventV1 } from "./signed-journal.js";
 import { createGitHubReleaseProviderEvidence } from "./github-release-evidence.js";
 
@@ -159,8 +160,10 @@ export function createGitHubReleaseDispatchAdapter(input: Readonly<{ runner: Git
   };
   return Object.freeze({
     ...(input.fallback.prepare ? { async prepare(state: DispatchRequestState) {
-      if (ENDPOINTS[inertEndpointId(state.effect) ?? ""]) throw new TypeError("release dispatch requires the dedicated prepared send boundary");
-      return input.fallback.prepare!(state);
+      const fallbackPrepared = await input.fallback.prepare!(state);
+      if (!ENDPOINTS[inertEndpointId(state.effect) ?? ""]) return fallbackPrepared;
+      const description = describePreparedDispatch(fallbackPrepared);
+      return createPreparedDispatch({ description, send: async () => await invoke(state) ?? failure("dedicated-release-runner-absent") });
     } } : {}),
     async dispatch(state: DispatchRequestState) { return await invoke(state) ?? input.fallback.dispatch(state); },
     async reconcile(state: DispatchRequestState, outcome: DispatchOutcome) { return await invoke(state) ?? (input.fallback.reconcile ? input.fallback.reconcile(state, outcome) : outcome); },
