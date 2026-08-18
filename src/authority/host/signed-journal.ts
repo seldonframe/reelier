@@ -1,5 +1,5 @@
-import type { KeyObject } from "node:crypto";
-import { open, mkdir, readdir, readFile, rename, unlink } from "node:fs/promises";
+import { randomUUID, type KeyObject } from "node:crypto";
+import { open, mkdir, readdir, readFile, rename, stat, unlink } from "node:fs/promises";
 import path from "node:path";
 import { authorityCanonicalBytes, authorityDigest } from "../wire.js";
 import { signAuthorityDigest, verifyAuthoritySignature } from "../crypto.js";
@@ -87,37 +87,10 @@ export async function createSignedJournal(input: Readonly<{ rootDir: string; jou
   };
   const withLease = async <T>(scope: string, operation: () => Promise<T>): Promise<T> => {
     if (!/^[a-z0-9][a-z0-9._-]{7,127}$/.test(scope)) throw new TypeError("signed journal lease scope is invalid");
-    const leasePath = path.join(input.rootDir, `${authorityDigest({ journalId: input.journalId, scope }).slice(7)}.lease`);
-    const started = Date.now();
-    for (;;) {
-      let handle;
-      try {
-        handle = await open(leasePath, "wx", 0o600);
-        await handle.writeFile(authorityCanonicalBytes({ pid: process.pid, acquiredAt: new Date().toISOString(), scope }));
-        await handle.sync();
-        try { return await operation(); }
-        finally { await handle.close(); await unlink(leasePath).catch(() => undefined); await fsyncDirectory(input.rootDir); }
-      } catch (error: any) {
-        if (handle) await handle.close().catch(() => undefined);
-        if (error?.code !== "EEXIST") throw error;
-        if (await retireDeadLease(leasePath)) continue;
-        if (Date.now() - started > 10_000) throw new TypeError("signed journal saga lease is busy");
-        await new Promise(resolve => setTimeout(resolve, 5));
-      }
-    }
+    const leaseQueue = path.join(input.rootDir, `${authorityDigest({ journalId: input.journalId, scope }).slice(7)}.lease.d`);
+    return withTicketLease(leaseQueue, scope, operation);
   };
   return Object.freeze({ append, listRequestIds, load, withLease });
-}
-
-async function retireDeadLease(leasePath: string): Promise<boolean> {
-  let value: unknown;
-  try { value = JSON.parse(await readFile(leasePath, "utf8")); } catch { return false; }
-  if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).sort().join("\0") !== ["acquiredAt", "pid", "scope"].sort().join("\0")) return false;
-  const pid = Number((value as Record<string, unknown>).pid);
-  if (!Number.isSafeInteger(pid) || pid <= 0) return false;
-  try { process.kill(pid, 0); return false; }
-  catch (error: any) { if (error?.code !== "ESRCH") return false; }
-  try { await unlink(leasePath); return true; } catch (error: any) { return error?.code === "ENOENT"; }
 }
 
 function parseEvent(value: SignedJournalEventV1, requestId: string, sequence: number, priorDigest: string | null, semanticsDigest: string | null): Omit<SignedJournalEventV1, "digest" | "signature" | "signerId"> {
@@ -141,10 +114,69 @@ async function reconcileHead(directory: string, events: readonly SignedJournalEv
 }
 
 async function withExclusiveLock<T>(directory: string, operation: () => Promise<T>): Promise<T> {
-  const lockPath = path.join(directory, "request.lock");
-  let handle;
-  try { handle = await open(lockPath, "wx", 0o600); } catch (error: any) { if (error?.code === "EEXIST") throw new TypeError("signed journal request is already locked"); throw error; }
-  try { await handle.sync(); return await operation(); } finally { await handle.close(); await unlink(lockPath).catch(() => undefined); }
+  return withTicketLease(path.join(directory, "request.lock.d"), "request", operation);
+}
+
+/** Persistent monotonic tickets avoid check/unlink races: no process ever removes or renames
+ * another owner's claim. Released and dead lower tickets are ignored; partial crash tickets are
+ * conservatively held briefly, then skipped before any caller enters the critical section. */
+async function withTicketLease<T>(queueDir: string, scope: string, operation: () => Promise<T>): Promise<T> {
+  await mkdir(queueDir, { recursive: true });
+  const nonce = randomUUID(), started = Date.now();
+  let ticket = -1, ticketPath = "";
+  for (;;) {
+    const names = await readdir(queueDir);
+    const numbers = names.map(name => /^ticket-(\d{12})\.json$/.exec(name)).filter((match): match is RegExpExecArray => Boolean(match)).map(match => Number(match[1]));
+    ticket = (numbers.length === 0 ? -1 : Math.max(...numbers)) + 1;
+    ticketPath = path.join(queueDir, `ticket-${String(ticket).padStart(12, "0")}.json`);
+    let handle;
+    try {
+      handle = await open(ticketPath, "wx", 0o600);
+      await handle.writeFile(authorityCanonicalBytes({ acquiredAt: new Date().toISOString(), nonce, pid: process.pid, scope }));
+      await handle.sync();
+      await handle.close();
+      await fsyncDirectory(queueDir);
+      break;
+    } catch (error: any) {
+      await handle?.close().catch(() => undefined);
+      if (error?.code !== "EEXIST") throw error;
+    }
+  }
+  const releasePath = `${ticketPath}.released`;
+  try {
+    for (;;) {
+      let blocked = false;
+      for (let prior = 0; prior < ticket; prior += 1) {
+        const priorPath = path.join(queueDir, `ticket-${String(prior).padStart(12, "0")}.json`);
+        if (await ticketIsActive(priorPath)) { blocked = true; break; }
+      }
+      if (!blocked) return await operation();
+      if (Date.now() - started > 10_000) throw new TypeError("signed journal lease is busy");
+      await new Promise(resolve => setTimeout(resolve, 5));
+    }
+  } finally {
+    await writeExclusiveFsync(releasePath, authorityCanonicalBytes({ nonce, releasedAt: new Date().toISOString() }));
+    await fsyncDirectory(queueDir);
+  }
+}
+
+async function ticketIsActive(ticketPath: string): Promise<boolean> {
+  try { await stat(`${ticketPath}.released`); return false; } catch (error: any) { if (error?.code !== "ENOENT") throw error; }
+  let raw: string;
+  try { raw = await readFile(ticketPath, "utf8"); } catch (error: any) { return error?.code === "ENOENT" ? false : Promise.reject(error); }
+  let value: unknown;
+  try { value = JSON.parse(raw); } catch {
+    const info = await stat(ticketPath);
+    return Date.now() - info.mtimeMs < 250;
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).sort().join("\0") !== ["acquiredAt", "nonce", "pid", "scope"].sort().join("\0")) {
+    const info = await stat(ticketPath);
+    return Date.now() - info.mtimeMs < 250;
+  }
+  const pid = Number((value as Record<string, unknown>).pid);
+  if (!Number.isSafeInteger(pid) || pid <= 0) return false;
+  try { process.kill(pid, 0); return true; }
+  catch (error: any) { return error?.code !== "ESRCH"; }
 }
 async function writeExclusiveFsync(file: string, bytes: Uint8Array): Promise<void> { const handle = await open(file, "wx", 0o600); try { await handle.writeFile(bytes); await handle.sync(); } finally { await handle.close(); } }
 async function fsyncDirectory(directory: string): Promise<void> { try { const handle = await open(directory, "r"); try { await handle.sync(); } finally { await handle.close(); } } catch (error: any) { if (process.platform !== "win32") throw error; } }
