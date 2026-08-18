@@ -32,8 +32,10 @@ function releaseInputs() {
     changedPaths: ["CHANGELOG.md", "src/cli.ts", "test/cli-subcommand-help.test.ts"],
     destinationBranch: "main",
     qualityEvidence: {
+      coverageStatus: "non-regressed",
       coverageEvidenceDigest: digest("6"),
       fullTestEvidenceDigest: digest("7"),
+      fullTestsStatus: "verified",
       headCommit: sha("a"),
       mutationEvidenceDigest: digest("8"),
       mutationScoreBasisPoints: 9_137,
@@ -46,7 +48,8 @@ function releaseInputs() {
     workflowCommitments: [
       { digest: digest("3"), path: ".github/workflows/ci.yml" },
       { digest: digest("4"), path: ".github/workflows/publish-ghcr.yml" },
-      { digest: digest("5"), path: ".github/workflows/publish-npm.yml" },
+      { digest: digest("5"), path: ".github/workflows/publish-mcp.yml" },
+      { digest: digest("a"), path: ".github/workflows/publish-npm.yml" },
     ],
   }, signer);
   const policy = createSignedReleasePolicyV1({
