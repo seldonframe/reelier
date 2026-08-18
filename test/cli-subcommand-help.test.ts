@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -20,6 +21,19 @@ const cliPath = fileURLToPath(new URL("../src/cli.js", import.meta.url));
 const cliSourcePath = fileURLToPath(new URL("../../src/cli.ts", import.meta.url));
 const MAX_RSS_KIB = 256 * 1024;
 const PERMISSION_ARGS = ["--permission", "--allow-fs-read=*"] as const;
+const NETWORK_CALLABLE_SURFACES = {
+  net: ["Server", "Socket", "Stream", "_createServerHandle", "_normalizeArgs", "connect", "createConnection", "createServer", "getDefaultAutoSelectFamily", "getDefaultAutoSelectFamilyAttemptTimeout", "isIP", "isIPv4", "isIPv6", "setDefaultAutoSelectFamily", "setDefaultAutoSelectFamilyAttemptTimeout"],
+  netSocket: ["_destroy", "_final", "_getpeername", "_getsockname", "_onTimeout", "_read", "_reset", "_unrefTimer", "_write", "_writeGeneric", "_writev", "address", "connect", "constructor", "destroySoon", "end", "pause", "read", "ref", "resetAndDestroy", "resume", "setKeepAlive", "setNoDelay", "setTimeout", "unref"],
+  netServer: ["_emitCloseIfDrained", "_listen2", "_setupWorker", "address", "close", "constructor", "getConnections", "listen", "ref", "unref"],
+  tls: ["SecureContext", "Server", "TLSSocket", "checkServerIdentity", "connect", "convertALPNProtocols", "createSecureContext", "createServer", "getCACertificates", "getCiphers", "setDefaultCACertificates"],
+  tlsSocket: ["_destroySSL", "_emitTLSError", "_finishInit", "_handleTimeout", "_init", "_releaseControl", "_start", "_tlsError", "_wrapHandle", "constructor", "disableRenegotiation", "enableTrace", "exportKeyingMaterial", "getCertificate", "getCipher", "getEphemeralKeyInfo", "getFinished", "getPeerCertificate", "getPeerFinished", "getPeerX509Certificate", "getProtocol", "getSession", "getSharedSigalgs", "getTLSTicket", "getX509Certificate", "isSessionReused", "renegotiate", "setKeyCert", "setMaxSendFragment", "setServername", "setSession"],
+  dgram: ["Socket", "_createSocketHandle", "createSocket"],
+  dgramSocket: ["_healthCheck", "_stopReceiving", "addMembership", "addSourceSpecificMembership", "address", "bind", "close", "connect", "constructor", "disconnect", "dropMembership", "dropSourceSpecificMembership", "getRecvBufferSize", "getSendBufferSize", "getSendQueueCount", "getSendQueueSize", "ref", "remoteAddress", "send", "sendto", "setBroadcast", "setMulticastInterface", "setMulticastLoopback", "setMulticastTTL", "setRecvBufferSize", "setSendBufferSize", "setTTL", "unref"],
+  dns: ["Resolver", "getDefaultResultOrder", "getServers", "lookup", "lookupService", "resolve", "resolve4", "resolve6", "resolveAny", "resolveCaa", "resolveCname", "resolveMx", "resolveNaptr", "resolveNs", "resolvePtr", "resolveSoa", "resolveSrv", "resolveTlsa", "resolveTxt", "reverse", "setDefaultResultOrder", "setServers"],
+  dnsResolver: ["constructor", "resolve", "resolve4", "resolve6", "resolveAny", "resolveCaa", "resolveCname", "resolveMx", "resolveNaptr", "resolveNs", "resolvePtr", "resolveSoa", "resolveSrv", "resolveTlsa", "resolveTxt", "reverse"],
+  dnsPromises: ["Resolver", "getDefaultResultOrder", "getServers", "lookup", "lookupService", "resolve", "resolve4", "resolve6", "resolveAny", "resolveCaa", "resolveCname", "resolveMx", "resolveNaptr", "resolveNs", "resolvePtr", "resolveSoa", "resolveSrv", "resolveTlsa", "resolveTxt", "reverse", "setDefaultResultOrder", "setServers"],
+  dnsPromisesResolver: ["constructor", "resolve", "resolve4", "resolve6", "resolveAny", "resolveCaa", "resolveCname", "resolveMx", "resolveNaptr", "resolveNs", "resolvePtr", "resolveSoa", "resolveSrv", "resolveTlsa", "resolveTxt", "reverse"],
+} as const;
 
 const ORACLE = String.raw`
 const { syncBuiltinESMExports } = require("node:module");
@@ -31,15 +45,20 @@ const block = (target, label, keys) => {
 // and process.binding. Patch the lowest network surfaces still callable by
 // application code: socket/server/datagram instances and both DNS APIs.
 const net = require("node:net");
-block(net, "node:net", ["connect", "createConnection", "createServer"]);
+block(net, "node:net", ["_createServerHandle", "connect", "createConnection", "createServer"]);
 block(net.Socket.prototype, "node:net.Socket", ["connect"]);
 block(net.Server.prototype, "node:net.Server", ["listen"]);
 const tls = require("node:tls");
 block(tls, "node:tls", ["connect", "createServer"]);
 block(tls.TLSSocket.prototype, "node:tls.TLSSocket", ["connect"]);
 const dgram = require("node:dgram");
-block(dgram, "node:dgram", ["createSocket"]);
-block(dgram.Socket.prototype, "node:dgram.Socket", ["bind", "connect", "send", "sendto"]);
+block(dgram, "node:dgram", ["_createSocketHandle", "createSocket"]);
+block(dgram.Socket.prototype, "node:dgram.Socket", [
+  "_stopReceiving", "addMembership", "addSourceSpecificMembership", "bind", "close", "connect",
+  "disconnect", "dropMembership", "dropSourceSpecificMembership", "ref", "send", "sendto",
+  "setBroadcast", "setMulticastInterface", "setMulticastLoopback", "setMulticastTTL",
+  "setRecvBufferSize", "setSendBufferSize", "setTTL", "unref",
+]);
 const dnsKeys = ["lookup", "lookupService", "resolve", "resolve4", "resolve6", "resolveAny", "resolveCaa", "resolveCname", "resolveMx", "resolveNaptr", "resolveNs", "resolvePtr", "resolveSoa", "resolveSrv", "resolveTlsa", "resolveTxt", "reverse"];
 const dns = require("node:dns");
 block(dns, "node:dns", dnsKeys);
@@ -87,7 +106,30 @@ test("dedicated help inventory exactly matches main's dispatch switch", async ()
   assert.deepEqual([...DISPATCH_COMMANDS].sort(), actual);
 });
 
-test("the help oracle closes filesystem, subprocess, and low-level network escape paths", async () => {
+test("network oracle inventory exactly matches Node's callable network surfaces", () => {
+  const callableOwnProperties = (target: object) => Object.getOwnPropertyNames(target)
+    .filter((key) => typeof Object.getOwnPropertyDescriptor(target, key)?.value === "function")
+    .sort();
+  const require = createRequire(import.meta.url);
+  const net = require("node:net") as typeof import("node:net");
+  const tls = require("node:tls") as typeof import("node:tls");
+  const dgram = require("node:dgram") as typeof import("node:dgram");
+  const dns = require("node:dns") as typeof import("node:dns");
+  const dnsPromises = require("node:dns/promises") as typeof import("node:dns/promises");
+  assert.deepEqual(callableOwnProperties(net), [...NETWORK_CALLABLE_SURFACES.net].sort());
+  assert.deepEqual(callableOwnProperties(net.Socket.prototype), [...NETWORK_CALLABLE_SURFACES.netSocket].sort());
+  assert.deepEqual(callableOwnProperties(net.Server.prototype), [...NETWORK_CALLABLE_SURFACES.netServer].sort());
+  assert.deepEqual(callableOwnProperties(tls), [...NETWORK_CALLABLE_SURFACES.tls].sort());
+  assert.deepEqual(callableOwnProperties(tls.TLSSocket.prototype), [...NETWORK_CALLABLE_SURFACES.tlsSocket].sort());
+  assert.deepEqual(callableOwnProperties(dgram), [...NETWORK_CALLABLE_SURFACES.dgram].sort());
+  assert.deepEqual(callableOwnProperties(dgram.Socket.prototype), [...NETWORK_CALLABLE_SURFACES.dgramSocket].sort());
+  assert.deepEqual(callableOwnProperties(dns), [...NETWORK_CALLABLE_SURFACES.dns].sort());
+  assert.deepEqual(callableOwnProperties(dns.Resolver.prototype), [...NETWORK_CALLABLE_SURFACES.dnsResolver].sort());
+  assert.deepEqual(callableOwnProperties(dnsPromises), [...NETWORK_CALLABLE_SURFACES.dnsPromises].sort());
+  assert.deepEqual(callableOwnProperties(dnsPromises.Resolver.prototype), [...NETWORK_CALLABLE_SURFACES.dnsPromisesResolver].sort());
+});
+
+test("the help oracle closes filesystem, subprocess, and low-level network escape paths", async (t) => {
   const sandbox = await mkdtemp(path.join(os.tmpdir(), "reelier-cli-help-escape-oracle-"));
   const oraclePath = path.join(sandbox, "oracle.cjs");
   await writeFile(oraclePath, ORACLE);
@@ -97,8 +139,11 @@ test("the help oracle closes filesystem, subprocess, and low-level network escap
     ["execSync", `require("node:child_process").execSync(${JSON.stringify(process.execPath)}, ["--version"])`],
     ["execFileSync", `require("node:child_process").execFileSync(${JSON.stringify(process.execPath)}, ["--version"])`],
     ["direct Socket", `new (require("node:net").Socket)().connect(9, "127.0.0.1")`],
+    ["raw TCP server handle", `require("node:net")._createServerHandle("127.0.0.1", 0, 4)`],
     ["direct TLSSocket", `new (require("node:tls").TLSSocket)(new (require("node:net").Socket)()).connect(9, "127.0.0.1")`],
     ["direct datagram Socket", `new (require("node:dgram").Socket)("udp4").send("probe", 9, "127.0.0.1")`],
+    ["raw datagram handle", `require("node:dgram")._createSocketHandle("127.0.0.1", 0, "udp4")`],
+    ["datagram addMembership", `new (require("node:dgram").Socket)("udp4").addMembership("224.0.0.114")`],
     ["DNS promises lookup", `require("node:dns/promises").lookup("localhost")`],
     ["DNS promises top-level TLSA", `(() => { const dns = require("node:dns/promises"); dns.setServers(["127.0.0.1"]); return dns.resolveTlsa("localhost"); })()`],
     ["DNS promises TLSA", `(() => { const dns = require("node:dns/promises"); const resolver = new dns.Resolver(); resolver.setServers(["127.0.0.1"]); return resolver.resolveTlsa("localhost"); })()`],
@@ -106,19 +151,21 @@ test("the help oracle closes filesystem, subprocess, and low-level network escap
   ] as const;
   try {
     for (const [name, expression] of probes) {
-      const source = `(async () => { try { await (${expression}); console.error("REELIER_HELP_ORACLE_ESCAPE"); process.exitCode = 0; } catch (error) { console.error(error && error.message); process.exitCode = 23; } })()`;
-      const result = spawnSync(process.execPath, [...PERMISSION_ARGS, "--require", oraclePath, "-e", source], {
-        cwd: sandbox,
-        env: { HOME: sandbox, USERPROFILE: sandbox, APPDATA: sandbox, LOCALAPPDATA: sandbox, TEMP: sandbox, TMP: sandbox, PATH: process.env.PATH ?? "" },
-        encoding: "utf8",
-        timeout: 1_500,
-        windowsHide: true,
+      await t.test(name, () => {
+        const source = `(async () => { try { await (${expression}); console.error("REELIER_HELP_ORACLE_ESCAPE"); process.exitCode = 0; } catch (error) { console.error(error && error.message); process.exitCode = 23; } })()`;
+        const result = spawnSync(process.execPath, [...PERMISSION_ARGS, "--require", oraclePath, "-e", source], {
+          cwd: sandbox,
+          env: { HOME: sandbox, USERPROFILE: sandbox, APPDATA: sandbox, LOCALAPPDATA: sandbox, TEMP: sandbox, TMP: sandbox, PATH: process.env.PATH ?? "" },
+          encoding: "utf8",
+          timeout: 1_500,
+          windowsHide: true,
+        });
+        const output = `${result.stdout}${result.stderr}`;
+        assert.equal(result.error, undefined, `${name} oracle probe did not complete: ${result.error?.message}`);
+        assert.equal(result.signal, null, `${name} oracle probe was terminated by ${result.signal}`);
+        assert.equal(result.status, 23, `${name} bypassed the help oracle:\n${output}`);
+        assert.match(output, /REELIER_HELP_ORACLE side effect|Access to this API has been restricted/, `${name} was not denied by the help oracle:\n${output}`);
       });
-      const output = `${result.stdout}${result.stderr}`;
-      assert.equal(result.error, undefined, `${name} oracle probe did not complete: ${result.error?.message}`);
-      assert.equal(result.signal, null, `${name} oracle probe was terminated by ${result.signal}`);
-      assert.equal(result.status, 23, `${name} bypassed the help oracle:\n${output}`);
-      assert.match(output, /REELIER_HELP_ORACLE side effect|Access to this API has been restricted/, `${name} was not denied by the help oracle:\n${output}`);
     }
   } finally {
     await rm(sandbox, { recursive: true, force: true });
