@@ -24,7 +24,7 @@ function releaseAuthorityFixture() {
   const files = ["CHANGELOG.md", "src/cli.ts", "test/cli-subcommand-help.test.ts"].map((filePath, index) => ({ blobSha: blobSha(contents[index]!), contentDigest: `sha256:${createHash("sha256").update(contents[index]!).digest("hex")}`, mode: "100644" as const, path: filePath }));
   const candidateTreeDigest = authorityDigest({ v: "reelier.release-candidate-tree/v1", files });
   const workflows = [{ digest: digest("3"), path: ".github/workflows/ci.yml" }, { digest: digest("4"), path: ".github/workflows/docker-publish.yml" }, { digest: digest("5"), path: ".github/workflows/mcp-publish.yml" }, { digest: digest("6"), path: ".github/workflows/npm-publish.yml" }];
-  const operationPlan = createSignedReleaseOperationPlanV1({ v: "reelier.release-operation-plan/v1", repository: "seldonframe/reelier", baseCommit: "e600ad5c2dc5e1bde0714915e7a84980c8d5602b", candidateBranch: "reelier/release/0.32.1", destinationBranch: "main", tag: "v0.32.1", candidateTreeDigest, expectedTreeSha: gitSha("e"), expectedCommitSha: gitSha("a"), expectedSquashCommitSha: gitSha("f"), files, commit: { author: { name: "SeldonFrame Release", email: "release@seldonframe.com", date: "2026-08-18T05:00:00.000Z" }, committer: { name: "SeldonFrame Release", email: "release@seldonframe.com", date: "2026-08-18T05:00:00.000Z" }, message: "release: v0.32.1", parentSha: "e600ad5c2dc5e1bde0714915e7a84980c8d5602b" }, pullRequest: { base: "main", head: "reelier/release/0.32.1", draft: true, title: "Release v0.32.1", body: "Governed release v0.32.1" }, squash: { commitTitle: "Release v0.32.1", commitMessage: "release: v0.32.1" }, requiredChecks: ["coverage", "full-tests", "mutation"], workflowCommitments: workflows, npmPreflight: { packageName: "reelier", version: "0.32.1", versionMustBeAbsent: true } }, authoritySigner);
+  const operationPlan = createSignedReleaseOperationPlanV1({ v: "reelier.release-operation-plan/v1", repository: "seldonframe/reelier", baseCommit: "e600ad5c2dc5e1bde0714915e7a84980c8d5602b", candidateBranch: "reelier/release/0.32.1", destinationBranch: "main", tag: "v0.32.1", candidateTreeDigest, expectedTreeSha: gitSha("e"), expectedCommitSha: gitSha("a"), files, commit: { author: { name: "SeldonFrame Release", email: "release@seldonframe.com", date: "2026-08-18T05:00:00.000Z" }, committer: { name: "SeldonFrame Release", email: "release@seldonframe.com", date: "2026-08-18T05:00:00.000Z" }, message: "release: v0.32.1", parentSha: "e600ad5c2dc5e1bde0714915e7a84980c8d5602b" }, pullRequest: { base: "main", head: "reelier/release/0.32.1", draft: true, title: "Release v0.32.1", body: "Governed release v0.32.1" }, squash: { commitTitle: "Release v0.32.1", commitMessage: "release: v0.32.1" }, requiredChecks: ["coverage", "full-tests", "mutation"], workflowCommitments: workflows, npmPreflight: { packageName: "reelier", version: "0.32.1", versionMustBeAbsent: true } }, authoritySigner);
   const candidateManifest = createSignedStagedCandidateManifestV1({ v: "reelier.staged-candidate-manifest/v1", repository: "seldonframe/reelier", baseCommit: "e600ad5c2dc5e1bde0714915e7a84980c8d5602b", destinationBranch: "main", branch: "reelier/release/0.32.1", tag: "v0.32.1", packageName: "reelier", packageVersion: "0.32.1", candidateCommit: gitSha("a"), candidateTreeDigest, changedBytes: contents.reduce((sum, value) => sum + value.length, 0), changedPaths: files.map(file => file.path), packedTarballDigest: digest("2"), workflowCommitments: workflows, qualityEvidence: { coverageEvidenceDigest: digest("7"), coverageStatus: "non-regressed", fullTestEvidenceDigest: digest("8"), fullTestsStatus: "verified", headCommit: gitSha("a"), mutationEvidenceDigest: digest("9"), mutationScoreBasisPoints: 9_500 } }, authoritySigner);
   const policy = createSignedReleasePolicyV1({ v: "reelier.release-policy/v1", allowedPaths: files.map(file => file.path), destinations: ["ghcr", "mcp-registry", "npm"], effectAllocations: ["candidate-branch", "draft-pr", "exact-sha-merge", "non-force-tag"], expirySeconds: 43_200, forbiddenChangeClasses: ["authority-contract", "credential", "dependency", "generated-contract", "lockfile", "policy", "release-script", "workflow"], maxChangedBytes: 65_536, maxChangedFiles: 3 }, authoritySigner);
   const effects = ["candidate-branch", "draft-pr", "exact-sha-merge", "non-force-tag"] as const;
@@ -68,7 +68,7 @@ test("release runner refuses raw or wrong allocation authority before provider d
       provider: provider as never,
       now: () => new Date("2026-08-18T06:00:00.000Z"),
     });
-    await assert.rejects(() => runner.run({ alias: "github_release_candidate_publish_v1", authorizationHandle: "release_auth_1", requestId: "request_1", semanticsDigest: authorityDigest({ request: 1 }) }), /verified authorization|allocation|brand/i);
+    await assert.rejects(() => runner.run({ alias: "github_release_candidate_publish_v1", allocationId: "release-candidate-branch-01", authorizationHandle: "release_auth_1", requestId: "request_1", semanticsDigest: authorityDigest({ request: 1 }) }), /verified authorization|allocation|brand/i);
     assert.equal(calls, 0);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
@@ -89,13 +89,14 @@ test("four-operation release saga converges after ambiguous merge and tag withou
     createPullRequest: async (metadata: any) => (pullRequest = { ...metadata, number: 1, merged: false, headSha: gitSha("a") }),
     getPullRequest: async () => pullRequest,
     getChecks: async () => ["coverage", "full-tests", "mutation"].map(name => ({ name, status: "success", workflowDigest: digest("3") })),
-    mergePullRequest: async () => { mergeCalls += 1; pullRequest = { ...pullRequest, merged: true, mergeCommitSha: gitSha("f") }; refs.set("heads/main", gitSha("f")); throw new Error("socket lost after merge"); },
+    mergePullRequest: async () => { mergeCalls += 1; pullRequest = { ...pullRequest, merged: true, mergeCommitSha: gitSha("9") }; refs.set("heads/main", gitSha("9")); return { merged: true, sha: gitSha("9") }; },
     npmVersionExists: async () => false,
     readPackageManifest: async () => ({ name: "reelier", version: "0.32.1" }),
   };
   try {
     const runner = await createGitHubReleaseRunner({ rootDir: root, journalSigner: { signerId: "release-journal-2026", privateKey: journalKeys.privateKey, publicKey: journalKeys.publicKey }, evidenceSigner: fixture.evidenceSigner, authorizationResolver: async () => fixture.context, provider, now: () => new Date("2026-08-18T06:00:00.000Z") });
-    const invoke = (alias: any, requestId: string) => runner.run({ alias, authorizationHandle: "release_auth_1", requestId, semanticsDigest: authorityDigest({ alias, requestId }) });
+    const allocations: Record<string, string> = { github_release_candidate_publish_v1: "release-candidate-branch-01", github_release_pr_ensure_v1: "release-draft-pr-01", github_release_pr_merge_v1: "release-exact-sha-merge-01", github_release_tag_create_v1: "release-non-force-tag-01" };
+    const invoke = (alias: any, requestId: string) => runner.run({ alias, allocationId: allocations[alias], authorizationHandle: "release_auth_1", requestId, semanticsDigest: authorityDigest({ alias, requestId }) });
     assert.equal((await invoke("github_release_candidate_publish_v1", "candidate_1")).status, "verified");
     assert.equal((await invoke("github_release_pr_ensure_v1", "pr_1")).status, "verified");
     assert.equal((await invoke("github_release_pr_merge_v1", "merge_1")).status, "verified");
@@ -122,7 +123,7 @@ test("concurrent duplicate candidate requests serialize and converge to one prov
   };
   try {
     const runner = await createGitHubReleaseRunner({ rootDir: root, journalSigner: { signerId: "release-journal-2026", privateKey: journalKeys.privateKey, publicKey: journalKeys.publicKey }, evidenceSigner: fixture.evidenceSigner, authorizationResolver: async () => fixture.context, provider, now: () => new Date("2026-08-18T06:00:00.000Z") });
-    const request = { alias: "github_release_candidate_publish_v1" as const, authorizationHandle: "release_auth_1", requestId: "candidate_concurrent", semanticsDigest: authorityDigest({ candidate: "concurrent" }) };
+    const request = { alias: "github_release_candidate_publish_v1" as const, allocationId: "release-candidate-branch-01", authorizationHandle: "release_auth_1", requestId: "candidate_concurrent", semanticsDigest: authorityDigest({ candidate: "concurrent" }) };
     const results = await Promise.all([runner.run(request), runner.run(request)]);
     assert.deepEqual(results.map(result => result.status), ["verified", "verified"]);
     assert.equal(blobCalls, 3);
