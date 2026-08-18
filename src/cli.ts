@@ -4603,7 +4603,7 @@ function isReadOnlySubcommandHelp(cmd: string | undefined, rest: string[]): bool
   return cmd !== undefined && HELP_DISPATCH_COMMANDS.has(cmd) && rest.length === 1 && (rest[0] === "--help" || rest[0] === "-h");
 }
 
-async function main(): Promise<number> {
+export async function main(): Promise<number> {
   const [, , cmd, ...rest] = process.argv;
 
   if (cmd === "--version" || cmd === "-v") {
