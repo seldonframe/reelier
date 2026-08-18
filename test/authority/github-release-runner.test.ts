@@ -101,7 +101,7 @@ test("four-operation release saga converges after ambiguous merge and tag withou
     createPullRequest: async (metadata: any) => (pullRequest = { base: metadata.base, body: metadata.body, draft: metadata.draft, head: metadata.head, headSha: gitSha("a"), mergeCommitSha: null, merged: false, number: 1, title: metadata.title }),
     getPullRequest: async () => pullRequest,
     getChecks: async () => ["coverage", "full-tests", "mutation"].map(name => ({ name, status: "success", workflowDigest: digest("3") })),
-    mergePullRequest: async () => { mergeCalls += 1; pullRequest = { ...pullRequest, merged: true, mergeCommitSha: gitSha("9") }; refs.set("heads/main", gitSha("9")); return { merged: true, sha: gitSha("9") }; },
+    mergePullRequest: async () => { mergeCalls += 1; pullRequest = { ...pullRequest, merged: true, mergeCommitSha: gitSha("9") }; refs.set("heads/main", gitSha("9")); throw new Error("socket lost after merge"); },
     npmVersionExists: async () => false,
     readPackageManifest: async () => ({ name: "reelier", version: "0.32.1" }),
   };
@@ -203,3 +203,20 @@ test("dedicated dispatch adapter passes only host-owned allocation and durable s
   assert.equal(fallbackCalls, 0);
   assert.deepEqual(observed, { alias: "github_release_candidate_publish_v1", allocationId: "release-candidate-branch-01", authorizationHandle: "release_auth_1", requestId: "reservation_1", semanticsDigest: authorityDigest(effect) });
 });
+
+for (const faultMethod of ["createBlob", "createTree", "createCommit"] as const) {
+  test(`content-addressed ${faultMethod} crash resumes idempotently without widening authority`, async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), `reelier-release-${faultMethod}-`));
+    const fixture = releaseAuthorityFixture(), keys = generateKeyPairSync("ed25519");
+    const base = candidateProvider(), original = base[faultMethod] as (...args: any[]) => Promise<any>;
+    let faulted = false, calls = 0;
+    base[faultMethod] = async (...args: any[]) => { calls++; const result = await original(...args); if (!faulted) { faulted = true; throw new Error(`crash after ${faultMethod}`); } return result; };
+    try {
+      const runner = await createGitHubReleaseRunner({ rootDir: root, journalSigner: { signerId: "release-journal-2026", privateKey: keys.privateKey, publicKey: keys.publicKey }, evidenceSigner: fixture.evidenceSigner, authorizationResolver: async () => fixture.context, provider: base, now: () => new Date("2026-08-18T06:00:00.000Z") });
+      const request = { alias: "github_release_candidate_publish_v1" as const, allocationId: "release-candidate-branch-01", authorizationHandle: "release_auth_1", requestId: `resume_${faultMethod}`, semanticsDigest: authorityDigest({ faultMethod }) };
+      await assert.rejects(() => runner.run(request), new RegExp(faultMethod));
+      assert.equal((await runner.run(request)).status, "verified");
+      assert.equal(calls, faultMethod === "createBlob" ? 4 : 2);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+}
