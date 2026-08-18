@@ -7,6 +7,8 @@ import path from "node:path";
 import { authorityDigest } from "../../src/authority/wire.js";
 import { createSignedJournal } from "../../src/authority/host/signed-journal.js";
 import { createGitHubReleaseDispatchAdapter, createGitHubReleaseReceiptPublication, createGitHubReleaseRunner } from "../../src/authority/host/github-release-runner.js";
+import { createDispatchCommitLease, createPreparedDispatch, consumePreparedDispatch } from "../../src/authority/host/prepared-dispatch.js";
+import { materializedHttpRequestDigest } from "../../src/authority/host/http-response-semantics.js";
 import { createSignedReleaseAuthorizationBundleV1, createSignedReleaseOperationPlanV1, createSignedReleasePolicyV1, createSignedReleaseVerifierEvidenceV1, createSignedStagedCandidateManifestV1, verifyReleaseAuthorizationBundleV1, type ReleaseEvidenceLaneV1 } from "../../src/authority/release-contracts.js";
 
 const digest = (seed: string) => `sha256:${seed.repeat(64).slice(0, 64)}`;
@@ -137,6 +139,25 @@ test("release dispatch composition preserves fallback prepare and fails closed w
   const refused = await adapter.dispatch(releaseState);
   assert.equal(refused.kind, "definitive-failure");
   assert.equal(fallbackDispatches, 1, "reviewed release endpoints must never reach generic HTTPS fallback");
+});
+
+test("release provider execution stays behind the prepared commit boundary", async () => {
+  let releaseWrites = 0, fallbackWrites = 0;
+  const projection = { v: "reelier.materialized-http-request/v1" as const, method: "POST" as const, origin: "https://api.github.test", normalizedPath: "/internal/github-release", normalizedQuery: "", reviewedHeaders: {}, bodyDigest: digest("a") };
+  const materializedRequestDigest = materializedHttpRequestDigest(projection);
+  const fallback = {
+    async prepare() { return createPreparedDispatch({ description: { v: "reelier.prepared-dispatch-description/v1", routeDigest: digest("b"), materializedRequestDigest, projection, authorityGeneration: "generation_1", authorityExpiresAt: "2026-08-18T17:00:00.000Z", absoluteDeadlineMs: 60_000, reservationId: "reservation_1", allocationId: "release-candidate-branch-01" }, monotonicNow: () => 0, wallClockNow: () => Date.parse("2026-08-18T06:00:00.000Z"), send: async () => { fallbackWrites += 1; return { kind: "acknowledged", resultDigest: digest("c") }; } }); },
+    async dispatch() { fallbackWrites += 1; return { kind: "acknowledged" as const, resultDigest: digest("d") }; },
+  };
+  const runner = { recover: async () => [], run: async () => { releaseWrites += 1; return { status: "verified" as const, phase: "candidate-verified", evidenceDigest: digest("e") }; } };
+  const adapter = createGitHubReleaseDispatchAdapter({ runner, fallback });
+  const effect = { v: "reelier.transport-effect/v1", endpointId: "github.release.candidate-branch", method: "POST", path: "/internal/github-release", query: "", headers: {}, bodyBase64: Buffer.from('{"authorizationHandle":"release_auth_1"}').toString("base64"), riskClass: "github_release", idempotency: "reconcile-only", preconditions: [], reconciliation: { recipeId: "github_release_authoritative_readback_v1" } };
+  const state = { reservation: { reservationId: "reservation_1", state: "reserved", intent: { executionContext: { allocationId: "release-candidate-branch-01" } } }, effect, effectDigest: digest("f"), effectCanonicalBase64: "" } as any;
+  const prepared = await adapter.prepare!(state);
+  assert.equal(releaseWrites, 0);
+  const lease = createDispatchCommitLease({ reservationId: "reservation_1", allocationId: "release-candidate-branch-01", preparedDigest: materializedRequestDigest, authorityGeneration: "generation_1", authorityExpiresAt: "2026-08-18T17:00:00.000Z", absoluteDeadlineMs: 60_000, commitGeneration: "commit_1" });
+  assert.equal((await consumePreparedDispatch(prepared, lease)).kind, "acknowledged");
+  assert.deepEqual([releaseWrites, fallbackWrites], [1, 0]);
 });
 
 test("runner does not expose a forgeable receipt-publication confirmation method", async () => {
