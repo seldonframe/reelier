@@ -70,6 +70,7 @@ Files touched:
 - `src/packs/github-release/reconcile.ts`
 - `src/packs/github-release/index.ts`
 - `src/packs/index.ts`
+- `src/packs/conformance.ts`
 - `src/packs/semantic.ts`
 - `test/authority/github-release-runner.test.ts`
 - `test/authority/local-multi-definition-jobs.test.ts`
