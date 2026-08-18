@@ -2425,7 +2425,12 @@ non-plain object state. Arrays MUST have the ordinary array prototype, every
 own key MUST be one dense numeric slot or `length`, and sparse slots and custom
 own array fields or methods MUST be rejected. Validation MUST inspect own data
 descriptors and MUST NOT invoke caller-supplied methods, accessors, or
-iterators. Signed envelopes contain exactly `digest`, `signature`, `signerId`,
+iterators. A Proxy at any depth MUST be rejected by native Proxy detection
+before any prototype, key, or descriptor operation can execute its traps.
+Accepted wire trees MUST be recursively copied from own data descriptors into
+fresh ordinary objects and dense arrays before ordinary property reads or
+canonicalization; parsing and verification MUST use only those snapshots.
+Signed envelopes contain exactly `digest`, `signature`, `signerId`,
 `v`, and `value`; signer IDs use the closed lower-case identifier grammar and
 signatures are canonical Ed25519 signatures in their declared authority
 purpose domain.
@@ -2508,6 +2513,13 @@ additional exact observation/freshness binding and require
 `<=` are inclusive; expiry and freshness upper bounds stated with `<` are
 exclusive. Future, pre-issue, at/post-expiry, post-graph, and reversed
 timestamps MUST refuse.
+
+Each public verification call MUST snapshot its explicit current time once.
+The clock input MUST be an ordinary `Date` with exactly `Date.prototype` and
+no own properties; Proxy dates, subclasses, invalid dates, own overrides, and
+own accessors MUST refuse without executing caller code. After those checks,
+the verifier MUST obtain the numeric snapshot with exactly one
+`Date.prototype.getTime.call(now)` and thread only that number internally.
 
 Receipt success evaluation is inseparable from that verification: no public
 raw graph-to-success operation exists. The verifier returns an evaluation only
