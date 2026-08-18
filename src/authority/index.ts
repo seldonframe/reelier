@@ -3,7 +3,47 @@ export * from "./types.js";
 export { authorityCanonicalBytes, authorityDigest, parseAuthorityWire, parseCanonicalAuthorityJson, parsePortableAuthorityEvidence, assertAcceptedDecisionContext, decisionContextPresence } from "./wire.js";
 export { AUTHORITY_ADAPTER_CONTRACT_V1, AUTHORITY_ADAPTER_CONTRACT_V1_DIGEST, verifyAuthorityAdapterContractV1, type AuthorityAdapterContractV1 } from "./adapter-contract.js";
 export { signAuthorityDigest, verifyAuthoritySignature } from "./crypto.js";
-export * from "./release-contracts.js";
+export {
+  createSignedReleaseVerifierEvidenceV1,
+  parseSignedReleaseVerifierEvidenceV1,
+  createSignedStagedCandidateManifestV1,
+  createSignedReleasePolicyV1,
+  createSignedReleaseAuthorizationBundleV1,
+  createSignedReleaseReceiptGraphV1,
+  parseSignedStagedCandidateManifestV1,
+  parseSignedReleasePolicyV1,
+  parseSignedReleaseAuthorizationBundleV1,
+  parseSignedReleaseReceiptGraphV1,
+  parseCanonicalSignedReleaseAuthorizationBundleV1,
+  parseCanonicalSignedStagedCandidateManifestV1,
+  parseCanonicalSignedReleasePolicyV1,
+  parseCanonicalSignedReleaseReceiptGraphV1,
+  verifyReleaseAuthorizationBundleV1,
+  verifyReleaseReceiptGraphV1,
+  type ReleaseDestinationV1,
+  type ReleaseProviderEffectV1,
+  type ReleaseEvidenceStatus,
+  type ReleaseEvidenceLaneV1,
+  type ReleaseVerifierEvidenceV1,
+  type StagedCandidateManifestV1,
+  type ReleasePolicyV1,
+  type ReleaseEffectAllocationV1,
+  type ReleaseAuthorizationBundleV1,
+  type ReleaseReceiptGraphMakerBindingV1,
+  type ReleaseEvidenceVerifierBindingV1,
+  type ReleaseReceiptGraphV1,
+  type SignedReleaseArtifactV1,
+  type SignedStagedCandidateManifestV1,
+  type SignedReleasePolicyV1,
+  type SignedReleaseAuthorizationBundleV1,
+  type SignedReleaseReceiptGraphV1,
+  type SignedReleaseVerifierEvidenceV1,
+  type ReleaseContractSignerV1,
+  type ReleaseContractVerifierV1,
+  type ReleaseEvidenceVerificationV1,
+  type VerifiedReleaseAuthorizationV1,
+  type VerifiedReleaseReceiptGraphV1,
+} from "./release-contracts.js";
 export { createAuthorityEvidence, createAuthorityReceipt, createAuthorityReceiptBundle, parseAuthorityReceiptBundle, digestAuthorityReceiptBundle, authorityEvidenceCanonicalBytes } from "./evidence.js";
 export { verifyAuthorityReceiptBundle, verifyAuthorityReceipt, type AuthorityReceiptVerificationOptions, type VerifiedAuthorityReceiptBundle } from "./verify.js";
 export {
