@@ -218,6 +218,15 @@ test("receipt graph rejects upgraded completeness, lane aliasing, duplicates, an
   duplicateException.human.exceptions = { count: 2, evidenceDigests: [digest("a"), digest("a")], status: "verified" };
   assert.throws(() => createSignedReleaseReceiptGraphV1(duplicateException, signer), /sorted|unique|duplicate/i);
 
+  const missingAuthorization = releaseReceiptGraph();
+  missingAuthorization.human.authorization.count = 0;
+  assert.throws(() => createSignedReleaseReceiptGraphV1(missingAuthorization, signer), /authorization count/i);
+
+  const aliasedHumanEvidence = releaseReceiptGraph();
+  aliasedHumanEvidence.human.exceptions = { count: 1, evidenceDigests: [digest("a")], status: "verified" };
+  aliasedHumanEvidence.human.interruptions = { count: 1, evidenceDigests: [digest("a")], status: "verified" };
+  assert.throws(() => createSignedReleaseReceiptGraphV1(aliasedHumanEvidence, signer), /duplicate|distinct/i);
+
   const tampered = structuredClone(signed);
   (tampered.value.npm.integrity as any).status = "failed";
   assert.throws(() => verifyReleaseReceiptGraphV1(tampered, verifier, release.authorization.digest), /digest|signature|tamper/i);
