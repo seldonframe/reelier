@@ -13,14 +13,13 @@ export function validateGitHubReleaseChoices(value: unknown): Record<string, nev
 }
 
 function parsePolicy(value: unknown, expectedEffect: GitHubReleaseEffect): GitHubReleaseAllocationPolicy {
-  if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).sort().join("\0") !== ["allocationDigest", "allocationId", "authorizationHandleDigest", "effect", "maxEffects"].sort().join("\0")) throw new TypeError("GitHub release policy is closed");
-  const policy = value as unknown as GitHubReleaseAllocationPolicy;
+  const policy = inertRecord(value, ["allocationDigest", "allocationId", "authorizationHandleDigest", "effect", "maxEffects"], "GitHub release policy") as unknown as GitHubReleaseAllocationPolicy;
   if (!DIGEST.test(policy.allocationDigest) || !DIGEST.test(policy.authorizationHandleDigest) || !ID.test(policy.allocationId) || policy.effect !== expectedEffect || policy.maxEffects !== 1) throw new TypeError("GitHub release policy allocation or effect is invalid");
   return Object.freeze({ ...policy });
 }
 
 function compile(input: StaticPackCompileInput, effect: GitHubReleaseEffect): unknown {
-  const source = input.source.projection as GitHubReleaseProjection;
+  const source = inertRecord(input.source.projection, ["authorizationHandle"], "GitHub release projection") as unknown as GitHubReleaseProjection;
   const policy = input.policy as GitHubReleaseAllocationPolicy;
   if (authorityDigest({ handle: source.authorizationHandle }) !== policy.authorizationHandleDigest) throw new TypeError("GitHub release authorization handle does not match host policy");
   return Object.freeze({
@@ -29,6 +28,13 @@ function compile(input: StaticPackCompileInput, effect: GitHubReleaseEffect): un
     riskClass: githubReleaseRiskClass, idempotency: "reconcile-only" as const,
     preconditions: Object.freeze([{ kind: `release-allocation-${effect}`, digest: authorityDigest(policy) }]), reconciliation: Object.freeze({ recipeId: githubReleaseRecipeId }),
   });
+}
+
+function inertRecord(value: unknown, keys: readonly string[], label: string): Readonly<Record<string, unknown>> {
+  if (!value || typeof value !== "object" || Array.isArray(value) || Object.getPrototypeOf(value) !== Object.prototype || Reflect.ownKeys(value).some(key => typeof key !== "string")) throw new TypeError(`${label} must be a closed inert record`);
+  const descriptors = Object.getOwnPropertyDescriptors(value), actual = Object.keys(descriptors).sort();
+  if (actual.join("\0") !== [...keys].sort().join("\0") || Object.values(descriptors).some(descriptor => !("value" in descriptor) || !descriptor.enumerable)) throw new TypeError(`${label} must be a closed inert record`);
+  return Object.freeze(Object.fromEntries(keys.map(key => [key, descriptors[key]!.value])));
 }
 
 function definition(index: number): StaticPackDefinition {
