@@ -185,6 +185,10 @@ export interface VerifiedReleaseReceiptGraphV1 { readonly evaluation: Readonly<{
 interface InternalReleaseContractVerifierV1 { readonly publicKey: KeyObject; readonly publicKeySpkiDigest: string; readonly signerId: string }
 const verifiedAuthorizations = new WeakSet<object>();
 
+export function assertVerifiedReleaseAuthorizationV1(value: unknown): asserts value is VerifiedReleaseAuthorizationV1 {
+  if (!value || typeof value !== "object" || !verifiedAuthorizations.has(value as object)) throw new TypeError("verified release authorization brand is required");
+}
+
 export function createSignedReleaseVerifierEvidenceV1(value: ReleaseVerifierEvidenceV1, signer: ReleaseContractSignerV1): SignedReleaseVerifierEvidenceV1 {
   return signRelease(parseReleaseVerifierEvidenceV1(value), signer, "reelier.signed-release-verifier-evidence/v1", "release-evidence");
 }
