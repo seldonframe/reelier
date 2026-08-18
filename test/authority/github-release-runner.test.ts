@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash, generateKeyPairSync } from "node:crypto";
-import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, unlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { authorityDigest } from "../../src/authority/wire.js";
@@ -56,6 +56,7 @@ test("signed journal detects tamper and atomic-head rollback", async () => {
     assert.equal((await journal.load("request_1")).at(-1)?.phase, "blob-created");
     const directory = path.join(root, authorityDigest({ journalId: "release", requestId: "request_1" }).slice(7));
     const events = (await readdir(directory)).filter(name => name.startsWith("event-")).sort();
+    const originalHead = await readFile(path.join(directory, "head.json"), "utf8");
     const eventPath = path.join(directory, events[0]!);
     const event = JSON.parse(await readFile(eventPath, "utf8"));
     await writeFile(eventPath, JSON.stringify({ ...event, data: { alias: "attacker" } }));
@@ -63,6 +64,12 @@ test("signed journal detects tamper and atomic-head rollback", async () => {
     await writeFile(eventPath, JSON.stringify(event));
     await writeFile(path.join(directory, "head.json"), JSON.stringify({ digest: event.digest, sequence: 0 }));
     await assert.rejects(() => journal.load("request_1"), /rollback|head|fork/i);
+    await writeFile(path.join(directory, "head.json"), originalHead);
+    await unlink(path.join(directory, events[1]!));
+    await assert.rejects(() => journal.load("request_1"), /rollback|head|fork/i);
+    const scope = `authorization-${"a".repeat(64)}`, leasePath = path.join(root, `${authorityDigest({ journalId: "release", scope }).slice(7)}.lease`);
+    await writeFile(leasePath, JSON.stringify({ acquiredAt: "2026-08-18T00:00:00.000Z", pid: 999999, scope }));
+    assert.equal(await journal.withLease(scope, async () => "recovered"), "recovered");
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
