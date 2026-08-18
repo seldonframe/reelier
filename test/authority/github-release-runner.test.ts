@@ -290,6 +290,23 @@ test("authorization expiry is checked again immediately before every provider wr
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
+test("candidate branch write refuses base drift observed after durable intent", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "reelier-release-post-intent-drift-"));
+  const fixture = releaseAuthorityFixture(), keys = generateKeyPairSync("ed25519"), provider = candidateProvider();
+  const originalGetRef = provider.getRef, originalCreateRef = provider.createRef;
+  let baseReads = 0, branchWrites = 0;
+  provider.getRef = async (input: any) => {
+    if (input.ref === "heads/main" && ++baseReads >= 7) return { sha: gitSha("7") };
+    return originalGetRef(input);
+  };
+  provider.createRef = async (input: any) => { branchWrites += 1; return originalCreateRef(input); };
+  try {
+    const runner = await createGitHubReleaseRunner({ rootDir: root, journalSigner: { signerId: "release-journal-2026", privateKey: keys.privateKey, publicKey: keys.publicKey }, evidenceSigner: fixture.evidenceSigner, authorizationResolver: async () => fixture.context, provider, now: () => new Date("2026-08-18T06:00:00.000Z") });
+    await assert.rejects(() => runner.run({ alias: "github_release_candidate_publish_v1", allocationId: "release-candidate-branch-01", authorizationHandle: "release_auth_1", requestId: "post_intent_drift", semanticsDigest: authorityDigest({ drift: true }) }), /base.*drift/i);
+    assert.equal(branchWrites, 0);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 test("dedicated dispatch adapter passes only host-owned allocation and durable semantics", async () => {
   let observed: any = null, fallbackCalls = 0;
   const adapter = createGitHubReleaseDispatchAdapter({ runner: { recover: async () => [], run: async request => { observed = request; return { status: "verified", phase: "candidate-verified", evidenceDigest: digest("a") }; } }, fallback: { dispatch: async () => { fallbackCalls++; return { kind: "acknowledged", resultDigest: digest("f") }; } } });
