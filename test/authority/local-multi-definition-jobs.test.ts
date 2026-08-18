@@ -4,12 +4,16 @@ import { generateKeyPairSync } from "node:crypto";
 import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { authorityCanonicalBytes, authorityDigest, signAuthorityDigest, signJobCard, signedJobCardDigest } from "../../src/authority/index.js";
 import { connectionAdoptionCommitmentDigest, connectionDescriptorDigest, digestNormalizedMcpToolSchemas } from "../../src/connections.js";
 import { buildAuthorityDeployment } from "../../src/authority/host/deploy.js";
 import { createDelegationAuthority } from "../../src/authority/host/delegation-service.js";
 import type { DispatchAdapter } from "../../src/authority/host/dispatch.js";
 import { createLocalAuthorityRuntime } from "../../src/authority/host/local.js";
+import { createAuthorityHostServer } from "../../src/authority/host/server.js";
+import { createPrincipalRegistry } from "../../src/authority/host/principal-registry.js";
 import { __testSetAuthorityCellHostPlatform } from "../../src/authority/host/platform.js";
 import { gmailPackDigest, gmailPolicySchemaId, gmailProjectionSchemaId, gmailReadEndpointId, gmailReplyDefinitionDigest, gmailReplyWriteEndpointId, gmailResolverId } from "../../src/packs/gmail/index.js";
 import { slackChannelTopicPackDigest } from "../../src/packs/slack-topic/index.js";
@@ -80,7 +84,7 @@ async function multiDefinitionFixture(title = "Production release") {
   const hostPin = path.join(authorityRoot, "trust", "job-card.json");
   await mkdir(path.dirname(hostPin), { recursive: true });
   await copyFile(built.jobCardTrustEvidenceFile, hostPin);
-  const config = { version: 1 as const, tenant: "tenant_1", requester: "agent_1", definitions: [GMAIL, SLACK], ledgerDir: path.join(authorityRoot, "ledger"), decisionDir: path.join(authorityRoot, "decisions"), receiptDir: path.join(authorityRoot, "receipts"), gateKeyFile: path.join(authorityRoot, "keys", "gate.pem"), endpoints: [], deploymentPath: built.deploymentFile, jobCardTrustPinPath: hostPin };
+  const config = { version: 1 as const, tenant: "tenant_1", requester: "agent_1", authorityCellId: "cell_1", definitions: [GMAIL, SLACK], ledgerDir: path.join(authorityRoot, "ledger"), decisionDir: path.join(authorityRoot, "decisions"), receiptDir: path.join(authorityRoot, "receipts"), gateKeyFile: path.join(authorityRoot, "keys", "gate.pem"), endpoints: [], deploymentPath: built.deploymentFile, jobCardTrustPinPath: hostPin };
   const delegationRoot = path.join(authorityRoot, "delegation");
   const signGrant = async (value: DelegationGrant) => ({ grant: value, digest: authorityDigest(value), signerId: "operator", signature: signAuthorityDigest(operator.privateKey, "delegation-grant", authorityDigest(value)) });
   const delegation = createDelegationAuthority({ root: delegationRoot, now: () => new Date("2026-06-01T00:00:00.000Z"), signGrant });
@@ -122,6 +126,7 @@ test("multi-definition signed Job Card returns deterministic opaque references i
 test("signed multi-definition references refuse every binding mismatch and stale authority", async () => {
   const fixture = await multiDefinitionFixture();
   const otherCard = await multiDefinitionFixture("Different signed production release");
+  const differentlySignedSameBody = await multiDefinitionFixture();
   try {
     const runtime = await createLocalAuthorityRuntime(fixture.config, { jobCardTrustPin: fixture.trustPin, delegation: fixture.delegation });
     const found = await runtime.jobsSearch!({}, fixture.context) as { jobs: Array<{ jobRef: string }> };
@@ -131,21 +136,35 @@ test("signed multi-definition references refuse every binding mismatch and stale
       altered({ taskId: "task_other" }),
       altered({}, "tenant_other"),
       altered({ principalId: "agent_other" }, "tenant_1", "agent_other"),
+      altered({ grantId: "grant_other" }),
       altered({ allocationId: "allocation_other" }),
+      altered({ runtimeSessionId: "session_other" }),
+      altered({ authorityCellId: "cell_other" }),
       altered({ jobId: "job_other" }),
       altered({ grantDigest: sha("9") }),
     ];
     for (const context of attempts) {
+      const searched = await runtime.jobsSearch!({}, context) as { verdict: string; jobs: unknown[] };
       const loaded = await runtime.jobLoad!({ jobId: ref }, context) as { verdict: string };
+      const invoked = await runtime.invoke!({ v: "reelier.outcome-request/v1", jobRef: ref, requestId: `isolation_${context.executionContext.runtimeSessionId}_${context.executionContext.grantId}`, sourceRefs: { thread: "thread_1" }, choices: {} }, context);
+      if (!["session_other", "cell_other"].includes(context.executionContext.runtimeSessionId) && context.executionContext.authorityCellId !== "cell_other") assert.equal(searched.verdict, "refused");
       assert.equal(loaded.verdict, "refused");
+      assert.equal(invoked.verdict, "refused");
     }
+    await mkdir(path.dirname(otherCard.config.gateKeyFile), { recursive: true });
+    await copyFile(fixture.config.gateKeyFile, otherCard.config.gateKeyFile);
     const otherRuntime = await createLocalAuthorityRuntime(otherCard.config, { jobCardTrustPin: otherCard.trustPin, delegation: otherCard.delegation });
     const otherRef = ((await otherRuntime.jobsSearch!({}, otherCard.context) as { jobs: Array<{ jobRef: string }> }).jobs[0]!).jobRef;
     assert.notEqual(otherRef, ref);
     assert.equal((await runtime.jobLoad!({ jobId: otherRef }, fixture.context) as { verdict: string }).verdict, "refused");
+    await mkdir(path.dirname(differentlySignedSameBody.config.gateKeyFile), { recursive: true });
+    await copyFile(fixture.config.gateKeyFile, differentlySignedSameBody.config.gateKeyFile);
+    const differentlySignedRuntime = await createLocalAuthorityRuntime(differentlySignedSameBody.config, { jobCardTrustPin: differentlySignedSameBody.trustPin, delegation: differentlySignedSameBody.delegation });
+    const differentlySignedRef = ((await differentlySignedRuntime.jobsSearch!({}, differentlySignedSameBody.context) as { jobs: Array<{ jobRef: string }> }).jobs[0]!).jobRef;
+    assert.notEqual(differentlySignedRef, ref, "the exact signed Job Card envelope must bind the reference");
     await fixture.delegation.revoke("tenant_1", "task_1");
     assert.equal((await runtime.jobLoad!({ jobId: ref }, fixture.context) as { verdict: string }).verdict, "refused");
-  } finally { await Promise.all([rm(fixture.root, { recursive: true, force: true }), rm(otherCard.root, { recursive: true, force: true })]); }
+  } finally { await Promise.all([rm(fixture.root, { recursive: true, force: true }), rm(otherCard.root, { recursive: true, force: true }), rm(differentlySignedSameBody.root, { recursive: true, force: true })]); }
 });
 
 test("opaque invoke converges exact retries and refuses request-id semantic conflicts before provider dispatch", async () => {
@@ -160,8 +179,8 @@ test("opaque invoke converges exact retries and refuses request-id semantic conf
     const refs = (await runtime.jobsSearch!({}, fixture.context) as { jobs: Array<{ jobRef: string }> }).jobs.map(job => job.jobRef);
     const ref = refs[0]!;
     const request = { v: "reelier.outcome-request/v1", jobRef: ref, requestId: "request_1", sourceRefs: { thread: "thread_1" }, choices: {} };
-    const first = await runtime.invoke!(request, fixture.context);
-    assert.equal(first.verdict, "accepted", JSON.stringify(first));
+    const exactRace = await Promise.all([runtime.invoke!(request, fixture.context), runtime.invoke!(request, fixture.context)]);
+    assert.deepEqual(exactRace.map(result => result.verdict), ["accepted", "accepted"]);
     assert.equal(dispatches, 1);
     assert.equal((await runtime.invoke!(request, fixture.context)).verdict, "accepted");
     assert.equal(dispatches, 1);
@@ -172,7 +191,56 @@ test("opaque invoke converges exact retries and refuses request-id semantic conf
     assert.equal(dispatches, 1);
     assert.equal((await runtime.invoke!({ ...request, requestId: "raw_alias", jobRef: GMAIL }, fixture.context)).verdict, "refused");
     assert.equal(dispatches, 1);
+    const secondDefinition = await runtime.invoke!({ ...request, requestId: "second_definition", jobRef: refs[1]! }, fixture.context);
+    assert.notEqual(secondDefinition.reasonCode, "job-not-found", "both signed definitions must resolve through their own opaque references");
+    assert.equal(dispatches, 1);
   } finally { await rm(fixture.root, { recursive: true, force: true }); }
+});
+
+test("production MCP and HTTP keep signed multi-definition aliases behind authenticated opaque refs", async () => {
+  const fixture = await multiDefinitionFixture();
+  let dispatches = 0;
+  const adapter: DispatchAdapter = {
+    async dispatch() { dispatches++; return { kind: "acknowledged", resultDigest: authorityDigest({ messageId: `provider_${dispatches}` }) }; },
+    async reconcile() { return { kind: "acknowledged", resultDigest: authorityDigest({ messageId: "provider_1" }), reconciliationStatus: "matched", normalizedProjectionDigest: authorityDigest({ messageId: "provider_1" }) }; },
+  };
+  const principals = createPrincipalRegistry({ tenant: "tenant_1" });
+  const credential = await principals.issue({ ...fixture.context.executionContext, expiresAt: "2027-01-01T00:00:00.000Z" });
+  const runtime = await createLocalAuthorityRuntime(fixture.config, { jobCardTrustPin: fixture.trustPin, delegation: fixture.delegation, dispatchAdapter: adapter });
+  const server = createAuthorityHostServer(fixture.config, runtime, { principalRegistry: principals, stdioExecutionContext: fixture.context.executionContext } as never);
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: "multi-definition-production-path", version: "1" }, { capabilities: {} });
+  try {
+    await server.mcp.connect(serverTransport);
+    await client.connect(clientTransport);
+    const tools = await client.listTools();
+    assert.equal(tools.tools.some(tool => tool.name === `reelier_outcome_${GMAIL}` || tool.name === `reelier_outcome_${SLACK}`), false);
+    const searched = await client.callTool({ name: "reelier_jobs_search", arguments: {} });
+    const searchedContent = (searched as unknown as { content: Array<{ text: string }> }).content;
+    const catalog = JSON.parse(String(searchedContent[0]!.text)) as { verdict: string; jobs: Array<{ jobRef: string }> };
+    assert.equal(catalog.verdict, "accepted");
+    assert.equal(catalog.jobs.length, 2);
+    const loaded = await client.callTool({ name: "reelier_job_load", arguments: { jobId: catalog.jobs[0]!.jobRef } });
+    assert.match(String((loaded as unknown as { content: Array<{ text: string }> }).content[0]!.text), /job-loaded/);
+    const invoked = await client.callTool({ name: "reelier_outcome_invoke", arguments: { jobRef: catalog.jobs[0]!.jobRef, requestId: "mcp_invoke", sourceRefs: { thread: "thread_1" }, choices: {} } });
+    assert.match(String((invoked as unknown as { content: Array<{ text: string }> }).content[0]!.text), /accepted/);
+    assert.equal(dispatches, 1);
+    const rawMcp = await client.callTool({ name: `reelier_outcome_${GMAIL}`, arguments: { requestId: "raw_mcp", sourceRefs: { thread: "thread_1" }, choices: {} } });
+    assert.equal(rawMcp.isError, true);
+    assert.equal(dispatches, 1);
+
+    await server.startHttp(0);
+    const address = server.http.address();
+    assert.ok(address && typeof address !== "string");
+    const rawHttp = await fetch(`http://127.0.0.1:${address.port}/v1/outcomes/${GMAIL}`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${credential.token}` }, body: JSON.stringify({ requestId: "raw_http", sourceRefs: { thread: "thread_1" }, choices: {} }) });
+    const rawHttpBody = await rawHttp.json() as { verdict: string };
+    assert.equal(rawHttpBody.verdict, "refused");
+    assert.equal(dispatches, 1);
+  } finally {
+    await client.close();
+    await server.close();
+    await rm(fixture.root, { recursive: true, force: true });
+  }
 });
 
 test("persisted references refuse after the bound grant expires across authority restart", async () => {

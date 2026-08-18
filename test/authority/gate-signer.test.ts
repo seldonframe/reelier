@@ -21,6 +21,18 @@ test("local gate signer persists the same Ed25519 identity across runtime restar
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
+test("simultaneous first starts converge on the one durably persisted gate identity", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "reelier-gate-signer-race-"));
+  try {
+    const file = path.join(root, "keys", "local-gate.pem");
+    const starts = await Promise.all(Array.from({ length: 32 }, () => loadOrCreateLocalGateSigner(file)));
+    const durable = await loadExistingLocalGateSigner(file);
+    const identities = starts.map(item => item.publicKey.export({ type: "spki", format: "der" }).toString("base64"));
+    assert.equal(new Set(identities).size, 1, "all concurrent creators must return the published key");
+    assert.equal(identities[0], durable.publicKey.export({ type: "spki", format: "der" }).toString("base64"));
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 test("local gate signer refuses a malformed existing key instead of replacing it", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "reelier-gate-signer-invalid-"));
   try {
