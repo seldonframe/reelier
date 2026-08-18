@@ -55,27 +55,31 @@ export async function createGitHubReleaseRunner(input: Readonly<{ rootDir: strin
     const effect = ALIASES[request.alias];
     const allocation = authorization.authorization.value.effectAllocations.find(candidate => candidate.effect === effect);
     if (!allocation || allocation.maxEffects !== 1 || allocation.allocationId !== request.allocationId || !DIGEST.test(allocation.allocationDigest)) throw new TypeError("release alias does not have the authenticated exact one-effect allocation");
-    let events = await journal.load(request.requestId);
-    if (events.length > 0) {
-      if (events[0].semanticsDigest !== request.semanticsDigest) throw new TypeError("release requestId semantic reuse is forbidden before dispatch");
-      const root = events[0].data;
-      if (root.alias !== request.alias || root.authorizationHandle !== request.authorizationHandle || root.authorizationDigest !== authorization.authorization.digest || root.allocationId !== allocation.allocationId || root.allocationDigest !== allocation.allocationDigest || root.effect !== effect) throw new TypeError("release journal authority binding is inconsistent");
-      const terminal = events.at(-1)!;
-      if (TERMINAL.has(terminal.phase)) return Object.freeze({ status: "verified", phase: terminal.phase, evidenceDigest: String(terminal.data.evidenceDigest) });
-    } else {
-      assertLive(authorization, input.now());
-      if (effect === "candidate-branch") validateCandidate(context);
-      await requirePredecessor(journal, authorization.authorization.digest, effect);
-      await journal.append(request.requestId, request.semanticsDigest, "authorized", { alias: request.alias, allocationDigest: allocation.allocationDigest, allocationId: allocation.allocationId, authorizationDigest: authorization.authorization.digest, authorizationHandle: request.authorizationHandle, effect });
-      events = await journal.load(request.requestId);
-    }
-    const execute = async () => {
+    return journal.withLease(`authorization-${authorization.authorization.digest.slice(7)}`, async () => {
+      let events = await journal.load(request.requestId);
+      if (events.length > 0) {
+        if (events[0].semanticsDigest !== request.semanticsDigest) throw new TypeError("release requestId semantic reuse is forbidden before dispatch");
+        const root = events[0].data;
+        if (root.alias !== request.alias || root.authorizationHandle !== request.authorizationHandle || root.authorizationDigest !== authorization.authorization.digest || root.allocationId !== allocation.allocationId || root.allocationDigest !== allocation.allocationDigest || root.effect !== effect) throw new TypeError("release journal authority binding is inconsistent");
+        const terminal = events.at(-1)!;
+        if (TERMINAL.has(terminal.phase)) return Object.freeze({ status: "verified", phase: terminal.phase, evidenceDigest: String(terminal.data.evidenceDigest) });
+      } else {
+        assertLive(authorization, input.now());
+        if (effect === "candidate-branch") validateCandidate(context);
+        await requirePredecessor(journal, authorization.authorization.digest, effect);
+        for (const priorRequestId of await journal.listRequestIds()) {
+          if (priorRequestId === request.requestId) continue;
+          const first = (await journal.load(priorRequestId))[0];
+          if (first?.data.authorizationDigest === authorization.authorization.digest && first.data.allocationId === allocation.allocationId) throw new TypeError("release one-effect allocation was already used by another request");
+        }
+        await journal.append(request.requestId, request.semanticsDigest, "authorized", { alias: request.alias, allocationDigest: allocation.allocationDigest, allocationId: allocation.allocationId, authorizationDigest: authorization.authorization.digest, authorizationHandle: request.authorizationHandle, effect });
+        events = await journal.load(request.requestId);
+      }
       if (effect === "candidate-branch") return candidate(request, context, events, journal, input.provider, input.evidenceSigner, input.now);
       if (effect === "draft-pr") return pullRequest(request, authorization, events, journal, input.provider, input.evidenceSigner, input.now);
       if (effect === "exact-sha-merge") return merge(request, authorization, events, journal, input.provider, input.evidenceSigner, input.now);
       return tag(request, authorization, events, journal, input.provider, input.evidenceSigner, input.now);
-    };
-    return journal.withLease(`authorization-${authorization.authorization.digest.slice(7)}`, execute);
+    });
   };
   const active = new Map<string, Promise<GitHubReleaseRunResultV1>>();
   const run = (request: GitHubReleaseRunRequestV1): Promise<GitHubReleaseRunResultV1> => {
