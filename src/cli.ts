@@ -4607,6 +4607,13 @@ async function main(): Promise<number> {
     console.log(USAGE);
     return 0;
   }
+  // Help is a read-only product contract. Check it before parsing arguments
+  // or dispatching, because some handlers initialize connections, servers,
+  // credentials, or local state as part of their normal command path.
+  if (rest.includes("--help") || rest.includes("-h")) {
+    console.log(USAGE);
+    return 0;
+  }
 
   const args = parseArgv(rest);
 
