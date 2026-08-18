@@ -19,35 +19,34 @@ const DISPATCH_COMMANDS = [
 const cliPath = fileURLToPath(new URL("../src/cli.js", import.meta.url));
 const cliSourcePath = fileURLToPath(new URL("../../src/cli.ts", import.meta.url));
 const MAX_RSS_KIB = 256 * 1024;
+const PERMISSION_ARGS = ["--permission", "--allow-fs-read=*"] as const;
 
 const ORACLE = String.raw`
 const { syncBuiltinESMExports } = require("node:module");
 const fail = (api) => () => { throw new Error("REELIER_HELP_ORACLE side effect: " + api); };
-const block = (name, keys) => {
-  const mod = require(name);
-  for (const key of keys) if (typeof mod[key] === "function") mod[key] = fail(name + "." + key);
+const block = (target, label, keys) => {
+  for (const key of keys) if (typeof target[key] === "function") target[key] = fail(label + "." + key);
 };
-const fs = require("node:fs");
-// Read-only loader and import-time probes are permitted. Block every public
-// API that can mutate the filesystem or obtain a writable file descriptor;
-// openSync receives a loader-only exception because Node implements its own
-// module source reads through that public wrapper after preload hooks run.
-const fsMutation = ["appendFile", "appendFileSync", "chmod", "chmodSync", "chown", "chownSync", "copyFile", "copyFileSync", "cp", "cpSync", "createWriteStream", "fchmod", "fchmodSync", "fchown", "fchownSync", "fdatasync", "fdatasyncSync", "fsync", "fsyncSync", "ftruncate", "ftruncateSync", "futimes", "futimesSync", "lchmod", "lchmodSync", "lchown", "lchownSync", "link", "linkSync", "lutimes", "lutimesSync", "mkdir", "mkdirSync", "mkdtemp", "mkdtempSync", "mkdtempDisposableSync", "open", "rename", "renameSync", "rm", "rmSync", "rmdir", "rmdirSync", "symlink", "symlinkSync", "truncate", "truncateSync", "unlink", "unlinkSync", "utimes", "utimesSync", "write", "writeFile", "writeFileSync", "writeSync", "writev", "writevSync"];
-const loaderOpenSync = fs.openSync;
-block("node:fs", fsMutation.filter((key) => key !== "openSync"));
-fs.openSync = (...args) => {
-  if (new Error().stack.includes("node:internal/modules/")) return loaderOpenSync(...args);
-  return fail("node:fs.openSync")();
-};
-const fsp = require("node:fs/promises");
-block("node:fs/promises", fsMutation);
-block("node:child_process", ["exec", "execFile", "fork", "spawn", "spawnSync"]);
-block("node:net", ["connect", "createConnection", "createServer"]);
-block("node:http", ["get", "request", "createServer"]);
-block("node:https", ["get", "request", "createServer"]);
-block("node:dgram", ["createSocket"]);
-block("node:dns", ["getDefaultResultOrder", "getServers", "lookup", "lookupService", "resolve", "resolve4", "resolve6", "resolveAny", "resolveCaa", "resolveCname", "resolveMx", "resolveNaptr", "resolveNs", "resolvePtr", "resolveSoa", "resolveSrv", "resolveTxt", "reverse", "setDefaultResultOrder", "setServers"]);
-block("node:tls", ["connect", "createServer"]);
+// Permission mode denies filesystem mutation, subprocesses, native addons,
+// and process.binding. Patch the lowest network surfaces still callable by
+// application code: socket/server/datagram instances and both DNS APIs.
+const net = require("node:net");
+block(net, "node:net", ["connect", "createConnection", "createServer"]);
+block(net.Socket.prototype, "node:net.Socket", ["connect"]);
+block(net.Server.prototype, "node:net.Server", ["listen"]);
+const tls = require("node:tls");
+block(tls, "node:tls", ["connect", "createServer"]);
+block(tls.TLSSocket.prototype, "node:tls.TLSSocket", ["connect"]);
+const dgram = require("node:dgram");
+block(dgram, "node:dgram", ["createSocket"]);
+block(dgram.Socket.prototype, "node:dgram.Socket", ["bind", "connect", "send", "sendto"]);
+const dnsKeys = ["lookup", "lookupService", "resolve", "resolve4", "resolve6", "resolveAny", "resolveCaa", "resolveCname", "resolveMx", "resolveNaptr", "resolveNs", "resolvePtr", "resolveSoa", "resolveSrv", "resolveTlsa", "resolveTxt", "reverse"];
+const dns = require("node:dns");
+block(dns, "node:dns", dnsKeys);
+block(dns.Resolver.prototype, "node:dns.Resolver", dnsKeys);
+const dnsPromises = require("node:dns/promises");
+block(dnsPromises, "node:dns/promises", dnsKeys);
+block(dnsPromises.Resolver.prototype, "node:dns/promises.Resolver", dnsKeys);
 globalThis.fetch = fail("global.fetch");
 syncBuiltinESMExports();
 process.once("beforeExit", () => {
@@ -65,11 +64,11 @@ interface Invocation {
 
 function invoke(command: string, args: readonly string[], sandbox: string, oraclePath: string): Invocation {
   const home = path.join(sandbox, "home");
-  const result = spawnSync(process.execPath, ["--require", oraclePath, cliPath, command, ...args], {
+  const result = spawnSync(process.execPath, [...PERMISSION_ARGS, "--require", oraclePath, cliPath, command, ...args], {
     cwd: sandbox,
     // Do not let the child inherit credentials, configuration, proxy settings,
-    // or an ambient home. The oracle blocks all userland filesystem, network,
-    // and subprocess APIs, including reads that would reach state or keys.
+    // or an ambient home. Permission mode allows imports and other reads while
+    // denying filesystem mutation, subprocesses, and native escape hatches.
     env: { HOME: home, USERPROFILE: home, APPDATA: home, LOCALAPPDATA: home, TEMP: sandbox, TMP: sandbox, PATH: process.env.PATH ?? "" },
     encoding: "utf8",
     timeout: 1_500,
@@ -88,54 +87,6 @@ test("dedicated help inventory exactly matches main's dispatch switch", async ()
   assert.deepEqual([...DISPATCH_COMMANDS].sort(), actual);
 });
 
-test("the help oracle rejects representative synchronous filesystem writes", async () => {
-  const sandbox = await mkdtemp(path.join(os.tmpdir(), "reelier-cli-help-oracle-"));
-  const oraclePath = path.join(sandbox, "oracle.cjs");
-  const target = path.join(sandbox, "sync-write.txt");
-  await writeFile(oraclePath, ORACLE);
-  try {
-    const result = spawnSync(process.execPath, ["--require", oraclePath, "-e", 'require("node:fs").writeFileSync(process.argv[1], "mutated")', target], {
-      cwd: sandbox,
-      env: { HOME: sandbox, USERPROFILE: sandbox, APPDATA: sandbox, LOCALAPPDATA: sandbox, TEMP: sandbox, TMP: sandbox, PATH: process.env.PATH ?? "" },
-      encoding: "utf8",
-      timeout: 1_500,
-      windowsHide: true,
-    });
-    assert.equal(result.error, undefined, `synchronous-write oracle did not start: ${result.error?.message}`);
-    assert.equal(result.signal, null, `synchronous-write oracle was terminated by ${result.signal}`);
-    assert.notEqual(result.status, 0, "synchronous write bypassed the help oracle");
-    assert.match(`${result.stdout}${result.stderr}`, /REELIER_HELP_ORACLE side effect: node:fs\.writeFileSync/);
-    await assert.rejects(readFile(target), "synchronous write created its target despite the oracle");
-  } finally {
-    await rm(sandbox, { recursive: true, force: true });
-  }
-});
-
-test("the preload oracle rejects synchronous writes during transitive module loading", async () => {
-  const sandbox = await mkdtemp(path.join(os.tmpdir(), "reelier-cli-help-load-oracle-"));
-  const oraclePath = path.join(sandbox, "oracle.cjs");
-  const modulePath = path.join(sandbox, "mutating-module.cjs");
-  const target = path.join(sandbox, "load-time-write.txt");
-  await writeFile(oraclePath, ORACLE);
-  await writeFile(modulePath, 'require("node:fs").writeFileSync(process.argv[2], "mutated during module load")');
-  try {
-    const result = spawnSync(process.execPath, ["--require", oraclePath, modulePath, target], {
-      cwd: sandbox,
-      env: { HOME: sandbox, USERPROFILE: sandbox, APPDATA: sandbox, LOCALAPPDATA: sandbox, TEMP: sandbox, TMP: sandbox, PATH: process.env.PATH ?? "" },
-      encoding: "utf8",
-      timeout: 1_500,
-      windowsHide: true,
-    });
-    assert.equal(result.error, undefined, `load-time oracle did not start: ${result.error?.message}`);
-    assert.equal(result.signal, null, `load-time oracle was terminated by ${result.signal}`);
-    assert.notEqual(result.status, 0, "load-time synchronous write bypassed the preload oracle");
-    assert.match(`${result.stdout}${result.stderr}`, /REELIER_HELP_ORACLE side effect: node:fs\.writeFileSync/);
-    await assert.rejects(readFile(target), "load-time write created its target despite the oracle");
-  } finally {
-    await rm(sandbox, { recursive: true, force: true });
-  }
-});
-
 test("the help oracle closes filesystem, subprocess, and low-level network escape paths", async () => {
   const sandbox = await mkdtemp(path.join(os.tmpdir(), "reelier-cli-help-escape-oracle-"));
   const oraclePath = path.join(sandbox, "oracle.cjs");
@@ -148,13 +99,15 @@ test("the help oracle closes filesystem, subprocess, and low-level network escap
     ["direct Socket", `new (require("node:net").Socket)().connect(9, "127.0.0.1")`],
     ["direct TLSSocket", `new (require("node:tls").TLSSocket)(new (require("node:net").Socket)()).connect(9, "127.0.0.1")`],
     ["direct datagram Socket", `new (require("node:dgram").Socket)("udp4").send("probe", 9, "127.0.0.1")`],
+    ["DNS promises lookup", `require("node:dns/promises").lookup("localhost")`],
+    ["DNS promises top-level TLSA", `(() => { const dns = require("node:dns/promises"); dns.setServers(["127.0.0.1"]); return dns.resolveTlsa("localhost"); })()`],
     ["DNS promises TLSA", `(() => { const dns = require("node:dns/promises"); const resolver = new dns.Resolver(); resolver.setServers(["127.0.0.1"]); return resolver.resolveTlsa("localhost"); })()`],
     ["fetch", `fetch("http://127.0.0.1:9/")`],
   ] as const;
   try {
     for (const [name, expression] of probes) {
       const source = `(async () => { try { await (${expression}); console.error("REELIER_HELP_ORACLE_ESCAPE"); process.exitCode = 0; } catch (error) { console.error(error && error.message); process.exitCode = 23; } })()`;
-      const result = spawnSync(process.execPath, ["--require", oraclePath, "-e", source], {
+      const result = spawnSync(process.execPath, [...PERMISSION_ARGS, "--require", oraclePath, "-e", source], {
         cwd: sandbox,
         env: { HOME: sandbox, USERPROFILE: sandbox, APPDATA: sandbox, LOCALAPPDATA: sandbox, TEMP: sandbox, TMP: sandbox, PATH: process.env.PATH ?? "" },
         encoding: "utf8",
