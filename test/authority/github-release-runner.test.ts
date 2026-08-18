@@ -116,6 +116,33 @@ test("release runner refuses raw or wrong allocation authority before provider d
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
+test("provider fault classification never infers transport state from JavaScript TypeError", async () => {
+  const fixture = releaseAuthorityFixture(), keys = generateKeyPairSync("ed25519");
+  for (const [name, fault, deterministic] of [
+    ["js-type-error", new TypeError("network failed"), false],
+    ["explicit-refusal", { v: "reelier.github-release-provider-fault/v1", kind: "definitive-refusal", reason: "provider rejected request" }, true],
+    ["explicit-uncertainty", { v: "reelier.github-release-provider-fault/v1", kind: "transport-uncertain", reason: "response lost" }, false],
+  ] as const) {
+    const root = await mkdtemp(path.join(os.tmpdir(), `reelier-release-provider-${name}-`));
+    try {
+      const runner = await createGitHubReleaseRunner({ rootDir: root, journalSigner: { signerId: "release-journal-2026", privateKey: keys.privateKey, publicKey: keys.publicKey }, evidenceSigner: fixture.evidenceSigner, authorizationResolver: async () => fixture.context, provider: candidateProvider({ getRef: async () => { throw fault; } }), now: () => new Date("2026-08-18T06:00:00.000Z") });
+      await assert.rejects(() => runner.run({ alias: "github_release_candidate_publish_v1", allocationId: "release-candidate-branch-01", authorizationHandle: "release_auth_1", requestId: `fault_${name}`, semanticsDigest: authorityDigest({ name }) }), (error: any) => error?.deterministic === deterministic);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  }
+});
+
+test("release context rejects proxy arrays without invoking traps", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "reelier-release-context-proxy-"));
+  const fixture = releaseAuthorityFixture(), keys = generateKeyPairSync("ed25519");
+  let traps = 0;
+  const fileContents = new Proxy(fixture.context.fileContents as any[], { get() { traps += 1; throw new Error("trap invoked"); }, getPrototypeOf() { traps += 1; return Array.prototype; }, ownKeys() { traps += 1; return []; } });
+  try {
+    const runner = await createGitHubReleaseRunner({ rootDir: root, journalSigner: { signerId: "release-journal-2026", privateKey: keys.privateKey, publicKey: keys.publicKey }, evidenceSigner: fixture.evidenceSigner, authorizationResolver: async () => ({ authorization: fixture.context.authorization, fileContents }) as any, provider: candidateProvider(), now: () => new Date("2026-08-18T06:00:00.000Z") });
+    await assert.rejects(() => runner.run({ alias: "github_release_candidate_publish_v1", allocationId: "release-candidate-branch-01", authorizationHandle: "release_auth_1", requestId: "proxy_context", semanticsDigest: authorityDigest({ proxy: true }) }), /closed|inert|context|array/i);
+    assert.equal(traps, 0);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 test("release dispatch composition preserves fallback prepare and fails closed without a release runner", async () => {
   const prepared = Object.freeze({ description: Object.freeze({}) }) as never;
   let fallbackDispatches = 0, fallbackReconciles = 0, fallbackPrepares = 0;
