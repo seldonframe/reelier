@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash, generateKeyPairSync } from "node:crypto";
-import { mkdtemp, readFile, readdir, rm, unlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, unlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { authorityDigest } from "../../src/authority/wire.js";
@@ -76,8 +76,9 @@ test("signed journal detects tamper and atomic-head rollback", async () => {
     await writeFile(path.join(directory, "head.json"), originalHead);
     await unlink(path.join(directory, events[1]!));
     await assert.rejects(() => journal.load("request_1"), /rollback|head|fork/i);
-    const scope = `authorization-${"a".repeat(64)}`, leasePath = path.join(root, `${authorityDigest({ journalId: "release", scope }).slice(7)}.lease`);
-    await writeFile(leasePath, JSON.stringify({ acquiredAt: "2026-08-18T00:00:00.000Z", pid: 999999, scope }));
+    const scope = `authorization-${"a".repeat(64)}`, leaseQueue = path.join(root, `${authorityDigest({ journalId: "release", scope }).slice(7)}.lease.d`);
+    await mkdir(leaseQueue, { recursive: true });
+    await writeFile(path.join(leaseQueue, "ticket-000000000000.json"), "");
     assert.equal(await journal.withLease(scope, async () => "recovered"), "recovered");
   } finally { await rm(root, { recursive: true, force: true }); }
 });

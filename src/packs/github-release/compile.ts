@@ -9,7 +9,7 @@ const ID = /^[a-z0-9][a-z0-9-]{7,127}$/;
 export interface GitHubReleaseAllocationPolicy { readonly allocationDigest: string; readonly allocationId: string; readonly authorizationHandleDigest: string; readonly effect: GitHubReleaseEffect; readonly maxEffects: 1 }
 
 export function validateGitHubReleaseChoices(value: unknown): Record<string, never> {
-  inertRecord(value, [], "GitHub release choices");
+  inertRecord(value, [], "GitHub release choices (empty)");
   return Object.freeze({});
 }
 
