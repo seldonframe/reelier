@@ -47,7 +47,10 @@ function candidateProvider(overrides: Record<string, unknown> = {}) {
 }
 
 async function confirmTestPublication(runner: Awaited<ReturnType<typeof createGitHubReleaseRunner>>, requestId: string, result: { status: string; evidenceDigest: string | null }): Promise<void> {
-  if (result.status === "verified" && result.evidenceDigest) await runner.confirmPublication({ requestId, providerEvidenceDigest: result.evidenceDigest, receiptRef: `receipt_${requestId}`, receiptEvidenceDigest: authorityDigest({ published: requestId }) });
+  if (result.status === "verified" && result.evidenceDigest) {
+    const publication = createGitHubReleaseReceiptPublication({ runner, publication: { async publish() { return { receiptRef: `receipt_${requestId}`, evidenceDigest: authorityDigest({ published: requestId }) }; } } });
+    await publication.publish({ phase: "dispatch", state: { reservation: { reservationId: requestId }, effect: { endpointId: "github.release.candidate-branch" } } as any, outcome: { kind: "acknowledged", resultDigest: result.evidenceDigest }, dispatchedRequestDigest: digest("f") });
+  }
 }
 
 test("signed journal detects tamper and atomic-head rollback", async () => {
@@ -157,13 +160,13 @@ test("four-operation release saga converges after ambiguous merge and tag withou
     const candidateResult = await invoke("github_release_candidate_publish_v1", "candidate_1");
     assert.equal(candidateResult.status, "verified");
     await assert.rejects(() => invoke("github_release_pr_ensure_v1", "pr_1"), /receipt.*publish|predecessor/i);
-    await runner.confirmPublication({ requestId: "candidate_1", providerEvidenceDigest: candidateResult.evidenceDigest!, receiptRef: "receipt_candidate_1", receiptEvidenceDigest: digest("b") });
+    await confirmTestPublication(runner, "candidate_1", candidateResult);
     const prResult = await invoke("github_release_pr_ensure_v1", "pr_1");
     assert.equal(prResult.status, "verified");
-    await runner.confirmPublication({ requestId: "pr_1", providerEvidenceDigest: prResult.evidenceDigest!, receiptRef: "receipt_pr_1", receiptEvidenceDigest: digest("c") });
+    await confirmTestPublication(runner, "pr_1", prResult);
     const mergeResult = await invoke("github_release_pr_merge_v1", "merge_1");
     assert.equal(mergeResult.status, "verified");
-    await runner.confirmPublication({ requestId: "merge_1", providerEvidenceDigest: mergeResult.evidenceDigest!, receiptRef: "receipt_merge_1", receiptEvidenceDigest: digest("d") });
+    await confirmTestPublication(runner, "merge_1", mergeResult);
     assert.equal((await invoke("github_release_tag_create_v1", "tag_1")).status, "verified");
     assert.equal(mergeCalls, 1);
     assert.equal(tagCalls, 1);
@@ -248,17 +251,13 @@ test("authorization expiry is checked again immediately before every provider wr
 
 test("dedicated dispatch adapter passes only host-owned allocation and durable semantics", async () => {
   let observed: any = null, fallbackCalls = 0;
-  const adapter = createGitHubReleaseDispatchAdapter({ runner: { confirmPublication: async () => undefined, recover: async () => [], run: async request => { observed = request; return { status: "verified", phase: "candidate-verified", evidenceDigest: digest("a") }; } }, fallback: { dispatch: async () => { fallbackCalls++; return { kind: "acknowledged", resultDigest: digest("f") }; } } });
+  const adapter = createGitHubReleaseDispatchAdapter({ runner: { recover: async () => [], run: async request => { observed = request; return { status: "verified", phase: "candidate-verified", evidenceDigest: digest("a") }; } }, fallback: { dispatch: async () => { fallbackCalls++; return { kind: "acknowledged", resultDigest: digest("f") }; } } });
   const effect = { v: "reelier.transport-effect/v1", endpointId: "github.release.candidate-branch", method: "POST", path: "/internal/github-release", query: "", headers: { "Content-Type": "application/json" }, bodyBase64: Buffer.from(JSON.stringify({ authorizationHandle: "release_auth_1" })).toString("base64"), riskClass: "github_release", idempotency: "reconcile-only", preconditions: [], reconciliation: { recipeId: "github_release_authoritative_readback_v1" } };
   const outcome = await adapter.dispatch({ reservation: { reservationId: "reservation_1", state: "reserved" as any, intent: { effectDigest: authorityDigest(effect), effectCanonicalBase64: "", executionContext: { allocationId: "release-candidate-branch-01" } as any } }, effect, effectCanonicalBase64: "", effectDigest: authorityDigest(effect) });
   assert.equal(outcome.kind, "acknowledged");
   assert.equal(fallbackCalls, 0);
   assert.deepEqual(observed, { alias: "github_release_candidate_publish_v1", allocationId: "release-candidate-branch-01", authorizationHandle: "release_auth_1", requestId: "reservation_1", semanticsDigest: authorityDigest(effect) });
-  let confirmation: any = null;
-  const runner: any = { confirmPublication: async (value: any) => { confirmation = value; }, recover: async () => [], run: async () => ({ status: "verified", phase: "candidate-verified", evidenceDigest: digest("a") }) };
-  const publication = createGitHubReleaseReceiptPublication({ runner, publication: { publish: async () => ({ receiptRef: "receipt_reservation_1", evidenceDigest: digest("b") }) } });
-  await publication.publish({ phase: "dispatch", state: { reservation: { reservationId: "reservation_1", state: "dispatched" as any, intent: { effectDigest: authorityDigest(effect), effectCanonicalBase64: "" } }, effect, effectCanonicalBase64: "", effectDigest: authorityDigest(effect) }, outcome: { kind: "acknowledged", resultDigest: digest("a") }, dispatchedRequestDigest: authorityDigest({ dispatched: 1 }) });
-  assert.deepEqual(confirmation, { requestId: "reservation_1", providerEvidenceDigest: digest("a"), receiptRef: "receipt_reservation_1", receiptEvidenceDigest: digest("b") });
+  assert.throws(() => createGitHubReleaseReceiptPublication({ runner: { recover: async () => [], run: async () => ({ status: "verified", phase: "candidate-verified", evidenceDigest: digest("a") }) }, publication: { publish: async () => ({ receiptRef: "receipt_reservation_1", evidenceDigest: digest("b") }) } }), /capability/i);
 });
 
 for (const faultMethod of ["createBlob", "createTree", "createCommit"] as const) {

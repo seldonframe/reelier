@@ -166,7 +166,7 @@ async function createLocalAuthorityRuntimeCore(config:AuthorityHostConfig,option
   const certifiedDispatch = options.certifiedDispatch ? { ...options.certifiedDispatch, ...(options.latencyRecorder ? { latencyRecorder: options.latencyRecorder } : {}), verifyIdentity: options.verifyAuthenticatedProviderIdentity ?? options.certifiedDispatch.verifyIdentity } : undefined;
   if (config.nativeHttpsRoutes && config.nativeHttpsRoutes.length > 0 && !certifiedDispatch?.verifyIdentity) throw new TypeError("native HTTPS routes require an identity verifier");
   const fallbackAdapter = options.dispatchAdapter ?? createJsonHttpsDispatchAdapter({ endpoints: config.endpoints, routes: config.nativeHttpsRoutes, secrets, ...(options.latencyRecorder ? { latencyRecorder: options.latencyRecorder } : {}) });
-  const adapter = options.githubReleaseRunner ? createGitHubReleaseDispatchAdapter({ runner: options.githubReleaseRunner, fallback: fallbackAdapter }) : fallbackAdapter;
+  const adapter = createGitHubReleaseDispatchAdapter({ runner: options.githubReleaseRunner ?? null, fallback: fallbackAdapter });
   const dispatch = createDispatchCoordinator(ledger, adapter, undefined, publication, options.delegation?.budget, certifiedDispatch);
   const runtime = createAuthorityHostRuntime({ gate, dispatch, ledger, decisions, delegation: options.delegation, ...(options.delegation ? { verifyRootGrant: (grant, tenant) => { verifyTrustedAuthority(trustRoots, { tenant, signerId: grant.signerId, purpose: "delegation-grant", advertisedDigest: grant.digest, value: grant.grant, signature: grant.signature }); } } : {}) });
   const jobs = deployment?.jobCard

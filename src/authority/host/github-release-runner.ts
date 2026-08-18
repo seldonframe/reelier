@@ -45,7 +45,9 @@ export interface GitHubReleaseProviderV1 {
 export interface GitHubReleaseRunRequestV1 { readonly alias: GitHubReleaseAliasV1; readonly allocationId: string; readonly authorizationHandle: string; readonly requestId: string; readonly semanticsDigest: string }
 export interface GitHubReleaseRunResultV1 { readonly status: "verified" | "pending-reconciliation" | "refused"; readonly phase: string; readonly evidenceDigest: string | null }
 export interface GitHubReleasePublicationConfirmationV1 { readonly requestId: string; readonly providerEvidenceDigest: string; readonly receiptRef: string; readonly receiptEvidenceDigest: string }
-export interface GitHubReleaseRunnerV1 { run(input: GitHubReleaseRunRequestV1): Promise<GitHubReleaseRunResultV1>; recover(): Promise<readonly string[]>; confirmPublication(input: GitHubReleasePublicationConfirmationV1): Promise<void> }
+export interface GitHubReleaseRunnerV1 { run(input: GitHubReleaseRunRequestV1): Promise<GitHubReleaseRunResultV1>; recover(): Promise<readonly string[]> }
+
+const publicationConfirmers = new WeakMap<GitHubReleaseRunnerV1, (input: GitHubReleasePublicationConfirmationV1) => Promise<void>>();
 
 export async function createGitHubReleaseRunner(input: Readonly<{ rootDir: string; journalSigner: Readonly<{ signerId: string; privateKey: KeyObject; publicKey: KeyObject }>; evidenceSigner: ReleaseContractSignerV1; authorizationResolver: (handle: string) => Promise<GitHubReleaseAuthorizationContextV1 | VerifiedReleaseAuthorizationV1>; provider: GitHubReleaseProviderV1; now: () => Date }>): Promise<GitHubReleaseRunnerV1> {
   if (!path.isAbsolute(input.rootDir)) throw new TypeError("GitHub release runner root must be absolute");
@@ -124,16 +126,20 @@ export async function createGitHubReleaseRunner(input: Readonly<{ rootDir: strin
       await step(journal, { requestId: String(value.requestId), semanticsDigest: events[0]!.semanticsDigest } as GitHubReleaseRunRequestV1, "receipt-published", data);
     });
   };
-  return Object.freeze({ run, recover, confirmPublication });
+  const runner = Object.freeze({ run, recover });
+  publicationConfirmers.set(runner, confirmPublication);
+  return runner;
 }
 
 /** Routes only the four reviewed release endpoints through the dedicated saga. The ordinary
  * coordinator still performs the actual allocation consumption and receipt publication. */
-export function createGitHubReleaseDispatchAdapter(input: Readonly<{ runner: GitHubReleaseRunnerV1; fallback: DispatchAdapter }>): DispatchAdapter {
+export function createGitHubReleaseDispatchAdapter(input: Readonly<{ runner: GitHubReleaseRunnerV1 | null; fallback: DispatchAdapter }>): DispatchAdapter {
   const invoke = async (state: DispatchRequestState): Promise<DispatchOutcome | null> => {
-    const effect = exactRecord(state.effect, ["bodyBase64", "endpointId", "headers", "idempotency", "method", "path", "preconditions", "query", "reconciliation", "riskClass", "v"], "release transport effect");
-    const alias = typeof effect.endpointId === "string" ? ENDPOINTS[effect.endpointId] : undefined;
+    const endpointId = inertEndpointId(state.effect);
+    const alias = endpointId ? ENDPOINTS[endpointId] : undefined;
     if (!alias) return null;
+    if (!input.runner) return failure("dedicated-release-runner-absent");
+    const effect = exactRecord(state.effect, ["bodyBase64", "endpointId", "headers", "idempotency", "method", "path", "preconditions", "query", "reconciliation", "riskClass", "v"], "release transport effect");
     const execution = state.reservation.intent.executionContext;
     if (!execution) return failure("release-allocation-context-absent");
     let body: Record<string, unknown>;
@@ -151,6 +157,10 @@ export function createGitHubReleaseDispatchAdapter(input: Readonly<{ runner: Git
     }
   };
   return Object.freeze({
+    ...(input.fallback.prepare ? { async prepare(state: DispatchRequestState) {
+      if (ENDPOINTS[inertEndpointId(state.effect) ?? ""]) throw new TypeError("release dispatch requires the dedicated prepared send boundary");
+      return input.fallback.prepare!(state);
+    } } : {}),
     async dispatch(state: DispatchRequestState) { return await invoke(state) ?? input.fallback.dispatch(state); },
     async reconcile(state: DispatchRequestState, outcome: DispatchOutcome) { return await invoke(state) ?? (input.fallback.reconcile ? input.fallback.reconcile(state, outcome) : outcome); },
   });
@@ -159,11 +169,13 @@ export function createGitHubReleaseDispatchAdapter(input: Readonly<{ runner: Git
 /** Confirms the ordinary coordinator's durable receipt only after its configured publication
  * succeeds. Later release effects require this confirmation, not provider evidence alone. */
 export function createGitHubReleaseReceiptPublication(input: Readonly<{ runner: GitHubReleaseRunnerV1; publication: DispatchPublication }>): DispatchPublication {
+  const confirmPublication = publicationConfirmers.get(input.runner);
+  if (!confirmPublication) throw new TypeError("release runner publication capability is unavailable");
   return Object.freeze({
     async publish(value: Parameters<DispatchPublication["publish"]>[0]) {
       const published = await input.publication.publish(value);
       const effect = isPlain(value.state.effect) ? value.state.effect : null;
-      if (value.phase === "dispatch" && value.outcome.kind === "acknowledged" && effect && typeof effect.endpointId === "string" && ENDPOINTS[effect.endpointId]) await input.runner.confirmPublication({ requestId: value.state.reservation.reservationId, providerEvidenceDigest: value.outcome.resultDigest, receiptRef: published.receiptRef, receiptEvidenceDigest: published.evidenceDigest });
+      if (value.phase === "dispatch" && value.outcome.kind === "acknowledged" && effect && typeof effect.endpointId === "string" && ENDPOINTS[effect.endpointId]) await confirmPublication({ requestId: value.state.reservation.reservationId, providerEvidenceDigest: value.outcome.resultDigest, receiptRef: published.receiptRef, receiptEvidenceDigest: published.evidenceDigest });
       return published;
     },
     ...(input.publication.publishReservation ? { publishReservation: input.publication.publishReservation.bind(input.publication) } : {}),
@@ -300,6 +312,7 @@ function sha256(bytes: Uint8Array): string { return `sha256:${createHash("sha256
 function gitBlobSha(bytes: Uint8Array): string { return createHash("sha1").update(`blob ${bytes.byteLength}\0`).update(bytes).digest("hex"); }
 function validateRequest(request: unknown): asserts request is GitHubReleaseRunRequestV1 { const value = exactRecord(request, ["alias", "allocationId", "authorizationHandle", "requestId", "semanticsDigest"], "GitHub release request"); if (!(String(value.alias) in ALIASES) || !/^[a-z0-9][a-z0-9-]{7,127}$/.test(String(value.allocationId)) || !/^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$/.test(String(value.authorizationHandle)) || !/^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$/.test(String(value.requestId)) || !DIGEST.test(String(value.semanticsDigest))) throw new TypeError("GitHub release request is invalid"); }
 function isPlain(value: unknown): value is Record<string, unknown> { if (!value || typeof value !== "object" || isProxy(value) || Array.isArray(value) || Object.getPrototypeOf(value) !== Object.prototype || Reflect.ownKeys(value).some(key => typeof key !== "string")) return false; return Object.values(Object.getOwnPropertyDescriptors(value)).every(descriptor => "value" in descriptor && descriptor.enumerable); }
+function inertEndpointId(value: unknown): string | null { if (!isPlain(value)) return null; const descriptor = Object.getOwnPropertyDescriptor(value, "endpointId"); return descriptor && "value" in descriptor && typeof descriptor.value === "string" ? descriptor.value : null; }
 function exactRecord(value: unknown, keys: readonly string[], label: string): Record<string, unknown> { if (!isPlain(value) || Object.keys(value).sort().join("\0") !== [...keys].sort().join("\0")) throw new TypeError(`${label} is not a closed inert record`); return Object.freeze(Object.fromEntries(keys.map(key => [key, value[key]]))); }
 function parseSha(value: unknown, label: string): Readonly<{ sha: string }> { const item = exactRecord(value, ["sha"], label); if (!GIT_SHA.test(String(item.sha))) throw new TypeError(`${label} SHA is invalid`); return Object.freeze({ sha: String(item.sha) }); }
 function parseRef(value: unknown): Readonly<{ sha: string }> | null { if (value === null) return null; return parseSha(value, "ref"); }
