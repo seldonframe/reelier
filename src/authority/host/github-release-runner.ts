@@ -39,7 +39,7 @@ export async function createGitHubReleaseRunner(input: Readonly<{ rootDir: strin
   if (!path.isAbsolute(input.rootDir)) throw new TypeError("GitHub release runner root must be absolute");
   await mkdir(input.rootDir, { recursive: true });
   const journal = await createSignedJournal({ rootDir: path.join(input.rootDir, "journal"), journalId: "github-release", ...input.journalSigner });
-  const run = async (request: Readonly<{ alias: GitHubReleaseAliasV1; authorizationHandle: string; requestId: string; semanticsDigest: string }>): Promise<GitHubReleaseRunResultV1> => {
+  const runOnce = async (request: Readonly<{ alias: GitHubReleaseAliasV1; authorizationHandle: string; requestId: string; semanticsDigest: string }>): Promise<GitHubReleaseRunResultV1> => {
     validateRequest(request);
     const resolved = await input.authorizationResolver(request.authorizationHandle);
     const context: GitHubReleaseAuthorizationContextV1 = "authorization" in resolved && "fileContents" in resolved ? resolved as GitHubReleaseAuthorizationContextV1 : { authorization: resolved as VerifiedReleaseAuthorizationV1, fileContents: [] };
@@ -63,6 +63,13 @@ export async function createGitHubReleaseRunner(input: Readonly<{ rootDir: strin
     if (effect === "draft-pr") return pullRequest(request, authorization, events, journal, input.provider, input.evidenceSigner, now);
     if (effect === "exact-sha-merge") return merge(request, authorization, events, journal, input.provider, input.evidenceSigner, now);
     return tag(request, authorization, events, journal, input.provider, input.evidenceSigner, now);
+  };
+  const active = new Map<string, Promise<GitHubReleaseRunResultV1>>();
+  const run = (request: Readonly<{ alias: GitHubReleaseAliasV1; authorizationHandle: string; requestId: string; semanticsDigest: string }>): Promise<GitHubReleaseRunResultV1> => {
+    const prior = active.get(request.requestId) ?? Promise.resolve(undefined);
+    const current = prior.catch(() => undefined).then(() => runOnce(request));
+    active.set(request.requestId, current);
+    return current.finally(() => { if (active.get(request.requestId) === current) active.delete(request.requestId); });
   };
   const recover = async (): Promise<readonly string[]> => {
     const recovered: string[] = [];
