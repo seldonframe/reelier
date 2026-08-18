@@ -36,6 +36,15 @@ Build the deterministic release authority, common release verifier, receipt grap
 
 ## Task 4 — Closed release contracts
 
+Files touched:
+
+- `src/authority/release-contracts.ts`
+- `src/authority/types.ts`
+- `src/authority/index.ts`
+- `test/authority/release-contracts.test.ts`
+- `SPEC.md`
+- `docs/specs/release-contracts-v1.md`
+
 - Add closed, canonical, signed `ReleaseAuthorizationBundleV1`, staged candidate manifest, release policy, and `ReleaseReceiptGraphV1` contracts.
 - Bind all identities, digests, paths, size limits, expiry, four effect allocations, destinations, CI evidence, tarball, and workflow.
 - Keep completeness explicitly `unchecked` and prevent any non-verified required lane from producing success.
