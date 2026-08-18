@@ -284,7 +284,9 @@ test("authorization expiry is checked again immediately before every provider wr
   try {
     const runner = await createGitHubReleaseRunner({ rootDir: root, journalSigner: { signerId: "release-journal-2026", privateKey: keys.privateKey, publicKey: keys.publicKey }, evidenceSigner: fixture.evidenceSigner, authorizationResolver: async () => fixture.context, provider, now: () => ++clockReads <= 2 ? new Date("2026-08-18T06:00:00.000Z") : new Date("2026-08-18T17:00:00.000Z") });
     await assert.rejects(() => runner.run({ alias: "github_release_candidate_publish_v1", allocationId: "release-candidate-branch-01", authorizationHandle: "release_auth_1", requestId: "expires_mid_write", semanticsDigest: authorityDigest({ expiry: true }) }), /stale|clock/i);
-    assert.equal(blobWrites, 1);
+    assert.equal(blobWrites, 0, "expiry after durable intent must refuse before provider dispatch");
+    await assert.rejects(() => runner.recover(), /stale|expired|refus/i);
+    assert.equal(blobWrites, 0);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
