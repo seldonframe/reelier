@@ -400,7 +400,7 @@ test("ambiguous merge reconciles read-only after expiry and never resends", asyn
     findPullRequests: async () => pr ? [pr] : [],
     createPullRequest: async (metadata: any) => (pr = { base: metadata.base, body: metadata.body, draft: metadata.draft, head: metadata.head, headSha: gitSha("a"), mergeCommitSha: null, merged: false, number: 1, title: metadata.title }),
     markPullRequestReady: async () => (pr = { ...pr, draft: false }),
-    getPullRequest: async () => { pullRequestReads += 1; if (loseReadback && pullRequestReads >= 4) { loseReadback = false; throw { v: "reelier.github-release-provider-fault/v1", kind: "transport-uncertain", reason: "network socket unavailable" }; } return pr; },
+    getPullRequest: async () => { pullRequestReads += 1; if (loseReadback && pullRequestReads >= 6) { loseReadback = false; throw { v: "reelier.github-release-provider-fault/v1", kind: "transport-uncertain", reason: "network socket unavailable" }; } return pr; },
     getChecks: async () => ["coverage", "full-tests", "mutation"].map(name => ({ name, status: "success", workflowDigest: digest("3") })),
     mergePullRequest: async () => { mergeCalls++; pr = { ...pr, merged: true, mergeCommitSha: gitSha("9") }; refs.set("heads/main", gitSha("9")); throw new Error("response lost after merge"); },
     getCommit: async ({ sha }: any) => ({ sha, parentSha: "e600ad5c2dc5e1bde0714915e7a84980c8d5602b", treeSha: sha === "e600ad5c2dc5e1bde0714915e7a84980c8d5602b" ? gitSha("b") : gitSha("e") }),
