@@ -247,3 +247,38 @@ test("ambiguous merge reconciles read-only after expiry and never resends", asyn
     assert.equal(mergeCalls, 1);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
+
+for (const boundary of ["createBlob", "createTree", "createCommit", "createBranchRef", "getCommit", "findPullRequests", "createPullRequest", "getPullRequest", "getChecks", "mergePullRequest", "readPackageManifest", "npmVersionExists", "createTagRef"] as const) {
+  test(`lost response after ${boundary} converges without duplicate merge or tag`, async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), `reelier-release-boundary-${boundary}-`));
+    const fixture = releaseAuthorityFixture(), keys = generateKeyPairSync("ed25519"), refs = new Map<string, string>([["heads/main", "e600ad5c2dc5e1bde0714915e7a84980c8d5602b"]]);
+    let pr: any = null, faulted = false, mergeCalls = 0, tagCalls = 0;
+    const base: any = {
+      createBlob: async ({ contentBase64 }: any) => ({ sha: blobSha(Buffer.from(contentBase64, "base64")) }), createTree: async () => ({ sha: gitSha("e") }), createCommit: async () => ({ sha: gitSha("a") }),
+      getRef: async ({ ref }: any) => refs.has(ref) ? { sha: refs.get(ref)! } : null,
+      createRef: async ({ ref, sha }: any) => { refs.set(ref, sha); if (ref.startsWith("tags/")) tagCalls++; return { sha }; },
+      getCommit: async ({ sha }: any) => ({ sha, parentSha: "e600ad5c2dc5e1bde0714915e7a84980c8d5602b", treeSha: gitSha("e") }),
+      findPullRequests: async () => pr ? [pr] : [], createPullRequest: async (metadata: any) => (pr = { base: metadata.base, body: metadata.body, draft: metadata.draft, head: metadata.head, headSha: gitSha("a"), mergeCommitSha: null, merged: false, number: 1, title: metadata.title }), getPullRequest: async () => pr,
+      getChecks: async () => ["coverage", "full-tests", "mutation"].map(name => ({ name, status: "success", workflowDigest: digest("3") })),
+      mergePullRequest: async () => { mergeCalls++; pr = { ...pr, merged: true, mergeCommitSha: gitSha("9") }; refs.set("heads/main", gitSha("9")); return { merged: true, sha: gitSha("9") }; },
+      readPackageManifest: async () => ({ name: "reelier", version: "0.32.1" }), npmVersionExists: async () => false,
+    };
+    const method = boundary === "createBranchRef" || boundary === "createTagRef" ? "createRef" : boundary;
+    const original = base[method];
+    base[method] = async (...args: any[]) => { const result = await original(...args); const ref = args[0]?.ref; const matches = boundary === "createBranchRef" ? String(ref).startsWith("heads/") : boundary === "createTagRef" ? String(ref).startsWith("tags/") : true; if (!faulted && matches) { faulted = true; throw new Error(`lost after ${boundary}`); } return result; };
+    try {
+      const runner = await createGitHubReleaseRunner({ rootDir: root, journalSigner: { signerId: "release-journal-2026", privateKey: keys.privateKey, publicKey: keys.publicKey }, evidenceSigner: fixture.evidenceSigner, authorizationResolver: async () => fixture.context, provider: base, now: () => new Date("2026-08-18T06:00:00.000Z") });
+      const allocations: Record<string, string> = { github_release_candidate_publish_v1: "release-candidate-branch-01", github_release_pr_ensure_v1: "release-draft-pr-01", github_release_pr_merge_v1: "release-exact-sha-merge-01", github_release_tag_create_v1: "release-non-force-tag-01" };
+      for (const alias of Object.keys(allocations)) {
+        const requestId = `${boundary}_${alias}`;
+        const request = { alias: alias as any, allocationId: allocations[alias]!, authorizationHandle: "release_auth_1", requestId, semanticsDigest: authorityDigest({ boundary, alias }) };
+        let result: any = null;
+        for (let attempt = 0; attempt < 3 && result?.status !== "verified"; attempt++) { try { result = await runner.run(request); } catch { /* safe read/content-addressed retry */ } }
+        assert.equal(result?.status, "verified", `${alias} did not reconcile at ${boundary}`);
+      }
+      assert.equal(faulted, true);
+      assert.equal(mergeCalls, 1);
+      assert.equal(tagCalls, 1);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+}
