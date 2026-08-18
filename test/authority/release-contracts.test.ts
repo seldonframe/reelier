@@ -4,12 +4,14 @@ import { createHash, generateKeyPairSync } from "node:crypto";
 import test from "node:test";
 import {
   createSignedReleaseAuthorizationBundleV1,
+  createSignedReleaseOperationPlanV1,
   createSignedReleasePolicyV1,
   createSignedReleaseReceiptGraphV1,
   createSignedReleaseVerifierEvidenceV1,
   createSignedStagedCandidateManifestV1,
   parseCanonicalSignedReleaseAuthorizationBundleV1,
   parseSignedReleaseAuthorizationBundleV1,
+  parseSignedReleaseOperationPlanV1,
   parseSignedReleasePolicyV1,
   parseSignedReleaseReceiptGraphV1,
   parseSignedReleaseVerifierEvidenceV1,
@@ -49,12 +51,46 @@ const spkiDigest = (lane: ReleaseEvidenceLaneV1): string => {
 };
 
 function releaseInputs() {
+  const operationFiles = [
+    { blobSha: sha("b"), contentDigest: digest("b"), mode: "100644" as const, path: "CHANGELOG.md" },
+    { blobSha: sha("c"), contentDigest: digest("c"), mode: "100644" as const, path: "src/cli.ts" },
+    { blobSha: sha("d"), contentDigest: digest("d"), mode: "100644" as const, path: "test/cli-subcommand-help.test.ts" },
+  ];
+  const candidateTreeDigest = authorityDigest({ v: "reelier.release-candidate-tree/v1", files: operationFiles });
+  const operationPlan = createSignedReleaseOperationPlanV1({
+    v: "reelier.release-operation-plan/v1",
+    baseCommit: "e600ad5c2dc5e1bde0714915e7a84980c8d5602b",
+    candidateBranch: "reelier/release/0.32.1",
+    candidateTreeDigest,
+    commit: {
+      author: { date: "2026-08-18T05:00:00.000Z", email: "release@seldonframe.com", name: "SeldonFrame Release" },
+      committer: { date: "2026-08-18T05:00:00.000Z", email: "release@seldonframe.com", name: "SeldonFrame Release" },
+      message: "release: v0.32.1",
+      parentSha: "e600ad5c2dc5e1bde0714915e7a84980c8d5602b",
+    },
+    destinationBranch: "main",
+    expectedCommitSha: sha("a"),
+    expectedTreeSha: sha("e"),
+    files: operationFiles,
+    npmPreflight: { packageName: "reelier", version: "0.32.1", versionMustBeAbsent: true },
+    pullRequest: { base: "main", body: "Governed release v0.32.1", draft: true, head: "reelier/release/0.32.1", title: "Release v0.32.1" },
+    repository: "seldonframe/reelier",
+    requiredChecks: ["coverage", "full-tests", "mutation"],
+    squash: { commitMessage: "release: v0.32.1", commitTitle: "Release v0.32.1" },
+    tag: "v0.32.1",
+    workflowCommitments: [
+      { digest: digest("3"), path: ".github/workflows/ci.yml" },
+      { digest: digest("4"), path: ".github/workflows/docker-publish.yml" },
+      { digest: digest("5"), path: ".github/workflows/mcp-publish.yml" },
+      { digest: digest("a"), path: ".github/workflows/npm-publish.yml" },
+    ],
+  }, signer);
   const candidateManifest = createSignedStagedCandidateManifestV1({
     v: "reelier.staged-candidate-manifest/v1",
     baseCommit: "e600ad5c2dc5e1bde0714915e7a84980c8d5602b",
     branch: "reelier/release/0.32.1",
     candidateCommit: sha("a"),
-    candidateTreeDigest: digest("1"),
+    candidateTreeDigest,
     changedBytes: 4096,
     changedPaths: ["CHANGELOG.md", "src/cli.ts", "test/cli-subcommand-help.test.ts"],
     destinationBranch: "main",
@@ -104,6 +140,7 @@ function releaseInputs() {
     jobCardDigest: digest("e"),
     missionDigest: digest("f"),
     packDigest: digest("0"),
+    operationPlanDigest: operationPlan.digest,
     policyDigest: policy.digest,
     receiptGraphMakerBinding: { publicKeySpkiDigest: keySpkiDigest(graphKeyPair.publicKey), signerId: graphSigner.signerId },
     rootGrantDigest: digest("1"),
@@ -121,7 +158,7 @@ function releaseInputs() {
       candidateCommit: sha("a"), resultValue: 9_137, subjectDigest: digest("8"), workflowDigest: digest("3"), workflowPath: ".github/workflows/ci.yml",
     }),
   ];
-  return { authorization, candidateManifest, policy, qualityEvidence };
+  return { authorization, candidateManifest, operationPlan, policy, qualityEvidence };
 }
 
 function signedEvidence(
@@ -219,7 +256,16 @@ function verifyAuthorization(release = releaseInputs(), now = new Date("2026-08-
   return verifyReleaseAuthorizationBundleV1(authorizationInput(release), verifier, now, release.qualityEvidence);
 }
 
-function authorizationInput(release: ReturnType<typeof releaseInputs>) { return { authorization: release.authorization, candidateManifest: release.candidateManifest, policy: release.policy }; }
+function authorizationInput(release: ReturnType<typeof releaseInputs>) { return { authorization: release.authorization, candidateManifest: release.candidateManifest, operationPlan: release.operationPlan, policy: release.policy }; }
+
+test("release operation plan closes every Git, PR, merge, check, package, and tag input before dispatch", () => {
+  const release = releaseInputs();
+  assert.equal(release.operationPlan.value.candidateTreeDigest, release.candidateManifest.value.candidateTreeDigest);
+  assert.deepEqual(release.operationPlan.value.files.map(file => file.path), ["CHANGELOG.md", "src/cli.ts", "test/cli-subcommand-help.test.ts"]);
+  assert.equal(parseSignedReleaseOperationPlanV1(release.operationPlan), release.operationPlan);
+  assert.throws(() => parseSignedReleaseOperationPlanV1({ ...release.operationPlan, value: { ...release.operationPlan.value, repository: "attacker/repo" } }), /digest|signature|repository|release/i);
+  assert.throws(() => createSignedReleaseOperationPlanV1({ ...release.operationPlan.value, files: release.operationPlan.value.files.map((file, index) => index === 0 ? { ...file, contentDigest: digest("f") } : file) }, signer), /tree.*digest|content|candidate/i);
+});
 
 function trappedProxy<T extends object>(target: T) {
   let traps = 0;
