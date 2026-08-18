@@ -544,3 +544,105 @@ test("receipt graph rejects upgraded completeness, lane aliasing, duplicates, an
   staleInstalledCheck.installedChecks.windows.freshUntil = "2026-08-18T16:59:59.999Z";
   assert.throws(() => createSignedReleaseReceiptGraphV1(staleInstalledCheck, signer), /fresh|Windows|installed/i);
 });
+
+test("authorization rejects the authorization key reused by an evidence signer alias", () => {
+  const release = releaseInputs();
+  const authorizationValue = structuredClone(release.authorization.value);
+  const authorizationSpki = `sha256:${createHash("sha256").update(keyPair.publicKey.export({ format: "der", type: "spki" })).digest("hex")}`;
+  (authorizationValue.evidenceVerifierBindings as any)[0] = {
+    lane: "ci-coverage",
+    publicKeySpkiDigest: authorizationSpki,
+    signerId: "authorization-key-alias",
+  };
+  const authorization = createSignedReleaseAuthorizationBundleV1(authorizationValue, signer);
+  const original = release.qualityEvidence[0].evidence as ReturnType<typeof createSignedReleaseVerifierEvidenceV1>;
+  const aliasedEvidence = createSignedReleaseVerifierEvidenceV1(original.value, {
+    signerId: "authorization-key-alias",
+    privateKey: keyPair.privateKey,
+  });
+  const qualityEvidence = [...release.qualityEvidence];
+  qualityEvidence[0] = {
+    evidence: aliasedEvidence,
+    verifier: { signerId: "authorization-key-alias", publicKey: keyPair.publicKey },
+  };
+
+  assert.throws(
+    () => verifyReleaseAuthorizationBundleV1({ ...authorizationInput(release), authorization }, verifier, new Date("2026-08-18T06:00:00.000Z"), qualityEvidence),
+    /key|independent|maker|separat|spki/i,
+  );
+});
+
+test("receipt verification rejects arbitrary graph keys and graph-maker key aliases", () => {
+  const release = releaseInputs();
+  const authorization = verifyAuthorization(release);
+  const value = releaseReceiptGraph();
+  const evidence = receiptEvidence(value);
+  const arbitrary = generateKeyPairSync("ed25519");
+  const arbitraryGraph = createSignedReleaseReceiptGraphV1(value, { signerId: "arbitrary-graph-maker", privateKey: arbitrary.privateKey });
+  assert.throws(
+    () => verifyReleaseReceiptGraphV1(arbitraryGraph, { signerId: "arbitrary-graph-maker", publicKey: arbitrary.publicKey }, authorization, evidence),
+    /bound|graph|maker|trusted/i,
+  );
+
+  const authorizationAliasGraph = createSignedReleaseReceiptGraphV1(value, { signerId: "authorization-graph-alias", privateKey: keyPair.privateKey });
+  assert.throws(
+    () => verifyReleaseReceiptGraphV1(authorizationAliasGraph, { signerId: "authorization-graph-alias", publicKey: keyPair.publicKey }, authorization, evidence),
+    /key|independent|maker|separat|spki/i,
+  );
+
+  const checker = trustedEvidenceKeys.get("candidate-branch")!;
+  const aliasGraph = createSignedReleaseReceiptGraphV1(value, { signerId: "graph-maker-key-alias", privateKey: checker.pair.privateKey });
+  assert.throws(
+    () => verifyReleaseReceiptGraphV1(aliasGraph, { signerId: "graph-maker-key-alias", publicKey: checker.pair.publicKey }, authorization, evidence),
+    /key|independent|maker|separat|spki/i,
+  );
+});
+
+test("quality evidence chronology is closed at issue, verification-now, and expiry boundaries", () => {
+  const release = releaseInputs();
+  const verifyAt = (observedAt: string, now: string) => {
+    const evidence = release.qualityEvidence.map(item => resignEvidence(item, { observedAt }));
+    return verifyReleaseAuthorizationBundleV1(authorizationInput(release), verifier, new Date(now), evidence);
+  };
+  assert.doesNotThrow(() => verifyAt("2026-08-18T05:00:00.000Z", "2026-08-18T06:00:00.000Z"));
+  assert.doesNotThrow(() => verifyAt("2026-08-18T06:00:00.000Z", "2026-08-18T06:00:00.000Z"));
+  assert.throws(() => verifyAt("2026-08-18T04:59:59.999Z", "2026-08-18T06:00:00.000Z"), /observed|issue|chronolog|time/i);
+  assert.throws(() => verifyAt("2026-08-18T06:00:00.001Z", "2026-08-18T06:00:00.000Z"), /future|observed|verification|time/i);
+  assert.throws(() => verifyAt("2026-08-18T17:00:00.000Z", "2026-08-18T16:59:59.999Z"), /expiry|observed|future|time/i);
+});
+
+test("receipt graph chronology uses explicit current time and permits historical verification after expiry", () => {
+  const release = releaseInputs();
+  const authorization = verifyAuthorization(release);
+  const verifyGraphAt = (verifiedAt: string, now: string) => {
+    const value = releaseReceiptGraph();
+    value.verifiedAt = verifiedAt;
+    value.installedChecks.linux.observedAt = verifiedAt;
+    value.installedChecks.windows.observedAt = verifiedAt;
+    const signed = createSignedReleaseReceiptGraphV1(value, signer);
+    return (verifyReleaseReceiptGraphV1 as any)(signed, verifier, authorization, receiptEvidence(value), new Date(now));
+  };
+  assert.doesNotThrow(() => verifyGraphAt("2026-08-18T05:00:00.000Z", "2026-08-18T05:00:00.000Z"));
+  assert.doesNotThrow(() => verifyGraphAt("2026-08-18T16:59:59.999Z", "2026-08-19T05:00:00.000Z"));
+  assert.throws(() => verifyGraphAt("2026-08-18T04:59:59.999Z", "2026-08-18T06:00:00.000Z"), /graph|issue|chronolog|time/i);
+  assert.throws(() => verifyGraphAt("2026-08-18T17:00:00.000Z", "2026-08-18T18:00:00.000Z"), /graph|expiry|chronolog|time/i);
+  assert.throws(() => verifyGraphAt("2026-08-18T06:00:00.001Z", "2026-08-18T06:00:00.000Z"), /future|graph|verification|time/i);
+});
+
+test("every receipt evidence observation is between authorization issue and graph verification", () => {
+  const release = releaseInputs();
+  const authorization = verifyAuthorization(release);
+  const value = releaseReceiptGraph();
+  value.verifiedAt = "2026-08-18T16:55:00.000Z";
+  const graph = createSignedReleaseReceiptGraphV1(value, signer);
+  const evidence = receiptEvidence(value);
+  const verify = (observedAt: string) => {
+    const changed = [...evidence];
+    changed[0] = resignEvidence(changed[0], { observedAt });
+    return (verifyReleaseReceiptGraphV1 as any)(graph, verifier, authorization, changed, new Date("2026-08-18T16:55:00.000Z"));
+  };
+  assert.doesNotThrow(() => verify("2026-08-18T05:00:00.000Z"));
+  assert.doesNotThrow(() => verify("2026-08-18T16:55:00.000Z"));
+  assert.throws(() => verify("2026-08-18T04:59:59.999Z"), /evidence|issue|chronolog|observed/i);
+  assert.throws(() => verify("2026-08-18T16:55:00.001Z"), /evidence|graph|chronolog|observed/i);
+});
