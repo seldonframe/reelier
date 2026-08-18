@@ -224,6 +224,8 @@ test("public package exports do not expose the private runner registry", async (
   }
   assert.equal("verifyCertificationScenarioPlanV1" in authority, false);
   for (const verifier of ["verifyCertificationOperatorConfigV3", "verifyCertificationEndpointManifestV2", "verifyCertificationRunnerManifestV2", "verifyCertificationScenarioPlanV1"]) assert.equal(typeof host[verifier], "function", verifier);
+  assert.equal(typeof host.createGitHubReleaseRunner, "function");
+  assert.equal("createGitHubIssueLabelsHermeticComposition" in host, false, "release runner must not expose the certification-specific runner");
   const config = (host.verifyCertificationOperatorConfigV3 as any)(githubV3());
   const endpoint = deriveCertificationEndpointManifest(config, "github-issue-labels");
   const verifiedEndpoint = (host.verifyCertificationEndpointManifestV2 as any)(endpoint, config, "github-issue-labels");
