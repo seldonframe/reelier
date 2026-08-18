@@ -455,7 +455,10 @@ test("evidence verification rejects nested key accessors without invoking them",
       },
     }),
   };
-  assert.doesNotThrow(() => verifyReleaseAuthorizationBundleV1(authorizationInput(release), verifier, new Date("2026-08-18T06:00:00.000Z"), proxied));
+  assert.throws(
+    () => verifyReleaseAuthorizationBundleV1(authorizationInput(release), verifier, new Date("2026-08-18T06:00:00.000Z"), proxied),
+    /proxy/i,
+  );
   assert.equal(proxyReads, 0);
 
   let arrayProxyReads = 0;
@@ -465,7 +468,10 @@ test("evidence verification rejects nested key accessors without invoking them",
       return Reflect.get(target, property, receiver);
     },
   });
-  assert.doesNotThrow(() => verifyReleaseAuthorizationBundleV1(authorizationInput(release), verifier, new Date("2026-08-18T06:00:00.000Z"), proxiedArray));
+  assert.throws(
+    () => verifyReleaseAuthorizationBundleV1(authorizationInput(release), verifier, new Date("2026-08-18T06:00:00.000Z"), proxiedArray),
+    /proxy/i,
+  );
   assert.equal(arrayProxyReads, 0);
 
   let customExportCalls = 0;
@@ -861,6 +867,20 @@ test("receipt verification rejects hostile clocks without invoking overrides", (
   const switching = new Date("2026-08-18T16:55:00.000Z") as Date & { getTime: () => number };
   switching.getTime = () => { calls += 1; return calls % 2 === 1 ? Date.parse("2026-08-18T16:55:00.000Z") : Date.parse("2026-08-18T16:54:00.000Z"); };
   assert.throws(() => verifyReleaseReceiptGraphV1(graph, graphVerifier, authorization, evidence, switching), /clock|date|own|property/i);
+  assert.equal(calls, 0);
+
+  const ownGetter = new Date("2026-08-18T16:55:00.000Z");
+  Object.defineProperty(ownGetter, "getTime", { get: () => { calls += 1; return Date.prototype.getTime; } });
+  assert.throws(() => verifyReleaseReceiptGraphV1(graph, graphVerifier, authorization, evidence, ownGetter), /clock|date|own|property/i);
+  assert.equal(calls, 0);
+
+  class SwitchingDate extends Date {
+    override getTime(): number { calls += 1; return calls % 2 === 1 ? Date.parse("2026-08-18T16:55:00.000Z") : Date.parse("2026-08-18T16:54:00.000Z"); }
+  }
+  assert.throws(
+    () => verifyReleaseReceiptGraphV1(graph, graphVerifier, authorization, evidence, new SwitchingDate("2026-08-18T16:55:00.000Z")),
+    /clock|date|prototype/i,
+  );
   assert.equal(calls, 0);
 
   const proxied = trappedProxy(new Date("2026-08-18T16:55:00.000Z"));

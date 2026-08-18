@@ -1,4 +1,5 @@
 import { createHash, createPublicKey, KeyObject } from "node:crypto";
+import { types as utilTypes } from "node:util";
 import { signAuthorityDigest, verifyAuthoritySignature } from "./crypto.js";
 import type { AuthoritySignature, AuthoritySignaturePurpose } from "./types.js";
 import { authorityCanonicalBytes, authorityDigest } from "./wire.js";
@@ -217,27 +218,29 @@ export function verifyReleaseAuthorizationBundleV1(
   now: Date,
   qualityEvidence: readonly ReleaseEvidenceVerificationV1[],
 ): VerifiedReleaseAuthorizationV1 {
-  exact(input, ["authorization", "candidateManifest", "policy"], "release authorization inputs");
+  const verificationTime = snapshotVerificationTime(now, "release authorization verification clock");
+  const inputs = exact(input, ["authorization", "candidateManifest", "policy"], "release authorization inputs");
   const trustedVerifier = parseReleaseContractVerifierInput(verifier, "release authorization verifier");
-  const authorization = verifySigned(parseSignedReleaseAuthorizationBundleV1(input.authorization), trustedVerifier, "release-authorization");
-  const candidateManifest = verifySigned(parseSignedStagedCandidateManifestV1(input.candidateManifest), trustedVerifier, "release-authorization");
-  const policy = verifySigned(parseSignedReleasePolicyV1(input.policy), trustedVerifier, "release-authorization");
+  const authorization = verifySigned(parseSignedReleaseAuthorizationBundleV1(inputs.authorization), trustedVerifier, "release-authorization");
+  const candidateManifest = verifySigned(parseSignedStagedCandidateManifestV1(inputs.candidateManifest), trustedVerifier, "release-authorization");
+  const policy = verifySigned(parseSignedReleasePolicyV1(inputs.policy), trustedVerifier, "release-authorization");
   if (authorization.value.stagedCandidateManifestDigest !== candidateManifest.digest) throw new TypeError("release authorization candidate manifest digest mismatch");
   if (authorization.value.policyDigest !== policy.digest) throw new TypeError("release authorization policy digest mismatch");
-  if (!Number.isFinite(now.getTime()) || now.getTime() < Date.parse(authorization.value.issuedAt)) throw new TypeError("release authorization is not yet valid before issuedAt");
-  if (now.getTime() >= Date.parse(authorization.value.expiresAt)) throw new TypeError("release authorization is expired");
+  if (verificationTime < Date.parse(authorization.value.issuedAt)) throw new TypeError("release authorization is not yet valid before issuedAt");
+  if (verificationTime >= Date.parse(authorization.value.expiresAt)) throw new TypeError("release authorization is expired");
   const authorizationKeyDigest = trustedVerifier.publicKeySpkiDigest;
   if (authorization.value.receiptGraphMakerBinding.publicKeySpkiDigest === authorizationKeyDigest || authorization.value.evidenceVerifierBindings.some(binding => binding.publicKeySpkiDigest === authorizationKeyDigest)) throw new TypeError("release authorization signer, receipt graph maker, and evidence checker keys must be separate by SPKI digest");
   if (candidateManifest.value.changedPaths.length > policy.value.maxChangedFiles || candidateManifest.value.changedBytes > policy.value.maxChangedBytes) throw new TypeError("release candidate exceeds policy size limits");
   if (!equalStrings(candidateManifest.value.changedPaths, policy.value.allowedPaths)) throw new TypeError("release candidate paths do not equal policy allowed paths");
   if (!equalStrings(authorization.value.effectAllocations.map(item => item.effect), policy.value.effectAllocations)) throw new TypeError("release effect allocations do not equal policy effects");
-  verifyQualityEvidence(candidateManifest, authorization, qualityEvidence, now.getTime());
+  verifyQualityEvidence(candidateManifest, authorization, qualityEvidence, verificationTime);
   const verified = deepFreeze({ authorization, candidateManifest, policy });
   verifiedAuthorizations.add(verified);
   return verified;
 }
 
 export function verifyReleaseReceiptGraphV1(value: unknown, verifier: ReleaseContractVerifierV1, authorization: VerifiedReleaseAuthorizationV1, evidence: readonly ReleaseEvidenceVerificationV1[], now: Date): VerifiedReleaseReceiptGraphV1 {
+  const nowTime = snapshotVerificationTime(now, "release receipt graph verification clock");
   if (!authorization || !verifiedAuthorizations.has(authorization)) throw new TypeError("release receipt verification requires a verified authorization and trusted evidence bindings");
   const authorizationBundleDigest = authorization.authorization.digest;
   const trustedVerifier = parseReleaseContractVerifierInput(verifier, "release receipt graph verifier");
@@ -245,11 +248,10 @@ export function verifyReleaseReceiptGraphV1(value: unknown, verifier: ReleaseCon
   const makerBinding = authorization.authorization.value.receiptGraphMakerBinding;
   if (graph.signerId !== makerBinding.signerId || trustedVerifier.publicKeySpkiDigest !== makerBinding.publicKeySpkiDigest) throw new TypeError("release receipt graph verifier does not match the authorization-bound graph maker");
   if (graph.value.authorizationBundleDigest !== authorizationBundleDigest) throw new TypeError("release receipt graph authorization digest mismatch");
-  const nowTime = now instanceof Date ? now.getTime() : Number.NaN;
   const graphTime = Date.parse(graph.value.verifiedAt);
   const issuedAt = Date.parse(authorization.authorization.value.issuedAt);
   const expiresAt = Date.parse(authorization.authorization.value.expiresAt);
-  if (!Number.isFinite(nowTime) || graphTime < issuedAt || graphTime >= expiresAt || graphTime > nowTime) throw new TypeError("release receipt graph verifiedAt is outside authorization chronology or in the verification future");
+  if (graphTime < issuedAt || graphTime >= expiresAt || graphTime > nowTime) throw new TypeError("release receipt graph verifiedAt is outside authorization chronology or in the verification future");
   verifyReceiptEvidence(graph, authorization.authorization, evidence);
   const success = requiredStatuses(graph.value).every(status => status === "verified");
   return deepFreeze({ evaluation: { completeness: "unchecked" as const, status: success ? "verified" as const : "incomplete" as const, success }, graph });
@@ -494,6 +496,7 @@ function parseReleaseContractVerifierInput(value: unknown, label: string): Inter
 }
 
 function snapshotDenseDataArray(value: unknown, label: string): readonly unknown[] {
+  if (value !== null && typeof value === "object" && utilTypes.isProxy(value)) throw new TypeError(`${label} contains a Proxy`);
   if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype) throw new TypeError(`${label} is not a plain dense array`);
   const lengthDescriptor = Object.getOwnPropertyDescriptor(value, "length");
   if (!lengthDescriptor || !("value" in lengthDescriptor) || !Number.isSafeInteger(lengthDescriptor.value) || lengthDescriptor.value < 0) throw new TypeError(`${label} has invalid length`);
@@ -511,6 +514,7 @@ function snapshotDenseDataArray(value: unknown, label: string): readonly unknown
 }
 
 function shallowExact(value: unknown, fields: readonly string[], label: string): Record<string, any> {
+  if (value !== null && typeof value === "object" && utilTypes.isProxy(value)) throw new TypeError(`${label} contains a Proxy`);
   if (!value || typeof value !== "object" || Array.isArray(value) || Object.getPrototypeOf(value) !== Object.prototype) throw new TypeError(`${label} is not an exact object`);
   const snapshot: Record<string, unknown> = {};
   const keys: string[] = [];
@@ -557,15 +561,16 @@ function parseCanonicalReleaseJson<T>(json: string, parser: (value: unknown) => 
 }
 
 function exact(value: unknown, fields: readonly string[], label: string): Record<string, any> {
-  assertPlainDataTree(value, label);
-  if (!value || typeof value !== "object" || Array.isArray(value) || Object.getPrototypeOf(value) !== Object.prototype) throw new TypeError(`${label} is not an exact canonical object (prototype rejected)`);
-  const keys = ownDataKeys(value, label).sort();
+  const snapshot = snapshotPlainDataTree(value, label);
+  if (!snapshot || typeof snapshot !== "object" || Array.isArray(snapshot)) throw new TypeError(`${label} is not an exact canonical object (prototype rejected)`);
+  const keys = Object.keys(snapshot).sort();
   if (!equalStrings(keys, [...fields].sort())) throw new TypeError(`${label} is not an exact canonical object`);
-  return value as Record<string, any>;
+  return snapshot as Record<string, any>;
 }
 
-function assertPlainDataTree(value: unknown, label: string, seen = new Set<object>()): void {
-  if (value === null || typeof value !== "object") return;
+function snapshotPlainDataTree(value: unknown, label: string, seen = new Set<object>()): unknown {
+  if (value === null || typeof value !== "object") return value;
+  if (utilTypes.isProxy(value)) throw new TypeError(`${label} contains a Proxy`);
   if (seen.has(value)) throw new TypeError(`${label} contains a cyclic object graph`);
   seen.add(value);
   const array = Array.isArray(value);
@@ -576,25 +581,29 @@ function assertPlainDataTree(value: unknown, label: string, seen = new Set<objec
   if (array && (!lengthDescriptor || !("value" in lengthDescriptor) || !Number.isSafeInteger(lengthDescriptor.value) || lengthDescriptor.value < 0)) throw new TypeError(`${label} contains an invalid array length`);
   const expectedArrayKeys = array ? [...Array(lengthDescriptor!.value).keys()].map(String).concat("length") : null;
   if (expectedArrayKeys !== null && (keys.length !== expectedArrayKeys.length || keys.some((key, index) => key !== expectedArrayKeys[index]))) throw new TypeError(`${label} contains a sparse array, symbol, non-enumerable field, or custom own array property`);
+  const snapshot: Record<string, unknown> | unknown[] = array ? [] : {};
   for (const key of keys) {
     if (typeof key === "symbol") throw new TypeError(`${label} contains a symbol field`);
     const descriptor = Object.getOwnPropertyDescriptor(value, key);
     if (!descriptor || !("value" in descriptor) || (key !== "length" && descriptor.enumerable !== true)) throw new TypeError(`${label} contains an accessor or non-enumerable property`);
-    if (key !== "length") assertPlainDataTree(descriptor.value, label, seen);
+    if (key !== "length") {
+      const child = snapshotPlainDataTree(descriptor.value, label, seen);
+      if (array) (snapshot as unknown[]).push(child);
+      else Object.defineProperty(snapshot, key, { configurable: true, enumerable: true, value: child, writable: true });
+    }
   }
   seen.delete(value);
+  return snapshot;
 }
 
-function ownDataKeys(value: object, label: string): string[] {
-  const keys = Reflect.ownKeys(value);
-  const result: string[] = [];
-  for (const key of keys) {
-    if (typeof key === "symbol") throw new TypeError(`${label} contains a symbol field`);
-    const descriptor = Object.getOwnPropertyDescriptor(value, key);
-    if (!descriptor || !("value" in descriptor) || descriptor.enumerable !== true) throw new TypeError(`${label} contains an accessor or non-enumerable property`);
-    result.push(key);
-  }
-  return result;
+function snapshotVerificationTime(now: Date, label: string): number {
+  if (!now || typeof now !== "object") throw new TypeError(`${label} must be a plain Date`);
+  if (utilTypes.isProxy(now)) throw new TypeError(`${label} rejects Proxy clocks`);
+  if (Object.getPrototypeOf(now) !== Date.prototype) throw new TypeError(`${label} must use the Date prototype`);
+  if (Reflect.ownKeys(now).length !== 0) throw new TypeError(`${label} Date must not contain own properties`);
+  const time = Date.prototype.getTime.call(now);
+  if (!Number.isFinite(time)) throw new TypeError(`${label} is invalid`);
+  return time;
 }
 
 function normalize<T>(value: T): T { return deepFreeze(JSON.parse(authorityCanonicalBytes(value).toString("utf8")) as T); }
