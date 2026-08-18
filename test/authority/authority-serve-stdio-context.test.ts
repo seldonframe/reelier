@@ -4,8 +4,9 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { createPrincipalRegistry, type PrincipalRegistry } from "../../src/authority/host/principal-registry.js";
-import { composeAuthorityServeStdioRuntime, resolveAuthorityServeStdioExecutionContext } from "../../src/authority/host/stdio-context.js";
+import { composeAuthorityServeStdioRuntime, resolveAuthorityServeStdioExecutionContext, validatePrivateStdioCredentialFileMetadata } from "../../src/authority/host/stdio-context.js";
 import { validateAuthorityHostConfig } from "../../src/authority/host/config.js";
+import { composeAuthorityServeHost } from "../../src/authority/cli.js";
 
 const digest = `sha256:${"a".repeat(64)}`;
 const base = { version: 1 as const, tenant: "tenant_1", requester: "agent_1", authorityCellId: "cell_1", definitions: ["gmail_reply_send_v1", "slack_channel_topic_set_v1"], ledgerDir: "ledger", decisionDir: "decisions", receiptDir: "receipts", endpoints: [] };
@@ -61,4 +62,27 @@ test("authority serve production composition passes only the resolved context in
   assert.equal(composed.runtime.requiresAuthenticatedExecutionContext, true);
   const missing = validateAuthorityHostConfig({ ...base, ingress: { principalRegistryFile: "principal.jsonl" } });
   await assert.rejects(() => composeAuthorityServeStdioRuntime(missing, registry, async () => ({ requiresAuthenticatedExecutionContext: true })), /authenticated principal|credential/i);
+});
+
+test("stdio credential file metadata requires the effective host owner and private mode", () => {
+  assert.doesNotThrow(() => validatePrivateStdioCredentialFileMetadata({ uid: 1001, mode: 0o100600 }, 1001));
+  assert.throws(() => validatePrivateStdioCredentialFileMetadata({ uid: 1002, mode: 0o100600 }, 1001), /owner|uid|private/i);
+  for (const permission of [0o040, 0o020, 0o010, 0o004, 0o002, 0o001]) {
+    assert.throws(() => validatePrivateStdioCredentialFileMetadata({ uid: 1001, mode: 0o100600 | permission }, 1001), /permission|private|mode/i);
+  }
+});
+
+test("authority serve host composition binds stdio resolver, bound runtime, and host server without starting stdio", async () => {
+  const config = validateAuthorityHostConfig({ ...base, ingress: { principalRegistryFile: "principal.jsonl", stdioPrincipalCredentialRef: "env:REELIER_STDIO_PRINCIPAL" } });
+  const executionContext = { v: "reelier.authority-execution-context/v1" as const, taskId: "task_1", principalId: "agent_1", grantId: "grant_1", grantDigest: digest, allocationId: "root", runtimeSessionId: "session_1", jobId: "production_release", authorityCellId: "cell_1" };
+  const calls: string[] = [];
+  const server = { marker: "server" };
+  const result = await composeAuthorityServeHost(config, "stdio", {} as PrincipalRegistry, {}, undefined, {
+    async composeStdio(_config, _registry, createRuntime) { calls.push("compose"); return { executionContext, runtime: await createRuntime(executionContext) }; },
+    async createStdioBoundRuntime(_config, context) { calls.push("bound-runtime"); assert.deepEqual(context, executionContext); return { outcome: async () => ({ requestId: "", verdict: "refused" as const, reasonCode: "unused", lifecycleState: "refused" }), status: async () => ({ requestId: "", verdict: "refused" as const, reasonCode: "unused", lifecycleState: "refused" }) } as never; },
+    async createLocalRuntime() { calls.push("unbound-runtime"); throw new Error("must not use unbound runtime"); },
+    createHostServer(_config, _runtime, options) { calls.push("host-server"); assert.deepEqual(options.stdioExecutionContext, executionContext); return server as never; },
+  });
+  assert.equal(result, server);
+  assert.deepEqual(calls, ["compose", "bound-runtime", "host-server"]);
 });
