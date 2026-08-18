@@ -38,6 +38,7 @@ Build the deterministic release authority, common release verifier, receipt grap
 
 Files touched:
 
+- `docs/superpowers/plans/2026-08-18-eve-governed-production-release.md`
 - `src/authority/release-contracts.ts`
 - `src/authority/types.ts`
 - `src/authority/index.ts`
