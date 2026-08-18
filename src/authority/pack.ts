@@ -1,6 +1,11 @@
 import type { OutcomeContract, SourceBundle, TransportEffect } from "./types.js";
 import type { RegisteredDefinitionDigests } from "./contract.js";
 import { authorityDigest } from "./wire.js";
+import * as utilTypes from "node:util/types";
+
+/** Pack-safe proxy detection. First-party pack sources import this reviewed authority boundary
+ * rather than loading runtime modules themselves. */
+export function isStaticPackProxy(value: unknown): boolean { return typeof value === "object" && value !== null && utilTypes.isProxy(value); }
 
 export interface StaticPackCompileInput {
   readonly contract: OutcomeContract;
@@ -117,8 +122,8 @@ const STATIC_RUNTIME_SPECIFIER_ALLOWLIST: Readonly<Record<string, ReadonlySet<st
   "src/packs/github/reconcile.ts": new Set(["../../authority/wire.js", "./manifest.js", "../types.js"]),
   "src/packs/github-release/manifest.ts": new Set(["../../authority/wire.js"]),
   "src/packs/github-release/source.ts": new Set(["../../authority/wire.js", "./manifest.js"]),
-  "src/packs/github-release/compile.ts": new Set(["../../authority/wire.js", "./manifest.js"]),
-  "src/packs/github-release/reconcile.ts": new Set(["../../authority/wire.js", "../types.js", "./manifest.js"]),
+  "src/packs/github-release/compile.ts": new Set(["../../authority/pack.js", "../../authority/wire.js", "./manifest.js"]),
+  "src/packs/github-release/reconcile.ts": new Set(["../../authority/pack.js", "../../authority/wire.js", "../types.js", "./manifest.js"]),
   "src/packs/github-release/index.ts": new Set(["./manifest.js", "./compile.js", "./source.js", "./reconcile.js"]),
   "src/packs/slack-topic/manifest.ts": new Set(["../../authority/wire.js"]),
   "src/packs/slack-topic/source.ts": new Set(["../../authority/source.js", "../../authority/wire.js", "./manifest.js"]),
