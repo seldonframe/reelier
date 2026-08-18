@@ -9,6 +9,7 @@ export interface AuthorityMcpDefinition { readonly alias: string; readonly descr
 
 export function buildAuthorityMcpServer(definitions: readonly AuthorityMcpDefinition[], handler: AuthorityMcpHandler, context: AuthorityContext, artifactStage?: (input: unknown, context: AuthorityContext) => Promise<unknown>): Server {
   const server = new Server({ name: "reelier-authority", version: "1.0.0" }, { capabilities: { tools: {} } });
+  const directOutcomeAliases = new Set(definitions.map(definition => definition.alias));
   server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [
     { name: "reelier_jobs_search", description: "Find deployed jobs without loading every Outcome schema.", inputSchema: { type: "object", additionalProperties: false, properties: { query: { type: "string", maxLength: 256 } } } },
     { name: "reelier_job_load", description: "Load one deployed job and its bounded Outcome.", inputSchema: { type: "object", additionalProperties: false, required: ["jobId"], properties: { jobId: { type: "string", minLength: 1, maxLength: 128 } } } },
@@ -31,7 +32,7 @@ export function buildAuthorityMcpServer(definitions: readonly AuthorityMcpDefini
         : name === "reelier_outcome_invoke" && handler.invoke ? await handler.invoke(args, context)
         : name === "reelier_outcome_status" ? await handler.status(args, context)
         : name === "reelier_artifact_stage" && artifactStage ? await artifactStage(args, context)
-        : name.startsWith("reelier_outcome_") ? await handler.outcome(name.slice("reelier_outcome_".length), args, context) : undefined;
+        : name.startsWith("reelier_outcome_") && directOutcomeAliases.has(name.slice("reelier_outcome_".length)) ? await handler.outcome(name.slice("reelier_outcome_".length), args, context) : undefined;
       if (!value) throw new Error("unknown authority tool");
       return { content: [{ type: "text", text: JSON.stringify(value) }] };
     } catch { return { isError: true, content: [{ type: "text", text: JSON.stringify({ verdict: "refused", reasonCode: "host-unavailable", lifecycleState: "unavailable", requestId: "" }) }] }; }

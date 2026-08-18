@@ -298,6 +298,7 @@ async function authorityServe(args: Readonly<{ opts: Record<string, string> }>):
     ...(delegation ? { delegation } : {}),
   });
   const runtime: AuthorityHostRuntime = {
+    directOutcomeAliases: authorityRuntime.directOutcomeAliases,
     outcome: authorityRuntime.outcome,
     status: authorityRuntime.status,
     jobsSearch: authorityRuntime.jobsSearch,

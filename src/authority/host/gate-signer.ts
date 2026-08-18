@@ -1,6 +1,6 @@
-import { createPrivateKey, createPublicKey, generateKeyPairSync, type KeyObject } from "node:crypto";
+import { createPrivateKey, createPublicKey, generateKeyPairSync, randomBytes, type KeyObject } from "node:crypto";
 import { constants } from "node:fs";
-import { mkdir, open, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { link, mkdir, open, readFile, rm } from "node:fs/promises";
 import path from "node:path";
 
 export interface LocalGateSigner {
@@ -29,26 +29,25 @@ export async function loadOrCreateLocalGateSigner(file: string): Promise<LocalGa
   await mkdir(path.dirname(resolved), { recursive: true });
   const { privateKey } = generateKeyPairSync("ed25519");
   const pem = privateKey.export({ type: "pkcs8", format: "pem" }) as string;
-  const temporary = `${resolved}.${process.pid}.${Date.now()}.tmp`;
+  const temporary = `${resolved}.${process.pid}.${randomBytes(16).toString("hex")}.tmp`;
   try {
-    await writeFile(temporary, pem, { encoding: "utf8", mode: 0o600, flag: "wx" });
+    const candidate = await open(temporary, "wx", 0o600);
     try {
-      await rename(temporary, resolved);
-    } catch (error) {
-      if (!isAlreadyExists(error)) throw error;
-      await rm(temporary, { force: true });
-      const existing = parsePrivateKey(await readFile(resolved));
-      return Object.freeze({ privateKey: existing, publicKey: createPublicKey(existing), keyFile: resolved });
-    }
+      await candidate.writeFile(pem, "utf8");
+      await candidate.sync();
+    } finally { await candidate.close(); }
+    try { await link(temporary, resolved); }
+    catch (error) { if (!isAlreadyExists(error)) throw error; }
+    await rm(temporary, { force: true });
+    await syncDirectory(path.dirname(resolved));
+    return await loadExistingLocalGateSigner(resolved);
   } catch (error) {
     await rm(temporary, { force: true });
     if (isAlreadyExists(error)) {
-      const existing = parsePrivateKey(await readFile(resolved));
-      return Object.freeze({ privateKey: existing, publicKey: createPublicKey(existing), keyFile: resolved });
+      return await loadExistingLocalGateSigner(resolved);
     }
     throw new TypeError(`local gate key could not be created: ${error instanceof Error ? error.message : String(error)}`);
   }
-  return Object.freeze({ privateKey, publicKey: createPublicKey(privateKey), keyFile: resolved });
 }
 
 /** Package-internal governed loader: read-only, non-creating, and stable-handle pinned. */
@@ -81,3 +80,4 @@ function parsePrivateKey(bytes: Uint8Array): KeyObject {
 
 function isMissing(error: unknown): boolean { return Boolean(error && typeof error === "object" && (error as { code?: unknown }).code === "ENOENT"); }
 function isAlreadyExists(error: unknown): boolean { return Boolean(error && typeof error === "object" && (error as { code?: unknown }).code === "EEXIST"); }
+async function syncDirectory(directory: string): Promise<void> { if (process.platform === "win32") return; const handle = await open(directory, "r"); try { await handle.sync(); } finally { await handle.close(); } }

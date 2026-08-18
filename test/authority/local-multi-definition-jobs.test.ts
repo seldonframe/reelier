@@ -207,7 +207,7 @@ test("production MCP and HTTP keep signed multi-definition aliases behind authen
   const principals = createPrincipalRegistry({ tenant: "tenant_1" });
   const credential = await principals.issue({ ...fixture.context.executionContext, expiresAt: "2027-01-01T00:00:00.000Z" });
   const runtime = await createLocalAuthorityRuntime(fixture.config, { jobCardTrustPin: fixture.trustPin, delegation: fixture.delegation, dispatchAdapter: adapter });
-  const server = createAuthorityHostServer(fixture.config, runtime, { principalRegistry: principals, stdioExecutionContext: fixture.context.executionContext } as never);
+  const server = createAuthorityHostServer(fixture.config, runtime, { principalRegistry: principals, stdioExecutionContext: fixture.context.executionContext });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   const client = new Client({ name: "multi-definition-production-path", version: "1" }, { capabilities: {} });
   try {
@@ -228,6 +228,24 @@ test("production MCP and HTTP keep signed multi-definition aliases behind authen
     const rawMcp = await client.callTool({ name: `reelier_outcome_${GMAIL}`, arguments: { requestId: "raw_mcp", sourceRefs: { thread: "thread_1" }, choices: {} } });
     assert.equal(rawMcp.isError, true);
     assert.equal(dispatches, 1);
+
+    const isolatedServer = createAuthorityHostServer(fixture.config, runtime, { stdioExecutionContext: { ...fixture.context.executionContext, taskId: "task_other" } });
+    const [isolatedClientTransport, isolatedServerTransport] = InMemoryTransport.createLinkedPair();
+    const isolatedClient = new Client({ name: "multi-definition-isolation", version: "1" }, { capabilities: {} });
+    try {
+      await isolatedServer.mcp.connect(isolatedServerTransport);
+      await isolatedClient.connect(isolatedClientTransport);
+      const isolatedSearch = await isolatedClient.callTool({ name: "reelier_jobs_search", arguments: {} });
+      assert.match(String((isolatedSearch as unknown as { content: Array<{ text: string }> }).content[0]!.text), /job-authority-refused/);
+      const isolatedLoad = await isolatedClient.callTool({ name: "reelier_job_load", arguments: { jobId: catalog.jobs[0]!.jobRef } });
+      assert.match(String((isolatedLoad as unknown as { content: Array<{ text: string }> }).content[0]!.text), /job-authority-refused/);
+      const isolatedInvoke = await isolatedClient.callTool({ name: "reelier_outcome_invoke", arguments: { jobRef: catalog.jobs[0]!.jobRef, requestId: "isolated_mcp", sourceRefs: { thread: "thread_1" }, choices: {} } });
+      assert.match(String((isolatedInvoke as unknown as { content: Array<{ text: string }> }).content[0]!.text), /job-authority-refused/);
+      assert.equal(dispatches, 1);
+    } finally {
+      await isolatedClient.close();
+      await isolatedServer.close();
+    }
 
     await server.startHttp(0);
     const address = server.http.address();

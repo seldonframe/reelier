@@ -19,6 +19,7 @@ import { createPortableAuthorityReceiptPublication } from "./portable-receipts.j
 import { createAuthorityHostRuntime } from "./runtime.js";
 import type { AuthorityHostConfig } from "./config.js";
 import type { AuthorityHostRuntime } from "./server.js";
+import type { AuthorityIngressOutcome } from "../ingress/mcp.js";
 import { createSecretResolver, type SecretResolver, type SecretResolverOptions } from "./secret-resolver.js";
 import { firstPartyPacks, firstPartyPackForAlias, createFirstPartySourceRegistry } from "../../packs/index.js";
 import { loadAuthorityDeployment, type JobCardTrustPinV1, type LoadedAuthorityDeployment } from "./deployment.js";
@@ -160,24 +161,26 @@ async function createLocalAuthorityRuntimeCore(config:AuthorityHostConfig,option
     : Object.freeze(config.definitions.map(alias => Object.freeze({ jobId: alias, alias })));
   const authorizedRequester = (context: { readonly tenant: string; readonly requester: string }): boolean => context.tenant === config.tenant && (deployment?.jobCard?.audiences.includes(context.requester) ?? true);
   const multiDefinitionSigned = Boolean(deployment?.jobCard && deployment.jobCard.definitionAliases.length > 1);
+  const invokeFlights = new Map<string, Readonly<{ semantics: string; promise: Promise<AuthorityIngressOutcome> }>>();
   const resolveBoundJobs = async (context: { readonly tenant: string; readonly requester: string; readonly executionContext?: AuthorityExecutionContextV1 }) => {
     if (!multiDefinitionSigned) return jobs;
     const card = deployment!.jobCard!, execution = context.executionContext;
     if (!authorizedRequester(context) || !execution || !options.delegation || execution.jobId !== card.jobId) throw new TypeError("job authority is outside the authenticated task");
     const binding = await options.delegation.resolveSessionBinding({ tenant: context.tenant, taskId: execution.taskId, principalId: context.requester });
     if (binding.taskId !== execution.taskId || binding.grantee !== execution.principalId || binding.grantId !== execution.grantId || binding.grantDigest !== execution.grantDigest || binding.allocationId !== execution.allocationId || execution.principalId !== context.requester) throw new TypeError("job authority binding mismatch");
-    const cardDigest = signedJobCardDigest(card);
+    const cardDigest = authorityDigest(card);
     return Object.freeze(card.definitionAliases.map(alias => {
       const bindingDigest = authorityDigest({ v: "reelier.local-job-reference/v1", tenant: context.tenant, taskId: execution.taskId, principalId: execution.principalId, grantId: execution.grantId, grantDigest: execution.grantDigest, allocationId: execution.allocationId, runtimeSessionId: execution.runtimeSessionId, authorityCellId: execution.authorityCellId, jobCardDigest: cardDigest, definitionAlias: alias });
-      const keyedCommitment = signAuthorityDigest(privateKey, "principal", bindingDigest);
+      const keyedCommitment = signAuthorityDigest(privateKey, "job-reference", bindingDigest);
       return Object.freeze({ jobRef: `jobref_${authorityDigest({ v: "reelier.local-job-reference-commitment/v1", keyedCommitment }).slice("sha256:".length)}`, alias });
     }));
   };
   const catalogRefusal = (requestId = "") => Object.freeze({ requestId, verdict: "refused" as const, reasonCode: "job-authority-refused", lifecycleState: "refused" });
   return Object.freeze({
     ...runtime,
+    directOutcomeAliases: Object.freeze(multiDefinitionSigned ? [] : [...config.definitions]),
     async outcome(alias: string, input: unknown, context: { readonly tenant: string; readonly requester: string }) {
-      if ((deployment?.jobCard && !deployment.jobCard.definitionAliases.includes(alias)) || !authorizedRequester(context)) return Object.freeze({ requestId: input && typeof input === "object" && !Array.isArray(input) && typeof (input as Record<string, unknown>).requestId === "string" ? String((input as Record<string, unknown>).requestId) : "", verdict: "refused" as const, reasonCode: "job-authority-refused", lifecycleState: "refused" });
+      if (multiDefinitionSigned || (deployment?.jobCard && !deployment.jobCard.definitionAliases.includes(alias)) || !authorizedRequester(context)) return Object.freeze({ requestId: input && typeof input === "object" && !Array.isArray(input) && typeof (input as Record<string, unknown>).requestId === "string" ? String((input as Record<string, unknown>).requestId) : "", verdict: "refused" as const, reasonCode: "job-authority-refused", lifecycleState: "refused" });
       return runtime.outcome(alias, input, context);
     },
     async resolveAdoptedConnection(connectionId: string) {
@@ -217,7 +220,19 @@ async function createLocalAuthorityRuntimeCore(config:AuthorityHostConfig,option
       if (!job) return Object.freeze({ requestId: typeof raw.requestId === "string" ? raw.requestId : "", verdict: "refused" as const, reasonCode: "job-not-found", lifecycleState: "unknown" });
       const request = { ...raw }; delete request.jobRef;
       if (!authorizedRequester(context)) return Object.freeze({ requestId: typeof raw.requestId === "string" ? raw.requestId : "", verdict: "refused" as const, reasonCode: "job-authority-refused", lifecycleState: "refused" });
-      return runtime.outcome(job.alias, request, context);
+      if (!multiDefinitionSigned) return runtime.outcome(job.alias, request, context);
+      const requestId = typeof raw.requestId === "string" ? raw.requestId : "";
+      let flightKey: string, semantics: string;
+      try {
+        flightKey = authorityDigest({ v: "reelier.local-job-invoke-flight/v1", tenant: context.tenant, requester: context.requester, executionContext: context.executionContext, requestId });
+        semantics = authorityDigest({ v: "reelier.local-job-invoke-semantics/v1", alias: job.alias, request });
+      } catch { return Object.freeze({ requestId, verdict: "refused" as const, reasonCode: "invalid-request", lifecycleState: "refused" }); }
+      const existing = invokeFlights.get(flightKey);
+      if (existing) return existing.semantics === semantics ? existing.promise : Object.freeze({ requestId, verdict: "refused" as const, reasonCode: "request-id-conflict", lifecycleState: "refused" });
+      const promise = runtime.outcome(job.alias, request, context);
+      invokeFlights.set(flightKey, Object.freeze({ semantics, promise }));
+      try { return await promise; }
+      finally { if (invokeFlights.get(flightKey)?.promise === promise) invokeFlights.delete(flightKey); }
     },
   });
 }
