@@ -80,6 +80,21 @@ test("signed journal detects tamper and atomic-head rollback", async () => {
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
+test("signed journal serializes concurrent writers and recovers an abandoned request lock", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "reelier-release-journal-lock-"));
+  const keys = generateKeyPairSync("ed25519"), semantics = authorityDigest({ request: "race" });
+  try {
+    const first = await createSignedJournal({ rootDir: root, journalId: "release", signerId: "release-journal-2026", privateKey: keys.privateKey, publicKey: keys.publicKey });
+    const second = await createSignedJournal({ rootDir: root, journalId: "release", signerId: "release-journal-2026", privateKey: keys.privateKey, publicKey: keys.publicKey });
+    await Promise.all(Array.from({ length: 12 }, (_, index) => (index % 2 ? first : second).append("request_race", semantics, `phase-${index}`, { index })));
+    assert.equal((await first.load("request_race")).length, 12);
+    const requestDir = path.join(root, authorityDigest({ journalId: "release", requestId: "request_race" }).slice(7));
+    await writeFile(path.join(requestDir, "request.lock"), "");
+    await first.append("request_race", semantics, "after-crash", { recovered: true });
+    assert.equal((await first.load("request_race")).at(-1)?.phase, "after-crash");
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 test("release runner refuses raw or wrong allocation authority before provider dispatch", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "reelier-release-runner-"));
   const keys = generateKeyPairSync("ed25519");
