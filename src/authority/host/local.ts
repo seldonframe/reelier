@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { lstat, mkdir, readFile, realpath } from "node:fs/promises";
 import path from "node:path";
 import { authorityDigest } from "../wire.js";
+import { signedJobCardDigest } from "../job.js";
 import { signAuthorityDigest } from "../crypto.js";
 import { createAuthorityGate } from "../gate.js";
 import { createTrustRoots } from "../trust.js";
@@ -38,6 +39,7 @@ import type { AdmittedProfileGovernanceV1 } from "./profile-governance.js";
 import { admittedProfileGovernanceState, assertAdmittedProfileGovernance, assertProfileRuntimeBinding } from "./profile-governance.js";
 import { definitionRegistrationDigest } from "../pack.js";
 import { loadProfileGovernanceFromOperatorTrust } from "./profile-governance-loader.js";
+import type { AuthorityExecutionContextV1 } from "../types.js";
 
 /** Builds the local host from signed-artifact boundaries. An empty workspace is intentionally
  * usable for discovery and status, but every Outcome refuses until a signed contract is installed. */
@@ -113,7 +115,6 @@ async function createLocalAuthorityRuntimeCore(config:AuthorityHostConfig,option
   if (deployment && deployment.tenant !== config.tenant) throw new TypeError("authority deployment tenant does not match host config");
   if (deployment && !deployment.jobCard) throw new TypeError("production authority deployment requires a signed Job Card");
   if (deployment?.jobCard) {
-    if (deployment.jobCard.definitionAliases.length !== 1) throw new TypeError("loaded signed Job Card must bind exactly one invokable definition");
     const configured = [...config.definitions].sort();
     if (authorityDigest(configured) !== authorityDigest(deployment.jobCard.definitionAliases)) throw new TypeError("host definitions do not match the signed Job Card");
     const selectedPacks = deployment.jobCard.definitionAliases.map(alias => firstPartyPackForAlias(alias));
@@ -155,9 +156,23 @@ async function createLocalAuthorityRuntimeCore(config:AuthorityHostConfig,option
   const dispatch = createDispatchCoordinator(ledger, adapter, undefined, publication, options.delegation?.budget, certifiedDispatch);
   const runtime = createAuthorityHostRuntime({ gate, dispatch, ledger, decisions, delegation: options.delegation, ...(options.delegation ? { verifyRootGrant: (grant, tenant) => { verifyTrustedAuthority(trustRoots, { tenant, signerId: grant.signerId, purpose: "delegation-grant", advertisedDigest: grant.digest, value: grant.grant, signature: grant.signature }); } } : {}) });
   const jobs = deployment?.jobCard
-    ? Object.freeze([Object.freeze({ jobId: deployment.jobCard.jobId, alias: deployment.jobCard.definitionAliases[0]! })])
+    ? Object.freeze(deployment.jobCard.definitionAliases.map(alias => Object.freeze({ jobId: deployment.jobCard!.jobId, alias })))
     : Object.freeze(config.definitions.map(alias => Object.freeze({ jobId: alias, alias })));
   const authorizedRequester = (context: { readonly tenant: string; readonly requester: string }): boolean => context.tenant === config.tenant && (deployment?.jobCard?.audiences.includes(context.requester) ?? true);
+  const multiDefinitionSigned = Boolean(deployment?.jobCard && deployment.jobCard.definitionAliases.length > 1);
+  const resolveBoundJobs = async (context: { readonly tenant: string; readonly requester: string; readonly executionContext?: AuthorityExecutionContextV1 }) => {
+    if (!multiDefinitionSigned) return jobs;
+    const card = deployment!.jobCard!, execution = context.executionContext;
+    if (!authorizedRequester(context) || !execution || !options.delegation || execution.jobId !== card.jobId) throw new TypeError("job authority is outside the authenticated task");
+    const binding = await options.delegation.resolveSessionBinding({ tenant: context.tenant, taskId: execution.taskId, principalId: context.requester });
+    if (binding.taskId !== execution.taskId || binding.grantee !== execution.principalId || binding.grantId !== execution.grantId || binding.grantDigest !== execution.grantDigest || binding.allocationId !== execution.allocationId || execution.principalId !== context.requester) throw new TypeError("job authority binding mismatch");
+    const cardDigest = signedJobCardDigest(card);
+    return Object.freeze(card.definitionAliases.map(alias => Object.freeze({
+      jobRef: `jobref_${authorityDigest({ v: "reelier.local-job-reference/v1", tenant: context.tenant, taskId: execution.taskId, principalId: execution.principalId, grantId: execution.grantId, grantDigest: execution.grantDigest, allocationId: execution.allocationId, runtimeSessionId: execution.runtimeSessionId, authorityCellId: execution.authorityCellId, jobCardDigest: cardDigest, definitionAlias: alias }).slice("sha256:".length)}`,
+      alias,
+    })));
+  };
+  const catalogRefusal = (requestId = "") => Object.freeze({ requestId, verdict: "refused" as const, reasonCode: "job-authority-refused", lifecycleState: "refused" });
   return Object.freeze({
     ...runtime,
     async outcome(alias: string, input: unknown, context: { readonly tenant: string; readonly requester: string }) {
@@ -172,20 +187,32 @@ async function createLocalAuthorityRuntimeCore(config:AuthorityHostConfig,option
       if (!adoption) throw new TypeError("adopted connection binding is missing");
       return options.connectionRoutes.resolve(descriptor, adoption);
     },
-    async jobsSearch(input: unknown) {
+    async jobsSearch(input: unknown, context: { readonly tenant: string; readonly requester: string; readonly executionContext?: AuthorityExecutionContextV1 }) {
+      if (multiDefinitionSigned) {
+        try { return Object.freeze({ requestId: "", verdict: "accepted" as const, reasonCode: "jobs-found", lifecycleState: "catalog", jobs: Object.freeze((await resolveBoundJobs(context)).map(job => Object.freeze({ jobRef: "jobRef" in job ? job.jobRef : "" }))) }); }
+        catch { return Object.freeze({ ...catalogRefusal(), jobs: Object.freeze([]) }); }
+      }
       const query = input && typeof input === "object" && !Array.isArray(input) && typeof (input as Record<string, unknown>).query === "string" ? String((input as Record<string, unknown>).query).toLowerCase() : "";
       return Object.freeze({ requestId: "", verdict: "accepted" as const, reasonCode: "jobs-found", lifecycleState: "catalog", jobs: Object.freeze(jobs.filter(job => !query || job.jobId.toLowerCase().includes(query) || job.alias.toLowerCase().includes(query))) });
     },
-    async jobLoad(input: unknown) {
+    async jobLoad(input: unknown, context: { readonly tenant: string; readonly requester: string; readonly executionContext?: AuthorityExecutionContextV1 }) {
       const jobId = input && typeof input === "object" && !Array.isArray(input) && typeof (input as Record<string, unknown>).jobId === "string" ? String((input as Record<string, unknown>).jobId) : "";
+      if (multiDefinitionSigned) {
+        try {
+          const job = (await resolveBoundJobs(context)).find((item): item is Readonly<{ jobRef: `jobref_${string}`; alias: string }> => "jobRef" in item && item.jobRef === jobId);
+          return job ? Object.freeze({ requestId: "", verdict: "accepted" as const, reasonCode: "job-loaded", lifecycleState: "loaded", jobRef: job.jobRef }) : Object.freeze({ requestId: "", verdict: "refused" as const, reasonCode: "job-not-found", lifecycleState: "unknown" });
+        } catch { return catalogRefusal(); }
+      }
       if (!jobs.some(job => job.jobId === jobId)) return Object.freeze({ requestId: "", verdict: "refused" as const, reasonCode: "job-not-found", lifecycleState: "unknown" });
       return Object.freeze({ requestId: "", verdict: "accepted" as const, reasonCode: "job-loaded", lifecycleState: "loaded", jobRef: jobId });
     },
-    async invoke(input: unknown, context: { readonly tenant: string; readonly requester: string }) {
+    async invoke(input: unknown, context: { readonly tenant: string; readonly requester: string; readonly executionContext?: AuthorityExecutionContextV1 }) {
       if (!input || typeof input !== "object" || Array.isArray(input)) return Object.freeze({ requestId: "", verdict: "refused" as const, reasonCode: "invalid-request", lifecycleState: "refused" });
       const raw = input as Record<string, unknown>;
       const jobRef = typeof raw.jobRef === "string" ? raw.jobRef : "";
-      const job = jobs.find(item => item.jobId === jobRef);
+      let boundJobs;
+      try { boundJobs = await resolveBoundJobs(context); } catch { return catalogRefusal(typeof raw.requestId === "string" ? raw.requestId : ""); }
+      const job = multiDefinitionSigned ? boundJobs.find(item => "jobRef" in item && item.jobRef === jobRef) : jobs.find(item => item.jobId === jobRef);
       if (!job) return Object.freeze({ requestId: typeof raw.requestId === "string" ? raw.requestId : "", verdict: "refused" as const, reasonCode: "job-not-found", lifecycleState: "unknown" });
       const request = { ...raw }; delete request.jobRef;
       if (!authorizedRequester(context)) return Object.freeze({ requestId: typeof raw.requestId === "string" ? raw.requestId : "", verdict: "refused" as const, reasonCode: "job-authority-refused", lifecycleState: "refused" });

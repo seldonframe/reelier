@@ -4,9 +4,10 @@ import { generateKeyPairSync } from "node:crypto";
 import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { authorityDigest, signJobCard, signedJobCardDigest } from "../../src/authority/index.js";
+import { authorityDigest, signAuthorityDigest, signJobCard, signedJobCardDigest } from "../../src/authority/index.js";
 import { connectionAdoptionCommitmentDigest, connectionDescriptorDigest, digestNormalizedMcpToolSchemas } from "../../src/connections.js";
 import { buildAuthorityDeployment } from "../../src/authority/host/deploy.js";
+import { createDelegationAuthority } from "../../src/authority/host/delegation-service.js";
 import { createLocalAuthorityRuntime } from "../../src/authority/host/local.js";
 import { __testSetAuthorityCellHostPlatform } from "../../src/authority/host/platform.js";
 import { gmailPackDigest, gmailReadEndpointId, gmailReplyWriteEndpointId } from "../../src/packs/gmail/index.js";
@@ -68,14 +69,18 @@ async function multiDefinitionFixture() {
   await mkdir(path.dirname(hostPin), { recursive: true });
   await copyFile(built.jobCardTrustEvidenceFile, hostPin);
   const config = { version: 1 as const, tenant: "tenant_1", requester: "agent_1", definitions: [GMAIL, SLACK], ledgerDir: path.join(authorityRoot, "ledger"), decisionDir: path.join(authorityRoot, "decisions"), receiptDir: path.join(authorityRoot, "receipts"), gateKeyFile: path.join(authorityRoot, "keys", "gate.pem"), endpoints: [], deploymentPath: built.deploymentFile, jobCardTrustPinPath: hostPin };
-  const context: { tenant: string; requester: string; executionContext: AuthorityExecutionContextV1 } = { tenant: "tenant_1", requester: "agent_1", executionContext: { v: "reelier.authority-execution-context/v1", taskId: "task_1", principalId: "agent_1", grantId: "grant_1", grantDigest: authorityDigest({ grant: 1 }), allocationId: "allocation_1", runtimeSessionId: "session_1", jobId: jobCard.jobId, authorityCellId: "cell_1" } };
-  return { root, config, context, trustPin };
+  const grant = { v: "reelier.delegation-grant/v1" as const, tenant: "tenant_1", grantId: "grant_1", parentDigest: null, sponsor: "operator", grantor: "operator", grantee: "agent_1", issuedAt: "2026-01-01T00:00:00.000Z", expiresAt: "2027-01-01T00:00:00.000Z", constraints: { definitionAliases: [GMAIL, SLACK], audiences: ["agent_1"], connectorAccounts: [{ connectorId: "gmail", accountId: "account_1" }], projectionPointers: ["/source"], riskClasses: ["gmail_send"], limits: { maxEffectsPerWindow: 2, windowSeconds: 3600, maxEffectsPerSourceTrigger: 1, maxBodyBytes: 4096 } } };
+  const grantDigest = authorityDigest(grant);
+  const delegation = createDelegationAuthority({ root: path.join(authorityRoot, "delegation"), now: () => new Date("2026-06-01T00:00:00.000Z"), signGrant: async value => ({ grant: value, digest: authorityDigest(value), signerId: "operator", signature: signAuthorityDigest(operator.privateKey, "delegation-grant", authorityDigest(value)) }) });
+  await delegation.registerRoot({ taskId: "task_1", rootGrant: { grant, digest: grantDigest, signerId: "operator", signature: signAuthorityDigest(operator.privateKey, "delegation-grant", grantDigest) }, effects: 2 });
+  const context: { tenant: string; requester: string; executionContext: AuthorityExecutionContextV1 } = { tenant: "tenant_1", requester: "agent_1", executionContext: { v: "reelier.authority-execution-context/v1", taskId: "task_1", principalId: "agent_1", grantId: grant.grantId, grantDigest, allocationId: "root", runtimeSessionId: "session_1", jobId: jobCard.jobId, authorityCellId: "cell_1" } };
+  return { root, config, context, trustPin, delegation };
 }
 
 test("multi-definition signed Job Card returns deterministic opaque references instead of job IDs or aliases", async () => {
   const fixture = await multiDefinitionFixture();
   try {
-    const runtime = await createLocalAuthorityRuntime(fixture.config, { jobCardTrustPin: fixture.trustPin });
+    const runtime = await createLocalAuthorityRuntime(fixture.config, { jobCardTrustPin: fixture.trustPin, delegation: fixture.delegation });
     const found = await runtime.jobsSearch!({ query: "" }, fixture.context) as { jobs: Array<Record<string, string>> };
     assert.equal(found.jobs.length, 2);
     assert.deepEqual(found.jobs.map(job => Object.keys(job)), [["jobRef"], ["jobRef"]]);
@@ -87,7 +92,7 @@ test("multi-definition signed Job Card returns deterministic opaque references i
       assert.equal(ref.includes("gmail"), false);
       assert.equal(ref.includes("slack"), false);
     }
-    const restarted = await createLocalAuthorityRuntime(fixture.config, { jobCardTrustPin: fixture.trustPin });
+    const restarted = await createLocalAuthorityRuntime(fixture.config, { jobCardTrustPin: fixture.trustPin, delegation: fixture.delegation });
     const recovered = await restarted.jobsSearch!({ query: "ignored" }, fixture.context) as { jobs: Array<{ jobRef: string }> };
     assert.deepEqual(recovered.jobs.map(job => job.jobRef), refs);
     const loaded = await restarted.jobLoad!({ jobId: refs[0] }, fixture.context) as { verdict: string; jobRef: string };
@@ -95,5 +100,29 @@ test("multi-definition signed Job Card returns deterministic opaque references i
     assert.equal(loaded.jobRef, refs[0]);
     assert.equal((await restarted.jobLoad!({ jobId: "production_release" }, fixture.context) as { verdict: string }).verdict, "refused");
     assert.equal((await restarted.jobLoad!({ jobId: GMAIL }, fixture.context) as { verdict: string }).verdict, "refused");
+  } finally { await rm(fixture.root, { recursive: true, force: true }); }
+});
+
+test("signed multi-definition references refuse every binding mismatch and stale authority", async () => {
+  const fixture = await multiDefinitionFixture();
+  try {
+    const runtime = await createLocalAuthorityRuntime(fixture.config, { jobCardTrustPin: fixture.trustPin, delegation: fixture.delegation });
+    const found = await runtime.jobsSearch!({}, fixture.context) as { jobs: Array<{ jobRef: string }> };
+    const ref = found.jobs[0]!.jobRef;
+    const altered = (patch: Partial<AuthorityExecutionContextV1>, tenant = fixture.context.tenant, requester = fixture.context.requester) => ({ tenant, requester, executionContext: { ...fixture.context.executionContext, ...patch } });
+    const attempts = [
+      altered({ taskId: "task_other" }),
+      altered({}, "tenant_other"),
+      altered({ principalId: "agent_other" }, "tenant_1", "agent_other"),
+      altered({ allocationId: "allocation_other" }),
+      altered({ jobId: "job_other" }),
+      altered({ grantDigest: sha("9") }),
+    ];
+    for (const context of attempts) {
+      const loaded = await runtime.jobLoad!({ jobId: ref }, context) as { verdict: string };
+      assert.equal(loaded.verdict, "refused");
+    }
+    await fixture.delegation.revoke("tenant_1", "task_1");
+    assert.equal((await runtime.jobLoad!({ jobId: ref }, fixture.context) as { verdict: string }).verdict, "refused");
   } finally { await rm(fixture.root, { recursive: true, force: true }); }
 });
