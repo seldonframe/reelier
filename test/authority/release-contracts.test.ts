@@ -954,6 +954,10 @@ test("authorization verification rejects hostile clocks without invoking overrid
   const proxied = trappedProxy(new Date("2026-08-18T06:00:00.000Z"));
   assert.throws(() => verifyReleaseAuthorizationBundleV1(authorizationInput(release), verifier, proxied.proxy as Date, release.qualityEvidence), /proxy/i);
   assert.equal(proxied.traps(), 0);
+
+  const callable = trappedProxy(function hostileClock() { throw new Error("clock applied"); });
+  assert.throws(() => verifyReleaseAuthorizationBundleV1(authorizationInput(release), verifier, callable.proxy as never, release.qualityEvidence), /proxy/i);
+  assert.equal(callable.traps(), 0);
 });
 
 test("receipt verification rejects hostile clocks without invoking overrides", () => {
@@ -985,6 +989,32 @@ test("receipt verification rejects hostile clocks without invoking overrides", (
   const proxied = trappedProxy(new Date("2026-08-18T16:55:00.000Z"));
   assert.throws(() => verifyReleaseReceiptGraphV1(graph, graphVerifier, authorization, evidence, proxied.proxy as Date), /proxy/i);
   assert.equal(proxied.traps(), 0);
+
+  const callable = trappedProxy(function hostileClock() { throw new Error("clock applied"); });
+  assert.throws(() => verifyReleaseReceiptGraphV1(graph, graphVerifier, authorization, evidence, callable.proxy as never), /proxy/i);
+  assert.equal(callable.traps(), 0);
+});
+
+test("authorization and graph verification read the intrinsic clock exactly once", () => {
+  const release = releaseInputs();
+  const authorization = verifyAuthorization(release);
+  const value = releaseReceiptGraph();
+  const graph = createSignedReleaseReceiptGraphV1(value, graphSigner);
+  const originalGetTime = Date.prototype.getTime;
+  let reads = 0;
+  Date.prototype.getTime = function getTimeOnce(this: Date): number {
+    reads += 1;
+    return originalGetTime.call(this);
+  };
+  try {
+    verifyReleaseAuthorizationBundleV1(authorizationInput(release), verifier, new Date("2026-08-18T06:00:00.000Z"), release.qualityEvidence);
+    assert.equal(reads, 1);
+    reads = 0;
+    verifyReleaseReceiptGraphV1(graph, graphVerifier, authorization, receiptEvidence(value), new Date("2026-08-18T16:55:00.000Z"));
+    assert.equal(reads, 1);
+  } finally {
+    Date.prototype.getTime = originalGetTime;
+  }
 });
 
 test("authorization refuses its signing key as the authorization-bound graph-maker key", () => {
