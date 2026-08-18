@@ -9,7 +9,10 @@ import {
   createSignedStagedCandidateManifestV1,
   parseCanonicalSignedReleaseAuthorizationBundleV1,
   parseSignedReleaseAuthorizationBundleV1,
+  parseSignedReleasePolicyV1,
   parseSignedReleaseReceiptGraphV1,
+  parseSignedReleaseVerifierEvidenceV1,
+  parseSignedStagedCandidateManifestV1,
   verifyReleaseAuthorizationBundleV1,
   verifyReleaseReceiptGraphV1,
   type ReleaseEvidenceStatus,
@@ -216,6 +219,18 @@ function verifyAuthorization(release = releaseInputs(), now = new Date("2026-08-
 }
 
 function authorizationInput(release: ReturnType<typeof releaseInputs>) { return { authorization: release.authorization, candidateManifest: release.candidateManifest, policy: release.policy }; }
+
+function trappedProxy<T extends object>(target: T) {
+  let traps = 0;
+  return {
+    proxy: new Proxy(target, {
+      get: (value, property, receiver) => { traps += 1; return Reflect.get(value, property, receiver); },
+      getOwnPropertyDescriptor: (value, property) => { traps += 1; return Reflect.getOwnPropertyDescriptor(value, property); },
+      ownKeys: value => { traps += 1; return Reflect.ownKeys(value); },
+    }),
+    traps: () => traps,
+  };
+}
 
 test("release authorization binds the exact reviewed release and is deterministic", () => {
   const first = releaseInputs();
@@ -772,4 +787,104 @@ test("every receipt evidence observation is between authorization issue and grap
   assert.doesNotThrow(() => verify("2026-08-18T16:55:00.000Z"));
   assert.throws(() => verify("2026-08-18T04:59:59.999Z"), /evidence|issue|chronolog|observed/i);
   assert.throws(() => verify("2026-08-18T16:55:00.001Z"), /evidence|graph|chronolog|observed/i);
+});
+
+test("signed release wire rejects top-level and nested proxies without executing any trap", () => {
+  const release = releaseInputs();
+  const graph = createSignedReleaseReceiptGraphV1(releaseReceiptGraph(), graphSigner);
+  const evidence = release.qualityEvidence[0].evidence;
+  const cases: ReadonlyArray<readonly [string, object, (value: unknown) => unknown, (copy: any, proxy: object) => void]> = [
+    ["authorization", release.authorization, parseSignedReleaseAuthorizationBundleV1, (copy, proxy) => { copy.value.receiptGraphMakerBinding = proxy; }],
+    ["candidate", release.candidateManifest, parseSignedStagedCandidateManifestV1, (copy, proxy) => { copy.value.qualityEvidence = proxy; }],
+    ["policy", release.policy, parseSignedReleasePolicyV1, (copy, proxy) => { copy.value.allowedPaths = proxy; }],
+    ["graph", graph, parseSignedReleaseReceiptGraphV1, (copy, proxy) => { copy.value.installedChecks = proxy; }],
+    ["evidence", evidence as object, parseSignedReleaseVerifierEvidenceV1, (copy, proxy) => { copy.signature = proxy; }],
+  ];
+
+  for (const [label, artifact, parse, installNested] of cases) {
+    const top = trappedProxy(artifact);
+    assert.throws(() => parse(top.proxy), /proxy/i, `${label} top-level proxy must refuse`);
+    assert.equal(top.traps(), 0, `${label} top-level proxy traps`);
+
+    const copy = structuredClone(artifact);
+    const nested = trappedProxy({ inert: true });
+    installNested(copy, nested.proxy);
+    assert.throws(() => parse(copy), /proxy/i, `${label} nested proxy must refuse`);
+    assert.equal(nested.traps(), 0, `${label} nested proxy traps`);
+  }
+});
+
+test("verification snapshots accepted release wire instead of retaining caller objects", () => {
+  const release = releaseInputs();
+  const input = authorizationInput(release);
+  const verified = verifyReleaseAuthorizationBundleV1(input, verifier, new Date("2026-08-18T06:00:00.000Z"), release.qualityEvidence);
+  assert.notEqual(verified.authorization, input.authorization);
+  assert.notEqual(verified.authorization.value, input.authorization.value);
+  assert.notEqual(verified.candidateManifest, input.candidateManifest);
+  assert.notEqual(verified.policy, input.policy);
+});
+
+test("authorization verification rejects hostile clocks without invoking overrides and accepts issue-time now", () => {
+  const release = releaseInputs();
+  const issueEvidence = release.qualityEvidence.map(item => resignEvidence(item, { observedAt: "2026-08-18T05:00:00.000Z" }));
+  assert.doesNotThrow(() => verifyReleaseAuthorizationBundleV1(authorizationInput(release), verifier, new Date("2026-08-18T05:00:00.000Z"), issueEvidence));
+
+  let calls = 0;
+  const ownMethod = new Date("2026-08-18T06:00:00.000Z") as Date & { getTime: () => number };
+  ownMethod.getTime = () => { calls += 1; return Date.parse("2026-08-18T06:00:00.000Z"); };
+  assert.throws(() => verifyReleaseAuthorizationBundleV1(authorizationInput(release), verifier, ownMethod, release.qualityEvidence), /clock|date|own|property/i);
+  assert.equal(calls, 0);
+
+  const ownGetter = new Date("2026-08-18T06:00:00.000Z");
+  Object.defineProperty(ownGetter, "getTime", { get: () => { calls += 1; return Date.prototype.getTime; } });
+  assert.throws(() => verifyReleaseAuthorizationBundleV1(authorizationInput(release), verifier, ownGetter, release.qualityEvidence), /clock|date|own|property/i);
+  assert.equal(calls, 0);
+
+  class SwitchingDate extends Date {
+    override getTime(): number { calls += 1; return calls % 2 === 1 ? Date.parse("2026-08-18T06:00:00.000Z") : Date.parse("2026-08-18T18:00:00.000Z"); }
+  }
+  assert.throws(() => verifyReleaseAuthorizationBundleV1(authorizationInput(release), verifier, new SwitchingDate("2026-08-18T06:00:00.000Z"), release.qualityEvidence), /clock|date|prototype/i);
+  assert.equal(calls, 0);
+
+  const proxied = trappedProxy(new Date("2026-08-18T06:00:00.000Z"));
+  assert.throws(() => verifyReleaseAuthorizationBundleV1(authorizationInput(release), verifier, proxied.proxy as Date, release.qualityEvidence), /proxy/i);
+  assert.equal(proxied.traps(), 0);
+});
+
+test("receipt verification rejects hostile clocks without invoking overrides", () => {
+  const release = releaseInputs();
+  const authorization = verifyAuthorization(release);
+  const value = releaseReceiptGraph();
+  const graph = createSignedReleaseReceiptGraphV1(value, graphSigner);
+  const evidence = receiptEvidence(value);
+  let calls = 0;
+  const switching = new Date("2026-08-18T16:55:00.000Z") as Date & { getTime: () => number };
+  switching.getTime = () => { calls += 1; return calls % 2 === 1 ? Date.parse("2026-08-18T16:55:00.000Z") : Date.parse("2026-08-18T16:54:00.000Z"); };
+  assert.throws(() => verifyReleaseReceiptGraphV1(graph, graphVerifier, authorization, evidence, switching), /clock|date|own|property/i);
+  assert.equal(calls, 0);
+
+  const proxied = trappedProxy(new Date("2026-08-18T16:55:00.000Z"));
+  assert.throws(() => verifyReleaseReceiptGraphV1(graph, graphVerifier, authorization, evidence, proxied.proxy as Date), /proxy/i);
+  assert.equal(proxied.traps(), 0);
+});
+
+test("authorization refuses its signing key as the authorization-bound graph-maker key", () => {
+  const release = releaseInputs();
+  const value = structuredClone(release.authorization.value);
+  (value as any).receiptGraphMakerBinding = { publicKeySpkiDigest: keySpkiDigest(keyPair.publicKey), signerId: signer.signerId };
+  const authorization = createSignedReleaseAuthorizationBundleV1(value, signer);
+  assert.throws(
+    () => verifyReleaseAuthorizationBundleV1({ ...authorizationInput(release), authorization }, verifier, new Date("2026-08-18T06:00:00.000Z"), release.qualityEvidence),
+    /key|graph|maker|separate|spki/i,
+  );
+});
+
+test("installed freshness boundaries reject equality", () => {
+  const verifiedAtEqualsFreshUntil = releaseReceiptGraph();
+  verifiedAtEqualsFreshUntil.installedChecks.windows.freshUntil = verifiedAtEqualsFreshUntil.verifiedAt;
+  assert.throws(() => createSignedReleaseReceiptGraphV1(verifiedAtEqualsFreshUntil, graphSigner), /fresh|Windows|installed/i);
+
+  const freshUntilEqualsObservedAt = releaseReceiptGraph();
+  freshUntilEqualsObservedAt.installedChecks.windows.freshUntil = freshUntilEqualsObservedAt.installedChecks.windows.observedAt;
+  assert.throws(() => createSignedReleaseReceiptGraphV1(freshUntilEqualsObservedAt, graphSigner), /fresh|Windows|installed/i);
 });
