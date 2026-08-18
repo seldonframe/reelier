@@ -67,6 +67,6 @@ export function identifyAuthenticatedWorkload(ctx: ManagedContext): Authenticate
     principalId: binding.principalId,
     workloadId: binding.workloadId,
     runtimeSessionId: ctx.session.id,
-    harnessId: "eve@0.37.1",
+    harnessId: "eve@0.39.0",
   };
 }

@@ -16,7 +16,7 @@ function exportedSchemaKeys(source: string): string[] {
 
 test("Eve fixture is isolated and its model-facing schemas exclude authority", async () => {
   const packageJson = JSON.parse(await readFile(join(fixtureRoot, "package.json"), "utf8"));
-  assert.equal(packageJson.dependencies.eve, "0.37.1");
+  assert.equal(packageJson.dependencies.eve, "0.39.0");
   assert.equal(packageJson.dependencies.reelier, "file:../../../..");
   assert.equal(rootPackageJson.dependencies?.eve, undefined);
   assert.equal(rootPackageJson.devDependencies?.eve, undefined);

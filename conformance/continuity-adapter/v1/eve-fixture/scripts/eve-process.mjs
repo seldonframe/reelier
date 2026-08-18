@@ -389,7 +389,7 @@ async function createScenario(context, name, options) {
   const taskId = fixture.initialized.identifiers.taskId;
   const token = randomBytes(32).toString("base64url");
   const otherToken = randomBytes(32).toString("base64url");
-  const actor = Object.freeze({ v: "reelier.authenticated-workload/v1", taskId, principalId: "principal_eve_1", workloadId: "workload_eve_1", runtimeSessionId: "provisioning", harnessId: "eve@0.37.1" });
+  const actor = Object.freeze({ v: "reelier.authenticated-workload/v1", taskId, principalId: "principal_eve_1", workloadId: "workload_eve_1", runtimeSessionId: "provisioning", harnessId: "eve@0.39.0" });
   const evidenceSignerId = fixture.pin.keyDescriptors.find((item) => item.role === "authority-cell" && item.purpose === "authority-evidence")?.keyId;
   const replayAnchors = Object.freeze({ trustPin: fixture.pin, currentTrustObservation: { v: "reelier.portable-current-trust-observation/v1", observedAt: "2026-08-11T20:00:00.000Z", expiresAt: "2026-08-11T21:00:00.000Z", activeAuthorityEvidenceSignerIds: [evidenceSignerId] }, expectedResponseSemanticsProfile: { v: "reelier.http-response-semantics/v1", profileId: "github.issue-labels.hermetic-v1", acknowledgedStatuses: [200] }, verificationTime: "2026-08-11T20:10:00.000Z" });
   const ledger = new context.continuity.FsContinuityLedger(ledgerRoot, { resolveAuthorityAnchors: async () => replayAnchors });

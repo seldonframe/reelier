@@ -9,7 +9,7 @@ import test from "node:test";
 type Scenario = Readonly<Record<string, unknown>>;
 type Matrix = Readonly<{ scenarios: Readonly<Record<string, Scenario>> }>;
 
-test("real Eve 0.37.1 preserves Reelier continuity across process and session boundaries", async (t) => {
+test("real Eve 0.39.0 preserves Reelier continuity across process and session boundaries", async (t) => {
   const root = await mkdtemp(resolve(tmpdir(), "reelier-eve-kill-resume-"));
   const externalResult = process.env.REELIER_EVE_MATRIX_RESULT_PATH;
   const resultPath = externalResult ? resolve(externalResult) : resolve(root, "matrix.json");
@@ -170,7 +170,7 @@ function reportFixture() {
     maturity: "reproduced",
     reelierCommit: "a".repeat(40),
     authorityAdapterContractDigest: `sha256:${"b".repeat(64)}`,
-    eveVersion: "0.37.1",
+    eveVersion: "0.39.0",
     nodeVersion: "v24.9.0",
     checks: [{ id: "generic-candidate", status: "passed", detail: "passed" }],
     artifacts: { ledgerHeadDigest: `sha256:${"c".repeat(64)}`, receiptGraphDigest: `sha256:${"d".repeat(64)}`, reportDigest: `sha256:${"e".repeat(64)}` },

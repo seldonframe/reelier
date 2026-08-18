@@ -68,7 +68,7 @@ try {
     maturity: "reproduced",
     reelierCommit,
     authorityAdapterContractDigest: candidate.authorityAdapterContractDigest,
-    eveVersion: "0.37.1",
+    eveVersion: "0.39.0",
     nodeVersion: process.version,
     checks: Object.freeze([
       { id: "generic-candidate", status: "passed", detail: "public continuity adapter candidate checks passed" },
