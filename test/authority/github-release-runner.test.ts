@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash, generateKeyPairSync } from "node:crypto";
+import { spawn } from "node:child_process";
 import { mkdir, mkdtemp, readFile, readdir, rm, unlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -95,6 +96,31 @@ test("signed journal serializes concurrent writers and recovers an abandoned req
     await writeFile(path.join(requestDir, "request.lock"), "");
     await first.append("request_race", semantics, "after-crash", { recovered: true });
     assert.equal((await first.load("request_race")).at(-1)?.phase, "after-crash");
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("signed journal authorization lease serializes independent processes", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "reelier-release-process-lease-"));
+  const keys = generateKeyPairSync("ed25519"), moduleUrl = new URL("../../src/authority/host/signed-journal.js", import.meta.url).href;
+  const script = `
+    import { createPrivateKey, createPublicKey } from "node:crypto";
+    const { createSignedJournal } = await import(process.env.REELIER_JOURNAL_MODULE);
+    const journal = await createSignedJournal({ rootDir: process.env.REELIER_JOURNAL_ROOT, journalId: "release", signerId: "release-journal-2026", privateKey: createPrivateKey({ key: Buffer.from(process.env.REELIER_JOURNAL_PRIVATE, "base64"), format: "der", type: "pkcs8" }), publicKey: createPublicKey({ key: Buffer.from(process.env.REELIER_JOURNAL_PUBLIC, "base64"), format: "der", type: "spki" }) });
+    await journal.withLease("authorization-${"a".repeat(64)}", async () => { console.log("enter:" + Date.now()); await new Promise(resolve => setTimeout(resolve, 150)); console.log("exit:" + Date.now()); });
+  `;
+  const environment = { ...process.env, REELIER_JOURNAL_MODULE: moduleUrl, REELIER_JOURNAL_ROOT: root, REELIER_JOURNAL_PRIVATE: keys.privateKey.export({ type: "pkcs8", format: "der" }).toString("base64"), REELIER_JOURNAL_PUBLIC: keys.publicKey.export({ type: "spki", format: "der" }).toString("base64") };
+  const run = async () => {
+    const child = spawn(process.execPath, ["--input-type=module", "-e", script], { env: environment, stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "", stderr = ""; child.stdout.setEncoding("utf8"); child.stderr.setEncoding("utf8"); child.stdout.on("data", chunk => { stdout += chunk; }); child.stderr.on("data", chunk => { stderr += chunk; });
+    const code = await new Promise<number | null>(resolve => child.once("exit", resolve));
+    assert.equal(code, 0, stderr);
+    const times = Object.fromEntries(stdout.trim().split(/\r?\n/).map(line => { const [name, value] = line.split(":"); return [name, Number(value)]; }));
+    assert.ok(Number.isFinite(times.enter) && Number.isFinite(times.exit));
+    return times as { enter: number; exit: number };
+  };
+  try {
+    const [first, second] = await Promise.all([run(), run()]);
+    assert.ok(first.exit <= second.enter || second.exit <= first.enter, `lease intervals overlapped: ${JSON.stringify({ first, second })}`);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
