@@ -355,7 +355,7 @@ for (const faultMethod of ["createBlob", "createTree", "createCommit"] as const)
     try {
       const runner = await createGitHubReleaseRunner({ rootDir: root, journalSigner: { signerId: "release-journal-2026", privateKey: keys.privateKey, publicKey: keys.publicKey }, evidenceSigner: fixture.evidenceSigner, authorizationResolver: async () => fixture.context, provider: base, now: () => new Date("2026-08-18T06:00:00.000Z") });
       const request = { alias: "github_release_candidate_publish_v1" as const, allocationId: "release-candidate-branch-01", authorizationHandle: "release_auth_1", requestId: `resume_${faultMethod}`, semanticsDigest: authorityDigest({ faultMethod }) };
-      await assert.rejects(() => runner.run(request), new RegExp(faultMethod));
+      await assert.rejects(() => runner.run(request), /transport.*uncertain|ambiguous/i);
       assert.equal((await runner.run(request)).status, "verified");
       assert.equal(calls, faultMethod === "createBlob" ? 4 : 2);
     } finally { await rm(root, { recursive: true, force: true }); }

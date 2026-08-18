@@ -23,6 +23,8 @@ const TRANSITIONS: Readonly<Record<string, readonly string[]>> = Object.freeze({
 const DIGEST = /^sha256:[0-9a-f]{64}$/;
 const GIT_SHA = /^[0-9a-f]{40}$/;
 class ProviderWriteAmbiguity extends Error {}
+class ProviderTransportUncertainty extends Error {}
+class ProviderDefinitiveRefusal extends TypeError {}
 class ReleaseRunFailure extends Error { constructor(message: string, readonly effectPossible: boolean, readonly deterministic: boolean) { super(message); } }
 
 export type GitHubReleaseAliasV1 = keyof typeof ALIASES;
@@ -44,6 +46,7 @@ export interface GitHubReleaseProviderV1 {
   npmVersionExists(input: Readonly<{ packageName: string; version: string }>): Promise<unknown>;
   readPackageManifest(input: Readonly<{ repository: string; sha: string }>): Promise<unknown>;
 }
+export interface GitHubReleaseProviderFaultV1 { readonly v: "reelier.github-release-provider-fault/v1"; readonly kind: "transport-uncertain" | "definitive-refusal"; readonly reason: string }
 export interface GitHubReleaseRunRequestV1 { readonly alias: GitHubReleaseAliasV1; readonly allocationId: string; readonly authorizationHandle: string; readonly requestId: string; readonly semanticsDigest: string }
 export interface GitHubReleaseRunResultV1 { readonly status: "verified" | "pending-reconciliation" | "refused"; readonly phase: string; readonly evidenceDigest: string | null }
 export interface GitHubReleasePublicationConfirmationV1 { readonly requestId: string; readonly providerEvidenceDigest: string; readonly receiptRef: string; readonly receiptEvidenceDigest: string }
@@ -55,6 +58,7 @@ export async function createGitHubReleaseRunner(input: Readonly<{ rootDir: strin
   if (!path.isAbsolute(input.rootDir)) throw new TypeError("GitHub release runner root must be absolute");
   await mkdir(input.rootDir, { recursive: true });
   const journal = await createSignedJournal({ rootDir: path.join(input.rootDir, "journal"), journalId: "github-release", ...input.journalSigner });
+  const provider = normalizeProvider(input.provider);
   const runOnce = async (request: GitHubReleaseRunRequestV1): Promise<GitHubReleaseRunResultV1> => {
     validateRequest(request);
     const resolved = await input.authorizationResolver(request.authorizationHandle);
@@ -86,10 +90,10 @@ export async function createGitHubReleaseRunner(input: Readonly<{ rootDir: strin
         events = await journal.load(request.requestId);
       }
       try {
-        if (effect === "candidate-branch") return await candidate(request, context, events, journal, input.provider, input.evidenceSigner, input.now);
-        if (effect === "draft-pr") return await pullRequest(request, authorization, events, journal, input.provider, input.evidenceSigner, input.now);
-        if (effect === "exact-sha-merge") return await merge(request, authorization, events, journal, input.provider, input.evidenceSigner, input.now);
-        return await tag(request, authorization, events, journal, input.provider, input.evidenceSigner, input.now);
+        if (effect === "candidate-branch") return await candidate(request, context, events, journal, provider, input.evidenceSigner, input.now);
+        if (effect === "draft-pr") return await pullRequest(request, authorization, events, journal, provider, input.evidenceSigner, input.now);
+        if (effect === "exact-sha-merge") return await merge(request, authorization, events, journal, provider, input.evidenceSigner, input.now);
+        return await tag(request, authorization, events, journal, provider, input.evidenceSigner, input.now);
       } catch (error) {
         const latest = await journal.load(request.requestId);
         const effectPossible = latest.some(event => event.phase.endsWith("-intent") && event.phase !== "authorized");
@@ -334,7 +338,7 @@ function validateCandidate(context: GitHubReleaseAuthorizationContextV1): void {
   for (const raw of context.fileContents) { const file = exactRecord(raw, ["bytesBase64", "path"], "candidate file bytes"); if (typeof file.path !== "string" || typeof file.bytesBase64 !== "string" || byPath.has(file.path)) throw new TypeError("authenticated candidate file set is invalid"); byPath.set(file.path, file.bytesBase64); }
   for (const file of plan.files) { const bytesBase64 = byPath.get(file.path); if (!bytesBase64) throw new TypeError("authenticated candidate file bytes are missing"); const bytes = Buffer.from(bytesBase64, "base64"); if (bytes.toString("base64") !== bytesBase64 || sha256(bytes) !== file.contentDigest || gitBlobSha(bytes) !== file.blobSha) throw new TypeError("candidate bytes do not match signed content and Git blob commitments"); }
 }
-function normalizeContext(value: GitHubReleaseAuthorizationContextV1 | VerifiedReleaseAuthorizationV1): GitHubReleaseAuthorizationContextV1 { if (isPlain(value) && Object.keys(value).sort().join("\0") === ["authorization", "fileContents"].sort().join("\0")) return Object.freeze({ authorization: (value as GitHubReleaseAuthorizationContextV1).authorization, fileContents: Object.freeze([...(value as GitHubReleaseAuthorizationContextV1).fileContents]) }); return Object.freeze({ authorization: value as VerifiedReleaseAuthorizationV1, fileContents: Object.freeze([]) }); }
+function normalizeContext(value: GitHubReleaseAuthorizationContextV1 | VerifiedReleaseAuthorizationV1): GitHubReleaseAuthorizationContextV1 { if (isPlain(value) && Object.keys(value).sort().join("\0") === ["authorization", "fileContents"].sort().join("\0")) { const context = exactRecord(value, ["authorization", "fileContents"], "release authorization context"); return Object.freeze({ authorization: context.authorization as VerifiedReleaseAuthorizationV1, fileContents: inertArray(context.fileContents, "release candidate file array") as readonly Readonly<{ path: string; bytesBase64: string }>[] }); } return Object.freeze({ authorization: value as VerifiedReleaseAuthorizationV1, fileContents: Object.freeze([]) }); }
 function assertLive(auth: VerifiedReleaseAuthorizationV1, now: Date): void { if (!(now instanceof Date) || !Number.isFinite(now.getTime()) || now.getTime() < Date.parse(auth.authorization.value.issuedAt) || now.getTime() >= Date.parse(auth.authorization.value.expiresAt)) throw new TypeError("release authorization is stale or clock is invalid"); }
 function assertWriteLive(auth: VerifiedReleaseAuthorizationV1, now: () => Date): void { assertLive(auth, now()); }
 async function assertPostIntentLive(journal: SignedJournal, request: GitHubReleaseRunRequestV1, auth: VerifiedReleaseAuthorizationV1, now: () => Date): Promise<void> { try { assertWriteLive(auth, now); } catch (error) { await step(journal, request, "expired-refused", { observedAt: safeNowIso(now) }); throw error; } }
@@ -355,12 +359,34 @@ function parseSha(value: unknown, label: string): Readonly<{ sha: string }> { co
 function parseRef(value: unknown): Readonly<{ sha: string }> | null { if (value === null) return null; return parseSha(value, "ref"); }
 function parseCommit(value: unknown): Readonly<{ sha: string; parentSha: string; treeSha: string }> | null { if (value === null) return null; const item = exactRecord(value, ["parentSha", "sha", "treeSha"], "commit"); if (![item.sha, item.parentSha, item.treeSha].every(raw => GIT_SHA.test(String(raw)))) throw new TypeError("commit readback is invalid"); return Object.freeze({ sha: String(item.sha), parentSha: String(item.parentSha), treeSha: String(item.treeSha) }); }
 function parsePullRequest(value: unknown): GitHubReleasePullRequestV1 { const item = exactRecord(value, ["base", "body", "draft", "head", "headSha", "mergeCommitSha", "merged", "number", "title"], "pull request"); if (!Number.isSafeInteger(item.number) || Number(item.number) <= 0 || typeof item.head !== "string" || typeof item.base !== "string" || typeof item.draft !== "boolean" || typeof item.title !== "string" || typeof item.body !== "string" || !GIT_SHA.test(String(item.headSha)) || typeof item.merged !== "boolean" || !(item.mergeCommitSha === null || GIT_SHA.test(String(item.mergeCommitSha)))) throw new TypeError("pull request readback is invalid"); return Object.freeze({ number: Number(item.number), head: item.head, base: item.base, draft: item.draft, title: item.title, body: item.body, headSha: String(item.headSha), merged: item.merged, mergeCommitSha: item.mergeCommitSha === null ? null : String(item.mergeCommitSha) }); }
-function parsePullRequests(value: unknown): readonly GitHubReleasePullRequestV1[] { if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype || Object.keys(value).some((key, index) => key !== String(index))) throw new TypeError("pull request list is not closed and dense"); return Object.freeze(value.map(parsePullRequest)); }
+function parsePullRequests(value: unknown): readonly GitHubReleasePullRequestV1[] { return Object.freeze(inertArray(value, "pull request list").map(parsePullRequest)); }
 function assertPullRequestPlan(pr: GitHubReleasePullRequestV1, plan: VerifiedReleaseAuthorizationV1["operationPlan"]["value"], draft: boolean): void { if (pr.head !== plan.pullRequest.head || pr.base !== plan.pullRequest.base || pr.draft !== draft || pr.title !== plan.pullRequest.title || pr.body !== plan.pullRequest.body || pr.headSha !== plan.expectedCommitSha) throw new TypeError("pull request readback does not match exact authorized metadata"); }
-function parseChecks(value: unknown): readonly Readonly<{ name: string; status: string; workflowDigest: string }>[] { if (!Array.isArray(value) || Object.keys(value).some((key, index) => key !== String(index))) throw new TypeError("checks list is not closed and dense"); return Object.freeze(value.map(raw => { const item = exactRecord(raw, ["name", "status", "workflowDigest"], "check"); if (typeof item.name !== "string" || typeof item.status !== "string" || !DIGEST.test(String(item.workflowDigest))) throw new TypeError("check readback is invalid"); return Object.freeze({ name: item.name, status: item.status, workflowDigest: String(item.workflowDigest) }); })); }
+function parseChecks(value: unknown): readonly Readonly<{ name: string; status: string; workflowDigest: string }>[] { return Object.freeze(inertArray(value, "checks list").map(raw => { const item = exactRecord(raw, ["name", "status", "workflowDigest"], "check"); if (typeof item.name !== "string" || typeof item.status !== "string" || !DIGEST.test(String(item.workflowDigest))) throw new TypeError("check readback is invalid"); return Object.freeze({ name: item.name, status: item.status, workflowDigest: String(item.workflowDigest) }); })); }
 function assertChecks(checks: readonly Readonly<{ name: string; status: string; workflowDigest: string }>[], plan: VerifiedReleaseAuthorizationV1["operationPlan"]["value"]): void { const names = checks.map(check => check.name).sort(); if (names.join("\0") !== [...plan.requiredChecks].sort().join("\0") || checks.some(check => check.status !== "success" || !plan.workflowCommitments.some(workflow => workflow.digest === check.workflowDigest))) throw new TypeError("required release checks or workflow commitment are missing or failed"); }
 function parseMerge(value: unknown): Readonly<{ merged: boolean; sha: string }> { const item = exactRecord(value, ["merged", "sha"], "merge result"); if (typeof item.merged !== "boolean" || !GIT_SHA.test(String(item.sha))) throw new TypeError("merge result is invalid"); return Object.freeze({ merged: item.merged, sha: String(item.sha) }); }
 function parseManifest(value: unknown): Readonly<{ name: string; version: string }> { const item = exactRecord(value, ["name", "version"], "package manifest"); if (typeof item.name !== "string" || typeof item.version !== "string") throw new TypeError("package manifest is invalid"); return Object.freeze({ name: item.name, version: item.version }); }
 function parseBoolean(value: unknown, label: string): boolean { if (typeof value !== "boolean") throw new TypeError(`${label} is invalid`); return value; }
 async function safeRead<T>(read: () => Promise<unknown>, parse: (value: unknown) => T): Promise<T | null> { let raw: unknown; try { raw = await read(); } catch { return null; } return parse(raw); }
-async function providerWrite<T>(write: () => Promise<unknown>, parse: (value: unknown) => T): Promise<T> { let raw: unknown; try { raw = await write(); } catch (error) { throw new ProviderWriteAmbiguity(error instanceof Error ? error.message : "provider write response is ambiguous"); } return parse(raw); }
+async function providerWrite<T>(write: () => Promise<unknown>, parse: (value: unknown) => T): Promise<T> { let raw: unknown; try { raw = await write(); } catch (error) { if (error instanceof ProviderDefinitiveRefusal) throw error; throw new ProviderWriteAmbiguity(error instanceof Error ? error.message : "provider write response is ambiguous"); } return parse(raw); }
+
+function inertArray(value: unknown, label: string): readonly unknown[] {
+  if (!value || typeof value !== "object" || isProxy(value) || !Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype) throw new TypeError(`${label} is not a closed inert array`);
+  const descriptors = Object.getOwnPropertyDescriptors(value) as unknown as Record<PropertyKey, PropertyDescriptor>, lengthDescriptor = descriptors["length"];
+  const count = lengthDescriptor && "value" in lengthDescriptor ? lengthDescriptor.value : null;
+  if (typeof count !== "number" || !Number.isSafeInteger(count) || count < 0 || count > 10_000) throw new TypeError(`${label} is not a closed inert array`);
+  const result: unknown[] = [];
+  for (let index = 0; index < count; index += 1) { const descriptor = descriptors[String(index)]; if (!descriptor || !("value" in descriptor) || !descriptor.enumerable) throw new TypeError(`${label} is not a closed dense inert array`); result.push(descriptor.value); }
+  if (Reflect.ownKeys(descriptors as object).some(key => key !== "length" && (typeof key !== "string" || !/^(0|[1-9]\d*)$/.test(key) || Number(key) >= count))) throw new TypeError(`${label} is not a closed inert array`);
+  return Object.freeze(result);
+}
+
+function normalizeProvider(provider: GitHubReleaseProviderV1): GitHubReleaseProviderV1 {
+  const invoke = async (method: keyof GitHubReleaseProviderV1, argument: unknown): Promise<unknown> => {
+    try { const callable = Reflect.get(provider as object, method); if (typeof callable !== "function") throw new TypeError(`provider method ${method} is absent`); return await Reflect.apply(callable, provider, [argument]); }
+    catch (error) { throw normalizeProviderFault(error); }
+  };
+  return Object.freeze({
+    createBlob: (argument: any) => invoke("createBlob", argument), createTree: (argument: any) => invoke("createTree", argument), createCommit: (argument: any) => invoke("createCommit", argument), getRef: (argument: any) => invoke("getRef", argument), createRef: (argument: any) => invoke("createRef", argument), getCommit: (argument: any) => invoke("getCommit", argument), findPullRequests: (argument: any) => invoke("findPullRequests", argument), createPullRequest: (argument: any) => invoke("createPullRequest", argument), markPullRequestReady: (argument: any) => invoke("markPullRequestReady", argument), getPullRequest: (argument: any) => invoke("getPullRequest", argument), getChecks: (argument: any) => invoke("getChecks", argument), mergePullRequest: (argument: any) => invoke("mergePullRequest", argument), npmVersionExists: (argument: any) => invoke("npmVersionExists", argument), readPackageManifest: (argument: any) => invoke("readPackageManifest", argument),
+  });
+}
+function normalizeProviderFault(error: unknown): Error { if (isPlain(error)) { try { const fault = exactRecord(error, ["kind", "reason", "v"], "provider fault"); if (fault.v === "reelier.github-release-provider-fault/v1" && (fault.kind === "transport-uncertain" || fault.kind === "definitive-refusal") && typeof fault.reason === "string" && fault.reason.length > 0 && fault.reason.length <= 512) return fault.kind === "definitive-refusal" ? new ProviderDefinitiveRefusal(fault.reason) : new ProviderTransportUncertainty(fault.reason); } catch { /* unknown failures stay transport-uncertain */ } } return new ProviderTransportUncertainty("provider transport state is uncertain"); }
