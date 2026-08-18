@@ -400,6 +400,28 @@ test("quality evidence refuses wrong head, workflow, signature, alias, and attac
   assert.throws(() => verify(accessor), error => error instanceof TypeError && !/invoked evidence accessor/.test(error.message));
 });
 
+test("evidence verification rejects nested key accessors without invoking them", () => {
+  const release = releaseInputs();
+  const poisoned = [...release.qualityEvidence];
+  let keyReads = 0;
+  const original = poisoned[0];
+  const verifierWithKeyAccessor = { signerId: "quality-coverage-verifier" } as Record<string, unknown>;
+  Object.defineProperty(verifierWithKeyAccessor, "publicKey", {
+    enumerable: true,
+    get: () => {
+      keyReads += 1;
+      throw new Error("invoked attacker key accessor");
+    },
+  });
+  poisoned[0] = { evidence: original.evidence, verifier: verifierWithKeyAccessor } as any;
+
+  assert.throws(
+    () => verifyReleaseAuthorizationBundleV1(authorizationInput(release), verifier, new Date("2026-08-18T06:00:00.000Z"), poisoned),
+    error => error instanceof TypeError && !/invoked attacker/.test(error.message),
+  );
+  assert.equal(keyReads, 0);
+});
+
 test("receipt evidence resolves complete signed lanes and refuses missing, duplicate, wrong lane, authorization, subject, signer, and tampering", () => {
   const release = releaseInputs();
   const authorization = verifyAuthorization(release);
