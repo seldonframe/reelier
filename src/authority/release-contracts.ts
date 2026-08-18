@@ -496,7 +496,10 @@ function parseReleaseContractVerifierInput(value: unknown, label: string): Inter
 }
 
 function snapshotDenseDataArray(value: unknown, label: string): readonly unknown[] {
-  if (value !== null && typeof value === "object" && utilTypes.isProxy(value)) throw new TypeError(`${label} contains a Proxy`);
+  if ((typeof value === "object" && value !== null) || typeof value === "function") {
+    if (utilTypes.isProxy(value)) throw new TypeError(`${label} contains a Proxy`);
+  }
+  if (typeof value === "function") throw new TypeError(`${label} contains a function`);
   if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype) throw new TypeError(`${label} is not a plain dense array`);
   const lengthDescriptor = Object.getOwnPropertyDescriptor(value, "length");
   if (!lengthDescriptor || !("value" in lengthDescriptor) || !Number.isSafeInteger(lengthDescriptor.value) || lengthDescriptor.value < 0) throw new TypeError(`${label} has invalid length`);
@@ -514,7 +517,10 @@ function snapshotDenseDataArray(value: unknown, label: string): readonly unknown
 }
 
 function shallowExact(value: unknown, fields: readonly string[], label: string): Record<string, any> {
-  if (value !== null && typeof value === "object" && utilTypes.isProxy(value)) throw new TypeError(`${label} contains a Proxy`);
+  if ((typeof value === "object" && value !== null) || typeof value === "function") {
+    if (utilTypes.isProxy(value)) throw new TypeError(`${label} contains a Proxy`);
+  }
+  if (typeof value === "function") throw new TypeError(`${label} contains a function`);
   if (!value || typeof value !== "object" || Array.isArray(value) || Object.getPrototypeOf(value) !== Object.prototype) throw new TypeError(`${label} is not an exact object`);
   const snapshot: Record<string, unknown> = {};
   const keys: string[] = [];
@@ -569,22 +575,28 @@ function exact(value: unknown, fields: readonly string[], label: string): Record
 }
 
 function snapshotPlainDataTree(value: unknown, label: string, seen = new Set<object>()): unknown {
-  if (value === null || typeof value !== "object") return value;
-  if (utilTypes.isProxy(value)) throw new TypeError(`${label} contains a Proxy`);
-  if (seen.has(value)) throw new TypeError(`${label} contains a cyclic object graph`);
-  seen.add(value);
-  const array = Array.isArray(value);
+  const kind = typeof value;
+  if ((kind === "object" && value !== null) || kind === "function") {
+    if (utilTypes.isProxy(value)) throw new TypeError(`${label} contains a Proxy`);
+  }
+  if (value === null || kind === "string" || kind === "boolean" || (kind === "number" && Number.isFinite(value))) return value;
+  if (kind !== "object") throw new TypeError(`${label} contains a non-JSON scalar or function`);
+  const objectValue = value as object;
+  if (seen.has(objectValue)) throw new TypeError(`${label} contains a cyclic object graph`);
+  seen.add(objectValue);
+  const array = Array.isArray(objectValue);
   const expectedPrototype = array ? Array.prototype : Object.prototype;
-  if (Object.getPrototypeOf(value) !== expectedPrototype) throw new TypeError(`${label} contains a non-plain prototype`);
-  const keys = Reflect.ownKeys(value);
-  const lengthDescriptor = array ? Object.getOwnPropertyDescriptor(value, "length") : undefined;
+  if (Object.getPrototypeOf(objectValue) !== expectedPrototype) throw new TypeError(`${label} contains a non-plain prototype`);
+  const lengthDescriptor = array ? Object.getOwnPropertyDescriptor(objectValue, "length") : undefined;
   if (array && (!lengthDescriptor || !("value" in lengthDescriptor) || !Number.isSafeInteger(lengthDescriptor.value) || lengthDescriptor.value < 0)) throw new TypeError(`${label} contains an invalid array length`);
-  const expectedArrayKeys = array ? [...Array(lengthDescriptor!.value).keys()].map(String).concat("length") : null;
-  if (expectedArrayKeys !== null && (keys.length !== expectedArrayKeys.length || keys.some((key, index) => key !== expectedArrayKeys[index]))) throw new TypeError(`${label} contains a sparse array, symbol, non-enumerable field, or custom own array property`);
+  const keys = Reflect.ownKeys(objectValue);
+  if (array && keys.length !== lengthDescriptor!.value + 1) throw new TypeError(`${label} contains a sparse array, symbol, non-enumerable field, or custom own array property`);
   const snapshot: Record<string, unknown> | unknown[] = array ? [] : {};
-  for (const key of keys) {
+  for (let index = 0; index < keys.length; index += 1) {
+    const key = keys[index];
     if (typeof key === "symbol") throw new TypeError(`${label} contains a symbol field`);
-    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (array && key !== (index === keys.length - 1 ? "length" : String(index))) throw new TypeError(`${label} contains a sparse array, symbol, non-enumerable field, or custom own array property`);
+    const descriptor = Object.getOwnPropertyDescriptor(objectValue, key);
     if (!descriptor || !("value" in descriptor) || (key !== "length" && descriptor.enumerable !== true)) throw new TypeError(`${label} contains an accessor or non-enumerable property`);
     if (key !== "length") {
       const child = snapshotPlainDataTree(descriptor.value, label, seen);
@@ -592,13 +604,15 @@ function snapshotPlainDataTree(value: unknown, label: string, seen = new Set<obj
       else Object.defineProperty(snapshot, key, { configurable: true, enumerable: true, value: child, writable: true });
     }
   }
-  seen.delete(value);
+  seen.delete(objectValue);
   return snapshot;
 }
 
 function snapshotVerificationTime(now: Date, label: string): number {
+  if ((typeof now === "object" && now !== null) || typeof now === "function") {
+    if (utilTypes.isProxy(now)) throw new TypeError(`${label} rejects Proxy clocks`);
+  }
   if (!now || typeof now !== "object") throw new TypeError(`${label} must be a plain Date`);
-  if (utilTypes.isProxy(now)) throw new TypeError(`${label} rejects Proxy clocks`);
   if (Object.getPrototypeOf(now) !== Date.prototype) throw new TypeError(`${label} must use the Date prototype`);
   if (Reflect.ownKeys(now).length !== 0) throw new TypeError(`${label} Date must not contain own properties`);
   const time = Date.prototype.getTime.call(now);
@@ -618,7 +632,7 @@ function deepFreeze<T>(value: T): T {
 function requireDigest(value: unknown, label: string): asserts value is string { if (typeof value !== "string" || !DIGEST.test(value)) throw new TypeError(`${label} digest is invalid`); }
 function requireCommit(value: unknown, label: string): asserts value is string { if (typeof value !== "string" || !COMMIT.test(value)) throw new TypeError(`${label} is invalid`); }
 function requireTime(value: unknown, label: string): number { if (typeof value !== "string") throw new TypeError(`${label} is invalid`); const time = Date.parse(value); if (!Number.isFinite(time) || new Date(time).toISOString() !== value) throw new TypeError(`${label} is invalid`); return time; }
-function requireEvidenceStatus(value: unknown, label: string): asserts value is ReleaseEvidenceStatus { if (!["verified", "failed", "pending", "absent", "unchecked", "ambiguity"].includes(String(value))) throw new TypeError(`${label} evidence status is invalid`); }
+function requireEvidenceStatus(value: unknown, label: string): asserts value is ReleaseEvidenceStatus { if (typeof value !== "string" || !["verified", "failed", "pending", "absent", "unchecked", "ambiguity"].includes(value)) throw new TypeError(`${label} evidence status is invalid`); }
 function requireExactSet(actual: readonly unknown[], expected: readonly string[], label: string): void { if (!Array.isArray(actual) || !equalStrings(actual, expected)) throw new TypeError(`${label} must be the exact sorted unique set`); }
 function requireSortedUniqueDigests(values: readonly unknown[], label: string): void { let previous = ""; for (const value of values) { requireDigest(value, label); if (value <= previous) throw new TypeError(`${label} evidence digests must be sorted and unique`); previous = value; } }
 function equalStrings(left: readonly unknown[], right: readonly string[]): boolean { return left.length === right.length && left.every((value, index) => value === right[index]); }
