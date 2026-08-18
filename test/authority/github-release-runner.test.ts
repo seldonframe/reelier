@@ -108,3 +108,23 @@ test("four-operation release saga converges after ambiguous merge and tag withou
     assert.equal(tagCalls, 1, "tag must never be resent after ambiguous response");
   } finally { await rm(root, { recursive: true, force: true }); }
 });
+
+test("concurrent duplicate candidate requests serialize and converge to one provider execution", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "reelier-release-concurrent-"));
+  const fixture = releaseAuthorityFixture(), journalKeys = generateKeyPairSync("ed25519"), refs = new Map<string, string>([["heads/main", "e600ad5c2dc5e1bde0714915e7a84980c8d5602b"]]);
+  let blobCalls = 0;
+  const provider: any = {
+    createBlob: async ({ contentBase64 }: any) => { blobCalls += 1; await new Promise(resolve => setImmediate(resolve)); return { sha: blobSha(Buffer.from(contentBase64, "base64")) }; },
+    createTree: async () => ({ sha: gitSha("e") }), createCommit: async () => ({ sha: gitSha("a") }),
+    getRef: async ({ ref }: any) => refs.has(ref) ? { sha: refs.get(ref)! } : null,
+    createRef: async ({ ref, sha }: any) => { refs.set(ref, sha); return { sha }; },
+    getCommit: async ({ sha }: any) => ({ sha, parentSha: "e600ad5c2dc5e1bde0714915e7a84980c8d5602b", treeSha: gitSha("e") }),
+  };
+  try {
+    const runner = await createGitHubReleaseRunner({ rootDir: root, journalSigner: { signerId: "release-journal-2026", privateKey: journalKeys.privateKey, publicKey: journalKeys.publicKey }, evidenceSigner: fixture.evidenceSigner, authorizationResolver: async () => fixture.context, provider, now: () => new Date("2026-08-18T06:00:00.000Z") });
+    const request = { alias: "github_release_candidate_publish_v1" as const, authorizationHandle: "release_auth_1", requestId: "candidate_concurrent", semanticsDigest: authorityDigest({ candidate: "concurrent" }) };
+    const results = await Promise.all([runner.run(request), runner.run(request)]);
+    assert.deepEqual(results.map(result => result.status), ["verified", "verified"]);
+    assert.equal(blobCalls, 3);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
