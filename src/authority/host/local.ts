@@ -41,7 +41,7 @@ import { admittedProfileGovernanceState, assertAdmittedProfileGovernance, assert
 import { definitionRegistrationDigest } from "../pack.js";
 import { loadProfileGovernanceFromOperatorTrust } from "./profile-governance-loader.js";
 import type { AuthorityExecutionContextV1 } from "../types.js";
-import { createGitHubReleaseDispatchAdapter, type GitHubReleaseRunnerV1 } from "./github-release-runner.js";
+import { createGitHubReleaseDispatchAdapter, createGitHubReleaseReceiptPublication, type GitHubReleaseRunnerV1 } from "./github-release-runner.js";
 
 /** Builds the local host from signed-artifact boundaries. An empty workspace is intentionally
  * usable for discovery and status, but every Outcome refuses until a signed contract is installed. */
@@ -159,7 +159,8 @@ async function createLocalAuthorityRuntimeCore(config:AuthorityHostConfig,option
     },
   });
   const gate = createAuthorityGate({ trustRoots, packs, sources, connectors: connectorRegistry, state, ledger, ...(options.routeAuthority ? { routeAuthority: options.routeAuthority } : {}), ...(options.authenticatedProviderIdentity ? { authenticatedProviderIdentity: options.authenticatedProviderIdentity } : {}), ...(internal.beforeReserve?{beforeReserve:internal.beforeReserve}:{}), ...(options.latencyRecorder ? { latencyRecorder: options.latencyRecorder } : {}), localGatePolicyDigest: authorityDigest({ v: "reelier.local-gate-policy/v1", tenant: config.tenant }), decisionSink: decisions, signer: { async sign(input) { return { signerId: "local-gate", signature: signAuthorityDigest(privateKey, input.purpose, input.digest) }; } }, eventId: () => `evt_${randomUUID()}`, capabilityId: () => `cap_${randomUUID()}` });
-  const publication = internal.governedPublication??createLocalAuthorityReceiptPublication({ localPublication: createFileReceiptPublication({ rootDir: config.receiptDir }), ...(options.portableReceiptPublication ? { portablePublication: options.portableReceiptPublication } : {}) });
+  const basePublication = internal.governedPublication??createLocalAuthorityReceiptPublication({ localPublication: createFileReceiptPublication({ rootDir: config.receiptDir }), ...(options.portableReceiptPublication ? { portablePublication: options.portableReceiptPublication } : {}) });
+  const publication = options.githubReleaseRunner ? createGitHubReleaseReceiptPublication({ runner: options.githubReleaseRunner, publication: basePublication }) : basePublication;
   const secrets = options.secretResolver ?? createSecretResolver(options.secretResolverOptions);
   if (config.nativeHttpsRoutes && config.nativeHttpsRoutes.length > 0 && (!options.routeAuthority || !options.authenticatedProviderIdentity || !options.certifiedDispatch || !options.verifyAuthenticatedProviderIdentity)) throw new TypeError("native HTTPS routes require certified route, identity, verifier, and dispatch wiring");
   const certifiedDispatch = options.certifiedDispatch ? { ...options.certifiedDispatch, ...(options.latencyRecorder ? { latencyRecorder: options.latencyRecorder } : {}), verifyIdentity: options.verifyAuthenticatedProviderIdentity ?? options.certifiedDispatch.verifyIdentity } : undefined;

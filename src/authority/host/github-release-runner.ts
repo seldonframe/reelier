@@ -5,7 +5,7 @@ import path from "node:path";
 import { isProxy } from "node:util/types";
 import { authorityDigest } from "../wire.js";
 import { assertVerifiedReleaseAuthorizationV1, type ReleaseContractSignerV1, type ReleaseProviderEffectV1, type VerifiedReleaseAuthorizationV1 } from "../release-contracts.js";
-import type { DispatchAdapter, DispatchOutcome, DispatchRequestState } from "./dispatch.js";
+import type { DispatchAdapter, DispatchOutcome, DispatchPublication, DispatchRequestState } from "./dispatch.js";
 import { createSignedJournal, type SignedJournal, type SignedJournalEventV1 } from "./signed-journal.js";
 import { createGitHubReleaseProviderEvidence } from "./github-release-evidence.js";
 
@@ -17,6 +17,7 @@ const TERMINAL = new Set(["candidate-verified", "pr-verified", "merge-verified",
 const TRANSITIONS: Readonly<Record<string, readonly string[]>> = Object.freeze({
   authorized: ["blob-intent", "pr-intent", "merge-intent", "tag-intent"], "blob-intent": ["blob-created"], "blob-created": ["blob-intent", "tree-intent"], "tree-intent": ["tree-created"], "tree-created": ["commit-intent"], "commit-intent": ["commit-created"], "commit-created": ["branch-intent"], "branch-intent": ["candidate-verified"],
   "pr-intent": ["pr-created", "pr-verified"], "pr-created": ["pr-verified"], "merge-intent": ["merge-verified"], "tag-intent": ["tag-verified"],
+  "candidate-verified": ["receipt-published"], "pr-verified": ["receipt-published"], "merge-verified": ["receipt-published"], "tag-verified": ["receipt-published"],
 });
 const DIGEST = /^sha256:[0-9a-f]{64}$/;
 const GIT_SHA = /^[0-9a-f]{40}$/;
@@ -43,7 +44,8 @@ export interface GitHubReleaseProviderV1 {
 }
 export interface GitHubReleaseRunRequestV1 { readonly alias: GitHubReleaseAliasV1; readonly allocationId: string; readonly authorizationHandle: string; readonly requestId: string; readonly semanticsDigest: string }
 export interface GitHubReleaseRunResultV1 { readonly status: "verified" | "pending-reconciliation" | "refused"; readonly phase: string; readonly evidenceDigest: string | null }
-export interface GitHubReleaseRunnerV1 { run(input: GitHubReleaseRunRequestV1): Promise<GitHubReleaseRunResultV1>; recover(): Promise<readonly string[]> }
+export interface GitHubReleasePublicationConfirmationV1 { readonly requestId: string; readonly providerEvidenceDigest: string; readonly receiptRef: string; readonly receiptEvidenceDigest: string }
+export interface GitHubReleaseRunnerV1 { run(input: GitHubReleaseRunRequestV1): Promise<GitHubReleaseRunResultV1>; recover(): Promise<readonly string[]>; confirmPublication(input: GitHubReleasePublicationConfirmationV1): Promise<void> }
 
 export async function createGitHubReleaseRunner(input: Readonly<{ rootDir: string; journalSigner: Readonly<{ signerId: string; privateKey: KeyObject; publicKey: KeyObject }>; evidenceSigner: ReleaseContractSignerV1; authorizationResolver: (handle: string) => Promise<GitHubReleaseAuthorizationContextV1 | VerifiedReleaseAuthorizationV1>; provider: GitHubReleaseProviderV1; now: () => Date }>): Promise<GitHubReleaseRunnerV1> {
   if (!path.isAbsolute(input.rootDir)) throw new TypeError("GitHub release runner root must be absolute");
@@ -64,8 +66,8 @@ export async function createGitHubReleaseRunner(input: Readonly<{ rootDir: strin
         if (events[0].semanticsDigest !== request.semanticsDigest) throw new TypeError("release requestId semantic reuse is forbidden before dispatch");
         const root = events[0].data;
         if (root.alias !== request.alias || root.authorizationHandle !== request.authorizationHandle || root.authorizationDigest !== authorization.authorization.digest || root.allocationId !== allocation.allocationId || root.allocationDigest !== allocation.allocationDigest || root.effect !== effect) throw new TypeError("release journal authority binding is inconsistent");
-        const terminal = events.at(-1)!;
-        if (TERMINAL.has(terminal.phase)) return Object.freeze({ status: "verified", phase: terminal.phase, evidenceDigest: String(terminal.data.evidenceDigest) });
+        const terminal = [...events].reverse().find(event => TERMINAL.has(event.phase));
+        if (terminal) return Object.freeze({ status: "verified", phase: terminal.phase, evidenceDigest: String(terminal.data.evidenceDigest) });
       } else {
         assertLive(authorization, input.now());
         if (effect === "candidate-branch") validateCandidate(context);
@@ -102,13 +104,27 @@ export async function createGitHubReleaseRunner(input: Readonly<{ rootDir: strin
     const recovered: string[] = [];
     for (const requestId of await journal.listRequestIds()) {
       const events = await journal.load(requestId), first = events[0];
-      if (!first || TERMINAL.has(events.at(-1)!.phase)) continue;
+      if (!first || events.some(event => TERMINAL.has(event.phase))) continue;
       const result = await run({ alias: first.data.alias as GitHubReleaseAliasV1, allocationId: String(first.data.allocationId), authorizationHandle: String(first.data.authorizationHandle), requestId, semanticsDigest: first.semanticsDigest });
       if (result.status === "verified") recovered.push(requestId);
     }
     return Object.freeze(recovered);
   };
-  return Object.freeze({ run, recover });
+  const confirmPublication = async (confirmation: GitHubReleasePublicationConfirmationV1): Promise<void> => {
+    const value = exactRecord(confirmation, ["providerEvidenceDigest", "receiptEvidenceDigest", "receiptRef", "requestId"], "release publication confirmation");
+    if (!DIGEST.test(String(value.providerEvidenceDigest)) || !DIGEST.test(String(value.receiptEvidenceDigest)) || !/^[A-Za-z0-9][A-Za-z0-9._:~-]{0,255}$/.test(String(value.receiptRef)) || !/^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$/.test(String(value.requestId))) throw new TypeError("release publication confirmation is invalid");
+    const initial = await journal.load(String(value.requestId)), authorizationDigest = String(initial[0]?.data.authorizationDigest ?? "");
+    if (!DIGEST.test(authorizationDigest)) throw new TypeError("release publication request is absent");
+    await journal.withLease(`authorization-${authorizationDigest.slice(7)}`, async () => {
+      const events = await journal.load(String(value.requestId)), terminal = [...events].reverse().find(event => TERMINAL.has(event.phase));
+      if (!terminal || terminal.data.evidenceDigest !== value.providerEvidenceDigest) throw new TypeError("release publication does not match terminal provider evidence");
+      const existing = events.find(event => event.phase === "receipt-published");
+      const data = Object.freeze({ providerEvidenceDigest: value.providerEvidenceDigest, receiptEvidenceDigest: value.receiptEvidenceDigest, receiptRef: value.receiptRef });
+      if (existing) { if (authorityDigest(existing.data) !== authorityDigest(data)) throw new TypeError("release publication confirmation conflicts"); return; }
+      await step(journal, { requestId: String(value.requestId), semanticsDigest: events[0]!.semanticsDigest } as GitHubReleaseRunRequestV1, "receipt-published", data);
+    });
+  };
+  return Object.freeze({ run, recover, confirmPublication });
 }
 
 /** Routes only the four reviewed release endpoints through the dedicated saga. The ordinary
@@ -137,6 +153,21 @@ export function createGitHubReleaseDispatchAdapter(input: Readonly<{ runner: Git
   return Object.freeze({
     async dispatch(state: DispatchRequestState) { return await invoke(state) ?? input.fallback.dispatch(state); },
     async reconcile(state: DispatchRequestState, outcome: DispatchOutcome) { return await invoke(state) ?? (input.fallback.reconcile ? input.fallback.reconcile(state, outcome) : outcome); },
+  });
+}
+
+/** Confirms the ordinary coordinator's durable receipt only after its configured publication
+ * succeeds. Later release effects require this confirmation, not provider evidence alone. */
+export function createGitHubReleaseReceiptPublication(input: Readonly<{ runner: GitHubReleaseRunnerV1; publication: DispatchPublication }>): DispatchPublication {
+  return Object.freeze({
+    async publish(value: Parameters<DispatchPublication["publish"]>[0]) {
+      const published = await input.publication.publish(value);
+      const effect = isPlain(value.state.effect) ? value.state.effect : null;
+      if (value.phase === "dispatch" && value.outcome.kind === "acknowledged" && effect && typeof effect.endpointId === "string" && ENDPOINTS[effect.endpointId]) await input.runner.confirmPublication({ requestId: value.state.reservation.reservationId, providerEvidenceDigest: value.outcome.resultDigest, receiptRef: published.receiptRef, receiptEvidenceDigest: published.evidenceDigest });
+      return published;
+    },
+    ...(input.publication.publishReservation ? { publishReservation: input.publication.publishReservation.bind(input.publication) } : {}),
+    ...(input.publication.loadDurableHead ? { loadDurableHead: input.publication.loadDurableHead.bind(input.publication) } : {}),
   });
 }
 
@@ -243,8 +274,8 @@ async function requirePredecessor(journal: SignedJournal, authorizationDigest: s
   if (!required) return Object.freeze({ data: Object.freeze({}), phase: "root" } as SignedJournalEventV1);
   const matches: SignedJournalEventV1[] = [];
   for (const requestId of await journal.listRequestIds()) {
-    const events = await journal.load(requestId), first = events[0], last = events.at(-1);
-    if (first?.data.authorizationDigest === authorizationDigest && first.data.effect === required && last && TERMINAL.has(last.phase)) matches.push(last);
+    const events = await journal.load(requestId), first = events[0], last = events.at(-1), terminal = [...events].reverse().find(event => TERMINAL.has(event.phase));
+    if (first?.data.authorizationDigest === authorizationDigest && first.data.effect === required && last?.phase === "receipt-published" && terminal && last.data.providerEvidenceDigest === terminal.data.evidenceDigest && DIGEST.test(String(last.data.receiptEvidenceDigest ?? "")) && typeof last.data.receiptRef === "string" && last.data.receiptRef.length > 0) matches.push(terminal);
   }
   if (matches.length !== 1 || !DIGEST.test(String(matches[0]!.data.evidenceDigest ?? ""))) throw new TypeError(`verified ${required} predecessor evidence is absent or conflicting`);
   return matches[0]!;

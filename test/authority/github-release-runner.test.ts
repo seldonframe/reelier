@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { authorityDigest } from "../../src/authority/wire.js";
 import { createSignedJournal } from "../../src/authority/host/signed-journal.js";
-import { createGitHubReleaseDispatchAdapter, createGitHubReleaseRunner } from "../../src/authority/host/github-release-runner.js";
+import { createGitHubReleaseDispatchAdapter, createGitHubReleaseReceiptPublication, createGitHubReleaseRunner } from "../../src/authority/host/github-release-runner.js";
 import { createSignedReleaseAuthorizationBundleV1, createSignedReleaseOperationPlanV1, createSignedReleasePolicyV1, createSignedReleaseVerifierEvidenceV1, createSignedStagedCandidateManifestV1, verifyReleaseAuthorizationBundleV1, type ReleaseEvidenceLaneV1 } from "../../src/authority/release-contracts.js";
 
 const digest = (seed: string) => `sha256:${seed.repeat(64).slice(0, 64)}`;
@@ -44,6 +44,10 @@ function candidateProvider(overrides: Record<string, unknown> = {}) {
     getCommit: async ({ sha }: any) => ({ sha, parentSha: "e600ad5c2dc5e1bde0714915e7a84980c8d5602b", treeSha: gitSha("e") }),
     ...overrides,
   } as any;
+}
+
+async function confirmTestPublication(runner: Awaited<ReturnType<typeof createGitHubReleaseRunner>>, requestId: string, result: { status: string; evidenceDigest: string | null }): Promise<void> {
+  if (result.status === "verified" && result.evidenceDigest) await runner.confirmPublication({ requestId, providerEvidenceDigest: result.evidenceDigest, receiptRef: `receipt_${requestId}`, receiptEvidenceDigest: authorityDigest({ published: requestId }) });
 }
 
 test("signed journal detects tamper and atomic-head rollback", async () => {
@@ -210,12 +214,17 @@ test("authorization expiry is checked again immediately before every provider wr
 
 test("dedicated dispatch adapter passes only host-owned allocation and durable semantics", async () => {
   let observed: any = null, fallbackCalls = 0;
-  const adapter = createGitHubReleaseDispatchAdapter({ runner: { recover: async () => [], run: async request => { observed = request; return { status: "verified", phase: "candidate-verified", evidenceDigest: digest("a") }; } }, fallback: { dispatch: async () => { fallbackCalls++; return { kind: "acknowledged", resultDigest: digest("f") }; } } });
+  const adapter = createGitHubReleaseDispatchAdapter({ runner: { confirmPublication: async () => undefined, recover: async () => [], run: async request => { observed = request; return { status: "verified", phase: "candidate-verified", evidenceDigest: digest("a") }; } }, fallback: { dispatch: async () => { fallbackCalls++; return { kind: "acknowledged", resultDigest: digest("f") }; } } });
   const effect = { v: "reelier.transport-effect/v1", endpointId: "github.release.candidate-branch", method: "POST", path: "/internal/github-release", query: "", headers: { "Content-Type": "application/json" }, bodyBase64: Buffer.from(JSON.stringify({ authorizationHandle: "release_auth_1" })).toString("base64"), riskClass: "github_release", idempotency: "reconcile-only", preconditions: [], reconciliation: { recipeId: "github_release_authoritative_readback_v1" } };
   const outcome = await adapter.dispatch({ reservation: { reservationId: "reservation_1", state: "reserved" as any, intent: { effectDigest: authorityDigest(effect), effectCanonicalBase64: "", executionContext: { allocationId: "release-candidate-branch-01" } as any } }, effect, effectCanonicalBase64: "", effectDigest: authorityDigest(effect) });
   assert.equal(outcome.kind, "acknowledged");
   assert.equal(fallbackCalls, 0);
   assert.deepEqual(observed, { alias: "github_release_candidate_publish_v1", allocationId: "release-candidate-branch-01", authorizationHandle: "release_auth_1", requestId: "reservation_1", semanticsDigest: authorityDigest(effect) });
+  let confirmation: any = null;
+  const runner: any = { confirmPublication: async (value: any) => { confirmation = value; }, recover: async () => [], run: async () => ({ status: "verified", phase: "candidate-verified", evidenceDigest: digest("a") }) };
+  const publication = createGitHubReleaseReceiptPublication({ runner, publication: { publish: async () => ({ receiptRef: "receipt_reservation_1", evidenceDigest: digest("b") }) } });
+  await publication.publish({ phase: "dispatch", state: { reservation: { reservationId: "reservation_1", state: "dispatched" as any, intent: { effectDigest: authorityDigest(effect), effectCanonicalBase64: "" } }, effect, effectCanonicalBase64: "", effectDigest: authorityDigest(effect) }, outcome: { kind: "acknowledged", resultDigest: digest("a") }, dispatchedRequestDigest: authorityDigest({ dispatched: 1 }) });
+  assert.deepEqual(confirmation, { requestId: "reservation_1", providerEvidenceDigest: digest("a"), receiptRef: "receipt_reservation_1", receiptEvidenceDigest: digest("b") });
 });
 
 for (const faultMethod of ["createBlob", "createTree", "createCommit"] as const) {
@@ -252,7 +261,7 @@ test("ambiguous merge reconciles read-only after expiry and never resends", asyn
   };
   try {
     const runner = await createGitHubReleaseRunner({ rootDir: root, journalSigner: { signerId: "release-journal-2026", privateKey: keys.privateKey, publicKey: keys.publicKey }, evidenceSigner: fixture.evidenceSigner, authorizationResolver: async () => fixture.context, provider, now: () => expired ? new Date("2026-08-18T17:00:00.000Z") : new Date("2026-08-18T06:00:00.000Z") });
-    const run = (alias: any, allocationId: string, requestId: string) => runner.run({ alias, allocationId, authorizationHandle: "release_auth_1", requestId, semanticsDigest: authorityDigest({ alias, requestId }) });
+    const run = async (alias: any, allocationId: string, requestId: string) => { const result = await runner.run({ alias, allocationId, authorizationHandle: "release_auth_1", requestId, semanticsDigest: authorityDigest({ alias, requestId }) }); await confirmTestPublication(runner, requestId, result); return result; };
     assert.equal((await run("github_release_candidate_publish_v1", "release-candidate-branch-01", "expired_candidate")).status, "verified");
     assert.equal((await run("github_release_pr_ensure_v1", "release-draft-pr-01", "expired_pr")).status, "verified");
     assert.equal((await run("github_release_pr_merge_v1", "release-exact-sha-merge-01", "expired_merge")).status, "pending-reconciliation");
@@ -289,6 +298,7 @@ for (const boundary of ["createBlob", "createTree", "createCommit", "createBranc
         let result: any = null;
         for (let attempt = 0; attempt < 3 && result?.status !== "verified"; attempt++) { try { result = await runner.run(request); } catch { /* safe read/content-addressed retry */ } }
         assert.equal(result?.status, "verified", `${alias} did not reconcile at ${boundary}`);
+        await confirmTestPublication(runner, requestId, result);
       }
       assert.equal(faulted, true);
       assert.equal(mergeCalls, 1);
@@ -313,7 +323,7 @@ for (const scenario of ["base-drift", "branch-conflict", "duplicate-pr", "failed
     };
     try {
       const runner = await createGitHubReleaseRunner({ rootDir: root, journalSigner: { signerId: "release-journal-2026", privateKey: keys.privateKey, publicKey: keys.publicKey }, evidenceSigner: fixture.evidenceSigner, authorizationResolver: async () => fixture.context, provider, now: () => new Date("2026-08-18T06:00:00.000Z") });
-      const run = (alias: any, allocationId: string, requestId: string) => runner.run({ alias, allocationId, authorizationHandle: "release_auth_1", requestId, semanticsDigest: authorityDigest({ scenario, alias }) });
+      const run = async (alias: any, allocationId: string, requestId: string) => { const result = await runner.run({ alias, allocationId, authorizationHandle: "release_auth_1", requestId, semanticsDigest: authorityDigest({ scenario, alias }) }); await confirmTestPublication(runner, requestId, result); return result; };
       if (scenario === "base-drift" || scenario === "branch-conflict") {
         await assert.rejects(() => run("github_release_candidate_publish_v1", "release-candidate-branch-01", `${scenario}_candidate`), /drift|conflict/i);
       } else {
