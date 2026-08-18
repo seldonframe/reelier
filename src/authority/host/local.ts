@@ -41,6 +41,7 @@ import { admittedProfileGovernanceState, assertAdmittedProfileGovernance, assert
 import { definitionRegistrationDigest } from "../pack.js";
 import { loadProfileGovernanceFromOperatorTrust } from "./profile-governance-loader.js";
 import type { AuthorityExecutionContextV1 } from "../types.js";
+import { createGitHubReleaseDispatchAdapter, type GitHubReleaseRunnerV1 } from "./github-release-runner.js";
 
 /** Builds the local host from signed-artifact boundaries. An empty workspace is intentionally
  * usable for discovery and status, but every Outcome refuses until a signed contract is installed. */
@@ -71,6 +72,8 @@ export interface LocalAuthorityRuntimeOptions {
   readonly portableReceiptPublication?: DispatchPublication;
   /** In-memory aggregate-only critical-path recorder; never persisted by the runtime. */
   readonly latencyRecorder?: AuthorityLatencyRecorder;
+  /** Host-owned four-outcome release saga. Agents only see the ordinary opaque MCP job surface. */
+  readonly githubReleaseRunner?: GitHubReleaseRunnerV1;
 }
 
 export interface LocalAuthorityRuntime extends AuthorityHostRuntime {
@@ -161,7 +164,8 @@ async function createLocalAuthorityRuntimeCore(config:AuthorityHostConfig,option
   if (config.nativeHttpsRoutes && config.nativeHttpsRoutes.length > 0 && (!options.routeAuthority || !options.authenticatedProviderIdentity || !options.certifiedDispatch || !options.verifyAuthenticatedProviderIdentity)) throw new TypeError("native HTTPS routes require certified route, identity, verifier, and dispatch wiring");
   const certifiedDispatch = options.certifiedDispatch ? { ...options.certifiedDispatch, ...(options.latencyRecorder ? { latencyRecorder: options.latencyRecorder } : {}), verifyIdentity: options.verifyAuthenticatedProviderIdentity ?? options.certifiedDispatch.verifyIdentity } : undefined;
   if (config.nativeHttpsRoutes && config.nativeHttpsRoutes.length > 0 && !certifiedDispatch?.verifyIdentity) throw new TypeError("native HTTPS routes require an identity verifier");
-  const adapter = options.dispatchAdapter ?? createJsonHttpsDispatchAdapter({ endpoints: config.endpoints, routes: config.nativeHttpsRoutes, secrets, ...(options.latencyRecorder ? { latencyRecorder: options.latencyRecorder } : {}) });
+  const fallbackAdapter = options.dispatchAdapter ?? createJsonHttpsDispatchAdapter({ endpoints: config.endpoints, routes: config.nativeHttpsRoutes, secrets, ...(options.latencyRecorder ? { latencyRecorder: options.latencyRecorder } : {}) });
+  const adapter = options.githubReleaseRunner ? createGitHubReleaseDispatchAdapter({ runner: options.githubReleaseRunner, fallback: fallbackAdapter }) : fallbackAdapter;
   const dispatch = createDispatchCoordinator(ledger, adapter, undefined, publication, options.delegation?.budget, certifiedDispatch);
   const runtime = createAuthorityHostRuntime({ gate, dispatch, ledger, decisions, delegation: options.delegation, ...(options.delegation ? { verifyRootGrant: (grant, tenant) => { verifyTrustedAuthority(trustRoots, { tenant, signerId: grant.signerId, purpose: "delegation-grant", advertisedDigest: grant.digest, value: grant.grant, signature: grant.signature }); } } : {}) });
   const jobs = deployment?.jobCard
@@ -247,7 +251,7 @@ async function createLocalAuthorityRuntimeCore(config:AuthorityHostConfig,option
   });
 }
 
-const LOCAL_RUNTIME_OPTION_FIELDS=["dispatchAdapter","delegation","topologyEvidence","signedTopologyEvidence","topologySigner","signedLease","leaseSigner","sourceReadAdapter","connectionRoutes","jobCardTrustPin","secretResolver","secretResolverOptions","routeAuthority","authenticatedProviderIdentity","verifyAuthenticatedProviderIdentity","certifiedDispatch","portableReceiptPublication","latencyRecorder"] as const;
+const LOCAL_RUNTIME_OPTION_FIELDS=["dispatchAdapter","delegation","topologyEvidence","signedTopologyEvidence","topologySigner","signedLease","leaseSigner","sourceReadAdapter","connectionRoutes","jobCardTrustPin","secretResolver","secretResolverOptions","routeAuthority","authenticatedProviderIdentity","verifyAuthenticatedProviderIdentity","certifiedDispatch","portableReceiptPublication","latencyRecorder","githubReleaseRunner"] as const;
 function assertLocalRuntimeOptions(value:unknown):asserts value is LocalAuthorityRuntimeOptions{if(!value||typeof value!=="object"||Object.getPrototypeOf(value)!==Object.prototype)throw new TypeError("local authority runtime options must be a plain record");const descriptors=Object.getOwnPropertyDescriptors(value);for(const key of Reflect.ownKeys(value)){if(typeof key!=="string"||!LOCAL_RUNTIME_OPTION_FIELDS.includes(key as any))throw new TypeError("local authority runtime options contain an unknown field");const descriptor=descriptors[key];if(!descriptor||!("value" in descriptor)||!descriptor.enumerable)throw new TypeError("local authority runtime options must use enumerable own data fields");}}
 
 /** Package-internal governed composition seam. Deliberately absent from the host barrel. */

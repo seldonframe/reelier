@@ -22,6 +22,7 @@ export interface SignedJournal {
   append(requestId: string, semanticsDigest: string, phase: string, data: Readonly<Record<string, unknown>>): Promise<SignedJournalEventV1>;
   load(requestId: string): Promise<readonly SignedJournalEventV1[]>;
   listRequestIds(): Promise<readonly string[]>;
+  withLease<T>(scope: string, operation: () => Promise<T>): Promise<T>;
 }
 
 export async function createSignedJournal(input: Readonly<{ rootDir: string; journalId: string; signerId: string; privateKey: KeyObject; publicKey: KeyObject }>): Promise<SignedJournal> {
@@ -84,7 +85,39 @@ export async function createSignedJournal(input: Readonly<{ rootDir: string; jou
     }
     return Object.freeze(requestIds.sort());
   };
-  return Object.freeze({ append, listRequestIds, load });
+  const withLease = async <T>(scope: string, operation: () => Promise<T>): Promise<T> => {
+    if (!/^[a-z0-9][a-z0-9._-]{7,127}$/.test(scope)) throw new TypeError("signed journal lease scope is invalid");
+    const leasePath = path.join(input.rootDir, `${authorityDigest({ journalId: input.journalId, scope }).slice(7)}.lease`);
+    const started = Date.now();
+    for (;;) {
+      let handle;
+      try {
+        handle = await open(leasePath, "wx", 0o600);
+        await handle.writeFile(authorityCanonicalBytes({ pid: process.pid, acquiredAt: new Date().toISOString(), scope }));
+        await handle.sync();
+        try { return await operation(); }
+        finally { await handle.close(); await unlink(leasePath).catch(() => undefined); await fsyncDirectory(input.rootDir); }
+      } catch (error: any) {
+        if (handle) await handle.close().catch(() => undefined);
+        if (error?.code !== "EEXIST") throw error;
+        if (await retireDeadLease(leasePath)) continue;
+        if (Date.now() - started > 10_000) throw new TypeError("signed journal saga lease is busy");
+        await new Promise(resolve => setTimeout(resolve, 5));
+      }
+    }
+  };
+  return Object.freeze({ append, listRequestIds, load, withLease });
+}
+
+async function retireDeadLease(leasePath: string): Promise<boolean> {
+  let value: unknown;
+  try { value = JSON.parse(await readFile(leasePath, "utf8")); } catch { return false; }
+  if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).sort().join("\0") !== ["acquiredAt", "pid", "scope"].sort().join("\0")) return false;
+  const pid = Number((value as Record<string, unknown>).pid);
+  if (!Number.isSafeInteger(pid) || pid <= 0) return false;
+  try { process.kill(pid, 0); return false; }
+  catch (error: any) { if (error?.code !== "ESRCH") return false; }
+  try { await unlink(leasePath); return true; } catch (error: any) { return error?.code === "ENOENT"; }
 }
 
 function parseEvent(value: SignedJournalEventV1, requestId: string, sequence: number, priorDigest: string | null, semanticsDigest: string | null): Omit<SignedJournalEventV1, "digest" | "signature" | "signerId"> {

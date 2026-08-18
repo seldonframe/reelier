@@ -86,7 +86,7 @@ test("four-operation release saga converges after ambiguous merge and tag withou
     createRef: async ({ ref, sha }: any) => { if (refs.has(ref)) throw new Error("exists"); refs.set(ref, sha); if (ref === "tags/v0.32.1") { tagCalls += 1; throw new Error("socket lost after tag"); } return { sha }; },
     getCommit: async ({ sha }: any) => sha === gitSha("a") ? { sha, parentSha: "e600ad5c2dc5e1bde0714915e7a84980c8d5602b", treeSha: gitSha("e") } : { sha, parentSha: "e600ad5c2dc5e1bde0714915e7a84980c8d5602b", treeSha: gitSha("e") },
     findPullRequests: async () => pullRequest ? [pullRequest] : [],
-    createPullRequest: async (metadata: any) => (pullRequest = { ...metadata, number: 1, merged: false, headSha: gitSha("a") }),
+    createPullRequest: async (metadata: any) => (pullRequest = { base: metadata.base, body: metadata.body, draft: metadata.draft, head: metadata.head, headSha: gitSha("a"), mergeCommitSha: null, merged: false, number: 1, title: metadata.title }),
     getPullRequest: async () => pullRequest,
     getChecks: async () => ["coverage", "full-tests", "mutation"].map(name => ({ name, status: "success", workflowDigest: digest("3") })),
     mergePullRequest: async () => { mergeCalls += 1; pullRequest = { ...pullRequest, merged: true, mergeCommitSha: gitSha("9") }; refs.set("heads/main", gitSha("9")); return { merged: true, sha: gitSha("9") }; },

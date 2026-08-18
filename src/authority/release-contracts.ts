@@ -77,7 +77,6 @@ export interface ReleaseOperationPlanV1 {
   }>;
   readonly destinationBranch: "main";
   readonly expectedCommitSha: string;
-  readonly expectedSquashCommitSha: string;
   readonly expectedTreeSha: string;
   readonly files: readonly ReleaseCandidateFileV1[];
   readonly npmPreflight: Readonly<{ packageName: "reelier"; version: "0.32.1"; versionMustBeAbsent: true }>;
@@ -326,10 +325,9 @@ function parseStagedCandidateManifestV1(value: unknown): StagedCandidateManifest
 }
 
 function parseReleaseOperationPlanV1(value: unknown): ReleaseOperationPlanV1 {
-  const item = exact(value, ["baseCommit", "candidateBranch", "candidateTreeDigest", "commit", "destinationBranch", "expectedCommitSha", "expectedSquashCommitSha", "expectedTreeSha", "files", "npmPreflight", "pullRequest", "repository", "requiredChecks", "squash", "tag", "v", "workflowCommitments"], "release operation plan") as unknown as ReleaseOperationPlanV1;
+  const item = exact(value, ["baseCommit", "candidateBranch", "candidateTreeDigest", "commit", "destinationBranch", "expectedCommitSha", "expectedTreeSha", "files", "npmPreflight", "pullRequest", "repository", "requiredChecks", "squash", "tag", "v", "workflowCommitments"], "release operation plan") as unknown as ReleaseOperationPlanV1;
   if (item.v !== "reelier.release-operation-plan/v1" || item.repository !== "seldonframe/reelier" || item.baseCommit !== RELEASE_BASE || item.candidateBranch !== RELEASE_BRANCH || item.destinationBranch !== "main" || item.tag !== "v0.32.1") throw new TypeError("release operation plan identity or ref is invalid");
   requireCommit(item.expectedCommitSha, "release expected commit");
-  requireCommit(item.expectedSquashCommitSha, "release expected squash commit");
   requireCommit(item.expectedTreeSha, "release expected tree");
   requireDigest(item.candidateTreeDigest, "release candidate tree");
   if (!Array.isArray(item.files) || item.files.length !== RELEASE_PATHS.length) throw new TypeError("release operation plan files must be complete");
