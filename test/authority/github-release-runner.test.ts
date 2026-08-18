@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { authorityDigest } from "../../src/authority/wire.js";
 import { createSignedJournal } from "../../src/authority/host/signed-journal.js";
-import { createGitHubReleaseRunner } from "../../src/authority/host/github-release-runner.js";
+import { createGitHubReleaseDispatchAdapter, createGitHubReleaseRunner } from "../../src/authority/host/github-release-runner.js";
 import { createSignedReleaseAuthorizationBundleV1, createSignedReleaseOperationPlanV1, createSignedReleasePolicyV1, createSignedReleaseVerifierEvidenceV1, createSignedStagedCandidateManifestV1, verifyReleaseAuthorizationBundleV1, type ReleaseEvidenceLaneV1 } from "../../src/authority/release-contracts.js";
 
 const digest = (seed: string) => `sha256:${seed.repeat(64).slice(0, 64)}`;
@@ -32,6 +32,18 @@ function releaseAuthorityFixture() {
   const evidence = [["ci-coverage", digest("7"), 1], ["ci-full-tests", digest("8"), 1], ["ci-mutation", digest("9"), 9_500]].map(([lane, subjectDigest, resultValue]) => ({ evidence: createSignedReleaseVerifierEvidenceV1({ v: "reelier.release-verifier-evidence/v1", authorizationBundleDigest: null, candidateCommit: gitSha("a"), count: null, freshUntil: null, lane: lane as ReleaseEvidenceLaneV1, observation: "workflow-run", observedAt: "2026-08-18T05:30:00.000Z", resultValue: resultValue as number, status: "verified", subjectDigest: subjectDigest as string, workflowDigest: digest("3"), workflowPath: ".github/workflows/ci.yml" }, evidenceSigner), verifier: { signerId: evidenceSigner.signerId, publicKeySpkiBase64: spki(evidenceKeys.publicKey) } }));
   const verified = verifyReleaseAuthorizationBundleV1({ authorization, candidateManifest, operationPlan, policy }, { signerId: authoritySigner.signerId, publicKeySpkiBase64: spki(authorityKeys.publicKey) }, new Date("2026-08-18T06:00:00.000Z"), evidence);
   return { context: { authorization: verified, fileContents: files.map((file, index) => ({ path: file.path, bytesBase64: contents[index]!.toString("base64") })) }, evidenceSigner };
+}
+
+function candidateProvider(overrides: Record<string, unknown> = {}) {
+  const refs = new Map<string, string>([["heads/main", "e600ad5c2dc5e1bde0714915e7a84980c8d5602b"]]);
+  return {
+    createBlob: async ({ contentBase64 }: any) => ({ sha: blobSha(Buffer.from(contentBase64, "base64")) }),
+    createTree: async () => ({ sha: gitSha("e") }), createCommit: async () => ({ sha: gitSha("a") }),
+    getRef: async ({ ref }: any) => refs.has(ref) ? { sha: refs.get(ref)! } : null,
+    createRef: async ({ ref, sha }: any) => { refs.set(ref, sha); return { sha }; },
+    getCommit: async ({ sha }: any) => ({ sha, parentSha: "e600ad5c2dc5e1bde0714915e7a84980c8d5602b", treeSha: gitSha("e") }),
+    ...overrides,
+  } as any;
 }
 
 test("signed journal detects tamper and atomic-head rollback", async () => {
@@ -128,4 +140,66 @@ test("concurrent duplicate candidate requests serialize and converge to one prov
     assert.deepEqual(results.map(result => result.status), ["verified", "verified"]);
     assert.equal(blobCalls, 3);
   } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("independent runner instances serialize the same durable request and allocation", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "reelier-release-cross-process-"));
+  const fixture = releaseAuthorityFixture(), keys = generateKeyPairSync("ed25519");
+  let blobCalls = 0;
+  const provider = candidateProvider({ createBlob: async ({ contentBase64 }: any) => { blobCalls++; await new Promise(resolve => setImmediate(resolve)); return { sha: blobSha(Buffer.from(contentBase64, "base64")) }; } });
+  try {
+    const make = () => createGitHubReleaseRunner({ rootDir: root, journalSigner: { signerId: "release-journal-2026", privateKey: keys.privateKey, publicKey: keys.publicKey }, evidenceSigner: fixture.evidenceSigner, authorizationResolver: async () => fixture.context, provider, now: () => new Date("2026-08-18T06:00:00.000Z") });
+    const [left, right] = await Promise.all([make(), make()]);
+    const request = { alias: "github_release_candidate_publish_v1" as const, allocationId: "release-candidate-branch-01", authorizationHandle: "release_auth_1", requestId: "cross_process_request", semanticsDigest: authorityDigest({ cross: true }) };
+    const results = await Promise.all([left.run(request), right.run(request)]);
+    assert.deepEqual(results.map(result => result.status), ["verified", "verified"]);
+    assert.equal(blobCalls, 3);
+    await assert.rejects(() => right.run({ ...request, requestId: "allocation_replay", semanticsDigest: authorityDigest({ cross: "replay" }) }), /allocation.*already|one-effect|replay/i);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("candidate validates the complete authenticated file set before any provider write", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "reelier-release-predispatch-"));
+  const fixture = releaseAuthorityFixture(), keys = generateKeyPairSync("ed25519");
+  let writes = 0;
+  const provider = candidateProvider({ createBlob: async () => { writes++; return { sha: gitSha("1") }; }, createTree: async () => { writes++; return { sha: gitSha("e") }; }, createCommit: async () => { writes++; return { sha: gitSha("a") }; }, createRef: async () => { writes++; return { sha: gitSha("a") }; } });
+  try {
+    const runner = await createGitHubReleaseRunner({ rootDir: root, journalSigner: { signerId: "release-journal-2026", privateKey: keys.privateKey, publicKey: keys.publicKey }, evidenceSigner: fixture.evidenceSigner, authorizationResolver: async () => ({ ...fixture.context, fileContents: [...fixture.context.fileContents, { path: "unexpected.txt", bytesBase64: "eA==" }] }), provider, now: () => new Date("2026-08-18T06:00:00.000Z") });
+    await assert.rejects(() => runner.run({ alias: "github_release_candidate_publish_v1", allocationId: "release-candidate-branch-01", authorizationHandle: "release_auth_1", requestId: "invalid_candidate", semanticsDigest: authorityDigest({ invalid: true }) }), /file set|candidate/i);
+    assert.equal(writes, 0);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("later outcomes refuse without exactly one verified predecessor before provider calls", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "reelier-release-predecessor-"));
+  const fixture = releaseAuthorityFixture(), keys = generateKeyPairSync("ed25519");
+  let calls = 0;
+  const provider = new Proxy({}, { get: () => async () => { calls++; return null; } });
+  try {
+    const runner = await createGitHubReleaseRunner({ rootDir: root, journalSigner: { signerId: "release-journal-2026", privateKey: keys.privateKey, publicKey: keys.publicKey }, evidenceSigner: fixture.evidenceSigner, authorizationResolver: async () => fixture.context, provider: provider as never, now: () => new Date("2026-08-18T06:00:00.000Z") });
+    await assert.rejects(() => runner.run({ alias: "github_release_pr_ensure_v1", allocationId: "release-draft-pr-01", authorizationHandle: "release_auth_1", requestId: "pr_without_candidate", semanticsDigest: authorityDigest({ missing: true }) }), /predecessor/i);
+    assert.equal(calls, 0);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("authorization expiry is checked again immediately before every provider write", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "reelier-release-expiry-boundary-"));
+  const fixture = releaseAuthorityFixture(), keys = generateKeyPairSync("ed25519");
+  let clockReads = 0, blobWrites = 0;
+  const provider = candidateProvider({ createBlob: async ({ contentBase64 }: any) => { blobWrites++; return { sha: blobSha(Buffer.from(contentBase64, "base64")) }; } });
+  try {
+    const runner = await createGitHubReleaseRunner({ rootDir: root, journalSigner: { signerId: "release-journal-2026", privateKey: keys.privateKey, publicKey: keys.publicKey }, evidenceSigner: fixture.evidenceSigner, authorizationResolver: async () => fixture.context, provider, now: () => ++clockReads <= 2 ? new Date("2026-08-18T06:00:00.000Z") : new Date("2026-08-18T17:00:00.000Z") });
+    await assert.rejects(() => runner.run({ alias: "github_release_candidate_publish_v1", allocationId: "release-candidate-branch-01", authorizationHandle: "release_auth_1", requestId: "expires_mid_write", semanticsDigest: authorityDigest({ expiry: true }) }), /stale|clock/i);
+    assert.equal(blobWrites, 1);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("dedicated dispatch adapter passes only host-owned allocation and durable semantics", async () => {
+  let observed: any = null, fallbackCalls = 0;
+  const adapter = createGitHubReleaseDispatchAdapter({ runner: { recover: async () => [], run: async request => { observed = request; return { status: "verified", phase: "candidate-verified", evidenceDigest: digest("a") }; } }, fallback: { dispatch: async () => { fallbackCalls++; return { kind: "acknowledged", resultDigest: digest("f") }; } } });
+  const effect = { v: "reelier.transport-effect/v1", endpointId: "github.release.candidate-branch", method: "POST", path: "/internal/github-release", query: "", headers: { "Content-Type": "application/json" }, bodyBase64: Buffer.from(JSON.stringify({ authorizationHandle: "release_auth_1" })).toString("base64"), riskClass: "github_release", idempotency: "reconcile-only", preconditions: [], reconciliation: { recipeId: "github_release_authoritative_readback_v1" } };
+  const outcome = await adapter.dispatch({ reservation: { reservationId: "reservation_1", state: "reserved" as any, intent: { effectDigest: authorityDigest(effect), effectCanonicalBase64: "", executionContext: { allocationId: "release-candidate-branch-01" } as any } }, effect, effectCanonicalBase64: "", effectDigest: authorityDigest(effect) });
+  assert.equal(outcome.kind, "acknowledged");
+  assert.equal(fallbackCalls, 0);
+  assert.deepEqual(observed, { alias: "github_release_candidate_publish_v1", allocationId: "release-candidate-branch-01", authorizationHandle: "release_auth_1", requestId: "reservation_1", semanticsDigest: authorityDigest(effect) });
 });
