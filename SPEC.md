@@ -2421,9 +2421,16 @@ Source of truth: `src/authority/release-contracts.ts` and
 `ReleaseAuthorizationBundleV1`, `ReleaseVerifierEvidenceV1`, and
 `ReleaseReceiptGraphV1` are closed wire contracts. A conforming parser MUST
 reject unknown, inherited, symbol, non-enumerable, accessor, cyclic, or
-non-plain object state. Arrays MUST have the ordinary array prototype, every
+non-plain object state. The only scalar leaves are `null`, strings, booleans,
+and finite numbers; functions, callable Proxies, `undefined`, symbols, bigints,
+and non-finite numbers MUST refuse before coercion or downstream scalar
+validation. Native Proxy detection applies to object and function values.
+Arrays MUST have the ordinary array prototype, every
 own key MUST be one dense numeric slot or `length`, and sparse slots and custom
-own array fields or methods MUST be rejected. Validation MUST inspect own data
+own array fields or methods MUST be rejected. After reading the inert own
+`length` descriptor and own keys once, validation MUST compare actual key count
+with `length + 1` before allocating or iterating in proportion to the declared
+length, then validate the actual keys in index order. Validation MUST inspect own data
 descriptors and MUST NOT invoke caller-supplied methods, accessors, or
 iterators. A Proxy at any depth MUST be rejected by native Proxy detection
 before any prototype, key, or descriptor operation can execute its traps.
@@ -2516,8 +2523,8 @@ timestamps MUST refuse.
 
 Each public verification call MUST snapshot its explicit current time once.
 The clock input MUST be an ordinary `Date` with exactly `Date.prototype` and
-no own properties; Proxy dates, subclasses, invalid dates, own overrides, and
-own accessors MUST refuse without executing caller code. After those checks,
+no own properties; object or callable Proxy clocks, subclasses, invalid dates,
+own overrides, and own accessors MUST refuse without executing caller code. After those checks,
 the verifier MUST obtain the numeric snapshot with exactly one
 `Date.prototype.getTime.call(now)` and thread only that number internally.
 
