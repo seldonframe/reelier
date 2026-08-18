@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { createHash, generateKeyPairSync } from "node:crypto";
 import test from "node:test";
 import {
@@ -224,7 +225,9 @@ function trappedProxy<T extends object>(target: T) {
   let traps = 0;
   return {
     proxy: new Proxy(target, {
+      apply: (value, thisArgument, argumentsList) => { traps += 1; return Reflect.apply(value as never, thisArgument, argumentsList); },
       get: (value, property, receiver) => { traps += 1; return Reflect.get(value, property, receiver); },
+      getPrototypeOf: value => { traps += 1; return Reflect.getPrototypeOf(value); },
       getOwnPropertyDescriptor: (value, property) => { traps += 1; return Reflect.getOwnPropertyDescriptor(value, property); },
       ownKeys: value => { traps += 1; return Reflect.ownKeys(value); },
     }),
@@ -318,6 +321,29 @@ test("deep parsing refuses every non-inert array shape without invoking custom m
       error => error instanceof TypeError && !/invoked attacker/.test(error.message),
     );
   }
+});
+
+test("deep parsing rejects a huge sparse legal array length before length-proportional work", () => {
+  const releaseContractsUrl = new URL("../../src/authority/release-contracts.js", import.meta.url).href;
+  const script = `
+    const { parseSignedReleasePolicyV1 } = await import(${JSON.stringify(releaseContractsUrl)});
+    const allowedPaths = [];
+    allowedPaths.length = 0xffffffff;
+    const input = {
+      digest: "sha256:${"0".repeat(64)}",
+      signature: { alg: "ed25519", sig: "" },
+      signerId: "release-authority-2026",
+      v: "reelier.signed-release-policy/v1",
+      value: { allowedPaths, effectAllocations: [], expirySeconds: 43200, maxChangedBytes: 65536, maxChangedFiles: 3, v: "reelier.release-policy/v1" },
+    };
+    try { parseSignedReleasePolicyV1(input); process.exitCode = 2; }
+    catch (error) { if (!(error instanceof TypeError)) throw error; }
+  `;
+  const started = performance.now();
+  const result = spawnSync(process.execPath, ["--max-old-space-size=32", "--input-type=module", "--eval", script], { encoding: "utf8", timeout: 1_500 });
+  const elapsedMs = performance.now() - started;
+  assert.equal(result.status, 0, `huge sparse array did not refuse promptly: ${result.error?.message ?? result.stderr}`);
+  assert.ok(elapsedMs < 1_500, `huge sparse array refusal took ${elapsedMs}ms`);
 });
 
 test("canonical JSON parsing rejects duplicate keys and every noncanonical byte representation", () => {
@@ -818,6 +844,79 @@ test("signed release wire rejects top-level and nested proxies without executing
     assert.throws(() => parse(copy), /proxy/i, `${label} nested proxy must refuse`);
     assert.equal(nested.traps(), 0, `${label} nested proxy traps`);
   }
+});
+
+test("signed release wire rejects functions and callable proxies before coercion or traps", () => {
+  const release = releaseInputs();
+  const graph = createSignedReleaseReceiptGraphV1(releaseReceiptGraph(), graphSigner);
+  const evidence = release.qualityEvidence[0].evidence;
+  const cases: ReadonlyArray<readonly [string, object, (value: unknown) => unknown, (copy: any, hostile: unknown) => void]> = [
+    ["authorization digest", release.authorization, parseSignedReleaseAuthorizationBundleV1, (copy, hostile) => { copy.digest = hostile; }],
+    ["authorization signer", release.authorization, parseSignedReleaseAuthorizationBundleV1, (copy, hostile) => { copy.signerId = hostile; }],
+    ["graph status", graph, parseSignedReleaseReceiptGraphV1, (copy, hostile) => { copy.value.human.postReleaseReview.status = hostile; }],
+    ["evidence time", evidence as object, parseSignedReleaseVerifierEvidenceV1, (copy, hostile) => { copy.value.observedAt = hostile; }],
+  ];
+
+  for (const [label, artifact, parse, install] of cases) {
+    let coercions = 0;
+    const ordinary = function hostileFunction() { coercions += 1; };
+    Object.defineProperty(ordinary, Symbol.toPrimitive, { value: () => { coercions += 1; return "verified"; } });
+    const ordinaryCopy = structuredClone(artifact);
+    install(ordinaryCopy, ordinary);
+    assert.throws(() => parse(ordinaryCopy), /function|scalar|json|plain|canonical/i, `${label} ordinary function`);
+    assert.equal(coercions, 0, `${label} ordinary function execution`);
+
+    const callable = trappedProxy(function hostileCallable() { throw new Error("callable proxy applied"); });
+    const proxyCopy = structuredClone(artifact);
+    install(proxyCopy, callable.proxy);
+    assert.throws(() => parse(proxyCopy), /proxy/i, `${label} callable proxy`);
+    assert.equal(callable.traps(), 0, `${label} callable proxy traps`);
+  }
+
+  const topLevelCallable = trappedProxy(function hostileTopLevel() { throw new Error("top-level callable applied"); });
+  assert.throws(() => parseSignedReleaseAuthorizationBundleV1(topLevelCallable.proxy), /proxy/i);
+  assert.equal(topLevelCallable.traps(), 0);
+});
+
+test("release wire rejects cycles but snapshots shared references independently", () => {
+  const release = releaseInputs();
+  const cyclic = structuredClone(release.policy);
+  (cyclic.value.allowedPaths as any[])[0] = cyclic.value;
+  assert.throws(() => parseSignedReleasePolicyV1(cyclic), /cyclic/i);
+
+  const graph = createSignedReleaseReceiptGraphV1(releaseReceiptGraph(), graphSigner);
+  const shared = structuredClone(graph);
+  (shared.value.candidate as any).pullRequest = shared.value.candidate.branch;
+  assert.throws(
+    () => parseSignedReleaseReceiptGraphV1(shared),
+    error => error instanceof TypeError && !/cyclic/i.test(error.message),
+  );
+});
+
+test("authorization and graph verifier proxies refuse without traps", () => {
+  const release = releaseInputs();
+  const authorizationVerifier = trappedProxy(evidenceVerifier(signer.signerId, keyPair.publicKey));
+  assert.throws(
+    () => verifyReleaseAuthorizationBundleV1(authorizationInput(release), authorizationVerifier.proxy, new Date("2026-08-18T06:00:00.000Z"), release.qualityEvidence),
+    /proxy/i,
+  );
+  assert.equal(authorizationVerifier.traps(), 0);
+
+  const authorization = verifyAuthorization(release);
+  const value = releaseReceiptGraph();
+  const graphVerifierProxy = trappedProxy(evidenceVerifier(graphSigner.signerId, graphKeyPair.publicKey));
+  assert.throws(
+    () => verifyReleaseReceiptGraphV1(createSignedReleaseReceiptGraphV1(value, graphSigner), graphVerifierProxy.proxy, authorization, receiptEvidence(value), graphVerificationNow),
+    /proxy/i,
+  );
+  assert.equal(graphVerifierProxy.traps(), 0);
+
+  const callableVerifier = trappedProxy(function hostileVerifier() { throw new Error("verifier applied"); });
+  assert.throws(
+    () => verifyReleaseAuthorizationBundleV1(authorizationInput(release), callableVerifier.proxy as never, new Date("2026-08-18T06:00:00.000Z"), release.qualityEvidence),
+    /proxy/i,
+  );
+  assert.equal(callableVerifier.traps(), 0);
 });
 
 test("verification snapshots accepted release wire instead of retaining caller objects", () => {
