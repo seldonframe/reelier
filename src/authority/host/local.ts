@@ -167,10 +167,11 @@ async function createLocalAuthorityRuntimeCore(config:AuthorityHostConfig,option
     const binding = await options.delegation.resolveSessionBinding({ tenant: context.tenant, taskId: execution.taskId, principalId: context.requester });
     if (binding.taskId !== execution.taskId || binding.grantee !== execution.principalId || binding.grantId !== execution.grantId || binding.grantDigest !== execution.grantDigest || binding.allocationId !== execution.allocationId || execution.principalId !== context.requester) throw new TypeError("job authority binding mismatch");
     const cardDigest = signedJobCardDigest(card);
-    return Object.freeze(card.definitionAliases.map(alias => Object.freeze({
-      jobRef: `jobref_${authorityDigest({ v: "reelier.local-job-reference/v1", tenant: context.tenant, taskId: execution.taskId, principalId: execution.principalId, grantId: execution.grantId, grantDigest: execution.grantDigest, allocationId: execution.allocationId, runtimeSessionId: execution.runtimeSessionId, authorityCellId: execution.authorityCellId, jobCardDigest: cardDigest, definitionAlias: alias }).slice("sha256:".length)}`,
-      alias,
-    })));
+    return Object.freeze(card.definitionAliases.map(alias => {
+      const bindingDigest = authorityDigest({ v: "reelier.local-job-reference/v1", tenant: context.tenant, taskId: execution.taskId, principalId: execution.principalId, grantId: execution.grantId, grantDigest: execution.grantDigest, allocationId: execution.allocationId, runtimeSessionId: execution.runtimeSessionId, authorityCellId: execution.authorityCellId, jobCardDigest: cardDigest, definitionAlias: alias });
+      const keyedCommitment = signAuthorityDigest(privateKey, "principal", bindingDigest);
+      return Object.freeze({ jobRef: `jobref_${authorityDigest({ v: "reelier.local-job-reference-commitment/v1", keyedCommitment }).slice("sha256:".length)}`, alias });
+    }));
   };
   const catalogRefusal = (requestId = "") => Object.freeze({ requestId, verdict: "refused" as const, reasonCode: "job-authority-refused", lifecycleState: "refused" });
   return Object.freeze({

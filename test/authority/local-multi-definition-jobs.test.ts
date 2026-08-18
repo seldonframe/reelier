@@ -107,6 +107,10 @@ test("multi-definition signed Job Card returns deterministic opaque references i
     const restarted = await createLocalAuthorityRuntime(fixture.config, { jobCardTrustPin: fixture.trustPin, delegation: fixture.delegation });
     const recovered = await restarted.jobsSearch!({ query: "ignored" }, fixture.context) as { jobs: Array<{ jobRef: string }> };
     assert.deepEqual(recovered.jobs.map(job => job.jobRef), refs);
+    const otherHostConfig = { ...fixture.config, gateKeyFile: path.join(fixture.root, "other-host", "gate.pem"), ledgerDir: path.join(fixture.root, "other-host", "ledger"), decisionDir: path.join(fixture.root, "other-host", "decisions"), receiptDir: path.join(fixture.root, "other-host", "receipts") };
+    const otherHost = await createLocalAuthorityRuntime(otherHostConfig, { jobCardTrustPin: fixture.trustPin, delegation: fixture.delegation });
+    const otherHostRefs = (await otherHost.jobsSearch!({}, fixture.context) as { jobs: Array<{ jobRef: string }> }).jobs.map(job => job.jobRef);
+    assert.notDeepEqual(otherHostRefs, refs, "opaque references must be keyed to host-owned authority");
     const loaded = await restarted.jobLoad!({ jobId: refs[0] }, fixture.context) as { verdict: string; jobRef: string };
     assert.equal(loaded.verdict, "accepted");
     assert.equal(loaded.jobRef, refs[0]);
