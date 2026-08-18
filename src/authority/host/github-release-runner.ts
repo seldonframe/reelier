@@ -53,13 +53,14 @@ export interface GitHubReleasePublicationConfirmationV1 { readonly requestId: st
 export interface GitHubReleaseRunnerV1 { run(input: GitHubReleaseRunRequestV1): Promise<GitHubReleaseRunResultV1>; recover(): Promise<readonly string[]> }
 
 const publicationConfirmers = new WeakMap<GitHubReleaseRunnerV1, (input: GitHubReleasePublicationConfirmationV1) => Promise<void>>();
+const runnerControllers = new WeakMap<GitHubReleaseRunnerV1, Readonly<{ execute(input: GitHubReleaseRunRequestV1): Promise<GitHubReleaseRunResultV1>; reconcile(input: GitHubReleaseRunRequestV1): Promise<GitHubReleaseRunResultV1>; recover(): Promise<readonly string[]> }>>();
 
 export async function createGitHubReleaseRunner(input: Readonly<{ rootDir: string; journalSigner: Readonly<{ signerId: string; privateKey: KeyObject; publicKey: KeyObject }>; evidenceSigner: ReleaseContractSignerV1; authorizationResolver: (handle: string) => Promise<GitHubReleaseAuthorizationContextV1 | VerifiedReleaseAuthorizationV1>; provider: GitHubReleaseProviderV1; now: () => Date }>): Promise<GitHubReleaseRunnerV1> {
   if (!path.isAbsolute(input.rootDir)) throw new TypeError("GitHub release runner root must be absolute");
   await mkdir(input.rootDir, { recursive: true });
   const journal = await createSignedJournal({ rootDir: path.join(input.rootDir, "journal"), journalId: "github-release", ...input.journalSigner });
   const provider = normalizeProvider(input.provider);
-  const runOnce = async (request: GitHubReleaseRunRequestV1): Promise<GitHubReleaseRunResultV1> => {
+  const runOnce = async (request: GitHubReleaseRunRequestV1, reconcileOnly = false): Promise<GitHubReleaseRunResultV1> => {
     validateRequest(request);
     const resolved = await input.authorizationResolver(request.authorizationHandle);
     const context = normalizeContext(resolved);
@@ -70,6 +71,7 @@ export async function createGitHubReleaseRunner(input: Readonly<{ rootDir: strin
     if (!allocation || allocation.maxEffects !== 1 || allocation.allocationId !== request.allocationId || !DIGEST.test(allocation.allocationDigest)) throw new TypeError("release alias does not have the authenticated exact one-effect allocation");
     return journal.withLease(`authorization-${authorization.authorization.digest.slice(7)}`, async () => {
       let events = await journal.load(request.requestId);
+      if (reconcileOnly && events.length === 0) throw new TypeError("release reconciliation requires a coordinator-dispatched journal intent");
       if (events.length > 0) {
         if (events[0].semanticsDigest !== request.semanticsDigest) throw new TypeError("release requestId semantic reuse is forbidden before dispatch");
         const root = events[0].data;
@@ -114,7 +116,8 @@ export async function createGitHubReleaseRunner(input: Readonly<{ rootDir: strin
     for (const requestId of await journal.listRequestIds()) {
       const events = await journal.load(requestId), first = events[0];
       if (!first || events.some(event => TERMINAL.has(event.phase))) continue;
-      const result = await run({ alias: first.data.alias as GitHubReleaseAliasV1, allocationId: String(first.data.allocationId), authorizationHandle: String(first.data.authorizationHandle), requestId, semanticsDigest: first.semanticsDigest });
+      if (!events.some(event => event.phase.endsWith("-dispatching"))) continue;
+      const result = await runOnce({ alias: first.data.alias as GitHubReleaseAliasV1, allocationId: String(first.data.allocationId), authorizationHandle: String(first.data.authorizationHandle), requestId, semanticsDigest: first.semanticsDigest }, true);
       if (result.status === "verified") recovered.push(requestId);
     }
     return Object.freeze(recovered);
@@ -133,19 +136,25 @@ export async function createGitHubReleaseRunner(input: Readonly<{ rootDir: strin
       await step(journal, { requestId: String(value.requestId), semanticsDigest: events[0]!.semanticsDigest } as GitHubReleaseRunRequestV1, "receipt-published", data);
     });
   };
-  const runner = Object.freeze({ run, recover });
+  const runner = Object.freeze({
+    async run(_request: GitHubReleaseRunRequestV1): Promise<GitHubReleaseRunResultV1> { throw new TypeError("release provider execution requires the coordinator prepared-dispatch capability"); },
+    async recover(): Promise<readonly string[]> { throw new TypeError("release recovery requires the coordinator reconciliation capability"); },
+  });
   publicationConfirmers.set(runner, confirmPublication);
+  runnerControllers.set(runner, Object.freeze({ execute: run, reconcile: request => runOnce(request, true), recover }));
   return runner;
 }
 
 /** Routes only the four reviewed release endpoints through the dedicated saga. The ordinary
  * coordinator still performs the actual allocation consumption and receipt publication. */
 export function createGitHubReleaseDispatchAdapter(input: Readonly<{ runner: GitHubReleaseRunnerV1 | null; fallback: DispatchAdapter }>): DispatchAdapter {
-  const invoke = async (state: DispatchRequestState): Promise<DispatchOutcome | null> => {
+  const invoke = async (state: DispatchRequestState, reconcileOnly = false): Promise<DispatchOutcome | null> => {
     const endpointId = inertEndpointId(state.effect);
     const alias = endpointId ? ENDPOINTS[endpointId] : undefined;
     if (!alias) return null;
     if (!input.runner) return failure("dedicated-release-runner-absent");
+    const controller = runnerControllers.get(input.runner);
+    if (!controller) return failure("dedicated-release-runner-capability-absent");
     const effect = exactRecord(state.effect, ["bodyBase64", "endpointId", "headers", "idempotency", "method", "path", "preconditions", "query", "reconciliation", "riskClass", "v"], "release transport effect");
     const execution = state.reservation.intent.executionContext;
     if (!execution) return failure("release-allocation-context-absent");
@@ -153,7 +162,8 @@ export function createGitHubReleaseDispatchAdapter(input: Readonly<{ runner: Git
     try { body = exactRecord(JSON.parse(Buffer.from(String(effect.bodyBase64), "base64").toString("utf8")), ["authorizationHandle"], "release dispatch body"); }
     catch { return failure("release-dispatch-body-invalid"); }
     try {
-      const result = await input.runner.run({ alias, allocationId: execution.allocationId, authorizationHandle: String(body.authorizationHandle), requestId: state.reservation.reservationId, semanticsDigest: state.effectDigest });
+      const request = { alias, allocationId: execution.allocationId, authorizationHandle: String(body.authorizationHandle), requestId: state.reservation.reservationId, semanticsDigest: state.effectDigest };
+      const result = reconcileOnly ? await controller.reconcile(request) : await controller.execute(request);
       if (result.status === "verified") return Object.freeze({ kind: "acknowledged", resultDigest: result.evidenceDigest!, reconciliationStatus: "matched", normalizedProjectionDigest: result.evidenceDigest });
       if (result.status === "pending-reconciliation") return Object.freeze({ kind: "ambiguous", resultDigest: authorityDigest(result), reconciliationStatus: "unavailable", normalizedProjectionDigest: null });
       return failure(result.phase);
@@ -170,8 +180,8 @@ export function createGitHubReleaseDispatchAdapter(input: Readonly<{ runner: Git
       const description = describePreparedDispatch(fallbackPrepared);
       return createPreparedDispatch({ description, send: async () => await invoke(state) ?? failure("dedicated-release-runner-absent") });
     } } : {}),
-    async dispatch(state: DispatchRequestState) { return await invoke(state) ?? input.fallback.dispatch(state); },
-    async reconcile(state: DispatchRequestState, outcome: DispatchOutcome) { return await invoke(state) ?? (input.fallback.reconcile ? input.fallback.reconcile(state, outcome) : outcome); },
+    async dispatch(state: DispatchRequestState) { if (ENDPOINTS[inertEndpointId(state.effect) ?? ""]) return failure("release-provider-execution-requires-prepared-dispatch"); return input.fallback.dispatch(state); },
+    async reconcile(state: DispatchRequestState, outcome: DispatchOutcome) { return await invoke(state, true) ?? (input.fallback.reconcile ? input.fallback.reconcile(state, outcome) : outcome); },
   });
 }
 
@@ -184,7 +194,7 @@ export function createGitHubReleaseReceiptPublication(input: Readonly<{ runner: 
     async publish(value: Parameters<DispatchPublication["publish"]>[0]) {
       const published = await input.publication.publish(value);
       const effect = isPlain(value.state.effect) ? value.state.effect : null;
-      if (value.phase === "dispatch" && value.outcome.kind === "acknowledged" && effect && typeof effect.endpointId === "string" && ENDPOINTS[effect.endpointId]) await confirmPublication({ requestId: value.state.reservation.reservationId, providerEvidenceDigest: value.outcome.resultDigest, receiptRef: published.receiptRef, receiptEvidenceDigest: published.evidenceDigest });
+      if ((value.phase === "dispatch" || value.phase === "reconcile") && value.outcome.kind === "acknowledged" && effect && typeof effect.endpointId === "string" && ENDPOINTS[effect.endpointId]) await confirmPublication({ requestId: value.state.reservation.reservationId, providerEvidenceDigest: value.outcome.resultDigest, receiptRef: published.receiptRef, receiptEvidenceDigest: published.evidenceDigest });
       return published;
     },
     ...(input.publication.publishReservation ? { publishReservation: input.publication.publishReservation.bind(input.publication) } : {}),
@@ -290,7 +300,7 @@ async function merge(request: GitHubReleaseRunRequestV1, auth: VerifiedReleaseAu
   const main = await safeRead(() => provider.getRef({ repository: plan.repository, ref: `heads/${plan.destinationBranch}` }), parseRef);
   if (!main || main.sha !== mergeSha) return pending("merge-intent");
   const commit = parseCommit(await provider.getCommit({ repository: plan.repository, sha: mergeSha }));
-  if (!commit || commit.treeSha !== plan.expectedTreeSha) throw new TypeError("squash commit tree readback is tampered");
+  if (!commit || commit.parentSha !== plan.baseCommit || commit.treeSha !== plan.expectedTreeSha) throw new TypeError("squash commit parent or tree readback is tampered");
   return finish(journal, request, auth, "merge-exact-sha", "merge-verified", authorityDigest({ pr, main, commit }), signer, now(), { mergeSha });
 }
 
@@ -348,7 +358,7 @@ async function finish(journal: SignedJournal, request: GitHubReleaseRunRequestV1
 async function step(journal: SignedJournal, request: GitHubReleaseRunRequestV1, phase: string, data: Readonly<Record<string, unknown>>): Promise<void> { const events = await journal.load(request.requestId), prior = events.at(-1)?.phase; if (!prior || !TRANSITIONS[prior]?.includes(phase)) { if (events.some(event => event.phase === phase && authorityDigest(event.data) === authorityDigest(data))) return; throw new TypeError(`invalid release saga transition ${prior ?? "absent"} -> ${phase}`); } await journal.append(request.requestId, request.semanticsDigest, phase, data); }
 function has(events: readonly SignedJournalEventV1[], phase: string, key?: string, value?: unknown): boolean { return events.some(event => event.phase === phase && (key === undefined || event.data[key] === value)); }
 function pending(phase: string): GitHubReleaseRunResultV1 { return Object.freeze({ status: "pending-reconciliation", phase, evidenceDigest: null }); }
-function failure(reason: string, reconciliationStatus: "not-applied" | "conflict" = "not-applied"): DispatchOutcome { return Object.freeze({ kind: "definitive-failure", resultDigest: authorityDigest({ reason }), reconciliationStatus, normalizedProjectionDigest: null }); }
+function failure(reason: string, reconciliationStatus: "not-applied" | "conflict" = "not-applied"): DispatchOutcome { return Object.freeze({ kind: "definitive-failure", resultDigest: authorityDigest({ reason }), reconciliationStatus, normalizedProjectionDigest: null, reason } as DispatchOutcome); }
 function sha256(bytes: Uint8Array): string { return `sha256:${createHash("sha256").update(bytes).digest("hex")}`; }
 function gitBlobSha(bytes: Uint8Array): string { return createHash("sha1").update(`blob ${bytes.byteLength}\0`).update(bytes).digest("hex"); }
 function validateRequest(request: unknown): asserts request is GitHubReleaseRunRequestV1 { const value = exactRecord(request, ["alias", "allocationId", "authorizationHandle", "requestId", "semanticsDigest"], "GitHub release request"); if (!(String(value.alias) in ALIASES) || !/^[a-z0-9][a-z0-9-]{7,127}$/.test(String(value.allocationId)) || !/^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$/.test(String(value.authorizationHandle)) || !/^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$/.test(String(value.requestId)) || !DIGEST.test(String(value.semanticsDigest))) throw new TypeError("GitHub release request is invalid"); }
@@ -361,8 +371,8 @@ function parseCommit(value: unknown): Readonly<{ sha: string; parentSha: string;
 function parsePullRequest(value: unknown): GitHubReleasePullRequestV1 { const item = exactRecord(value, ["base", "body", "draft", "head", "headSha", "mergeCommitSha", "merged", "number", "title"], "pull request"); if (!Number.isSafeInteger(item.number) || Number(item.number) <= 0 || typeof item.head !== "string" || typeof item.base !== "string" || typeof item.draft !== "boolean" || typeof item.title !== "string" || typeof item.body !== "string" || !GIT_SHA.test(String(item.headSha)) || typeof item.merged !== "boolean" || !(item.mergeCommitSha === null || GIT_SHA.test(String(item.mergeCommitSha)))) throw new TypeError("pull request readback is invalid"); return Object.freeze({ number: Number(item.number), head: item.head, base: item.base, draft: item.draft, title: item.title, body: item.body, headSha: String(item.headSha), merged: item.merged, mergeCommitSha: item.mergeCommitSha === null ? null : String(item.mergeCommitSha) }); }
 function parsePullRequests(value: unknown): readonly GitHubReleasePullRequestV1[] { return Object.freeze(inertArray(value, "pull request list").map(parsePullRequest)); }
 function assertPullRequestPlan(pr: GitHubReleasePullRequestV1, plan: VerifiedReleaseAuthorizationV1["operationPlan"]["value"], draft: boolean): void { if (pr.head !== plan.pullRequest.head || pr.base !== plan.pullRequest.base || pr.draft !== draft || pr.title !== plan.pullRequest.title || pr.body !== plan.pullRequest.body || pr.headSha !== plan.expectedCommitSha) throw new TypeError("pull request readback does not match exact authorized metadata"); }
-function parseChecks(value: unknown): readonly Readonly<{ name: string; status: string; workflowDigest: string }>[] { return Object.freeze(inertArray(value, "checks list").map(raw => { const item = exactRecord(raw, ["name", "status", "workflowDigest"], "check"); if (typeof item.name !== "string" || typeof item.status !== "string" || !DIGEST.test(String(item.workflowDigest))) throw new TypeError("check readback is invalid"); return Object.freeze({ name: item.name, status: item.status, workflowDigest: String(item.workflowDigest) }); })); }
-function assertChecks(checks: readonly Readonly<{ name: string; status: string; workflowDigest: string }>[], plan: VerifiedReleaseAuthorizationV1["operationPlan"]["value"]): void { const names = checks.map(check => check.name).sort(); if (names.join("\0") !== [...plan.requiredChecks].sort().join("\0") || checks.some(check => check.status !== "success" || !plan.workflowCommitments.some(workflow => workflow.digest === check.workflowDigest))) throw new TypeError("required release checks or workflow commitment are missing or failed"); }
+function parseChecks(value: unknown): readonly Readonly<{ name: string; status: string; workflowDigest: string; workflowPath: string }>[] { return Object.freeze(inertArray(value, "checks list").map(raw => { const item = exactRecord(raw, ["name", "status", "workflowDigest", "workflowPath"], "check"); if (typeof item.name !== "string" || typeof item.status !== "string" || typeof item.workflowPath !== "string" || !DIGEST.test(String(item.workflowDigest))) throw new TypeError("check readback is invalid"); return Object.freeze({ name: item.name, status: item.status, workflowDigest: String(item.workflowDigest), workflowPath: item.workflowPath }); })); }
+function assertChecks(checks: readonly Readonly<{ name: string; status: string; workflowDigest: string; workflowPath: string }>[], plan: VerifiedReleaseAuthorizationV1["operationPlan"]["value"]): void { const names = checks.map(check => check.name).sort(), ci = plan.workflowCommitments.find(workflow => workflow.path === ".github/workflows/ci.yml"); if (!ci || names.join("\0") !== [...plan.requiredChecks].sort().join("\0") || checks.some(check => check.status !== "success" || check.workflowPath !== ci.path || check.workflowDigest !== ci.digest)) throw new TypeError("required release checks are not bound to the signed CI workflow commitment"); }
 function parseMerge(value: unknown): Readonly<{ merged: boolean; sha: string }> { const item = exactRecord(value, ["merged", "sha"], "merge result"); if (typeof item.merged !== "boolean" || !GIT_SHA.test(String(item.sha))) throw new TypeError("merge result is invalid"); return Object.freeze({ merged: item.merged, sha: String(item.sha) }); }
 function parseManifest(value: unknown): Readonly<{ name: string; version: string }> { const item = exactRecord(value, ["name", "version"], "package manifest"); if (typeof item.name !== "string" || typeof item.version !== "string") throw new TypeError("package manifest is invalid"); return Object.freeze({ name: item.name, version: item.version }); }
 function parseBoolean(value: unknown, label: string): boolean { if (typeof value !== "boolean") throw new TypeError(`${label} is invalid`); return value; }

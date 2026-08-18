@@ -56,6 +56,19 @@ async function confirmTestPublication(runner: Awaited<ReturnType<typeof createGi
   }
 }
 
+async function governedRun(runner: Awaited<ReturnType<typeof createGitHubReleaseRunner>>, request: { alias: any; allocationId: string; authorizationHandle: string; requestId: string; semanticsDigest: string }, reconcile = false): Promise<{ status: "verified" | "pending-reconciliation"; phase: string; evidenceDigest: string | null }> {
+  const endpoint = { github_release_candidate_publish_v1: "candidate-branch", github_release_pr_ensure_v1: "draft-pr", github_release_pr_merge_v1: "exact-sha-merge", github_release_tag_create_v1: "non-force-tag" }[request.alias as string];
+  const effect = { v: "reelier.transport-effect/v1", endpointId: `github.release.${endpoint}`, method: "POST", path: "/internal/github-release", query: "", headers: {}, bodyBase64: Buffer.from(JSON.stringify({ authorizationHandle: request.authorizationHandle })).toString("base64"), riskClass: "github_release", idempotency: "reconcile-only", preconditions: [], reconciliation: { recipeId: "github_release_authoritative_readback_v1" } };
+  const state = { reservation: { reservationId: request.requestId, state: "reserved", intent: { executionContext: { allocationId: request.allocationId } } }, effect, effectDigest: request.semanticsDigest, effectCanonicalBase64: "" } as any;
+  const projection = { v: "reelier.materialized-http-request/v1" as const, method: "POST" as const, origin: "https://api.github.test", normalizedPath: "/internal/github-release", normalizedQuery: "", reviewedHeaders: {}, bodyDigest: digest("a") };
+  const materializedRequestDigest = materializedHttpRequestDigest(projection);
+  const adapter = createGitHubReleaseDispatchAdapter({ runner, fallback: { async prepare() { return createPreparedDispatch({ description: { v: "reelier.prepared-dispatch-description/v1", routeDigest: digest("b"), materializedRequestDigest, projection, authorityGeneration: "generation_1", authorityExpiresAt: "2099-08-18T17:00:00.000Z", absoluteDeadlineMs: performance.now() + 60_000, reservationId: request.requestId, allocationId: request.allocationId }, send: async () => ({ kind: "definitive-failure", resultDigest: digest("f") }) }); }, async dispatch() { return { kind: "definitive-failure" as const, resultDigest: digest("f") }; } } });
+  const prepared = reconcile ? null : await adapter.prepare!(state);
+  const outcome: any = reconcile ? await adapter.reconcile!(state, { kind: "ambiguous", resultDigest: request.semanticsDigest }) : await consumePreparedDispatch(prepared!, createDispatchCommitLease({ reservationId: request.requestId, allocationId: request.allocationId, preparedDigest: materializedRequestDigest, authorityGeneration: "generation_1", authorityExpiresAt: "2099-08-18T17:00:00.000Z", absoluteDeadlineMs: prepared!.description.absoluteDeadlineMs, commitGeneration: "commit_1" }));
+  if (outcome.kind === "definitive-failure") throw new TypeError(outcome.reason ?? "release operation refused");
+  return outcome.kind === "acknowledged" ? { status: "verified", phase: "verified", evidenceDigest: outcome.resultDigest } : { status: "pending-reconciliation", phase: "pending", evidenceDigest: null };
+}
+
 test("signed journal detects tamper and atomic-head rollback", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "reelier-release-journal-"));
   const keys = generateKeyPairSync("ed25519");
@@ -138,7 +151,7 @@ test("release runner refuses raw or wrong allocation authority before provider d
       provider: provider as never,
       now: () => new Date("2026-08-18T06:00:00.000Z"),
     });
-    await assert.rejects(() => runner.run({ alias: "github_release_candidate_publish_v1", allocationId: "release-candidate-branch-01", authorizationHandle: "release_auth_1", requestId: "request_1", semanticsDigest: authorityDigest({ request: 1 }) }), /verified authorization|allocation|brand/i);
+    await assert.rejects(() => governedRun(runner, { alias: "github_release_candidate_publish_v1", allocationId: "release-candidate-branch-01", authorizationHandle: "release_auth_1", requestId: "request_1", semanticsDigest: authorityDigest({ request: 1 }) }), /verified authorization|allocation|brand/i);
     assert.equal(calls, 0);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
@@ -153,7 +166,8 @@ test("provider fault classification never infers transport state from JavaScript
     const root = await mkdtemp(path.join(os.tmpdir(), `reelier-release-provider-${name}-`));
     try {
       const runner = await createGitHubReleaseRunner({ rootDir: root, journalSigner: { signerId: "release-journal-2026", privateKey: keys.privateKey, publicKey: keys.publicKey }, evidenceSigner: fixture.evidenceSigner, authorizationResolver: async () => fixture.context, provider: candidateProvider({ getRef: async () => { throw fault; } }), now: () => new Date("2026-08-18T06:00:00.000Z") });
-      await assert.rejects(() => runner.run({ alias: "github_release_candidate_publish_v1", allocationId: "release-candidate-branch-01", authorizationHandle: "release_auth_1", requestId: `fault_${name}`, semanticsDigest: authorityDigest({ name }) }), (error: any) => error?.deterministic === deterministic);
+      const action = () => governedRun(runner, { alias: "github_release_candidate_publish_v1", allocationId: "release-candidate-branch-01", authorizationHandle: "release_auth_1", requestId: `fault_${name}`, semanticsDigest: authorityDigest({ name }) });
+      if (deterministic) await assert.rejects(action, /rejected|refus/i); else assert.equal((await action()).status, "pending-reconciliation");
     } finally { await rm(root, { recursive: true, force: true }); }
   }
 });
@@ -165,7 +179,7 @@ test("release context rejects proxy arrays without invoking traps", async () => 
   const fileContents = new Proxy(fixture.context.fileContents as any[], { get() { traps += 1; throw new Error("trap invoked"); }, getPrototypeOf() { traps += 1; return Array.prototype; }, ownKeys() { traps += 1; return []; } });
   try {
     const runner = await createGitHubReleaseRunner({ rootDir: root, journalSigner: { signerId: "release-journal-2026", privateKey: keys.privateKey, publicKey: keys.publicKey }, evidenceSigner: fixture.evidenceSigner, authorizationResolver: async () => ({ authorization: fixture.context.authorization, fileContents }) as any, provider: candidateProvider(), now: () => new Date("2026-08-18T06:00:00.000Z") });
-    await assert.rejects(() => runner.run({ alias: "github_release_candidate_publish_v1", allocationId: "release-candidate-branch-01", authorizationHandle: "release_auth_1", requestId: "proxy_context", semanticsDigest: authorityDigest({ proxy: true }) }), /closed|inert|context|array/i);
+    await assert.rejects(() => governedRun(runner, { alias: "github_release_candidate_publish_v1", allocationId: "release-candidate-branch-01", authorizationHandle: "release_auth_1", requestId: "proxy_context", semanticsDigest: authorityDigest({ proxy: true }) }), /closed|inert|context|array/i);
     assert.equal(traps, 0);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
@@ -252,7 +266,7 @@ test("four-operation release saga converges after ambiguous merge and tag withou
   try {
     const runner = await createGitHubReleaseRunner({ rootDir: root, journalSigner: { signerId: "release-journal-2026", privateKey: journalKeys.privateKey, publicKey: journalKeys.publicKey }, evidenceSigner: fixture.evidenceSigner, authorizationResolver: async () => fixture.context, provider, now: () => new Date("2026-08-18T06:00:00.000Z") });
     const allocations: Record<string, string> = { github_release_candidate_publish_v1: "release-candidate-branch-01", github_release_pr_ensure_v1: "release-draft-pr-01", github_release_pr_merge_v1: "release-exact-sha-merge-01", github_release_tag_create_v1: "release-non-force-tag-01" };
-    const invoke = (alias: any, requestId: string) => runner.run({ alias, allocationId: allocations[alias], authorizationHandle: "release_auth_1", requestId, semanticsDigest: authorityDigest({ alias, requestId }) });
+    const invoke = (alias: any, requestId: string, reconcile = false) => governedRun(runner, { alias, allocationId: allocations[alias], authorizationHandle: "release_auth_1", requestId, semanticsDigest: authorityDigest({ alias, requestId }) }, reconcile);
     const candidateResult = await invoke("github_release_candidate_publish_v1", "candidate_1");
     assert.equal(candidateResult.status, "verified");
     await assert.rejects(() => invoke("github_release_pr_ensure_v1", "pr_1"), /receipt.*publish|predecessor/i);
@@ -268,8 +282,8 @@ test("four-operation release saga converges after ambiguous merge and tag withou
     assert.equal(tagCalls, 1);
     assert.equal(readyCalls, 1);
     assert.equal(treeBase, gitSha("b"));
-    assert.equal((await invoke("github_release_pr_merge_v1", "merge_1")).status, "verified");
-    assert.equal((await invoke("github_release_tag_create_v1", "tag_1")).status, "verified");
+    assert.equal((await invoke("github_release_pr_merge_v1", "merge_1", true)).status, "verified");
+    assert.equal((await invoke("github_release_tag_create_v1", "tag_1", true)).status, "verified");
     assert.equal(mergeCalls, 1, "merge must never be resent after ambiguous response");
     assert.equal(tagCalls, 1, "tag must never be resent after ambiguous response");
   } finally { await rm(root, { recursive: true, force: true }); }
@@ -289,7 +303,7 @@ test("concurrent duplicate candidate requests serialize and converge to one prov
   try {
     const runner = await createGitHubReleaseRunner({ rootDir: root, journalSigner: { signerId: "release-journal-2026", privateKey: journalKeys.privateKey, publicKey: journalKeys.publicKey }, evidenceSigner: fixture.evidenceSigner, authorizationResolver: async () => fixture.context, provider, now: () => new Date("2026-08-18T06:00:00.000Z") });
     const request = { alias: "github_release_candidate_publish_v1" as const, allocationId: "release-candidate-branch-01", authorizationHandle: "release_auth_1", requestId: "candidate_concurrent", semanticsDigest: authorityDigest({ candidate: "concurrent" }) };
-    const results = await Promise.all([runner.run(request), runner.run(request)]);
+    const results = await Promise.all([governedRun(runner, request), governedRun(runner, request)]);
     assert.deepEqual(results.map(result => result.status), ["verified", "verified"]);
     assert.equal(blobCalls, 3);
   } finally { await rm(root, { recursive: true, force: true }); }
@@ -304,10 +318,10 @@ test("independent runner instances serialize the same durable request and alloca
     const make = () => createGitHubReleaseRunner({ rootDir: root, journalSigner: { signerId: "release-journal-2026", privateKey: keys.privateKey, publicKey: keys.publicKey }, evidenceSigner: fixture.evidenceSigner, authorizationResolver: async () => fixture.context, provider, now: () => new Date("2026-08-18T06:00:00.000Z") });
     const [left, right] = await Promise.all([make(), make()]);
     const request = { alias: "github_release_candidate_publish_v1" as const, allocationId: "release-candidate-branch-01", authorizationHandle: "release_auth_1", requestId: "cross_process_request", semanticsDigest: authorityDigest({ cross: true }) };
-    const results = await Promise.all([left.run(request), right.run(request)]);
+    const results = await Promise.all([governedRun(left, request), governedRun(right, request)]);
     assert.deepEqual(results.map(result => result.status), ["verified", "verified"]);
     assert.equal(blobCalls, 3);
-    await assert.rejects(() => right.run({ ...request, requestId: "allocation_replay", semanticsDigest: authorityDigest({ cross: "replay" }) }), /allocation.*already|one-effect|replay/i);
+    await assert.rejects(() => governedRun(right, { ...request, requestId: "allocation_replay", semanticsDigest: authorityDigest({ cross: "replay" }) }), /allocation.*already|one-effect|replay/i);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
@@ -318,7 +332,7 @@ test("candidate validates the complete authenticated file set before any provide
   const provider = candidateProvider({ createBlob: async () => { writes++; return { sha: gitSha("1") }; }, createTree: async () => { writes++; return { sha: gitSha("e") }; }, createCommit: async () => { writes++; return { sha: gitSha("a") }; }, createRef: async () => { writes++; return { sha: gitSha("a") }; } });
   try {
     const runner = await createGitHubReleaseRunner({ rootDir: root, journalSigner: { signerId: "release-journal-2026", privateKey: keys.privateKey, publicKey: keys.publicKey }, evidenceSigner: fixture.evidenceSigner, authorizationResolver: async () => ({ ...fixture.context, fileContents: [...fixture.context.fileContents, { path: "unexpected.txt", bytesBase64: "eA==" }] }), provider, now: () => new Date("2026-08-18T06:00:00.000Z") });
-    await assert.rejects(() => runner.run({ alias: "github_release_candidate_publish_v1", allocationId: "release-candidate-branch-01", authorizationHandle: "release_auth_1", requestId: "invalid_candidate", semanticsDigest: authorityDigest({ invalid: true }) }), /file set|candidate/i);
+    await assert.rejects(() => governedRun(runner, { alias: "github_release_candidate_publish_v1", allocationId: "release-candidate-branch-01", authorizationHandle: "release_auth_1", requestId: "invalid_candidate", semanticsDigest: authorityDigest({ invalid: true }) }), /file set|candidate/i);
     assert.equal(writes, 0);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
@@ -330,7 +344,7 @@ test("later outcomes refuse without exactly one verified predecessor before prov
   const provider = new Proxy({}, { get: () => async () => { calls++; return null; } });
   try {
     const runner = await createGitHubReleaseRunner({ rootDir: root, journalSigner: { signerId: "release-journal-2026", privateKey: keys.privateKey, publicKey: keys.publicKey }, evidenceSigner: fixture.evidenceSigner, authorizationResolver: async () => fixture.context, provider: provider as never, now: () => new Date("2026-08-18T06:00:00.000Z") });
-    await assert.rejects(() => runner.run({ alias: "github_release_pr_ensure_v1", allocationId: "release-draft-pr-01", authorizationHandle: "release_auth_1", requestId: "pr_without_candidate", semanticsDigest: authorityDigest({ missing: true }) }), /predecessor/i);
+    await assert.rejects(() => governedRun(runner, { alias: "github_release_pr_ensure_v1", allocationId: "release-draft-pr-01", authorizationHandle: "release_auth_1", requestId: "pr_without_candidate", semanticsDigest: authorityDigest({ missing: true }) }), /predecessor/i);
     assert.equal(calls, 0);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
@@ -342,9 +356,9 @@ test("authorization expiry is checked again immediately before every provider wr
   const provider = candidateProvider({ createBlob: async ({ contentBase64 }: any) => { blobWrites++; return { sha: blobSha(Buffer.from(contentBase64, "base64")) }; } });
   try {
     const runner = await createGitHubReleaseRunner({ rootDir: root, journalSigner: { signerId: "release-journal-2026", privateKey: keys.privateKey, publicKey: keys.publicKey }, evidenceSigner: fixture.evidenceSigner, authorizationResolver: async () => fixture.context, provider, now: () => ++clockReads <= 2 ? new Date("2026-08-18T06:00:00.000Z") : new Date("2026-08-18T17:00:00.000Z") });
-    await assert.rejects(() => runner.run({ alias: "github_release_candidate_publish_v1", allocationId: "release-candidate-branch-01", authorizationHandle: "release_auth_1", requestId: "expires_mid_write", semanticsDigest: authorityDigest({ expiry: true }) }), /stale|clock/i);
+    await assert.rejects(() => governedRun(runner, { alias: "github_release_candidate_publish_v1", allocationId: "release-candidate-branch-01", authorizationHandle: "release_auth_1", requestId: "expires_mid_write", semanticsDigest: authorityDigest({ expiry: true }) }), /stale|clock/i);
     assert.equal(blobWrites, 0, "expiry after durable intent must refuse before provider dispatch");
-    await assert.rejects(() => runner.recover(), /stale|expired|refus/i);
+    await assert.rejects(() => runner.recover(), /coordinator|capability/i);
     assert.equal(blobWrites, 0);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
@@ -361,7 +375,7 @@ test("candidate branch write refuses base drift observed after durable intent", 
   provider.createRef = async (input: any) => { branchWrites += 1; return originalCreateRef(input); };
   try {
     const runner = await createGitHubReleaseRunner({ rootDir: root, journalSigner: { signerId: "release-journal-2026", privateKey: keys.privateKey, publicKey: keys.publicKey }, evidenceSigner: fixture.evidenceSigner, authorizationResolver: async () => fixture.context, provider, now: () => new Date("2026-08-18T06:00:00.000Z") });
-    await assert.rejects(() => runner.run({ alias: "github_release_candidate_publish_v1", allocationId: "release-candidate-branch-01", authorizationHandle: "release_auth_1", requestId: "post_intent_drift", semanticsDigest: authorityDigest({ drift: true }) }), /base.*drift/i);
+    await assert.rejects(() => governedRun(runner, { alias: "github_release_candidate_publish_v1", allocationId: "release-candidate-branch-01", authorizationHandle: "release_auth_1", requestId: "post_intent_drift", semanticsDigest: authorityDigest({ drift: true }) }), /base.*drift/i);
     assert.equal(branchWrites, 0);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
@@ -387,8 +401,8 @@ for (const faultMethod of ["createBlob", "createTree", "createCommit"] as const)
     try {
       const runner = await createGitHubReleaseRunner({ rootDir: root, journalSigner: { signerId: "release-journal-2026", privateKey: keys.privateKey, publicKey: keys.publicKey }, evidenceSigner: fixture.evidenceSigner, authorizationResolver: async () => fixture.context, provider: base, now: () => new Date("2026-08-18T06:00:00.000Z") });
       const request = { alias: "github_release_candidate_publish_v1" as const, allocationId: "release-candidate-branch-01", authorizationHandle: "release_auth_1", requestId: `resume_${faultMethod}`, semanticsDigest: authorityDigest({ faultMethod }) };
-      await assert.rejects(() => runner.run(request), /transport.*uncertain|ambiguous/i);
-      assert.equal((await runner.run(request)).status, "verified");
+      assert.equal((await governedRun(runner, request)).status, "pending-reconciliation");
+      assert.equal((await governedRun(runner, request)).status, "verified");
       assert.equal(calls, faultMethod === "createBlob" ? 4 : 2);
     } finally { await rm(root, { recursive: true, force: true }); }
   });
@@ -412,13 +426,13 @@ test("ambiguous merge reconciles read-only after expiry and never resends", asyn
   };
   try {
     const runner = await createGitHubReleaseRunner({ rootDir: root, journalSigner: { signerId: "release-journal-2026", privateKey: keys.privateKey, publicKey: keys.publicKey }, evidenceSigner: fixture.evidenceSigner, authorizationResolver: async () => fixture.context, provider, now: () => expired ? new Date("2026-08-18T17:00:00.000Z") : new Date("2026-08-18T06:00:00.000Z") });
-    const run = async (alias: any, allocationId: string, requestId: string) => { const result = await runner.run({ alias, allocationId, authorizationHandle: "release_auth_1", requestId, semanticsDigest: authorityDigest({ alias, requestId }) }); await confirmTestPublication(runner, requestId, result); return result; };
+    const run = async (alias: any, allocationId: string, requestId: string, reconcile = false) => { const result = await governedRun(runner, { alias, allocationId, authorizationHandle: "release_auth_1", requestId, semanticsDigest: authorityDigest({ alias, requestId }) }, reconcile); await confirmTestPublication(runner, requestId, result); return result; };
     assert.equal((await run("github_release_candidate_publish_v1", "release-candidate-branch-01", "expired_candidate")).status, "verified");
     assert.equal((await run("github_release_pr_ensure_v1", "release-draft-pr-01", "expired_pr")).status, "verified");
     loseReadback = true;
     assert.equal((await run("github_release_pr_merge_v1", "release-exact-sha-merge-01", "expired_merge")).status, "pending-reconciliation");
     expired = true;
-    assert.equal((await run("github_release_pr_merge_v1", "release-exact-sha-merge-01", "expired_merge")).status, "verified");
+    assert.equal((await run("github_release_pr_merge_v1", "release-exact-sha-merge-01", "expired_merge", true)).status, "verified");
     assert.equal(mergeCalls, 1);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
@@ -448,7 +462,7 @@ for (const boundary of ["createBlob", "createTree", "createCommit", "createBranc
         const requestId = `${boundary}_${alias}`;
         const request = { alias: alias as any, allocationId: allocations[alias]!, authorizationHandle: "release_auth_1", requestId, semanticsDigest: authorityDigest({ boundary, alias }) };
         let result: any = null;
-        for (let attempt = 0; attempt < 3 && result?.status !== "verified"; attempt++) { try { result = await runner.run(request); } catch { /* safe read/content-addressed retry */ } }
+        for (let attempt = 0; attempt < 3 && result?.status !== "verified"; attempt++) { try { result = await governedRun(runner, request, attempt > 0 && (boundary === "mergePullRequest" || boundary === "createTagRef")); } catch { /* safe content-addressed retry */ } }
         assert.equal(result?.status, "verified", `${alias} did not reconcile at ${boundary}`);
         await confirmTestPublication(runner, requestId, result);
       }
@@ -475,7 +489,7 @@ for (const scenario of ["base-drift", "branch-conflict", "duplicate-pr", "failed
     };
     try {
       const runner = await createGitHubReleaseRunner({ rootDir: root, journalSigner: { signerId: "release-journal-2026", privateKey: keys.privateKey, publicKey: keys.publicKey }, evidenceSigner: fixture.evidenceSigner, authorizationResolver: async () => fixture.context, provider, now: () => new Date("2026-08-18T06:00:00.000Z") });
-      const run = async (alias: any, allocationId: string, requestId: string) => { const result = await runner.run({ alias, allocationId, authorizationHandle: "release_auth_1", requestId, semanticsDigest: authorityDigest({ scenario, alias }) }); await confirmTestPublication(runner, requestId, result); return result; };
+      const run = async (alias: any, allocationId: string, requestId: string) => { const result = await governedRun(runner, { alias, allocationId, authorizationHandle: "release_auth_1", requestId, semanticsDigest: authorityDigest({ scenario, alias }) }); await confirmTestPublication(runner, requestId, result); return result; };
       if (scenario === "base-drift" || scenario === "branch-conflict") {
         await assert.rejects(() => run("github_release_candidate_publish_v1", "release-candidate-branch-01", `${scenario}_candidate`), /drift|conflict/i);
       } else {
