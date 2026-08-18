@@ -610,3 +610,20 @@ The two skips are the existing Windows bootstrap-liveness skip and the new Linux
 - The internal runtime override is module-scoped and therefore used only by serialized tests. It is absent from every public package export, and neither CLI arguments nor `runAuthorityCommand` parameters expose dependency injection to agent callers.
 - Actual wrong-owner and wrong-mode filesystem behavior still needs execution on Linux CI. This Windows run covered the pure UID/mode validator and skipped the honestly platform-gated `0640` resolver test.
 - Owner, mode, symlink, canonical-path, inode/device, size, and mtime stability guarantees remain unchanged; this round changes only credential content parsing and the testability of existing production wiring.
+
+### Fix round 4 repository-wide finishing check
+
+`npm test` was also run after the scoped gate. It is not green on this Windows checkout:
+
+```text
+ℹ tests 3378
+ℹ suites 0
+ℹ pass 3352
+ℹ fail 7
+ℹ cancelled 0
+ℹ skipped 19
+ℹ todo 0
+ℹ duration_ms 472248.9198
+```
+
+Six failures are Windows executions of tests that call Linux-only Authority Cell host constructors without installing the existing platform test seam: three in `test/authority-runtime.test.ts`, two in `test/authority/host-server.test.ts`, and one in `test/authority/receipts.test.ts`. The seventh is `test/bootstrap-build-identity.test.ts`, which cannot find `native/bootstrap-helper/manifest.json` in this checkout. None of those files or prerequisites is in Task 3's approved file list, so no out-of-scope fix was attempted. The scoped 82-test authority/security gate above remains the applicable Task 3 verification result.
