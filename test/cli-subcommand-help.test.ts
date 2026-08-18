@@ -136,6 +136,42 @@ test("the preload oracle rejects synchronous writes during transitive module loa
   }
 });
 
+test("the help oracle closes filesystem, subprocess, and low-level network escape paths", async () => {
+  const sandbox = await mkdtemp(path.join(os.tmpdir(), "reelier-cli-help-escape-oracle-"));
+  const oraclePath = path.join(sandbox, "oracle.cjs");
+  await writeFile(oraclePath, ORACLE);
+  const probes = [
+    ["writable openSync", `require("node:fs").openSync(${JSON.stringify(path.join(sandbox, "open-sync.txt"))}, "w")`],
+    ["promises mkdtempDisposable", `require("node:fs/promises").mkdtempDisposable(${JSON.stringify(path.join(sandbox, "disposable-"))})`],
+    ["execSync", `require("node:child_process").execSync(${JSON.stringify(process.execPath)}, ["--version"])`],
+    ["execFileSync", `require("node:child_process").execFileSync(${JSON.stringify(process.execPath)}, ["--version"])`],
+    ["direct Socket", `new (require("node:net").Socket)().connect(9, "127.0.0.1")`],
+    ["direct TLSSocket", `new (require("node:tls").TLSSocket)(new (require("node:net").Socket)()).connect(9, "127.0.0.1")`],
+    ["direct datagram Socket", `new (require("node:dgram").Socket)("udp4").send("probe", 9, "127.0.0.1")`],
+    ["DNS promises TLSA", `(() => { const dns = require("node:dns/promises"); const resolver = new dns.Resolver(); resolver.setServers(["127.0.0.1"]); return resolver.resolveTlsa("localhost"); })()`],
+    ["fetch", `fetch("http://127.0.0.1:9/")`],
+  ] as const;
+  try {
+    for (const [name, expression] of probes) {
+      const source = `(async () => { try { await (${expression}); console.error("REELIER_HELP_ORACLE_ESCAPE"); process.exitCode = 0; } catch (error) { console.error(error && error.message); process.exitCode = 23; } })()`;
+      const result = spawnSync(process.execPath, ["--require", oraclePath, "-e", source], {
+        cwd: sandbox,
+        env: { HOME: sandbox, USERPROFILE: sandbox, APPDATA: sandbox, LOCALAPPDATA: sandbox, TEMP: sandbox, TMP: sandbox, PATH: process.env.PATH ?? "" },
+        encoding: "utf8",
+        timeout: 1_500,
+        windowsHide: true,
+      });
+      const output = `${result.stdout}${result.stderr}`;
+      assert.equal(result.error, undefined, `${name} oracle probe did not complete: ${result.error?.message}`);
+      assert.equal(result.signal, null, `${name} oracle probe was terminated by ${result.signal}`);
+      assert.equal(result.status, 23, `${name} bypassed the help oracle:\n${output}`);
+      assert.match(output, /REELIER_HELP_ORACLE side effect|Access to this API has been restricted/, `${name} was not denied by the help oracle:\n${output}`);
+    }
+  } finally {
+    await rm(sandbox, { recursive: true, force: true });
+  }
+});
+
 test("every dispatched subcommand exits read-only for --help and -h", async () => {
   const sandbox = await mkdtemp(path.join(os.tmpdir(), "reelier-cli-help-"));
   const oraclePath = path.join(sandbox, "oracle.cjs");
