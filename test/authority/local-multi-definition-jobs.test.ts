@@ -11,7 +11,7 @@ import { connectionAdoptionCommitmentDigest, connectionDescriptorDigest, digestN
 import { buildAuthorityDeployment } from "../../src/authority/host/deploy.js";
 import { createDelegationAuthority } from "../../src/authority/host/delegation-service.js";
 import type { DispatchAdapter } from "../../src/authority/host/dispatch.js";
-import { createLocalAuthorityRuntime } from "../../src/authority/host/local.js";
+import { createLocalAuthorityRuntime, createStdioBoundLocalAuthorityRuntime } from "../../src/authority/host/local.js";
 import { createAuthorityHostServer } from "../../src/authority/host/server.js";
 import { createPrincipalRegistry } from "../../src/authority/host/principal-registry.js";
 import { __testSetAuthorityCellHostPlatform } from "../../src/authority/host/platform.js";
@@ -128,7 +128,7 @@ test("signed multi-definition references refuse every binding mismatch and stale
   const otherCard = await multiDefinitionFixture("Different signed production release");
   const differentlySignedSameBody = await multiDefinitionFixture();
   try {
-    const runtime = await createLocalAuthorityRuntime(fixture.config, { jobCardTrustPin: fixture.trustPin, delegation: fixture.delegation });
+    const runtime = await createStdioBoundLocalAuthorityRuntime(fixture.config, fixture.context.executionContext, { jobCardTrustPin: fixture.trustPin, delegation: fixture.delegation });
     const found = await runtime.jobsSearch!({}, fixture.context) as { jobs: Array<{ jobRef: string }> };
     const ref = found.jobs[0]!.jobRef;
     const altered = (patch: Partial<AuthorityExecutionContextV1>, tenant = fixture.context.tenant, requester = fixture.context.requester) => ({ tenant, requester, executionContext: { ...fixture.context.executionContext, ...patch } });
@@ -147,7 +147,7 @@ test("signed multi-definition references refuse every binding mismatch and stale
       const searched = await runtime.jobsSearch!({}, context) as { verdict: string; jobs: unknown[] };
       const loaded = await runtime.jobLoad!({ jobId: ref }, context) as { verdict: string };
       const invoked = await runtime.invoke!({ v: "reelier.outcome-request/v1", jobRef: ref, requestId: `isolation_${context.executionContext.runtimeSessionId}_${context.executionContext.grantId}`, sourceRefs: { thread: "thread_1" }, choices: {} }, context);
-      if (!["session_other", "cell_other"].includes(context.executionContext.runtimeSessionId) && context.executionContext.authorityCellId !== "cell_other") assert.equal(searched.verdict, "refused");
+      assert.equal(searched.verdict, "refused");
       assert.equal(loaded.verdict, "refused");
       assert.equal(invoked.verdict, "refused");
     }
@@ -170,8 +170,9 @@ test("signed multi-definition references refuse every binding mismatch and stale
 test("opaque invoke converges exact retries and refuses request-id semantic conflicts before provider dispatch", async () => {
   const fixture = await multiDefinitionFixture();
   let dispatches = 0;
+  const dispatchedEndpoints: string[] = [];
   const adapter: DispatchAdapter = {
-    async dispatch() { dispatches++; return { kind: "acknowledged", resultDigest: authorityDigest({ messageId: "provider_1" }) }; },
+    async dispatch(state) { dispatches++; dispatchedEndpoints.push((state.effect as { endpointId: string }).endpointId); return { kind: "acknowledged", resultDigest: authorityDigest({ messageId: `provider_${dispatches}` }) }; },
     async reconcile() { return { kind: "acknowledged", resultDigest: authorityDigest({ messageId: "provider_1" }), reconciliationStatus: "matched", normalizedProjectionDigest: authorityDigest({ messageId: "provider_1" }) }; },
   };
   try {
@@ -191,9 +192,10 @@ test("opaque invoke converges exact retries and refuses request-id semantic conf
     assert.equal(dispatches, 1);
     assert.equal((await runtime.invoke!({ ...request, requestId: "raw_alias", jobRef: GMAIL }, fixture.context)).verdict, "refused");
     assert.equal(dispatches, 1);
-    const secondDefinition = await runtime.invoke!({ ...request, requestId: "second_definition", jobRef: refs[1]! }, fixture.context);
-    assert.notEqual(secondDefinition.reasonCode, "job-not-found", "both signed definitions must resolve through their own opaque references");
-    assert.equal(dispatches, 1);
+    const secondDefinition = await runtime.invoke!({ ...request, requestId: "second_definition", jobRef: refs[1]!, sourceRefs: { channel: "channel_1" } }, fixture.context);
+    assert.equal(secondDefinition.verdict, "accepted", JSON.stringify(secondDefinition));
+    assert.equal(dispatches, 2);
+    assert.deepEqual(dispatchedEndpoints, [gmailReplyWriteEndpointId, "slack.conversations.setTopic"]);
   } finally { await rm(fixture.root, { recursive: true, force: true }); }
 });
 
