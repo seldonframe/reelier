@@ -2536,6 +2536,14 @@ result is not exactly `verified` yields `success: false`. Global completeness
 is always `unchecked`; neither a successful evaluation nor any individual
 evidence artifact upgrades it.
 
+### 12.4 Governed GitHub release outcomes
+
+**[Normative]** The GitHub release provider surface consists of exactly four first-party outcomes: candidate publication, draft-PR ensure, exact-SHA squash merge, and non-force tag creation. Their model-facing choices object MUST be empty. All repository, ref, version, package, metadata, allocation, credential, and byte authority MUST originate in host-owned signed inputs or authenticated opaque sources.
+
+The authorization MUST link a signed closed `ReleaseOperationPlanV1`. `candidateTreeDigest` is the authority digest of the complete ordered path/mode/content-digest/blob-SHA list; it is distinct from the separately committed Git tree SHA. Candidate and squash commit SHAs, commit identities/timestamps, PR and squash metadata, required checks, workflow bytes, package/version, npm absence, and tag MUST be fixed before dispatch.
+
+Each request MUST use a signed append-only hash-chain journal with exclusive event creation, durable publication, atomic head, semantic request-ID binding, and per-request serialization. Content-addressed object calls MAY repeat only when the same signed expected SHA makes them convergent. Branch, PR, merge, and tag ambiguity MUST use authoritative readback. Merge and tag MUST NOT be resent after a persisted intent. Provider acknowledgement without exact readback MUST remain pending and MUST NOT produce verified evidence. The reference transition semantics are in `docs/specs/github-release-outcomes-v1.md`.
+
 ## Deviations noted
 
 This section is for the orchestrator, not part of the normative spec. No
