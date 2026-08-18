@@ -1,7 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { createPrincipalRegistry, type PrincipalRegistry } from "../../src/authority/host/principal-registry.js";
-import { resolveAuthorityServeStdioExecutionContext } from "../../src/authority/host/stdio-context.js";
+import { composeAuthorityServeStdioRuntime, resolveAuthorityServeStdioExecutionContext } from "../../src/authority/host/stdio-context.js";
 import { validateAuthorityHostConfig } from "../../src/authority/host/config.js";
 
 const digest = `sha256:${"a".repeat(64)}`;
@@ -23,6 +26,13 @@ test("authority serve resolves a short-lived stdio principal before server const
   const resolved = await resolveAuthorityServeStdioExecutionContext(config, registry, { env: { REELIER_STDIO_PRINCIPAL: issued.token } });
   assert.deepEqual(resolved, { v: "reelier.authority-execution-context/v1", taskId: "task_1", principalId: "agent_1", grantId: "grant_1", grantDigest: digest, allocationId: "root", runtimeSessionId: "session_1", jobId: "production_release", authorityCellId: "cell_1" });
   assert.equal(JSON.stringify(resolved).includes(issued.token), false);
+  const credentialRoot = await mkdtemp(path.join(os.tmpdir(), "reelier-stdio-principal-"));
+  try {
+    const credentialFile = path.join(credentialRoot, "principal.token");
+    await writeFile(credentialFile, `${issued.token}\n`, { mode: 0o600 });
+    const fileConfig = validateAuthorityHostConfig({ ...base, ingress: { principalRegistryFile: "principal.jsonl", stdioPrincipalCredentialRef: `file:${credentialFile}` } });
+    assert.deepEqual(await resolveAuthorityServeStdioExecutionContext(fileConfig, registry), resolved);
+  } finally { await rm(credentialRoot, { recursive: true, force: true }); }
 
   const context = issued.context;
   const registryReturning = (patch: Partial<typeof context>): PrincipalRegistry => ({
@@ -39,4 +49,16 @@ test("authority serve resolves a short-lived stdio principal before server const
   const expiredRegistry = createPrincipalRegistry({ tenant: "tenant_1" });
   const expired = await expiredRegistry.issue({ ...issued.context, expiresAt: "2020-01-01T00:00:00.000Z", runtimeSessionId: "session_expired" });
   await assert.rejects(() => resolveAuthorityServeStdioExecutionContext(config, expiredRegistry, { env: { REELIER_STDIO_PRINCIPAL: expired.token } }), /credential|expired|principal/i);
+});
+
+test("authority serve production composition passes only the resolved context into runtime construction", async () => {
+  const registry = createPrincipalRegistry({ tenant: "tenant_1" });
+  const issued = await registry.issue({ principalId: "agent_1", taskId: "task_1", grantId: "grant_1", grantDigest: digest, allocationId: "root", runtimeSessionId: "session_1", jobId: "production_release", authorityCellId: "cell_1", expiresAt: "2099-01-01T00:00:00.000Z" });
+  const config = validateAuthorityHostConfig({ ...base, ingress: { principalRegistryFile: "principal.jsonl", stdioPrincipalCredentialRef: "env:REELIER_STDIO_PRINCIPAL" } });
+  let captured: unknown;
+  const composed = await composeAuthorityServeStdioRuntime(config, registry, async context => { captured = context; return { requiresAuthenticatedExecutionContext: true }; }, { env: { REELIER_STDIO_PRINCIPAL: issued.token } });
+  assert.deepEqual(captured, composed.executionContext);
+  assert.equal(composed.runtime.requiresAuthenticatedExecutionContext, true);
+  const missing = validateAuthorityHostConfig({ ...base, ingress: { principalRegistryFile: "principal.jsonl" } });
+  await assert.rejects(() => composeAuthorityServeStdioRuntime(missing, registry, async () => ({ requiresAuthenticatedExecutionContext: true })), /authenticated principal|credential/i);
 });

@@ -16,7 +16,7 @@ import { createAuthorityHostServer } from "../../src/authority/host/server.js";
 import { createPrincipalRegistry } from "../../src/authority/host/principal-registry.js";
 import { __testSetAuthorityCellHostPlatform } from "../../src/authority/host/platform.js";
 import { gmailPackDigest, gmailPolicySchemaId, gmailProjectionSchemaId, gmailReadEndpointId, gmailReplyDefinitionDigest, gmailReplyWriteEndpointId, gmailResolverId } from "../../src/packs/gmail/index.js";
-import { slackChannelTopicPackDigest } from "../../src/packs/slack-topic/index.js";
+import { slackChannelTopicDefinitionDigest, slackChannelTopicPackDigest, slackChannelTopicPolicySchemaId, slackChannelTopicProjectionSchemaId, slackChannelTopicReadEndpointId, slackChannelTopicResolverId, slackChannelTopicRiskClass, slackChannelTopicWriteEndpointId } from "../../src/packs/slack-topic/index.js";
 import { jobCardTrustPinFixture } from "./job-card-trust-pin-fixture.js";
 import type { AuthorityExecutionContextV1, DelegationGrant } from "../../src/authority/types.js";
 
@@ -39,6 +39,7 @@ async function multiDefinitionFixture(title = "Production release") {
   await writeFile(path.join(candidateRoot, "keys", "operator.pem"), operator.publicKey.export({ type: "spki", format: "pem" }));
   await writeFile(path.join(candidateRoot, "keys", "contract.pem"), contractSigner.publicKey.export({ type: "spki", format: "pem" }));
   await writeFile(path.join(candidateRoot, "sources", "thread_1.json"), `${JSON.stringify({ threadId: "thread_1", messageId: "message_1", recipient: "customer@example.test", subject: "Question", labelIds: ["INBOX"] })}\n`);
+  await writeFile(path.join(candidateRoot, "sources", "channel_1.json"), `${JSON.stringify({ teamId: "T1", channel: { id: "C1", name: "release-private", is_private: true, topic: { value: "Preparing release" } } })}\n`);
   const tools = [{ name: gmailReadEndpointId, inputSchema: {} }, { name: gmailReplyWriteEndpointId, inputSchema: {} }];
   const descriptor = {
     v: "reelier.connection-descriptor/v1" as const,
@@ -52,26 +53,38 @@ async function multiDefinitionFixture(title = "Production release") {
     coverage: { v: "reelier.host-coverage/v1" as const, host: "codex", observation: "observed" as const, outcomeInvocation: "supported" as const, exclusiveEnforcement: "unknown" as const, limitations: ["raw-write-reachability-unmeasured"] },
   };
   const adoptionBody = { v: "reelier.connection-adoption/v1" as const, adoptionId: "adopt_gmail", descriptorDigest: connectionDescriptorDigest(descriptor), selectedAccountIdentity: descriptor.account.identity, mode: "existing" as const, sidecarRouteId: descriptor.callableRoute.routeId, rawWriteReachability: "reachable" as const, activationState: "active" as const, secureConnectionCommitment: null };
+  const slackDescriptor = {
+    v: "reelier.connection-descriptor/v1" as const, connectionId: "slack", kind: "adopted-mcp-stdio" as const,
+    provider: { id: "slack", toolServerName: "slack-mcp" }, callableRoute: { kind: "mcp-stdio" as const, routeId: "route.slack", endpointIds: [slackChannelTopicReadEndpointId, slackChannelTopicWriteEndpointId] },
+    account: { status: "verified" as const, identity: "slack-team-example" }, toolSchemas: digestNormalizedMcpToolSchemas([{ name: slackChannelTopicReadEndpointId, inputSchema: {} }, { name: slackChannelTopicWriteEndpointId, inputSchema: {} }]), secretOwner: "host" as const,
+    coverage: { v: "reelier.host-coverage/v1" as const, host: "codex", observation: "observed" as const, outcomeInvocation: "supported" as const, exclusiveEnforcement: "unknown" as const, limitations: ["raw-write-reachability-unmeasured"] },
+  };
+  const slackAdoptionBody = { v: "reelier.connection-adoption/v1" as const, adoptionId: "adopt_slack", descriptorDigest: connectionDescriptorDigest(slackDescriptor), selectedAccountIdentity: slackDescriptor.account.identity, mode: "existing" as const, sidecarRouteId: slackDescriptor.callableRoute.routeId, rawWriteReachability: "reachable" as const, activationState: "active" as const, secureConnectionCommitment: null };
   const limits = { maxEffectsPerWindow: 2, windowSeconds: 3600, maxEffectsPerSourceTrigger: 1, maxBodyBytes: 4096 };
-  const grant = { v: "reelier.delegation-grant/v1" as const, tenant: "tenant_1", grantId: "grant_1", parentDigest: null, sponsor: "operator", grantor: "operator", grantee: "agent_1", issuedAt: "2026-01-01T00:00:00.000Z", expiresAt: "2027-01-01T00:00:00.000Z", constraints: { definitionAliases: [GMAIL, SLACK], audiences: ["agent_1"], connectorAccounts: [{ connectorId: "gmail", accountId: "account_1" }], projectionPointers: ["/threadId", "/messageId", "/recipient", "/subject", "/labelIds"], riskClasses: ["gmail_send"], limits } };
+  const grant = { v: "reelier.delegation-grant/v1" as const, tenant: "tenant_1", grantId: "grant_1", parentDigest: null, sponsor: "operator", grantor: "operator", grantee: "agent_1", issuedAt: "2026-01-01T00:00:00.000Z", expiresAt: "2027-01-01T00:00:00.000Z", constraints: { definitionAliases: [GMAIL, SLACK], audiences: ["agent_1"], connectorAccounts: [{ connectorId: "gmail", accountId: "account_1" }, { connectorId: "slack", accountId: "account_1" }], projectionPointers: ["/threadId", "/messageId", "/recipient", "/subject", "/labelIds", "/teamId", "/channelId", "/channelName", "/isPrivate", "/topic"], riskClasses: ["gmail_send", slackChannelTopicRiskClass], limits } };
   const grantDigest = authorityDigest(grant);
   const contractGrant = { ...grant, grantId: "contract_grant", grantee: "contract-signer", constraints: { ...grant.constraints, definitionAliases: [GMAIL] } };
   const contractGrantDigest = authorityDigest(contractGrant);
+  const slackContractGrant = { ...grant, grantId: "slack_contract_grant", grantee: "contract-signer", constraints: { ...grant.constraints, definitionAliases: [SLACK] } };
+  const slackContractGrantDigest = authorityDigest(slackContractGrant);
   const policy = { text: "Thanks for reaching out." };
   const contract = { v: "reelier.outcome-contract/v1", tenant: "tenant_1", alias: GMAIL, contractId: "contract_1", validFrom: "2026-01-01T00:00:00.000Z", validUntil: "2027-01-01T00:00:00.000Z", packDigest: gmailPackDigest, definitionDigest: gmailReplyDefinitionDigest, sponsor: "operator", audiences: ["agent_1"], delegationGrantDigest: contractGrantDigest, connectorId: "gmail", accountId: "account_1", sourceAuthority: { resolverId: gmailResolverId, projectionSchemaId: gmailProjectionSchemaId, allowedReadEndpointIds: [gmailReadEndpointId], authorizedProjectionPointers: ["/threadId", "/messageId", "/recipient", "/subject", "/labelIds"], maxFreshnessSeconds: 60 }, riskClasses: ["gmail_send"], limits, policyCommitment: { schemaId: gmailPolicySchemaId, jcsBase64: authorityCanonicalBytes(policy).toString("base64"), digest: authorityDigest(policy) } };
   const contractDigest = authorityDigest(contract);
+  const slackPolicy = { topic: "Release ready" };
+  const slackContract = { v: "reelier.outcome-contract/v1", tenant: "tenant_1", alias: SLACK, contractId: "contract_slack", validFrom: "2026-01-01T00:00:00.000Z", validUntil: "2027-01-01T00:00:00.000Z", packDigest: slackChannelTopicPackDigest, definitionDigest: slackChannelTopicDefinitionDigest, sponsor: "operator", audiences: ["agent_1"], delegationGrantDigest: slackContractGrantDigest, connectorId: "slack", accountId: "account_1", sourceAuthority: { resolverId: slackChannelTopicResolverId, projectionSchemaId: slackChannelTopicProjectionSchemaId, allowedReadEndpointIds: [slackChannelTopicReadEndpointId], authorizedProjectionPointers: ["/teamId", "/channelId", "/channelName", "/isPrivate", "/topic"], maxFreshnessSeconds: 60 }, riskClasses: [slackChannelTopicRiskClass], limits, policyCommitment: { schemaId: slackChannelTopicPolicySchemaId, jcsBase64: authorityCanonicalBytes(slackPolicy).toString("base64"), digest: authorityDigest(slackPolicy) } };
+  const slackContractDigest = authorityDigest(slackContract);
   const jobCard = signJobCard({
     v: "reelier.signed-job-card/v1", jobId: "production_release", title, taskShapeDigest: sha("a"),
-    semanticClasses: ["communication_commit_v1", "record_state_set_v1"], definitionAliases: [GMAIL, SLACK], connectorIds: ["gmail"],
-    accountIdentities: [descriptor.account.identity], connectionDescriptorDigests: [connectionDescriptorDigest(descriptor)], adoptionCommitmentDigests: [connectionAdoptionCommitmentDigest(adoptionBody)],
-    sourceRefs: ["thread"], audiences: ["agent_1"], limitsDigest: authorityDigest(limits), instructionsDigest: sha("c"), packDigests: [gmailPackDigest, slackChannelTopicPackDigest],
+    semanticClasses: ["communication_commit_v1", "record_state_set_v1"], definitionAliases: [GMAIL, SLACK], connectorIds: ["gmail", "slack"],
+    accountIdentities: [descriptor.account.identity, slackDescriptor.account.identity].sort(), connectionDescriptorDigests: [connectionDescriptorDigest(descriptor), connectionDescriptorDigest(slackDescriptor)].sort(), adoptionCommitmentDigests: [connectionAdoptionCommitmentDigest(adoptionBody), connectionAdoptionCommitmentDigest(slackAdoptionBody)].sort(),
+    sourceRefs: ["channel", "thread"], audiences: ["agent_1"], limitsDigest: authorityDigest(limits), instructionsDigest: sha("c"), packDigests: [gmailPackDigest, slackChannelTopicPackDigest].sort(),
     exceptionPolicy: ["ambiguous-reconcile"], coverage: "declared-surface",
   }, "job_sponsor", sponsor.privateKey);
   const trustPin = jobCardTrustPinFixture(sponsor.publicKey, "job_sponsor", "cell_receipt_key");
   const candidate = {
-    v: "reelier.authority-deployment-candidate/v1", jobCard, connectionDescriptors: [descriptor], connectionAdoptions: [{ ...adoptionBody, signedDeploymentBinding: signedJobCardDigest(jobCard) }],
+    v: "reelier.authority-deployment-candidate/v1", jobCard, connectionDescriptors: [descriptor, slackDescriptor], connectionAdoptions: [{ ...adoptionBody, signedDeploymentBinding: signedJobCardDigest(jobCard) }, { ...slackAdoptionBody, signedDeploymentBinding: signedJobCardDigest(jobCard) }],
     state: { tenant: "tenant_1", definitionAlias: GMAIL, stateVersion: 1, candidates: [{ contractEnvelope: { canonicalBase64: authorityCanonicalBytes(contract).toString("base64"), advertisedDigest: contractDigest, signerId: "contract-signer", signature: signAuthorityDigest(contractSigner.privateKey, "outcome-contract", contractDigest) }, delegationEnvelopes: [{ index: 0, canonicalBase64: authorityCanonicalBytes(contractGrant).toString("base64"), advertisedDigest: contractGrantDigest, signerId: "operator", signature: signAuthorityDigest(operator.privateKey, "delegation-grant", contractGrantDigest) }], stateEvents: [{ index: 0, kind: "activated", contractDigest, at: "2026-01-01T00:00:00.000Z" }] }] },
-    connectors: [{ tenant: "tenant_1", connectorId: "gmail", accountId: "account_1", providerAccountIdentity: descriptor.account.identity, allowedReadEndpointIds: [gmailReadEndpointId], allowedWriteEndpointIds: [gmailReplyWriteEndpointId], riskClasses: ["gmail_send"], operatorConfigurationDigest: sha("d") }],
+    connectors: [{ tenant: "tenant_1", connectorId: "gmail", accountId: "account_1", providerAccountIdentity: descriptor.account.identity, allowedReadEndpointIds: [gmailReadEndpointId], allowedWriteEndpointIds: [gmailReplyWriteEndpointId], riskClasses: ["gmail_send"], operatorConfigurationDigest: sha("d") }, { tenant: "tenant_1", connectorId: "slack", accountId: "account_1", providerAccountIdentity: slackDescriptor.account.identity, allowedReadEndpointIds: [slackChannelTopicReadEndpointId], allowedWriteEndpointIds: [slackChannelTopicWriteEndpointId], riskClasses: [slackChannelTopicRiskClass], operatorConfigurationDigest: sha("e") }],
     trust: [{ signerId: "operator", principalId: "operator", publicKeyFile: "keys/operator.pem", purposes: ["delegation-grant"] }, { signerId: "contract-signer", principalId: "contract-signer", publicKeyFile: "keys/contract.pem", purposes: ["outcome-contract"] }], sourceDirectory: "sources",
   };
   const candidateFile = path.join(candidateRoot, "candidate.json");
@@ -79,7 +92,7 @@ async function multiDefinitionFixture(title = "Production release") {
   const authorityRoot = path.join(root, "authority");
   const built = await buildAuthorityDeployment(candidateFile, path.join(authorityRoot, "deployment"), trustPin);
   const manifest = JSON.parse(await readFile(built.deploymentFile, "utf8"));
-  manifest.states.push({ tenant: "tenant_1", definitionAlias: SLACK, stateVersion: 1, candidates: [] });
+  manifest.states.push({ tenant: "tenant_1", definitionAlias: SLACK, stateVersion: 1, candidates: [{ contractEnvelope: { canonicalBase64: authorityCanonicalBytes(slackContract).toString("base64"), advertisedDigest: slackContractDigest, signerId: "contract-signer", signature: signAuthorityDigest(contractSigner.privateKey, "outcome-contract", slackContractDigest) }, delegationEnvelopes: [{ index: 0, canonicalBase64: authorityCanonicalBytes(slackContractGrant).toString("base64"), advertisedDigest: slackContractGrantDigest, signerId: "operator", signature: signAuthorityDigest(operator.privateKey, "delegation-grant", slackContractGrantDigest) }], stateEvents: [{ index: 0, kind: "activated", contractDigest: slackContractDigest, at: "2026-01-01T00:00:00.000Z" }] }] });
   await writeFile(built.deploymentFile, `${JSON.stringify(manifest)}\n`);
   const hostPin = path.join(authorityRoot, "trust", "job-card.json");
   await mkdir(path.dirname(hostPin), { recursive: true });
@@ -128,6 +141,7 @@ test("signed multi-definition references refuse every binding mismatch and stale
   const otherCard = await multiDefinitionFixture("Different signed production release");
   const differentlySignedSameBody = await multiDefinitionFixture();
   try {
+    await assert.rejects(() => createStdioBoundLocalAuthorityRuntime(fixture.config, { ...fixture.context.executionContext, jobId: "job_other" }, { jobCardTrustPin: fixture.trustPin, delegation: fixture.delegation }), /signed deployment|host identity/i);
     const runtime = await createStdioBoundLocalAuthorityRuntime(fixture.config, fixture.context.executionContext, { jobCardTrustPin: fixture.trustPin, delegation: fixture.delegation });
     const found = await runtime.jobsSearch!({}, fixture.context) as { jobs: Array<{ jobRef: string }> };
     const ref = found.jobs[0]!.jobRef;
@@ -195,7 +209,7 @@ test("opaque invoke converges exact retries and refuses request-id semantic conf
     const secondDefinition = await runtime.invoke!({ ...request, requestId: "second_definition", jobRef: refs[1]!, sourceRefs: { channel: "channel_1" } }, fixture.context);
     assert.equal(secondDefinition.verdict, "accepted", JSON.stringify(secondDefinition));
     assert.equal(dispatches, 2);
-    assert.deepEqual(dispatchedEndpoints, [gmailReplyWriteEndpointId, "slack.conversations.setTopic"]);
+    assert.deepEqual(dispatchedEndpoints, [gmailReplyWriteEndpointId, slackChannelTopicWriteEndpointId]);
   } finally { await rm(fixture.root, { recursive: true, force: true }); }
 });
 

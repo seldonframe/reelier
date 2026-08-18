@@ -90,7 +90,14 @@ export async function createLocalAuthorityRuntime(config: AuthorityHostConfig, o
   return createLocalAuthorityRuntimeCore(config,options,{});
 }
 
-interface LocalAuthorityRuntimeInternalOptions {readonly gateSigner?:LocalGateSigner;readonly beforeReserve?:(intent:Readonly<import("../ledger.js").ReservationIntent>)=>Promise<void>;readonly governedPublication?:DispatchPublication;readonly deployment?:LoadedAuthorityDeployment}
+/** Package-internal production stdio composition: pins every catalog call to one resolved principal session. */
+export async function createStdioBoundLocalAuthorityRuntime(config: AuthorityHostConfig, executionContext: AuthorityExecutionContextV1, options: LocalAuthorityRuntimeOptions = {}): Promise<LocalAuthorityRuntime> {
+  assertLinuxAuthorityCellHost();
+  assertLocalRuntimeOptions(options);
+  return createLocalAuthorityRuntimeCore(config, options, { authenticatedExecutionContext: executionContext });
+}
+
+interface LocalAuthorityRuntimeInternalOptions {readonly gateSigner?:LocalGateSigner;readonly beforeReserve?:(intent:Readonly<import("../ledger.js").ReservationIntent>)=>Promise<void>;readonly governedPublication?:DispatchPublication;readonly deployment?:LoadedAuthorityDeployment;readonly authenticatedExecutionContext?:AuthorityExecutionContextV1}
 async function createLocalAuthorityRuntimeCore(config:AuthorityHostConfig,options:LocalAuthorityRuntimeOptions,internal:LocalAuthorityRuntimeInternalOptions):Promise<LocalAuthorityRuntime>{
   if (config.cloud && config.topology !== "isolated") throw new TypeError("managed authority requires isolated topology");
   if (config.cloud) {
@@ -123,6 +130,7 @@ async function createLocalAuthorityRuntimeCore(config:AuthorityHostConfig,option
     const expectedPackDigests = [...new Set(selectedPacks.map(pack => pack!.definition.packDigest))].sort();
     if (authorityDigest(expectedPackDigests) !== authorityDigest(deployment.jobCard.packDigests)) throw new TypeError("signed Job Card pack digest set does not match installed reviewed packs");
   }
+  if (internal.authenticatedExecutionContext && (!deployment?.jobCard || internal.authenticatedExecutionContext.jobId !== deployment.jobCard.jobId || internal.authenticatedExecutionContext.principalId !== config.requester || !config.authorityCellId || internal.authenticatedExecutionContext.authorityCellId !== config.authorityCellId)) throw new TypeError("stdio principal context does not match the signed deployment or host identity");
   const ledger = new FsAuthorityLedger(config.ledgerDir);
   const decisions = createFileGateDecisionSink(config.decisionDir);
   const gateSigner = internal.gateSigner ?? await loadOrCreateLocalGateSigner(config.gateKeyFile ?? path.join(config.receiptDir, "..", "keys", "local-gate.pem"));
@@ -166,6 +174,7 @@ async function createLocalAuthorityRuntimeCore(config:AuthorityHostConfig,option
     if (!multiDefinitionSigned) return jobs;
     const card = deployment!.jobCard!, execution = context.executionContext;
     if (!authorizedRequester(context) || !execution || !options.delegation || execution.jobId !== card.jobId) throw new TypeError("job authority is outside the authenticated task");
+    if (internal.authenticatedExecutionContext && authorityDigest(execution) !== authorityDigest(internal.authenticatedExecutionContext)) throw new TypeError("job authority session or Cell binding mismatch");
     const binding = await options.delegation.resolveSessionBinding({ tenant: context.tenant, taskId: execution.taskId, principalId: context.requester });
     if (binding.taskId !== execution.taskId || binding.grantee !== execution.principalId || binding.grantId !== execution.grantId || binding.grantDigest !== execution.grantDigest || binding.allocationId !== execution.allocationId || execution.principalId !== context.requester) throw new TypeError("job authority binding mismatch");
     const cardDigest = authorityDigest(card);
@@ -179,6 +188,7 @@ async function createLocalAuthorityRuntimeCore(config:AuthorityHostConfig,option
   return Object.freeze({
     ...runtime,
     directOutcomeAliases: Object.freeze(multiDefinitionSigned ? [] : [...config.definitions]),
+    requiresAuthenticatedExecutionContext: multiDefinitionSigned,
     async outcome(alias: string, input: unknown, context: { readonly tenant: string; readonly requester: string }) {
       if (multiDefinitionSigned || (deployment?.jobCard && !deployment.jobCard.definitionAliases.includes(alias)) || !authorizedRequester(context)) return Object.freeze({ requestId: input && typeof input === "object" && !Array.isArray(input) && typeof (input as Record<string, unknown>).requestId === "string" ? String((input as Record<string, unknown>).requestId) : "", verdict: "refused" as const, reasonCode: "job-authority-refused", lifecycleState: "refused" });
       return runtime.outcome(alias, input, context);

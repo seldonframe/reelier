@@ -11,7 +11,7 @@ import { firstPartyPacks } from "../packs/index.js";
 import { verifyAuthorityReceiptBundle } from "./verify.js";
 import { createArtifactStore } from "./host/artifacts.js";
 import { runFirstPartyPackConformance } from "../packs/conformance.js";
-import { createLocalAuthorityRuntime } from "./host/local.js";
+import { createLocalAuthorityRuntime, createStdioBoundLocalAuthorityRuntime } from "./host/local.js";
 import { CERTIFICATION_TARGET_PACKAGE_VERSION, createCertificationPreflight } from "./host/certification.js";
 import { verifyReleaseEvidenceManifest } from "./host/release-evidence.js";
 import { inspectCertificationResourceIdentifiers, inspectCertificationSecretReferences, parseCertificationOperatorConfig, probePinnedCodexBinary } from "./host/certification-config.js";
@@ -39,6 +39,7 @@ import { assertLinuxAuthorityCellHost } from "./host/platform.js";
 import { authorityCellConnectionPathnameConfinement, defaultAuthorityCellConnectionFile, writeAuthorityCellConnection } from "./client/config.js";
 import { loadAuthorityCellConnection } from "./client/config.js";
 import { checkAuthorityCellLive } from "./client/http.js";
+import { composeAuthorityServeStdioRuntime } from "./host/stdio-context.js";
 
 interface AuthorityClientRuntime {
   readonly platform?: NodeJS.Platform;
@@ -290,15 +291,19 @@ async function authorityServe(args: Readonly<{ opts: Record<string, string> }>):
     const digest = authorityDigest(value);
     return Object.freeze({ grant: value, digest, signerId: "local-gate", signature: signAuthorityDigest(gateSigner.privateKey, "delegation-grant", digest) });
   } }) : undefined;
-  const authorityRuntime = await createLocalAuthorityRuntime(loaded.config, {
+  const localRuntimeOptions = {
     ...(certificationConfig ? {
       sourceReadAdapter: createFounderCertificationSourceAdapter({ config: certificationConfig, handles: { githubIssue: "certification_github_issue", cloudflareRecord: "certification_cloudflare_record", slackChannel: "certification_slack_channel" } }),
       dispatchAdapter: createFounderJsonHttpsDispatchAdapter({ config: certificationConfig }),
     } : {}),
     ...(delegation ? { delegation } : {}),
-  });
+  };
+  const composed = serveMode.transport === "stdio" ? await composeAuthorityServeStdioRuntime(loaded.config, principalRegistry, context => context ? createStdioBoundLocalAuthorityRuntime(loaded.config, context, localRuntimeOptions) : createLocalAuthorityRuntime(loaded.config, localRuntimeOptions)) : undefined;
+  const stdioExecutionContext = composed?.executionContext;
+  const authorityRuntime = composed?.runtime ?? await createLocalAuthorityRuntime(loaded.config, localRuntimeOptions);
   const runtime: AuthorityHostRuntime = {
     directOutcomeAliases: authorityRuntime.directOutcomeAliases,
+    requiresAuthenticatedExecutionContext: authorityRuntime.requiresAuthenticatedExecutionContext,
     outcome: authorityRuntime.outcome,
     status: authorityRuntime.status,
     jobsSearch: authorityRuntime.jobsSearch,
@@ -316,7 +321,7 @@ async function authorityServe(args: Readonly<{ opts: Record<string, string> }>):
       return { requestId, verdict: "accepted", reasonCode: "staged", lifecycleState: "staged", commitment: staged.commitment };
     },
   };
-  const server = createAuthorityHostServer(loaded.config, runtime, principalRegistry ? { principalRegistry } : {});
+  const server = createAuthorityHostServer(loaded.config, runtime, { ...(principalRegistry ? { principalRegistry } : {}), ...(stdioExecutionContext ? { stdioExecutionContext } : {}) });
   if (serveMode.transport === "http") {
     await server.startHttp(serveMode.port, serveMode.host);
     console.error(JSON.stringify({ status: "ready", transport: "http", host: serveMode.host, port: serveMode.port }));

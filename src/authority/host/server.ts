@@ -13,6 +13,7 @@ type AuthorityContext = { readonly tenant: string; readonly requester: string; r
 
 export interface AuthorityHostRuntime {
   readonly directOutcomeAliases?: readonly string[];
+  readonly requiresAuthenticatedExecutionContext?: boolean;
   readonly outcome: (alias: string, input: unknown, context: AuthorityContext) => Promise<AuthorityIngressOutcome>;
   readonly status: (input: unknown, context: AuthorityContext) => Promise<AuthorityIngressOutcome>;
   readonly jobsSearch?: (input: unknown, context: AuthorityContext) => Promise<unknown>;

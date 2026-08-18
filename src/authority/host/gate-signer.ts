@@ -14,6 +14,9 @@ export interface LocalGateSigner {
  * is first activated. The file is intentionally private-key-only: the public
  * key is derived on every start and is placed into the in-memory trust roots.
  * Existing malformed material is never replaced.
+ * First creation requires same-filesystem hard-link/no-replace support and fails
+ * closed when the filesystem cannot provide that atomic publication boundary.
+ * Rotating this key invalidates outstanding opaque job references by design.
  */
 export async function loadOrCreateLocalGateSigner(file: string): Promise<LocalGateSigner> {
   const resolved = path.resolve(file);

@@ -68,6 +68,10 @@ $env:CODEX_HOME = "C:\Users\you\.reelier\codex-certification\home"
 
 Do not invent or manually copy the ten `rat_...` session values. They must be issued by the Authority Cell against the real task grants and installed as `<profile>.token` files in the private session-credential directory. The Cell stores only their hashes in its append-only principal registry. Configure `ingress.principalRegistryFile` in `authority.yml`; do not combine it with the single-bearer mode.
 
+For stdio job discovery, configure `ingress.stdioPrincipalCredentialRef` as an `env:<NAME>` or absolute `file:<path>` reference to exactly one issued short-lived credential. It is valid only with `principalRegistryFile`; startup resolves it before MCP construction and refuses missing, expired, revoked, or tenant/requester/Authority-Cell/Job-Card drift. The token and resolved context are never MCP inputs.
+
+The local gate key is also the keyed namespace for opaque `jobRef` values. Rotating it intentionally invalidates every outstanding reference; clients must run search and load again and must never fall back to a raw alias or Job ID. Initial key publication requires a filesystem that supports same-filesystem hard-link creation with atomic no-replace semantics. If that guarantee is unavailable, Authority Cell startup fails closed rather than publishing an ambiguous identity.
+
 After the human-signed root task and all nine child grants exist, activate the ten sessions from the Cell's durable delegation tree:
 
 ```powershell
