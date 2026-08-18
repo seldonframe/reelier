@@ -16,11 +16,13 @@ import { cloudflareDnsRecordSetManifest, cloudflareDnsRecordSetDefinition, creat
 import { neonDatabaseMigrationManifest, neonDatabaseMigrationDefinition, createNeonDatabaseMigrationSourceResolver, reconcileNeonDatabaseMigration } from "./neon/index.js";
 import { cloudflareTokenRollManifest, cloudflareTokenRollDefinition, createCloudflareTokenRollSourceResolver, reconcileCloudflareTokenRoll } from "./cloudflare-token/index.js";
 import { informationFlowManifest, informationFlowDefinition, createInformationFlowSourceResolver, reconcileInformationFlowCommit } from "./information-flow/index.js";
+import { githubReleasePacks, createGitHubReleaseSourceResolvers } from "./github-release/index.js";
+import type { RegisteredSourceResolver } from "../authority/source.js";
 
 export interface FirstPartyPack {
   readonly manifest: Readonly<Record<string, unknown>>;
   readonly definition: StaticPackDefinition;
-  readonly resolver: ReturnType<typeof createGitHubIssueLabelsSourceResolver> | ReturnType<typeof createSlackChannelTopicSourceResolver> | ReturnType<typeof createGmailSourceResolver> | ReturnType<typeof createStripeSourceResolver> | ReturnType<typeof createVercelDeploymentReleaseSourceResolver> | ReturnType<typeof createCloudflareDnsRecordSourceResolver> | ReturnType<typeof createNeonDatabaseMigrationSourceResolver> | ReturnType<typeof createCloudflareTokenRollSourceResolver> | ReturnType<typeof createInformationFlowSourceResolver>;
+  readonly resolver: RegisteredSourceResolver;
   readonly reconcile: (...args: any[]) => any;
 }
 
@@ -34,13 +36,14 @@ export const cloudflareDnsRecordSetPack: FirstPartyPack = Object.freeze({ manife
 export const neonDatabaseMigrationPack: FirstPartyPack = Object.freeze({ manifest: neonDatabaseMigrationManifest, definition: neonDatabaseMigrationDefinition, resolver: createNeonDatabaseMigrationSourceResolver(), reconcile: reconcileNeonDatabaseMigration });
 export const cloudflareTokenRollPack: FirstPartyPack = Object.freeze({ manifest: cloudflareTokenRollManifest, definition: cloudflareTokenRollDefinition, resolver: createCloudflareTokenRollSourceResolver(), reconcile: reconcileCloudflareTokenRoll });
 export const informationFlowPack: FirstPartyPack = Object.freeze({ manifest: informationFlowManifest, definition: informationFlowDefinition, resolver: createInformationFlowSourceResolver(), reconcile: reconcileInformationFlowCommit });
-export const firstPartyPacks = Object.freeze([githubIssueLabelsPack, slackChannelTopicPack, gmailReplyPack, gmailLabelsPack, stripeRefundPack, vercelDeploymentReleasePack, cloudflareDnsRecordSetPack, neonDatabaseMigrationPack, cloudflareTokenRollPack, informationFlowPack]);
+export const firstPartyPacks = Object.freeze([githubIssueLabelsPack, ...githubReleasePacks, slackChannelTopicPack, gmailReplyPack, gmailLabelsPack, stripeRefundPack, vercelDeploymentReleasePack, cloudflareDnsRecordSetPack, neonDatabaseMigrationPack, cloudflareTokenRollPack, informationFlowPack]);
 
 export function createFirstPartyPackRegistry(): StaticPackRegistry { return createStaticPackRegistry(firstPartyPacks.map(pack => pack.definition)); }
-export function createFirstPartySourceRegistry(tenant: string): SourceRegistry { return createSourceRegistry([createGitHubIssueLabelsSourceResolver(tenant), createSlackChannelTopicSourceResolver(tenant), createGmailSourceResolver(tenant), createGmailSourceResolver(tenant, true), createStripeSourceResolver(tenant), createVercelDeploymentReleaseSourceResolver(tenant), createCloudflareDnsRecordSourceResolver(tenant), createNeonDatabaseMigrationSourceResolver(tenant), createCloudflareTokenRollSourceResolver(tenant), createInformationFlowSourceResolver(tenant)]); }
+export function createFirstPartySourceRegistry(tenant: string): SourceRegistry { return createSourceRegistry([createGitHubIssueLabelsSourceResolver(tenant), ...createGitHubReleaseSourceResolvers(tenant), createSlackChannelTopicSourceResolver(tenant), createGmailSourceResolver(tenant), createGmailSourceResolver(tenant, true), createStripeSourceResolver(tenant), createVercelDeploymentReleaseSourceResolver(tenant), createCloudflareDnsRecordSourceResolver(tenant), createNeonDatabaseMigrationSourceResolver(tenant), createCloudflareTokenRollSourceResolver(tenant), createInformationFlowSourceResolver(tenant)]); }
 export function firstPartyPackForAlias(alias: string): FirstPartyPack | undefined { return firstPartyPacks.find(pack => pack.definition.alias === alias); }
 
 export { githubIssueLabelsManifest, githubIssueLabelsDefinition, createGitHubIssueLabelsSourceResolver, compileGitHubIssueLabels, parseGitHubIssueLabelsPolicy, validateGitHubIssueLabelsChoices, reconcileGitHubIssueLabels } from "./github/index.js";
+export * from "./github-release/index.js";
 export { slackChannelTopicManifest, slackChannelTopicDefinition, createSlackChannelTopicSourceResolver, compileSlackChannelTopic, parseSlackChannelTopicPolicy, validateSlackChannelTopicChoices, reconcileSlackChannelTopic } from "./slack-topic/index.js";
 export { gmailReplySendAlias, gmailThreadLabelsAlias, parseGmailReplyPolicy, parseGmailLabelsPolicy, compileGmailReply, compileGmailLabels, reconcileGmailReply, reconcileGmailLabels, createGmailSourceResolver, gmailReplyDefinition, gmailLabelsDefinition, gmailReplyManifest, gmailLabelsManifest } from "./gmail/index.js";
 export { stripeRefundIssueAlias, parseStripeRefundPolicy, compileStripeRefund, reconcileStripeRefund, createStripeSourceResolver, stripeRefundDefinition, stripeManifest } from "./stripe/index.js";

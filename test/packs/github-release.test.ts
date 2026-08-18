@@ -35,11 +35,11 @@ test("GitHub release registers four isolated empty-choice outcomes with host-own
     assert.throws(() => definition.validateChoices({ repository: "attacker/repo" }), /choices.*empty/i);
     const allocationId = `release-${effect}-01`;
     const allocationDigest = authorityDigest({ allocationId, effect, maxEffects: 1 });
-    const policy = definition.parsePolicy({ allocationDigest, allocationId, authorizationHandleDigest: authorityDigest({ handle: "release_auth_1" }), effect, maxEffects: 1 });
+    const policy = definition.parsePolicy({ allocationDigest, allocationId, authorizationHandleDigest: authorityDigest({ handle: "release_auth_1" }), effect, maxEffects: 1 }) as Record<string, unknown>;
     const compiled = definition.compile({ contract: {} as never, source: { projection: { authorizationHandle: "release_auth_1" } } as never, choices: {}, policy, now: new Date(0), connectorAccount: { connectorId: "github", accountId: "host" } }) as Record<string, unknown>;
     assert.equal(compiled.endpointId, `github.release.${effect}`);
     assert.equal(JSON.stringify(compiled).includes("seldonframe/reelier"), false);
     assert.equal(JSON.stringify(compiled).includes("0.32.1"), false);
-    assert.throws(() => definition.parsePolicy({ ...policy, effect: "candidate-branch" }), /effect|policy/i);
+    assert.throws(() => definition.parsePolicy({ ...policy, effect: effect === "candidate-branch" ? "draft-pr" : "candidate-branch" }), /effect|policy/i);
   }
 });

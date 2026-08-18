@@ -10,6 +10,10 @@ export interface SemanticOutcomeCatalogEntry {
 /** The stable product vocabulary. Provider packs map into these classes; they do not redefine them. */
 export const semanticOutcomeCatalog: readonly SemanticOutcomeCatalogEntry[] = Object.freeze([
   { alias: "github_issue_labels_set_v1", semanticClass: "record_state_set_v1", provider: "github", supported: true },
+  { alias: "github_release_candidate_publish_v1", semanticClass: "deployment_release_v1", provider: "github", supported: true },
+  { alias: "github_release_pr_ensure_v1", semanticClass: "deployment_release_v1", provider: "github", supported: true },
+  { alias: "github_release_pr_merge_v1", semanticClass: "deployment_release_v1", provider: "github", supported: true },
+  { alias: "github_release_tag_create_v1", semanticClass: "deployment_release_v1", provider: "github", supported: true },
   { alias: "slack_channel_topic_set_v1", semanticClass: "record_state_set_v1", provider: "slack", supported: true },
   { alias: "gmail_reply_send_v1", semanticClass: "communication_commit_v1", provider: "gmail", supported: true },
   { alias: "gmail_thread_labels_set_v1", semanticClass: "record_state_set_v1", provider: "gmail", supported: true },
