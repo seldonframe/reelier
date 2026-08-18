@@ -180,6 +180,24 @@ test("closed release parsing rejects unknown fields, accessors, prototypes, inva
   assert.throws(() => verifyReleaseAuthorizationBundleV1({ ...release, policy: arrayPrototype }, verifier, new Date("2026-08-18T06:00:00.000Z")), /prototype|plain/i);
 });
 
+test("deep parsing refuses every non-inert array shape without invoking custom methods", () => {
+  const attacks: Array<(paths: any[]) => void> = [
+    paths => Object.defineProperty(paths, Symbol("hidden"), { value: "secret" }),
+    paths => Object.defineProperty(paths, "hidden", { value: "secret", enumerable: false }),
+    paths => { delete paths[1]; },
+    paths => Object.defineProperty(paths, "map", { value: () => { throw new Error("invoked attacker map"); }, enumerable: false }),
+  ];
+  for (const attack of attacks) {
+    const release = releaseInputs();
+    const poisoned = structuredClone(release.policy);
+    attack(poisoned.value.allowedPaths as any[]);
+    assert.throws(
+      () => verifyReleaseAuthorizationBundleV1({ ...release, policy: poisoned }, verifier, new Date("2026-08-18T06:00:00.000Z")),
+      error => error instanceof TypeError && !/invoked attacker/.test(error.message),
+    );
+  }
+});
+
 test("canonical JSON parsing rejects duplicate keys and every noncanonical byte representation", () => {
   const release = releaseInputs();
   const canonical = JSON.stringify(release.authorization);
@@ -200,6 +218,81 @@ test("receipt graph keeps every evidence lane distinct and succeeds only when al
     const graph = createSignedReleaseReceiptGraphV1(releaseReceiptGraph(nonSuccess), signer);
     const parsed = verifyReleaseReceiptGraphV1(graph, verifier, release.authorization.digest);
     assert.deepEqual(evaluateReleaseReceiptGraphV1(parsed.value), { completeness: "unchecked", status: "incomplete", success: false });
+  }
+});
+
+test("each required receipt lane independently prevents success when it is not verified", () => {
+  const release = releaseInputs();
+  const selectors: Array<(graph: ReturnType<typeof releaseReceiptGraph>) => { status: ReleaseEvidenceStatus }> = [
+    graph => graph.candidate.branch,
+    graph => graph.candidate.pullRequest,
+    graph => graph.merge.exactSha,
+    graph => graph.tag.immutableRef,
+    graph => graph.npm.integrity,
+    graph => graph.npm.provenance,
+    graph => graph.mcpRegistry.version,
+    graph => graph.ghcr.immutableManifest,
+    graph => graph.ghcr.tags,
+    graph => graph.installedChecks.windows,
+    graph => graph.installedChecks.linux,
+    graph => graph.human.authorization,
+    graph => graph.human.interruptions,
+    graph => graph.human.exceptions,
+    graph => graph.human.postReleaseReview,
+  ];
+  for (const select of selectors) {
+    const value = releaseReceiptGraph();
+    select(value).status = "failed";
+    const graph = createSignedReleaseReceiptGraphV1(value, signer);
+    const parsed = verifyReleaseReceiptGraphV1(graph, verifier, release.authorization.digest);
+    assert.equal(evaluateReleaseReceiptGraphV1(parsed.value).success, false);
+  }
+});
+
+test("digest-shaped maker assertions and empty zero-event lists are not verifier evidence", () => {
+  const release = releaseInputs();
+  const signed = createSignedReleaseReceiptGraphV1(releaseReceiptGraph(), signer);
+  assert.throws(
+    () => (verifyReleaseReceiptGraphV1 as any)(signed, verifier, release.authorization.digest, []),
+    /evidence|verifier|signed|missing/i,
+  );
+});
+
+test("candidate quality verdicts require distinct signed CI verifier evidence", () => {
+  const release = releaseInputs();
+  assert.throws(
+    () => (verifyReleaseAuthorizationBundleV1 as any)(release, verifier, new Date("2026-08-18T06:00:00.000Z"), []),
+    /quality|evidence|verifier|signed|missing/i,
+  );
+});
+
+test("authorization verification refuses before issuedAt", () => {
+  const release = releaseInputs();
+  assert.throws(
+    () => verifyReleaseAuthorizationBundleV1(release, verifier, new Date("2026-08-18T04:59:59.999Z")),
+    /issued|not yet valid/i,
+  );
+});
+
+test("candidate manifest freezes the complete production workflow path set and permits equal byte digests", () => {
+  const release = releaseInputs();
+  const expected = [
+    ".github/workflows/ci.yml",
+    ".github/workflows/docker-publish.yml",
+    ".github/workflows/mcp-publish.yml",
+    ".github/workflows/npm-publish.yml",
+  ];
+  const paths = release.candidateManifest.value.workflowCommitments.map(item => item.path);
+  assert.deepEqual(paths, expected);
+
+  const equalBytes = structuredClone(release.candidateManifest.value);
+  (equalBytes as any).workflowCommitments = equalBytes.workflowCommitments.map(item => ({ ...item, digest: digest("b") }));
+  assert.doesNotThrow(() => createSignedStagedCandidateManifestV1(equalBytes, signer));
+
+  for (let index = 0; index < expected.length; index += 1) {
+    const omitted = structuredClone(release.candidateManifest.value);
+    (omitted.workflowCommitments as any[]).splice(index, 1);
+    assert.throws(() => createSignedStagedCandidateManifestV1(omitted, signer), /workflow|path|exact/i);
   }
 });
 
