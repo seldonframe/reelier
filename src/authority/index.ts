@@ -3,6 +3,7 @@ export * from "./types.js";
 export { authorityCanonicalBytes, authorityDigest, parseAuthorityWire, parseCanonicalAuthorityJson, parsePortableAuthorityEvidence, assertAcceptedDecisionContext, decisionContextPresence } from "./wire.js";
 export { AUTHORITY_ADAPTER_CONTRACT_V1, AUTHORITY_ADAPTER_CONTRACT_V1_DIGEST, verifyAuthorityAdapterContractV1, type AuthorityAdapterContractV1 } from "./adapter-contract.js";
 export { signAuthorityDigest, verifyAuthoritySignature } from "./crypto.js";
+export * from "./release-contracts.js";
 export { createAuthorityEvidence, createAuthorityReceipt, createAuthorityReceiptBundle, parseAuthorityReceiptBundle, digestAuthorityReceiptBundle, authorityEvidenceCanonicalBytes } from "./evidence.js";
 export { verifyAuthorityReceiptBundle, verifyAuthorityReceipt, type AuthorityReceiptVerificationOptions, type VerifiedAuthorityReceiptBundle } from "./verify.js";
 export {

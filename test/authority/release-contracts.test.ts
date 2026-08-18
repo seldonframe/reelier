@@ -170,6 +170,14 @@ test("closed release parsing rejects unknown fields, accessors, prototypes, inva
   const invalidRef = structuredClone(release.candidateManifest);
   (invalidRef.value as any).branch = "refs/heads/main";
   assert.throws(() => verifyReleaseAuthorizationBundleV1({ ...release, candidateManifest: invalidRef }, verifier, new Date("2026-08-18T06:00:00.000Z")), /branch|candidate/i);
+
+  const reorderedAllocations = structuredClone(release.authorization);
+  (reorderedAllocations.value.effectAllocations as any).reverse();
+  assert.throws(() => parseSignedReleaseAuthorizationBundleV1(reorderedAllocations), /ordering|allocations/i);
+
+  const arrayPrototype = structuredClone(release.policy);
+  Object.setPrototypeOf(arrayPrototype.value.allowedPaths, null);
+  assert.throws(() => verifyReleaseAuthorizationBundleV1({ ...release, policy: arrayPrototype }, verifier, new Date("2026-08-18T06:00:00.000Z")), /prototype|plain/i);
 });
 
 test("canonical JSON parsing rejects duplicate keys and every noncanonical byte representation", () => {
@@ -213,6 +221,10 @@ test("receipt graph rejects upgraded completeness, lane aliasing, duplicates, an
   const tampered = structuredClone(signed);
   (tampered.value.npm.integrity as any).status = "failed";
   assert.throws(() => verifyReleaseReceiptGraphV1(tampered, verifier, release.authorization.digest), /digest|signature|tamper/i);
+
+  const invalidSignature = structuredClone(signed);
+  (invalidSignature.signature as any).sig = Buffer.alloc(64).toString("base64");
+  assert.throws(() => verifyReleaseReceiptGraphV1(invalidSignature, verifier, release.authorization.digest), /signature/i);
 
   const staleInstalledCheck = releaseReceiptGraph();
   staleInstalledCheck.installedChecks.windows.freshUntil = "2026-08-18T16:59:59.999Z";
