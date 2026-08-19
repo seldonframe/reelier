@@ -339,19 +339,45 @@ test("verifier refuses a tampered canonical artifact string", () => {
   } finally { rmSync(root, { force: true, recursive: true }); }
 });
 
-test("verifier refuses a non-canonical artifact encoding of an otherwise valid value", () => {
+// Each artifact gets its own case: three of the four signed artifacts are held canonical by the
+// barrel's parseCanonicalSigned* entries, but the operation plan and the quality-evidence wrapper
+// have no exported canonical-string parser, so the script's own guard is the only thing on them.
+// A case that perturbs several artifacts at once would pass on the barrel's guard alone and leave
+// the hand-rolled ones unpinned.
+for (const target of [
+  { key: ARTIFACT_FILE_NAMES.authorization, label: "authorization bundle (barrel-guarded)" },
+  { key: ARTIFACT_FILE_NAMES.candidateManifest, label: "candidate manifest (barrel-guarded)" },
+  { key: ARTIFACT_FILE_NAMES.policy, label: "release policy (barrel-guarded)" },
+  { key: ARTIFACT_FILE_NAMES.operationPlan, label: "operation plan (script-guarded)" },
+  { key: ARTIFACT_FILE_NAMES["ci-coverage"], label: "quality evidence wrapper (script-guarded)" },
+]) {
+  test(`verifier refuses a non-canonical encoding of the ${target.label}`, () => {
+    const root = scratch();
+    try {
+      const files = buildArtifactSet();
+      files[target.key] = JSON.stringify(JSON.parse(files[target.key]!), null, 2);
+      const dir = writeArtifactDir(root, files);
+      const pinPath = path.join(root, "pin.json");
+      writeFileSync(pinPath, trustPin(authorityKeys.publicKey), "utf8");
+      const run = runVerifier(["--dir", dir, "--trust-pin", pinPath, "--tag", "v0.32.1"]);
+      assert.equal(run.status, 1, run.stdout);
+      assert.match(run.stderr, /canonical/i);
+    } finally { rmSync(root, { force: true, recursive: true }); }
+  });
+}
+
+test("verifier refuses a non-canonical encoding of the inner signed quality evidence", () => {
   const root = scratch();
   try {
     const files = buildArtifactSet();
-    for (const key of [ARTIFACT_FILE_NAMES.operationPlan, ARTIFACT_FILE_NAMES.authorization]) {
-      files[key] = JSON.stringify(JSON.parse(files[key]!), null, 2);
-    }
+    const wrapper = JSON.parse(files[ARTIFACT_FILE_NAMES["ci-mutation"]]!);
+    files[ARTIFACT_FILE_NAMES["ci-mutation"]] = canonical({ evidence: JSON.stringify(JSON.parse(wrapper.evidence), null, 2), verifier: wrapper.verifier });
     const dir = writeArtifactDir(root, files);
     const pinPath = path.join(root, "pin.json");
     writeFileSync(pinPath, trustPin(authorityKeys.publicKey), "utf8");
     const run = runVerifier(["--dir", dir, "--trust-pin", pinPath, "--tag", "v0.32.1"]);
-    assert.equal(run.status, 1);
-    assert.match(run.stderr, /canonical/i);
+    assert.equal(run.status, 1, run.stdout);
+    assert.match(run.stderr, /ci-mutation quality evidence .* is not RFC 8785\/JCS canonical/);
   } finally { rmSync(root, { force: true, recursive: true }); }
 });
 
@@ -480,8 +506,13 @@ test("verifier accepts and refuses the single-file transport envelope on the sam
   } finally { rmSync(root, { force: true, recursive: true }); }
 });
 
-test("verifier refuses the retired --from-tag carrier with an actionable pointer", () => {
-  const run = runVerifier(["--from-tag", "v0.32.1"]);
-  assert.equal(run.status, 1);
-  assert.match(run.stderr, /--ref refs\/reelier\/release-authorizations/);
+test("verifier refuses the retired --from-tag carrier and the retired inline signer flags", () => {
+  const retiredCarrier = runVerifier(["--from-tag", "v0.32.1"]);
+  assert.equal(retiredCarrier.status, 1);
+  assert.match(retiredCarrier.stderr, /--ref refs\/reelier\/release-authorizations/);
+  for (const flag of ["--signer-id", "--signer-spki-base64"]) {
+    const run = runVerifier([flag, "whatever"]);
+    assert.equal(run.status, 1);
+    assert.match(run.stderr, /--trust-pin/);
+  }
 });
