@@ -58,6 +58,11 @@ const publicationConfirmers = new WeakMap<GitHubReleaseRunnerV1, (input: GitHubR
 const authoritativeHeadConfirmers = new WeakMap<GitHubReleaseRunnerV1, (query: DurableDispatchPublicationQueryV1, head: DurableDispatchPublicationHeadV1) => Promise<boolean>>();
 const runnerControllers = new WeakMap<GitHubReleaseRunnerV1, Readonly<{ execute(input: GitHubReleaseRunRequestV1): Promise<GitHubReleaseRunResultV1>; reconcile(input: GitHubReleaseRunRequestV1): Promise<GitHubReleaseRunResultV1>; recover(): Promise<readonly string[]> }>>();
 
+/** @internal Host composition brand check. Deliberately absent from the public package barrel. */
+export function assertGitHubReleaseRunnerCapability(value: GitHubReleaseRunnerV1): void {
+  if (!value || !runnerControllers.has(value) || !publicationConfirmers.has(value) || !authoritativeHeadConfirmers.has(value)) throw new TypeError("GitHub release runner capability is absent or unrecognized");
+}
+
 export async function createGitHubReleaseRunner(input: Readonly<{ rootDir: string; journalSigner: Readonly<{ signerId: string; privateKey: KeyObject; publicKey: KeyObject }>; evidenceSigner: ReleaseContractSignerV1; authorizationResolver: (handle: string) => Promise<GitHubReleaseAuthorizationContextV1 | VerifiedReleaseAuthorizationV1>; provider: GitHubReleaseProviderV1; now: () => Date }>): Promise<GitHubReleaseRunnerV1> {
   if (!path.isAbsolute(input.rootDir)) throw new TypeError("GitHub release runner root must be absolute");
   await mkdir(input.rootDir, { recursive: true });

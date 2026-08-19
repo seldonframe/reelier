@@ -41,7 +41,8 @@ import { admittedProfileGovernanceState, assertAdmittedProfileGovernance, assert
 import { definitionRegistrationDigest } from "../pack.js";
 import { loadProfileGovernanceFromOperatorTrust } from "./profile-governance-loader.js";
 import type { AuthorityExecutionContextV1 } from "../types.js";
-import { createGitHubReleaseHostComposition, type GitHubReleaseRunnerV1 } from "./github-release-runner.js";
+import { assertGitHubReleaseRunnerCapability, createGitHubReleaseHostComposition, type GitHubReleaseRunnerV1 } from "./github-release-runner.js";
+import { githubReleaseAliases } from "../../packs/github-release/manifest.js";
 
 /** Builds the local host from signed-artifact boundaries. An empty workspace is intentionally
  * usable for discovery and status, but every Outcome refuses until a signed contract is installed. */
@@ -91,6 +92,20 @@ export async function createLocalAuthorityRuntime(config: AuthorityHostConfig, o
   assertLinuxAuthorityCellHost();
   assertLocalRuntimeOptions(options);
   return createLocalAuthorityRuntimeCore(config,options,{});
+}
+
+export type GitHubReleaseAuthorityRuntimeOptions = Omit<LocalAuthorityRuntimeOptions, "githubReleaseRunner">;
+
+/** Public production composition for the four reviewed release Outcomes. The runner is a
+ * host-owned capability; agents receive only the ordinary authenticated opaque-job surface. */
+export async function createGitHubReleaseAuthorityRuntime(config: AuthorityHostConfig, runner: GitHubReleaseRunnerV1, options: GitHubReleaseAuthorityRuntimeOptions = {}): Promise<LocalAuthorityRuntime> {
+  assertLinuxAuthorityCellHost();
+  assertLocalRuntimeOptions(options);
+  if (Object.prototype.hasOwnProperty.call(options, "githubReleaseRunner")) throw new TypeError("production release runtime accepts exactly one host-owned release runner capability");
+  const configured = [...config.definitions].sort(), expected = [...githubReleaseAliases].sort();
+  if (authorityDigest(configured) !== authorityDigest(expected)) throw new TypeError("production release runtime requires exactly the four reviewed GitHub release definitions");
+  assertGitHubReleaseRunnerCapability(runner);
+  return createLocalAuthorityRuntimeCore(config, Object.freeze({ ...options, githubReleaseRunner: runner }), {});
 }
 
 /** Package-internal production stdio composition: pins every catalog call to one resolved principal session. */
