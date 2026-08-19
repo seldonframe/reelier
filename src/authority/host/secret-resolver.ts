@@ -71,7 +71,17 @@ export function createSecretResolver(options?: SecretResolverOptions): SlotSecre
       if (reference.startsWith("file:")) {
         const file = reference.slice(5);
         if (!file) throw new TypeError("empty secret file reference");
-        const value = (await readFile(file, "utf8")).trim();
+        let raw: string;
+        try {
+          raw = await readFile(file, "utf8");
+        } catch {
+          // Never let a raw readFile failure (ENOENT, EACCES, ...) through: its message can carry
+          // the file path, and a mistyped `env:` reference pasted as `file:ghp_...` turns that path
+          // tail into what looks like a leaked token. Mirror the `env:` branch's fixed string
+          // exactly — no path, no errno text — since this is the same "unavailable" outcome.
+          throw new Error("secret is unavailable");
+        }
+        const value = raw.trim();
         if (!value) throw new Error("secret is empty");
         if (value.includes("\0")) throw new Error("secret contains invalid data");
         return value;

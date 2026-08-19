@@ -180,7 +180,13 @@ function closedRecord(value: unknown, keys: readonly string[], label: string, op
   const record = plainRecord(value, label);
   const present = Object.keys(record);
   const permitted = new Set([...keys, ...optionalKeys]);
-  if (present.some(key => !permitted.has(key)) || keys.some(key => !Object.prototype.hasOwnProperty.call(record, key))) throw new TypeError(`${label} is not a closed record`);
+  // Presence is read from the SAME enumerated key set (`present`, i.e. `Object.keys`) the
+  // unknown-key half above walks — never `hasOwnProperty`, which answers true for a NON-ENUMERABLE
+  // own property too. A required key hiding behind `Object.defineProperty(..., {enumerable: false})`
+  // would satisfy `hasOwnProperty` while staying invisible to `Object.keys`, so the two halves of
+  // "closed" would disagree about what "present" means and the record would slip through.
+  const presentSet = new Set(present);
+  if (present.some(key => !permitted.has(key)) || keys.some(key => !presentSet.has(key))) throw new TypeError(`${label} is not a closed record`);
   return record;
 }
 
