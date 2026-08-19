@@ -41,3 +41,18 @@ test("file receipt publication persists an authoritative durable chain across re
     assert.deepEqual(await restarted.loadDurableHead!({ v: "reelier.durable-dispatch-publication-query/v1", identity, ledgerState: "dispatched", sendStarted: true }), head, "exact readback converges");
   } finally { restore(); }
 });
+
+test("durable file publication snapshots the reservation identity before caller mutation", async () => {
+  const restore = __testSetAuthorityCellHostPlatform("linux"), root = await mkdtemp(path.join(tmpdir(), "reelier-durable-identity-snapshot-"));
+  const identity: any = { v: "reelier.durable-dispatch-publication-identity/v1", reservationId: "r1", tenant: "tenant_1", requestDigest: "sha256:" + "2".repeat(64), capabilityDigest: "sha256:" + "3".repeat(64), effectDigest: state.effectDigest, routeAuthorityDigest: "sha256:" + "4".repeat(64), expectedDispatchedRequestDigest: "sha256:" + "5".repeat(64), reservationIntentDigest: "sha256:" + "6".repeat(64) };
+  try {
+    const publication = createFileReceiptPublication({ rootDir: root });
+    const rootReceipt = await publication.publishReservation!({ phase: "reservation", identity, state, outcome: { kind: "ambiguous", resultDigest: "sha256:" + "7".repeat(64) }, dispatchedRequestDigest: null, priorReceiptDigest: null });
+    const original = { ...identity };
+    identity.effectDigest = "sha256:" + "9".repeat(64);
+    const terminal = await publication.publish({ phase: "dispatch", state, outcome: { kind: "acknowledged", resultDigest: "sha256:" + "8".repeat(64) }, dispatchedRequestDigest: original.expectedDispatchedRequestDigest, priorReceiptDigest: rootReceipt.receiptRef });
+    const head = await createFileReceiptPublication({ rootDir: root }).loadDurableHead!({ v: "reelier.durable-dispatch-publication-query/v1", identity: original, ledgerState: "dispatched", sendStarted: true });
+    assert.equal(head?.receiptRef, terminal.receiptRef);
+    assert.equal(head?.identity.effectDigest, state.effectDigest);
+  } finally { restore(); }
+});
