@@ -21,6 +21,7 @@ import { materializedHttpRequestDigest, type MaterializedHttpRequestProjectionV1
 import { createFileReceiptPublication } from "../../src/authority/host/receipts.js";
 import { createReservedDispatchHandle } from "../../src/authority/gate.js";
 import { __testSetAuthorityCellHostPlatform } from "../../src/authority/host/platform.js";
+import { normalizeReservationPublicationId } from "../../src/authority/host/reservation-identity.js";
 import { bindableTempRoot } from "./bindable-root.js";
 
 const t0 = Date.parse("2026-08-19T12:00:00.000Z");
@@ -57,6 +58,21 @@ function preparedAdapter(reservation: ReservationSnapshot): DispatchAdapter {
   const description = { v: "reelier.prepared-dispatch-description/v1" as const, routeDigest: routeAuthority.routeDigest, materializedRequestDigest, projection, authorityGeneration: sha("d"), authorityExpiresAt: routeAuthority.authorityExpiresAt, absoluteDeadlineMs: 60_000, reservationId: reservation.reservationId, allocationId: "unbound" };
   return { async prepare() { return createPreparedDispatch({ description, monotonicNow: () => 0, wallClockNow: () => t0, send: async () => ({ kind: "acknowledged" as const, resultDigest: sha("8") }) }); }, async dispatch() { throw new Error("the prepared path is required"); } };
 }
+
+test("the shared normalizer maps only the raw ledger form and passes everything else through", () => {
+  const hex = "4".repeat(64);
+  assert.equal(normalizeReservationPublicationId(`sha256:${hex}`), `reservation_${hex}`);
+  // Idempotent: the canonical form is a fixed point, so every seam may apply it more than once.
+  assert.equal(normalizeReservationPublicationId(`reservation_${hex}`), `reservation_${hex}`);
+  for (const passthrough of [
+    "request_1",
+    `sha256:${"4".repeat(63)}`,
+    `sha256:${"A".repeat(64)}`,
+    `sha256.${hex}`, // the portable-wire convention is a different namespace and is NOT introduced here
+    `sha512:${hex}`,
+    "",
+  ]) assert.equal(normalizeReservationPublicationId(passthrough), passthrough);
+});
 
 test("a raw ledger-minted reservation publishes its durable root and reaches a terminal receipt", async () => {
   const restore = __testSetAuthorityCellHostPlatform("linux");

@@ -4,6 +4,7 @@ import path from "node:path";
 import { authorityCanonicalBytes, authorityDigest } from "../wire.js";
 import type { DispatchPublication, DispatchRequestState, DispatchOutcome, DurableDispatchPublicationHeadV1, DurableDispatchPublicationIdentityV1, DurableDispatchPublicationQueryV1 } from "./dispatch.js";
 import { assertLinuxAuthorityCellHost } from "./platform.js";
+import { normalizeReservationPublicationId } from "./reservation-identity.js";
 
 /**
  * Minimal local publication used by the host before a terminal ledger transition.
@@ -112,7 +113,7 @@ export function createFileReceiptPublication(options: FileReceiptPublicationOpti
   };
   const publishDurable = async (identity: DurableDispatchPublicationIdentityV1, input: Readonly<{ phase: "reservation" | "dispatch" | "ambiguous" | "reconcile"; state: DispatchRequestState; outcome: DispatchOutcome; dispatchedRequestDigest: string | null; priorReceiptDigest: string | null }>) => {
     assertDurableIdentity(identity);
-    if (identity.reservationId !== input.state.reservation.reservationId || identity.effectDigest !== input.state.effectDigest) throw new TypeError("durable publication state identity mismatch");
+    if (identity.reservationId !== normalizeReservationPublicationId(input.state.reservation.reservationId) || identity.effectDigest !== input.state.effectDigest) throw new TypeError("durable publication state identity mismatch");
     const current = await loadDurableChain(root, identity, "root-or-terminal");
     const terminalKind = input.phase === "reservation" ? null : input.phase === "reconcile" ? "reconciled" : input.outcome.kind;
     if (input.phase === "reservation") {
@@ -144,17 +145,17 @@ export function createFileReceiptPublication(options: FileReceiptPublicationOpti
   return Object.freeze({
     async publishReservation(input: Parameters<NonNullable<DispatchPublication["publishReservation"]>>[0]) {
       const identity = snapshotDurableIdentity(input.identity);
-      identities.set(identity.reservationId, identity);
+      identities.set(normalizeReservationPublicationId(identity.reservationId), identity);
       return publishDurable(identity, { phase: input.phase, state: input.state, outcome: input.outcome, dispatchedRequestDigest: input.dispatchedRequestDigest, priorReceiptDigest: input.priorReceiptDigest });
     },
     async loadDurableHead(query: DurableDispatchPublicationQueryV1, expect: "terminal" | "root-or-terminal" = "terminal") {
       assertDurableQuery(query);
       const identity = snapshotDurableIdentity(query.identity);
-      identities.set(identity.reservationId, identity);
+      identities.set(normalizeReservationPublicationId(identity.reservationId), identity);
       return loadDurableChain(root, identity, expect);
     },
     async publish(input: Readonly<{ phase: "dispatch" | "cancelled" | "ambiguous" | "reconcile"; state: DispatchRequestState; outcome: DispatchOutcome; dispatchedRequestDigest: string | null; priorReceiptDigest?: string | null }>) {
-      const identity = identities.get(input.state.reservation.reservationId);
+      const identity = identities.get(normalizeReservationPublicationId(input.state.reservation.reservationId));
       if (!identity) return legacyPublish(input);
       if (input.phase === "cancelled") throw new TypeError("a durable send-started chain cannot publish cancellation");
       return publishDurable(identity, { phase: input.phase, state: input.state, outcome: input.outcome, dispatchedRequestDigest: input.dispatchedRequestDigest, priorReceiptDigest: input.priorReceiptDigest ?? null });

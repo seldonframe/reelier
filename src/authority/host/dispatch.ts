@@ -7,6 +7,7 @@ import { assertLinuxAuthorityCellHost } from "./platform.js";
 import { unwrapReservedDispatchHandle, type ReservedDispatchHandle } from "../gate.js";
 import type { AuthorityLedger, LedgerState, StoredReservationIntent } from "../ledger.js";
 import { authorizeCoordinatorCommittedLease, authorizeCoordinatorReconciliation, consumePreparedDispatch, type PreparedDispatch, type PreparedDispatchDescriptionV1 } from "./prepared-dispatch.js";
+import { normalizeReservationPublicationId } from "./reservation-identity.js";
 import type { AuthenticatedProviderIdentityV1 } from "./github-account-identity.js";
 import type { AuthorityLatencyPhase, AuthorityLatencyRecorder } from "./latency.js";
 
@@ -335,7 +336,7 @@ function durableIdentity(reservation:import("../ledger.js").ReservationSnapshot)
   if(!route)throw new TypeError("durable publication requires route authority");
   const required=[intent.requestDigest,intent.capabilityDigest,intent.effectDigest,route.expectedMaterializedRequestDigest];
   if(typeof intent.tenant!=="string"||intent.tenant.length===0||required.some(value=>typeof value!=="string"||!/^sha256:(?!0{64}$)[0-9a-f]{64}$/.test(value)))throw new TypeError("durable publication identity is invalid");
-  const reservationId=/^sha256:[0-9a-f]{64}$/.test(reservation.reservationId)?`reservation_${reservation.reservationId.slice(7)}`:reservation.reservationId;
+  const reservationId=normalizeReservationPublicationId(reservation.reservationId);
   return Object.freeze({v:"reelier.durable-dispatch-publication-identity/v1",reservationId,tenant:intent.tenant,requestDigest:intent.requestDigest,capabilityDigest:intent.capabilityDigest,effectDigest:intent.effectDigest,routeAuthorityDigest:authorityDigest(route),expectedDispatchedRequestDigest:route.expectedMaterializedRequestDigest,reservationIntentDigest:authorityDigest({v:"reelier.dispatch-reservation-intent/v1",intent})});
 }
 

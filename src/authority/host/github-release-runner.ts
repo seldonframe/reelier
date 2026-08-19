@@ -7,6 +7,7 @@ import { authorityDigest } from "../wire.js";
 import { assertVerifiedReleaseAuthorizationV1, type ReleaseContractSignerV1, type ReleaseProviderEffectV1, type VerifiedReleaseAuthorizationV1 } from "../release-contracts.js";
 import { consumeCoordinatorPublicationCall, type DispatchAdapter, type DispatchOutcome, type DispatchPublication, type DispatchRequestState, type DurableDispatchPublicationHeadV1, type DurableDispatchPublicationQueryV1 } from "./dispatch.js";
 import { consumeCoordinatorReconciliation, createPreparedDispatch, describePreparedDispatch } from "./prepared-dispatch.js";
+import { normalizeReservationPublicationId } from "./reservation-identity.js";
 import { createSignedJournal, type SignedJournal, type SignedJournalEventV1 } from "./signed-journal.js";
 import { createGitHubReleaseProviderEvidence } from "./github-release-evidence.js";
 
@@ -192,8 +193,9 @@ function createGitHubReleaseDispatchAdapter(input: Readonly<{ runner: GitHubRele
     try { body = exactRecord(JSON.parse(Buffer.from(String(effect.bodyBase64), "base64").toString("utf8")), ["authorizationHandle"], "release dispatch body"); }
     catch { return failure("release-dispatch-body-invalid"); }
     try {
-      const request = { alias, allocationId: execution.allocationId, authorizationHandle: String(body.authorizationHandle), requestId: state.reservation.reservationId, semanticsDigest: state.effectDigest };
-      if (reconcileOnly) consumeCoordinatorReconciliation(state, { reservationId: request.requestId, allocationId: request.allocationId, effectDigest: request.semanticsDigest });
+      const request = { alias, allocationId: execution.allocationId, authorizationHandle: String(body.authorizationHandle), requestId: normalizeReservationPublicationId(state.reservation.reservationId), semanticsDigest: state.effectDigest };
+      // The coordinator minted the reconciliation stamp with the RAW ledger id, so it is checked raw.
+      if (reconcileOnly) consumeCoordinatorReconciliation(state, { reservationId: state.reservation.reservationId, allocationId: request.allocationId, effectDigest: request.semanticsDigest });
       const result = reconcileOnly ? await controller.reconcile(request) : await controller.execute(request);
       if (result.status === "verified") return Object.freeze({ kind: "acknowledged", resultDigest: result.evidenceDigest!, reconciliationStatus: "matched", normalizedProjectionDigest: result.evidenceDigest });
       if (result.status === "pending-reconciliation") return Object.freeze({ kind: "ambiguous", resultDigest: authorityDigest(result), reconciliationStatus: "unavailable", normalizedProjectionDigest: null });
@@ -232,14 +234,14 @@ function createGitHubReleaseReceiptPublication(input: Readonly<{ runner: GitHubR
       // below is what pins this head to the reservation phase.
       const head = await input.publication.loadDurableHead!({ v: "reelier.durable-dispatch-publication-query/v1", identity: value.identity, ledgerState: "dispatched", sendStarted: true }, "root-or-terminal");
       if (!head || head.phase !== "reservation" || head.terminalKind !== null || head.receiptRef !== published.receiptRef || head.evidenceDigest !== published.evidenceDigest || head.reservationReceiptRef !== published.receiptRef || head.priorReceiptRef !== null || authorityDigest(head.identity) !== authorityDigest(value.identity)) throw new TypeError("release reservation receipt is not the authoritative durable head");
-      identities.set(value.state.reservation.reservationId, Object.freeze({ identity: value.identity, reservationReceiptRef: published.receiptRef }));
+      identities.set(normalizeReservationPublicationId(value.state.reservation.reservationId), Object.freeze({ identity: value.identity, reservationReceiptRef: published.receiptRef }));
       return published;
     },
     async loadDurableHead(query: Parameters<NonNullable<DispatchPublication["loadDurableHead"]>>[0], expect: Parameters<NonNullable<DispatchPublication["loadDurableHead"]>>[1]) {
       const head = await input.publication.loadDurableHead!(query, expect);
       if (head) {
         if (authorityDigest(head.identity) !== authorityDigest(query.identity)) throw new TypeError("release durable publication head identity conflicts");
-        identities.set(query.identity.reservationId, Object.freeze({ identity: query.identity, reservationReceiptRef: head.reservationReceiptRef }));
+        identities.set(normalizeReservationPublicationId(query.identity.reservationId), Object.freeze({ identity: query.identity, reservationReceiptRef: head.reservationReceiptRef }));
         await confirmAuthoritativeHead(query, head);
       }
       return head;
@@ -249,12 +251,12 @@ function createGitHubReleaseReceiptPublication(input: Readonly<{ runner: GitHubR
       const published = await input.publication.publish(value);
       const effect = isPlain(value.state.effect) ? value.state.effect : null;
       if ((value.phase === "dispatch" || value.phase === "reconcile") && value.outcome.kind === "acknowledged" && effect && typeof effect.endpointId === "string" && ENDPOINTS[effect.endpointId]) {
-        const durable = identities.get(value.state.reservation.reservationId);
+        const durable = identities.get(normalizeReservationPublicationId(value.state.reservation.reservationId));
         if (!durable) throw new TypeError("release receipt authoritative identity is absent");
         const head = await input.publication.loadDurableHead!({ v: "reelier.durable-dispatch-publication-query/v1", identity: durable.identity, ledgerState: value.phase === "dispatch" ? "dispatched" : "ambiguous", sendStarted: true }, "terminal");
         const terminalKind = value.phase === "dispatch" ? "acknowledged" : "reconciled";
         if (!head || head.phase !== value.phase || head.terminalKind !== terminalKind || head.receiptRef !== published.receiptRef || head.evidenceDigest !== published.evidenceDigest || head.reservationReceiptRef !== durable.reservationReceiptRef || head.priorReceiptRef !== (value.priorReceiptDigest ?? null) || authorityDigest(head.identity) !== authorityDigest(durable.identity)) throw new TypeError("release receipt publication is not the authoritative durable head");
-        await confirmPublication({ requestId: value.state.reservation.reservationId, providerEvidenceDigest: value.outcome.resultDigest, receiptRef: published.receiptRef, receiptEvidenceDigest: published.evidenceDigest });
+        await confirmPublication({ requestId: normalizeReservationPublicationId(value.state.reservation.reservationId), providerEvidenceDigest: value.outcome.resultDigest, receiptRef: published.receiptRef, receiptEvidenceDigest: published.evidenceDigest });
       }
       return published;
     },
