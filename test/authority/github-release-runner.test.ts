@@ -342,8 +342,14 @@ test("runner does not expose a forgeable receipt-publication confirmation method
 test("restart confirms an authoritative terminal receipt committed before the publication callback crashed", async () => {
   const restore = __testSetAuthorityCellHostPlatform("linux"), root = await mkdtemp(path.join(os.tmpdir(), "reelier-release-post-publication-cut-"));
   const fixture = releaseAuthorityFixture(), journalKeys = generateKeyPairSync("ed25519");
-  let blobWrites = 0;
-  const provider = candidateProvider({ createBlob: async ({ contentBase64 }: any) => { blobWrites += 1; return { sha: blobSha(Buffer.from(contentBase64, "base64")) }; } });
+  let blobWrites = 0, pullRequest: any = null;
+  const provider = candidateProvider({
+    createBlob: async ({ contentBase64 }: any) => { blobWrites += 1; return { sha: blobSha(Buffer.from(contentBase64, "base64")) }; },
+    findPullRequests: async () => pullRequest ? [pullRequest] : [],
+    createPullRequest: async (metadata: any) => (pullRequest = { base: metadata.base, body: metadata.body, draft: metadata.draft, head: metadata.head, headSha: gitSha("a"), mergeCommitSha: null, merged: false, number: 1, title: metadata.title }),
+    markPullRequestReady: async () => (pullRequest = { ...pullRequest, draft: false }),
+    getPullRequest: async () => pullRequest,
+  });
   try {
     const createRunner = () => createGitHubReleaseRunner({ rootDir: path.join(root, "runner"), journalSigner: { signerId: "release-journal-2026", privateKey: journalKeys.privateKey, publicKey: journalKeys.publicKey }, evidenceSigner: fixture.evidenceSigner, authorizationResolver: async () => fixture.context, provider, now: () => new Date("2026-08-18T06:00:00.000Z") });
     const firstRunner = await createRunner();

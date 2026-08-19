@@ -5,7 +5,7 @@ import path from "node:path";
 import { isProxy } from "node:util/types";
 import { authorityDigest } from "../wire.js";
 import { assertVerifiedReleaseAuthorizationV1, type ReleaseContractSignerV1, type ReleaseProviderEffectV1, type VerifiedReleaseAuthorizationV1 } from "../release-contracts.js";
-import { consumeCoordinatorPublicationCall, type DispatchAdapter, type DispatchOutcome, type DispatchPublication, type DispatchRequestState } from "./dispatch.js";
+import { consumeCoordinatorPublicationCall, type DispatchAdapter, type DispatchOutcome, type DispatchPublication, type DispatchRequestState, type DurableDispatchPublicationHeadV1, type DurableDispatchPublicationQueryV1 } from "./dispatch.js";
 import { consumeCoordinatorReconciliation, createPreparedDispatch, describePreparedDispatch } from "./prepared-dispatch.js";
 import { createSignedJournal, type SignedJournal, type SignedJournalEventV1 } from "./signed-journal.js";
 import { createGitHubReleaseProviderEvidence } from "./github-release-evidence.js";
@@ -55,6 +55,7 @@ export interface GitHubReleasePublicationConfirmationV1 { readonly requestId: st
 export interface GitHubReleaseRunnerV1 { run(input: GitHubReleaseRunRequestV1): Promise<GitHubReleaseRunResultV1>; recover(): Promise<readonly string[]> }
 
 const publicationConfirmers = new WeakMap<GitHubReleaseRunnerV1, (input: GitHubReleasePublicationConfirmationV1) => Promise<void>>();
+const authoritativeHeadConfirmers = new WeakMap<GitHubReleaseRunnerV1, (query: DurableDispatchPublicationQueryV1, head: DurableDispatchPublicationHeadV1) => Promise<boolean>>();
 const runnerControllers = new WeakMap<GitHubReleaseRunnerV1, Readonly<{ execute(input: GitHubReleaseRunRequestV1): Promise<GitHubReleaseRunResultV1>; reconcile(input: GitHubReleaseRunRequestV1): Promise<GitHubReleaseRunResultV1>; recover(): Promise<readonly string[]> }>>();
 
 export async function createGitHubReleaseRunner(input: Readonly<{ rootDir: string; journalSigner: Readonly<{ signerId: string; privateKey: KeyObject; publicKey: KeyObject }>; evidenceSigner: ReleaseContractSignerV1; authorizationResolver: (handle: string) => Promise<GitHubReleaseAuthorizationContextV1 | VerifiedReleaseAuthorizationV1>; provider: GitHubReleaseProviderV1; now: () => Date }>): Promise<GitHubReleaseRunnerV1> {
@@ -143,11 +144,28 @@ export async function createGitHubReleaseRunner(input: Readonly<{ rootDir: strin
       await step(journal, { requestId: String(value.requestId), semanticsDigest: events[0]!.semanticsDigest } as GitHubReleaseRunRequestV1, "receipt-published", data);
     });
   };
+  const confirmAuthoritativeHead = async (query: DurableDispatchPublicationQueryV1, head: DurableDispatchPublicationHeadV1): Promise<boolean> => {
+    if (!((head.phase === "dispatch" && head.terminalKind === "acknowledged") || (head.phase === "reconcile" && head.terminalKind === "reconciled"))) return false;
+    const events = await journal.load(query.identity.reservationId);
+    if (events.length === 0) return false;
+    const first = events[0]!, alias = first.data.alias as GitHubReleaseAliasV1, effect = ALIASES[alias];
+    if (!effect || first.semanticsDigest !== query.identity.effectDigest || first.data.allocationId === undefined || first.data.authorizationHandle === undefined || first.data.authorizationDigest === undefined || first.data.effect !== effect) throw new TypeError("release durable head request, semantics, or alias binding conflicts");
+    const context = normalizeContext(await input.authorizationResolver(String(first.data.authorizationHandle))), authorization = context.authorization;
+    assertVerifiedReleaseAuthorizationV1(authorization);
+    if (authorization.authorization.digest !== first.data.authorizationDigest) throw new TypeError("release durable head authorization binding conflicts");
+    const allocation = authorization.authorization.value.effectAllocations.find(candidate => candidate.effect === effect);
+    if (!allocation || allocation.maxEffects !== 1 || allocation.allocationId !== first.data.allocationId || allocation.allocationDigest !== first.data.allocationDigest) throw new TypeError("release durable head allocation binding conflicts");
+    const terminal = [...events].reverse().find(event => TERMINAL.has(event.phase));
+    if (!terminal || !DIGEST.test(String(terminal.data.evidenceDigest ?? ""))) throw new TypeError("release durable head terminal evidence is absent");
+    await confirmPublication({ requestId: query.identity.reservationId, providerEvidenceDigest: String(terminal.data.evidenceDigest), receiptRef: head.receiptRef, receiptEvidenceDigest: head.evidenceDigest });
+    return true;
+  };
   const runner = Object.freeze({
     async run(_request: GitHubReleaseRunRequestV1): Promise<GitHubReleaseRunResultV1> { throw new TypeError("release provider execution requires the coordinator prepared-dispatch capability"); },
     async recover(): Promise<readonly string[]> { throw new TypeError("release recovery requires the coordinator reconciliation capability"); },
   });
   publicationConfirmers.set(runner, confirmPublication);
+  authoritativeHeadConfirmers.set(runner, confirmAuthoritativeHead);
   runnerControllers.set(runner, Object.freeze({ execute: run, reconcile: request => runOnce(request, true), recover }));
   return runner;
 }
@@ -197,7 +215,8 @@ function createGitHubReleaseDispatchAdapter(input: Readonly<{ runner: GitHubRele
  * succeeds. Later release effects require this confirmation, not provider evidence alone. */
 function createGitHubReleaseReceiptPublication(input: Readonly<{ runner: GitHubReleaseRunnerV1; publication: DispatchPublication }>): DispatchPublication {
   const confirmPublication = publicationConfirmers.get(input.runner);
-  if (!confirmPublication) throw new TypeError("release runner publication capability is unavailable");
+  const confirmAuthoritativeHead = authoritativeHeadConfirmers.get(input.runner);
+  if (!confirmPublication || !confirmAuthoritativeHead) throw new TypeError("release runner publication capability is unavailable");
   if (!input.publication.publishReservation || !input.publication.loadDurableHead) throw new TypeError("release receipt confirmation requires an authoritative durable publication head");
   const identities = new Map<string, Readonly<{ identity: any; reservationReceiptRef: string }>>();
   return Object.freeze({
@@ -211,7 +230,11 @@ function createGitHubReleaseReceiptPublication(input: Readonly<{ runner: GitHubR
     },
     async loadDurableHead(query: Parameters<NonNullable<DispatchPublication["loadDurableHead"]>>[0]) {
       const head = await input.publication.loadDurableHead!(query);
-      if (head) identities.set(query.identity.reservationId, Object.freeze({ identity: query.identity, reservationReceiptRef: head.reservationReceiptRef }));
+      if (head) {
+        if (authorityDigest(head.identity) !== authorityDigest(query.identity)) throw new TypeError("release durable publication head identity conflicts");
+        identities.set(query.identity.reservationId, Object.freeze({ identity: query.identity, reservationReceiptRef: head.reservationReceiptRef }));
+        await confirmAuthoritativeHead(query, head);
+      }
       return head;
     },
     async publish(value: Parameters<DispatchPublication["publish"]>[0]) {
