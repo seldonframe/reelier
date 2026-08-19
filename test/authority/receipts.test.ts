@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createFileReceiptPublication } from "../../src/authority/host/receipts.js";
@@ -39,6 +39,40 @@ test("file receipt publication persists an authoritative durable chain across re
     const head = await restarted.loadDurableHead!({ v: "reelier.durable-dispatch-publication-query/v1", identity, ledgerState: "dispatched", sendStarted: true });
     assert.deepEqual(head, { v: "reelier.durable-dispatch-publication-head/v1", identity, receiptRef: terminal.receiptRef, evidenceDigest: terminal.evidenceDigest, reservationReceiptRef: rootReceipt.receiptRef, priorReceiptRef: rootReceipt.receiptRef, phase: "dispatch", terminalKind: "acknowledged" });
     assert.deepEqual(await restarted.loadDurableHead!({ v: "reelier.durable-dispatch-publication-query/v1", identity, ledgerState: "dispatched", sendStarted: true }), head, "exact readback converges");
+  } finally { restore(); }
+});
+
+async function publishedDurableChain(root: string) {
+  const identity = { v: "reelier.durable-dispatch-publication-identity/v1", reservationId: "r1", tenant: "tenant_1", requestDigest: "sha256:" + "2".repeat(64), capabilityDigest: "sha256:" + "3".repeat(64), effectDigest: state.effectDigest, routeAuthorityDigest: "sha256:" + "4".repeat(64), expectedDispatchedRequestDigest: "sha256:" + "5".repeat(64), reservationIntentDigest: "sha256:" + "6".repeat(64) } as const;
+  const publication = createFileReceiptPublication({ rootDir: root });
+  const rootReceipt = await publication.publishReservation!({ phase: "reservation", identity, state, outcome: { kind: "ambiguous", resultDigest: "sha256:" + "7".repeat(64) }, dispatchedRequestDigest: null, priorReceiptDigest: null });
+  const terminal = await publication.publish({ phase: "dispatch", state, outcome: { kind: "acknowledged", resultDigest: "sha256:" + "8".repeat(64) }, dispatchedRequestDigest: identity.expectedDispatchedRequestDigest, priorReceiptDigest: rootReceipt.receiptRef });
+  const durableDir = path.join(root, (await readdir(root)).find(name => name.startsWith("durable-"))!);
+  const names = (await readdir(durableDir)).filter(name => /^node-[0-9a-f]{64}\.json$/.test(name));
+  const nodes = await Promise.all(names.map(async name => ({ name, node: JSON.parse(await readFile(path.join(durableDir, name), "utf8")) })));
+  return { identity, rootReceipt, terminal, durableDir, terminalNode: nodes.find(entry => entry.node.head.phase === "dispatch")! };
+}
+
+test("restart validation rejects a forged evidence digest and a forged terminal kind", async () => {
+  const restore = __testSetAuthorityCellHostPlatform("linux");
+  const root = await mkdtemp(path.join(tmpdir(), "reelier-durable-forge-"));
+  try {
+    const { identity, durableDir, terminalNode } = await publishedDurableChain(root);
+    const query = { v: "reelier.durable-dispatch-publication-query/v1", identity, ledgerState: "dispatched", sendStarted: true } as const;
+    await writeFile(path.join(durableDir, terminalNode.name), JSON.stringify({ ...terminalNode.node, head: { ...terminalNode.node.head, evidenceDigest: "sha256:" + "e".repeat(64) } }));
+    await assert.rejects(() => createFileReceiptPublication({ rootDir: root }).loadDurableHead!(query), /invalid or conflicting/);
+    await writeFile(path.join(durableDir, terminalNode.name), JSON.stringify({ ...terminalNode.node, head: { ...terminalNode.node.head, terminalKind: "definitive-failure" } }));
+    await assert.rejects(() => createFileReceiptPublication({ rootDir: root }).loadDurableHead!(query), /invalid or conflicting/);
+  } finally { restore(); }
+});
+
+test("a dispatched query refuses a chain whose terminal dirent is lost", async () => {
+  const restore = __testSetAuthorityCellHostPlatform("linux");
+  const root = await mkdtemp(path.join(tmpdir(), "reelier-durable-lost-dirent-"));
+  try {
+    const { identity, durableDir, terminalNode } = await publishedDurableChain(root);
+    await unlink(path.join(durableDir, terminalNode.name));
+    await assert.rejects(() => createFileReceiptPublication({ rootDir: root }).loadDurableHead!({ v: "reelier.durable-dispatch-publication-query/v1", identity, ledgerState: "dispatched", sendStarted: true }), /terminal receipt is absent/);
   } finally { restore(); }
 });
 
