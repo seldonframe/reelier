@@ -72,6 +72,23 @@ test("prepared dispatch rejects mismatched commit lease before send", async () =
   assert.equal(sends, 0);
 });
 
+test("coordinator-only prepared dispatch refuses a publicly forged commit lease", async () => {
+  let sends = 0;
+  const prepared = createPreparedDispatch({
+    description: {
+      v: "reelier.prepared-dispatch-description/v1", routeDigest: digest("route"), materializedRequestDigest: digest(projection), projection,
+      authorityGeneration: "generation-1", authorityExpiresAt: new Date(Date.now() + 60_000).toISOString(), absoluteDeadlineMs: performance.now() + 60_000,
+      reservationId: "reservation-1", allocationId: "allocation-1",
+    },
+    send: async () => { sends += 1; return { kind: "acknowledged", resultDigest: digest("result") }; },
+    requireCoordinatorCommit: true,
+  } as never);
+  const forged = createDispatchCommitLease({ reservationId: "reservation-1", allocationId: "allocation-1", preparedDigest: prepared.description.materializedRequestDigest,
+    authorityGeneration: "generation-1", authorityExpiresAt: prepared.description.authorityExpiresAt, absoluteDeadlineMs: prepared.description.absoluteDeadlineMs, commitGeneration: "forged" });
+  await assert.rejects(() => consumePreparedDispatch(prepared, forged), /coordinator|commit capability/i);
+  assert.equal(sends, 0);
+});
+
 test("concurrent joint consumption claims both capabilities before either send", async () => {
   let sends = 0;
   const prepared = createPreparedDispatch({
@@ -171,7 +188,7 @@ test("coordinator uses durable prepared commit boundary and recovery never resen
     async recover() { return { ok: true, reservations: [reservation], highWaterMark: null, topology: { directorySync: "verified" } }; },
   };
   const adapter: any = {
-    async prepare() { events.push("prepare"); return createPreparedDispatch({ description: { v: "reelier.prepared-dispatch-description/v1", routeDigest: digest("route"), materializedRequestDigest: digest(projection), projection, authorityGeneration: "generation-1", authorityExpiresAt: new Date(Date.now() + 60_000).toISOString(), absoluteDeadlineMs: performance.now() + 60_000, reservationId: "reservation-1", allocationId: "allocation-1" }, send: async () => { events.push("send"); return { kind: "acknowledged", resultDigest: digest("result") }; } }); },
+    async prepare() { events.push("prepare"); return createPreparedDispatch({ description: { v: "reelier.prepared-dispatch-description/v1", routeDigest: digest("route"), materializedRequestDigest: digest(projection), projection, authorityGeneration: "generation-1", authorityExpiresAt: new Date(Date.now() + 60_000).toISOString(), absoluteDeadlineMs: performance.now() + 60_000, reservationId: "reservation-1", allocationId: "allocation-1" }, send: async () => { events.push("send"); return { kind: "acknowledged", resultDigest: digest("result") }; }, requireCoordinatorCommit: true } as never); },
     async dispatch() { throw new Error("legacy dispatch must not run"); },
   };
   const handle = createReservedDispatchHandle({ reservation, effect: {}, effectCanonicalBase64: "e30=", effectDigest: digest("effect") });
