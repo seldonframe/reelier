@@ -6,7 +6,7 @@ import type { AuthoritySignature } from "../types.js";
 import { assertLinuxAuthorityCellHost } from "./platform.js";
 import { unwrapReservedDispatchHandle, type ReservedDispatchHandle } from "../gate.js";
 import type { AuthorityLedger, LedgerState, StoredReservationIntent } from "../ledger.js";
-import { consumePreparedDispatch, type PreparedDispatch, type PreparedDispatchDescriptionV1 } from "./prepared-dispatch.js";
+import { authorizeCoordinatorCommittedLease, authorizeCoordinatorReconciliation, consumePreparedDispatch, type PreparedDispatch, type PreparedDispatchDescriptionV1 } from "./prepared-dispatch.js";
 import type { AuthenticatedProviderIdentityV1 } from "./github-account-identity.js";
 import type { AuthorityLatencyPhase, AuthorityLatencyRecorder } from "./latency.js";
 
@@ -128,6 +128,7 @@ export function createDispatchCoordinator(ledger: AuthorityLedger, adapter: Disp
           const rootOutcome=Object.freeze({kind:"ambiguous" as const,resultDigest:authorityDigest({reservationId,phase:"reservation"})});
           reservationRoot=await publication.publishReservation({phase:"reservation",identity,state:rootState,outcome:rootOutcome,dispatchedRequestDigest:null,priorReceiptDigest:null});
         }
+        authorizeCoordinatorCommittedLease(lease);
         let outcome: DispatchOutcome;
         try { certified?.onPhase?.("authority-send-boundary"); outcome = await measureLatency(certified?.latencyRecorder, "authority-send-boundary", () => consumePreparedDispatch(prepared, lease)); certified?.onPhase?.("send"); }
         catch { outcome = { kind: "ambiguous", resultDigest: authorityDigest({ v: "reelier.dispatch-result/v1", reservationId, status: "ambiguous" }) }; }
@@ -217,6 +218,8 @@ export function createDispatchCoordinator(ledger: AuthorityLedger, adapter: Disp
         reconciliationStatus: "not-attempted" as const,
         normalizedProjectionDigest: null,
       });
+      const reconciliationContext = state.reservation.intent.executionContext;
+      if (reconciliationContext) authorizeCoordinatorReconciliation(state, { reservationId, allocationId: reconciliationContext.allocationId, effectDigest: state.effectDigest });
       let outcome = Object.freeze(await adapter.reconcile(state, pending));
       if (outcome.reconciliationStatus === "not-attempted") throw new Error("reconciliation did not produce a verdict");
       const budgetClaim = budgetFor(state);

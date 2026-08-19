@@ -24,7 +24,7 @@ export interface PreparedDispatchDescriptionV1 {
 export interface PreparedDispatch { readonly [preparedBrand]: true; readonly description: PreparedDispatchDescriptionV1 }
 export interface DispatchCommitLease { readonly [commitBrand]: true }
 
-type PreparedState = { readonly description: PreparedDispatchDescriptionV1; readonly send: () => Promise<DispatchOutcome>; readonly monotonicNow: () => number; readonly wallClockNow: () => number };
+type PreparedState = { readonly description: PreparedDispatchDescriptionV1; readonly send: () => Promise<DispatchOutcome>; readonly monotonicNow: () => number; readonly wallClockNow: () => number; readonly requireCoordinatorCommit: boolean };
 type CommitState = {
   readonly reservationId: string; readonly allocationId: string; readonly preparedDigest: string;
   readonly authorityGeneration: string; readonly authorityExpiresAt: string; readonly absoluteDeadlineMs: number; readonly commitGeneration: string;
@@ -33,12 +33,14 @@ type CommitState = {
 
 const preparedStates = new WeakMap<object, PreparedState>();
 const commitStates = new WeakMap<object, CommitState>();
+const coordinatorCommittedLeases = new WeakSet<object>();
+const coordinatorReconciliations = new WeakMap<object, Readonly<{ reservationId: string; allocationId: string; effectDigest: string }>>();
 
-export function createPreparedDispatch(input: Readonly<{ description: PreparedDispatchDescriptionV1; send: () => Promise<DispatchOutcome>; monotonicNow?: () => number; wallClockNow?: () => number }>): PreparedDispatch {
+export function createPreparedDispatch(input: Readonly<{ description: PreparedDispatchDescriptionV1; send: () => Promise<DispatchOutcome>; monotonicNow?: () => number; wallClockNow?: () => number; /** @internal Host-only release boundary. */ requireCoordinatorCommit?: boolean }>): PreparedDispatch {
   if (!input || typeof input !== "object" || typeof input.send !== "function") throw new TypeError("prepared dispatch is invalid");
   const description = validateDescription(input.description);
   const capability = Object.freeze(Object.defineProperty({ [preparedBrand]: true as const } as { [preparedBrand]: true; description: PreparedDispatchDescriptionV1 }, "description", { value: description, enumerable: false, writable: false, configurable: false }));
-  preparedStates.set(capability, { description, send: input.send, monotonicNow: input.monotonicNow ?? (() => performance.now()), wallClockNow: input.wallClockNow ?? (() => Date.now()) });
+  preparedStates.set(capability, { description, send: input.send, monotonicNow: input.monotonicNow ?? (() => performance.now()), wallClockNow: input.wallClockNow ?? (() => Date.now()), requireCoordinatorCommit: input.requireCoordinatorCommit === true });
   return capability;
 }
 
@@ -56,6 +58,25 @@ export function describePreparedDispatch(capability: PreparedDispatch): Prepared
   return state.description;
 }
 
+/** @internal Minted only by DispatchCoordinator after budget consumption and durable commit CAS. */
+export function authorizeCoordinatorCommittedLease(commitLease: DispatchCommitLease): void {
+  if (!commitStates.has(commitLease as object)) throw new TypeError("dispatch commit lease is invalid or consumed");
+  coordinatorCommittedLeases.add(commitLease as object);
+}
+
+/** @internal Binds one reconciliation attempt to a ledger-reread ambiguous reservation. */
+export function authorizeCoordinatorReconciliation(state: object, binding: Readonly<{ reservationId: string; allocationId: string; effectDigest: string }>): void {
+  if (!state || typeof state !== "object" || !binding.reservationId || !binding.allocationId || !DIGEST.test(binding.effectDigest)) throw new TypeError("coordinator reconciliation binding is invalid");
+  coordinatorReconciliations.set(state, Object.freeze({ ...binding }));
+}
+
+/** @internal Consumes the coordinator-only ambiguous-reconciliation authority. */
+export function consumeCoordinatorReconciliation(state: object, expected: Readonly<{ reservationId: string; allocationId: string; effectDigest: string }>): void {
+  const binding = coordinatorReconciliations.get(state);
+  coordinatorReconciliations.delete(state);
+  if (!binding || binding.reservationId !== expected.reservationId || binding.allocationId !== expected.allocationId || binding.effectDigest !== expected.effectDigest) throw new TypeError("release reconciliation requires a coordinator-minted ambiguous-reconcile capability");
+}
+
 /** Jointly consumes both capabilities. The commit callback is the durable send-started boundary. */
 export async function consumePreparedDispatch(prepared: PreparedDispatch, commitLease: DispatchCommitLease): Promise<DispatchOutcome> {
   const state = preparedStates.get(prepared as object);
@@ -63,12 +84,14 @@ export async function consumePreparedDispatch(prepared: PreparedDispatch, commit
   if (!state || !lease) throw new TypeError("prepared dispatch or commit lease is invalid or consumed");
   const description = state.description;
   if (lease.reservationId !== description.reservationId || lease.allocationId !== description.allocationId || lease.preparedDigest !== description.materializedRequestDigest || lease.authorityGeneration !== description.authorityGeneration || lease.authorityExpiresAt !== description.authorityExpiresAt || lease.absoluteDeadlineMs !== description.absoluteDeadlineMs) throw new TypeError("prepared dispatch and commit lease binding mismatch");
+  if (state.requireCoordinatorCommit && !coordinatorCommittedLeases.has(commitLease as object)) throw new TypeError("prepared dispatch requires a coordinator-minted commit capability");
   if (Date.parse(description.authorityExpiresAt) <= state.wallClockNow()) throw new Error("authority lease expired before send");
   if (!Number.isFinite(description.absoluteDeadlineMs) || state.monotonicNow() >= description.absoluteDeadlineMs) throw new Error("dispatch deadline expired before send");
   // Claim both capabilities synchronously, before the first await. Promise races therefore
   // leave exactly one winner and can never invoke the consequential send twice.
   preparedStates.delete(prepared as object);
   commitStates.delete(commitLease as object);
+  coordinatorCommittedLeases.delete(commitLease as object);
   if (lease.commit) await lease.commit(description);
   try { return Object.freeze(await state.send()); }
   catch { return Object.freeze({ kind: "ambiguous" as const, resultDigest: materializedHttpRequestDigest({ ...description.projection, v: "reelier.materialized-http-request/v1" }) }); }
