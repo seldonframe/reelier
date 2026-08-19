@@ -78,6 +78,7 @@ Files touched:
 - `src/packs/index.ts`
 - `src/packs/conformance.ts`
 - `src/packs/semantic.ts`
+- `scripts/build-packs.mjs`
 - `test/authority/github-release-runner.test.ts`
 - `test/authority/local-multi-definition-jobs.test.ts`
 - `test/authority/prepared-dispatch.test.ts`
@@ -90,6 +91,7 @@ Files touched:
 - `test/packs/github-release.test.ts`
 - `test/packs/conformance.test.ts`
 - `test/packs-semantic.test.ts`
+- `test/acceleration-preflight.test.ts`
 
 - Add reviewed definitions for candidate publication, draft-PR ensure, exact-SHA squash merge, and non-force tag creation.
 - Implement exact Git Data/PR/ref readback reconciliation with durable crash boundaries.
