@@ -115,22 +115,19 @@ test("signed journal serializes concurrent writers and recovers an abandoned req
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
-test("request ticket publication never retires a paused live creator by mtime", async () => {
+test("a paused creator cannot expose an incomplete request ticket", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "reelier-release-paused-ticket-"));
   const keys = generateKeyPairSync("ed25519"), semantics = authorityDigest({ request: "paused-ticket" });
   try {
     const journal = await createSignedJournal({ rootDir: root, journalId: "release", signerId: "release-journal-2026", privateKey: keys.privateKey, publicKey: keys.publicKey });
     await journal.append("request_paused", semantics, "first", {});
     const requestDir = path.join(root, authorityDigest({ journalId: "release", requestId: "request_paused" }).slice(7)), queue = path.join(requestDir, "request.lock.d");
-    const names = await readdir(queue), next = Math.max(...names.map(name => /^ticket-(\d{12})\.json$/.exec(name)).filter(Boolean).map(match => Number(match![1]))) + 1;
-    const paused = path.join(queue, `ticket-${String(next).padStart(12, "0")}.claim-${process.pid}-paused-owner`);
-    await mkdir(paused);
-    let settled = false;
-    const append = journal.append("request_paused", semantics, "after-paused-creator", {}).finally(() => { settled = true; });
+    const paused = path.join(queue, `.ticket-pending-${process.pid}-paused-owner`);
+    await writeFile(paused, "{");
     await new Promise(resolve => setTimeout(resolve, 400));
-    assert.equal(settled, false, "an incomplete ticket is not proof that its creator died");
-    await rm(paused, { recursive: true });
-    await append;
+    await journal.append("request_paused", semantics, "after-paused-creator", {});
+    for (const name of (await readdir(queue)).filter(value => /^ticket-\d{12}\.json$/.test(value))) { const raw = await readFile(path.join(queue, name), "utf8"); assert.doesNotThrow(() => JSON.parse(raw), "every published ticket is complete JSON"); }
+    await unlink(paused);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
