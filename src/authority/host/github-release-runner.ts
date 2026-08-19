@@ -152,7 +152,7 @@ export async function createGitHubReleaseRunner(input: Readonly<{ rootDir: strin
 
 /** Routes only the four reviewed release endpoints through the dedicated saga. The ordinary
  * coordinator still performs the actual allocation consumption and receipt publication. */
-export function createGitHubReleaseDispatchAdapter(input: Readonly<{ runner: GitHubReleaseRunnerV1 | null; fallback: DispatchAdapter }>): DispatchAdapter {
+function createGitHubReleaseDispatchAdapter(input: Readonly<{ runner: GitHubReleaseRunnerV1 | null; fallback: DispatchAdapter }>): DispatchAdapter {
   const invoke = async (state: DispatchRequestState, reconcileOnly = false): Promise<DispatchOutcome | null> => {
     const endpointId = inertEndpointId(state.effect);
     const alias = endpointId ? ENDPOINTS[endpointId] : undefined;
@@ -193,7 +193,7 @@ export function createGitHubReleaseDispatchAdapter(input: Readonly<{ runner: Git
 
 /** Confirms the ordinary coordinator's durable receipt only after its configured publication
  * succeeds. Later release effects require this confirmation, not provider evidence alone. */
-export function createGitHubReleaseReceiptPublication(input: Readonly<{ runner: GitHubReleaseRunnerV1; publication: DispatchPublication }>): DispatchPublication {
+function createGitHubReleaseReceiptPublication(input: Readonly<{ runner: GitHubReleaseRunnerV1; publication: DispatchPublication }>): DispatchPublication {
   const confirmPublication = publicationConfirmers.get(input.runner);
   if (!confirmPublication) throw new TypeError("release runner publication capability is unavailable");
   return Object.freeze({
@@ -206,6 +206,14 @@ export function createGitHubReleaseReceiptPublication(input: Readonly<{ runner: 
     },
     ...(input.publication.publishReservation ? { publishReservation: input.publication.publishReservation.bind(input.publication) } : {}),
     ...(input.publication.loadDurableHead ? { loadDurableHead: input.publication.loadDurableHead.bind(input.publication) } : {}),
+  });
+}
+
+/** @internal Local-host composition seam. Deliberately absent from the public package barrel. */
+export function createGitHubReleaseHostComposition(input: Readonly<{ runner: GitHubReleaseRunnerV1 | null; fallback: DispatchAdapter; publication: DispatchPublication }>): Readonly<{ adapter: DispatchAdapter; publication: DispatchPublication }> {
+  return Object.freeze({
+    adapter: createGitHubReleaseDispatchAdapter({ runner: input.runner, fallback: input.fallback }),
+    publication: input.runner ? createGitHubReleaseReceiptPublication({ runner: input.runner, publication: input.publication }) : input.publication,
   });
 }
 

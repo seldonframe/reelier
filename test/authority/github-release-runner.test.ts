@@ -7,7 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import { authorityDigest } from "../../src/authority/wire.js";
 import { createSignedJournal } from "../../src/authority/host/signed-journal.js";
-import { createGitHubReleaseDispatchAdapter, createGitHubReleaseReceiptPublication, createGitHubReleaseRunner } from "../../src/authority/host/github-release-runner.js";
+import { createGitHubReleaseHostComposition, createGitHubReleaseRunner } from "../../src/authority/host/github-release-runner.js";
 import { createDispatchCoordinator } from "../../src/authority/host/dispatch.js";
 import { createDispatchCommitLease, createPreparedDispatch, consumePreparedDispatch } from "../../src/authority/host/prepared-dispatch.js";
 import { createReservedDispatchHandle } from "../../src/authority/gate.js";
@@ -20,6 +20,10 @@ const gitSha = (seed: string) => seed.repeat(40);
 const spki = (key: ReturnType<typeof generateKeyPairSync>["publicKey"]) => key.export({ type: "spki", format: "der" }).toString("base64");
 const spkiDigest = (key: ReturnType<typeof generateKeyPairSync>["publicKey"]) => `sha256:${createHash("sha256").update(key.export({ type: "spki", format: "der" })).digest("hex")}`;
 const blobSha = (bytes: Buffer) => createHash("sha1").update(`blob ${bytes.length}\0`).update(bytes).digest("hex");
+const testFallback = { async dispatch() { return { kind: "definitive-failure" as const, resultDigest: digest("f") }; } };
+const testPublication = { async publish() { return { receiptRef: "receipt_test", evidenceDigest: digest("e") }; } };
+const createGitHubReleaseDispatchAdapter = (input: any) => createGitHubReleaseHostComposition({ ...input, publication: testPublication }).adapter;
+const createGitHubReleaseReceiptPublication = (input: any) => createGitHubReleaseHostComposition({ runner: input.runner, fallback: testFallback, publication: input.publication }).publication;
 const allLanes: ReleaseEvidenceLaneV1[] = ["ci-coverage", "ci-full-tests", "ci-mutation", "candidate-branch", "candidate-pull-request", "ghcr-immutable-manifest", "ghcr-tags", "human-authorization", "human-exceptions", "human-interruptions", "human-post-release-review", "installed-linux", "installed-windows", "mcp-registry-version", "merge-exact-sha", "npm-integrity", "npm-provenance", "tag-immutable-ref"];
 
 function releaseAuthorityFixture() {
@@ -469,7 +473,7 @@ test("candidate branch write refuses base drift observed after durable intent", 
 
 test("dedicated dispatch adapter passes only host-owned allocation and durable semantics", async () => {
   let observed: any = null, fallbackCalls = 0;
-  const adapter = createGitHubReleaseDispatchAdapter({ runner: { recover: async () => [], run: async request => { observed = request; return { status: "verified", phase: "candidate-verified", evidenceDigest: digest("a") }; } }, fallback: { dispatch: async () => { fallbackCalls++; return { kind: "acknowledged", resultDigest: digest("f") }; } } });
+  const adapter = createGitHubReleaseDispatchAdapter({ runner: { recover: async () => [], run: async (request: any) => { observed = request; return { status: "verified", phase: "candidate-verified", evidenceDigest: digest("a") }; } }, fallback: { dispatch: async () => { fallbackCalls++; return { kind: "acknowledged", resultDigest: digest("f") }; } } });
   const effect = { v: "reelier.transport-effect/v1", endpointId: "github.release.candidate-branch", method: "POST", path: "/internal/github-release", query: "", headers: { "Content-Type": "application/json" }, bodyBase64: Buffer.from(JSON.stringify({ authorizationHandle: "release_auth_1" })).toString("base64"), riskClass: "github_release", idempotency: "reconcile-only", preconditions: [], reconciliation: { recipeId: "github_release_authoritative_readback_v1" } };
   const outcome = await adapter.dispatch({ reservation: { reservationId: "reservation_1", state: "reserved" as any, intent: { effectDigest: authorityDigest(effect), effectCanonicalBase64: "", executionContext: { allocationId: "release-candidate-branch-01" } as any } }, effect, effectCanonicalBase64: "", effectDigest: authorityDigest(effect) });
   assert.equal(outcome.kind, "definitive-failure");
