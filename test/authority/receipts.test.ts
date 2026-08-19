@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, readFile, readdir, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { createFileReceiptPublication } from "../../src/authority/host/receipts.js";
+import { createFileReceiptPublication, __testSetReceiptsDurabilityProbe, type ReceiptsDurabilityProbeEventV1 } from "../../src/authority/host/receipts.js";
 import { __testSetAuthorityCellHostPlatform } from "../../src/authority/host/platform.js";
 
 const state = { reservation: { reservationId: "r1", state: "reserved", intent: { effectDigest: "sha256:" + "1".repeat(64) } }, effect: { x: 1 }, effectCanonicalBase64: "e30=", effectDigest: "sha256:" + "1".repeat(64) } as any;
@@ -93,4 +93,19 @@ test("durable file publication snapshots the reservation identity before caller 
     assert.equal(head?.receiptRef, terminal.receiptRef);
     assert.equal(head?.identity.effectDigest, state.effectDigest);
   } finally { restore(); }
+});
+
+test("directory syncs follow node create, durable-dir mkdir, and legacy rename", async () => {
+  const restore = __testSetAuthorityCellHostPlatform("linux");
+  const root = await mkdtemp(path.join(tmpdir(), "reelier-durable-fsync-order-"));
+  const events: ReceiptsDurabilityProbeEventV1[] = [];
+  const restoreProbe = __testSetReceiptsDurabilityProbe(event => events.push(event));
+  try {
+    const identity = { v: "reelier.durable-dispatch-publication-identity/v1", reservationId: "r1", tenant: "tenant_1", requestDigest: "sha256:" + "2".repeat(64), capabilityDigest: "sha256:" + "3".repeat(64), effectDigest: state.effectDigest, routeAuthorityDigest: "sha256:" + "4".repeat(64), expectedDispatchedRequestDigest: "sha256:" + "5".repeat(64), reservationIntentDigest: "sha256:" + "6".repeat(64) } as const;
+    await createFileReceiptPublication({ rootDir: root }).publishReservation!({ phase: "reservation", identity, state, outcome: { kind: "ambiguous", resultDigest: "sha256:" + "7".repeat(64) }, dispatchedRequestDigest: null, priorReceiptDigest: null });
+    assert.deepEqual(events.map(event => `${event.kind}:${event.site}`), ["created:durable-mkdir", "synced:durable-mkdir", "created:node-create", "synced:node-create"]);
+    events.length = 0;
+    await createFileReceiptPublication({ rootDir: root }).publish({ phase: "dispatch", state, outcome: { kind: "acknowledged", resultDigest: "sha256:" + "8".repeat(64) }, dispatchedRequestDigest: "sha256:" + "3".repeat(64) });
+    assert.deepEqual(events.map(event => `${event.kind}:${event.site}`), ["created:legacy-rename", "synced:legacy-rename"]);
+  } finally { restoreProbe(); restore(); }
 });
