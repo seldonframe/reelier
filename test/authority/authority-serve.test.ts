@@ -384,7 +384,10 @@ test("a pre-side-effect release-runner refusal creates no keys, journals, or sta
 
 test("the Fly Authority Cell starts the authenticated HTTP transport with durable state", async () => {
   const manifest = await readFile(path.resolve("infra/fly/authority-cell/authority-cell.toml"), "utf8");
-  assert.match(manifest, /authority serve --transport http --host 0\.0\.0\.0 --port 8080/);
+  assert.match(
+    manifest,
+    /app = "authority serve --transport http --host 0\.0\.0\.0 --port 8080 --path \/data\/authority\/authority\.yml --release-runner-config \/data\/authority\/release-runner\.config\.json"/,
+  );
   assert.match(manifest, /destination = "\/data"/);
   assert.doesNotMatch(manifest, /(?:TOKEN|PASSWORD|SECRET)\s*=\s*"[^\"]+"/i);
 });

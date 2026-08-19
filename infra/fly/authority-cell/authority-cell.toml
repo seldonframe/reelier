@@ -4,7 +4,7 @@ primary_region = "yyz"
   dockerfile = "../../../Dockerfile"
 
 [processes]
-  app = "authority serve --transport http --host 0.0.0.0 --port 8080 --path /data/authority/authority.yml --certification-config /data/authority/certification.local.json"
+  app = "authority serve --transport http --host 0.0.0.0 --port 8080 --path /data/authority/authority.yml --release-runner-config /data/authority/release-runner.config.json"
 
 [env]
   REELIER_TOPOLOGY_MODE = "managed"
