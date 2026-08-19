@@ -106,7 +106,7 @@ async function governedRun(runner: Awaited<ReturnType<typeof createGitHubRelease
     const coordinator = createDispatchCoordinator(ledger, adapter, undefined, undefined, { async consumeOnce() {}, async returnOnce() {}, async releaseConsumedOnce() {} });
     outcome = reconcile ? await coordinator.reconcile(request.requestId) : await coordinator.dispatch(createReservedDispatchHandle({ ...state, reservation }));
   } finally { restore(); }
-  if (outcome.kind === "definitive-failure") throw new TypeError(outcome.reason ?? "release operation refused");
+  if (outcome.kind === "definitive-failure") throw new TypeError(`${outcome.reason ?? "release operation refused"} [${outcome.reconciliationStatus ?? "unknown"}]`);
   return outcome.kind === "acknowledged" ? { status: "verified", phase: "verified", evidenceDigest: outcome.resultDigest } : { status: "pending-reconciliation", phase: "pending", evidenceDigest: null };
 }
 
@@ -636,6 +636,16 @@ for (const boundary of ["createBlob", "createTree", "createCommit", "createBranc
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 }
+
+test("a later candidate refusal reports earlier content-addressed writes as a partial logical Outcome", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "reelier-release-partial-candidate-"));
+  const fixture = releaseAuthorityFixture(), keys = generateKeyPairSync("ed25519");
+  const provider = candidateProvider({ createTree: async () => { throw { v: "reelier.github-release-provider-fault/v1", kind: "definitive-refusal", reason: "tree refused" }; } });
+  try {
+    const runner = await createGitHubReleaseRunner({ rootDir: root, journalSigner: { signerId: "release-journal-2026", privateKey: keys.privateKey, publicKey: keys.publicKey }, evidenceSigner: fixture.evidenceSigner, authorizationResolver: async () => fixture.context, provider, now: () => new Date("2026-08-18T06:00:00.000Z") });
+    await assert.rejects(() => governedRun(runner, { alias: "github_release_candidate_publish_v1", allocationId: "release-candidate-branch-01", authorizationHandle: "release_auth_1", requestId: "partial_tree_refusal", semanticsDigest: authorityDigest({ partial: "tree" }) }), /tree refused.*conflict/i);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
 
 for (const scenario of ["base-drift", "branch-conflict", "duplicate-pr", "failed-check", "wrong-check-workflow", "tampered-merge-tree", "tampered-merge-parent", "tag-conflict"] as const) {
   test(`deterministic ${scenario} refuses without semantic widening`, async () => {
