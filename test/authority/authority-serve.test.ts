@@ -143,9 +143,14 @@ test("the release runner operator config refuses every shape that is not an exac
   assert.throws(() => parseGitHubReleaseRunnerOperatorConfig({ ...valid, releaseAuthority: missingAuthoritySigner }), /authorization authority is not a closed record/i);
   // JSON.parse materializes "__proto__" as an OWN enumerable key, so it is a refused key, never a
   // silently-ignored one — and it never reaches Object.prototype.
+  const protoOwnKeysBeforeProbe = Object.getOwnPropertyNames(Object.prototype);
   assert.throws(() => parseGitHubReleaseRunnerOperatorConfig(JSON.parse('{"__proto__":{}}')), /operator config is not a closed record/i);
   assert.throws(() => parseGitHubReleaseRunnerOperatorConfig({ ...valid, releaseAuthority: JSON.parse('{"__proto__":{}}') }), /authorization authority is not a closed record/i);
-  assert.equal(Object.prototype.hasOwnProperty.call(Object.prototype, "polluted"), false);
+  // The previous assertion here checked for a "polluted" key that no payload above ever plants, so
+  // it passed unconditionally. This compares Object.prototype's actual own-key set before and after
+  // both "__proto__" payloads are parsed and refused, which fails if either call had actually
+  // written through to the shared prototype.
+  assert.deepEqual(Object.getOwnPropertyNames(Object.prototype), protoOwnKeysBeforeProbe, "parsing a JSON-parsed __proto__ payload must add no own key to Object.prototype");
   const shapes = [["null", null], ["undefined", undefined], ["empty array", []], ["array of configs", [valid]], ["string", "config"], ["number", 7], ["boolean", true], ["null-prototype record", Object.assign(Object.create(null), valid)]] as const;
   for (const [label, value] of shapes) assert.throws(() => parseGitHubReleaseRunnerOperatorConfig(value), /operator config is not a closed record/i, label);
 });
@@ -211,11 +216,26 @@ test("authority serve refuses the four reviewed release definitions without a co
   } finally { await rm(fixture.root, { recursive: true, force: true }); }
 });
 
-test("authority serve refuses an injected runner outside the exact four reviewed release definitions", async () => {
+test("authority serve refuses an injected runner outside the exact four reviewed release definitions before any side effect", async () => {
   const fixture = await releaseServeFixture();
   try {
     const widened = await fixture.writeConfig("authority-widened.yml", { ...fixture.configBody, definitions: [...githubReleaseAliases, "gmail_reply_send_v1"] });
-    await assert.rejects(() => serveThroughDispatch(["authority", "serve", "--path", widened, "--transport", "http", "--host", "127.0.0.1", "--port", "8080", "--release-runner-config", fixture.runnerConfigFile]), /four reviewed/i);
+    let started = 0;
+    const before = await listTree(fixture.root);
+    // This is the case the factory-level guard (`local.ts:106`) used to be the ONLY thing deciding:
+    // flag PRESENT + HTTP transport + definitions != the exact four. That guard fires only after the
+    // runner is constructed (journal + rootDir) and both artifact keys are written, so a refusal here
+    // used to leave a half-initialized Cell. It is decided pre-side-effect now, same as its sibling
+    // above; the factory guard stays as defense in depth (still pinned directly in
+    // local-multi-definition-jobs.test.ts).
+    const result = await serveThroughDispatch(["authority", "serve", "--path", widened, "--transport", "http", "--host", "127.0.0.1", "--port", "8080", "--release-runner-config", fixture.runnerConfigFile], () => { started += 1; });
+    assert.equal(result.code, 1);
+    assert.equal(started, 0, "a refused start must never reach the host transport");
+    assert.deepEqual(result.factoryCalls, [], "refusal precedes every runtime factory");
+    assert.deepEqual(await listTree(fixture.root), before, "refusal precedes every filesystem side effect, including the runner journal and both artifact keys");
+    const refusal = result.stderr.map(line => { try { return JSON.parse(line); } catch { return undefined; } }).find(value => value?.status === "refused");
+    assert.equal(refusal?.reasonCode, "release-runner-config-mismatched-definitions");
+    assert.match(refusal?.message ?? "", /four reviewed/i);
   } finally { await rm(fixture.root, { recursive: true, force: true }); }
 });
 

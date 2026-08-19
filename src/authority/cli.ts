@@ -288,8 +288,17 @@ async function authorityServe(args: Readonly<{ opts: Record<string, string> }>):
   // a refusal that left the operator a half-initialized Cell to clean up.
   const releaseRunnerConfigPath = args.opts["release-runner-config"];
   if (releaseRunnerConfigPath && serveMode.transport === "stdio") throw new TypeError("the release runner requires the authenticated HTTP transport");
-  if (!releaseRunnerConfigPath && authorityDigest([...loaded.config.definitions].sort()) === authorityDigest([...githubReleaseAliases].sort())) {
+  const definitionsAreExactlyReleaseAliases = authorityDigest([...loaded.config.definitions].sort()) === authorityDigest([...githubReleaseAliases].sort());
+  if (!releaseRunnerConfigPath && definitionsAreExactlyReleaseAliases) {
     console.error(JSON.stringify({ status: "refused", reasonCode: "release-runner-config-required", message: "the four reviewed GitHub release definitions refuse permanently (dedicated-release-runner-absent) without --release-runner-config" }));
+    return 1;
+  }
+  // Symmetric case: a flag was supplied for a config whose definitions are NOT the exact four. The
+  // factory (`createGitHubReleaseAuthorityRuntime`, local.ts:106) refuses this too, but only after
+  // the runner is constructed (rootDir + journal) and both artifact keys are written — decide it
+  // here instead, before either side effect. The factory check stays as defense in depth.
+  if (releaseRunnerConfigPath && !definitionsAreExactlyReleaseAliases) {
+    console.error(JSON.stringify({ status: "refused", reasonCode: "release-runner-config-mismatched-definitions", message: "--release-runner-config requires an authority config whose definitions are exactly the four reviewed GitHub release definitions" }));
     return 1;
   }
   // The release runner is a host-owned capability constructed in this process from operator-owned
