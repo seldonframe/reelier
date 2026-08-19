@@ -239,6 +239,13 @@ test("release dispatch composition preserves fallback prepare and fails closed w
   assert.equal(fallbackDispatches, 1, "reviewed release endpoints must never reach generic HTTPS fallback");
 });
 
+test("public host barrel does not export release adapter or receipt bypass factories", async () => {
+  const host = await import("../../src/authority/host/index.js") as Record<string, unknown>;
+  assert.equal("createGitHubReleaseDispatchAdapter" in host, false);
+  assert.equal("createGitHubReleaseReceiptPublication" in host, false);
+  assert.equal("createGitHubReleaseHostComposition" in host, false);
+});
+
 test("release provider execution stays behind the prepared commit boundary", async () => {
   let releaseWrites = 0, fallbackWrites = 0;
   const projection = { v: "reelier.materialized-http-request/v1" as const, method: "POST" as const, origin: "https://api.github.test", normalizedPath: "/internal/github-release", normalizedQuery: "", reviewedHeaders: {}, bodyDigest: digest("a") };
