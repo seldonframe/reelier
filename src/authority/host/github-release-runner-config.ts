@@ -2,7 +2,9 @@ import { createPrivateKey, createPublicKey } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { verifyReleaseAuthorizationBundleV1 } from "../release-contracts.js";
+import { assertAccountIdentity, assertHttpsOrigin, assertRepositoryIdentity, assertSecretReference, assertTimeoutMs, createGitHubReleaseHttpsProvider, GITHUB_RELEASE_HTTPS_DEFAULT_API_BASE_URL, GITHUB_RELEASE_HTTPS_DEFAULT_NPM_REGISTRY_BASE_URL, GITHUB_RELEASE_HTTPS_DEFAULT_TIMEOUT_MS } from "./github-release-https-provider.js";
 import { createGitHubReleaseRunner, type GitHubReleaseAuthorizationContextV1, type GitHubReleaseProviderFaultV1, type GitHubReleaseProviderV1, type GitHubReleaseRunnerV1 } from "./github-release-runner.js";
+import { createSecretResolver, type SecretResolver } from "./secret-resolver.js";
 
 /** Matches `createSignedJournal` and `release-contracts`' SIGNER_ID. One rule, three slots. */
 const SIGNER_ID = /^[a-z0-9][a-z0-9._:-]{7,127}$/;
@@ -11,15 +13,19 @@ const OPAQUE_HANDLE = /^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$/;
 /** Closed DISCRIMINATED UNION of provider kinds, keyed on `kind`. Every kind carries its OWN key
  * set, so a config for one kind can never carry another kind's fields.
  *
- * Lane B adds the live `github-https` provider as a NEW UNION ARM and touches exactly three
- * places, none of which alters this arm:
- *   1. `PROVIDER_KINDS` — append `"github-https"`.
- *   2. `PROVIDER_KEYS_BY_KIND` — add the `github-https` key tuple (its own credential-reference
- *      fields live HERE, inside the arm, never at the config top level).
- *   3. `parseProvider` and `createReleaseProvider` — one new `case` each.
- * An unrecognized kind is a refusal, never a silent fallback to the fixture provider. */
-const PROVIDER_KINDS = Object.freeze(["loopback-fixture"] as const);
-const PROVIDER_KEYS_BY_KIND = Object.freeze({ "loopback-fixture": Object.freeze(["kind", "fixtureDir"] as const) });
+ * An unrecognized kind is a refusal, never a silent fallback to the fixture provider.
+ *
+ * `github-https` (Lane B, landed) is the live arm. Its credential lives inside the arm as a
+ * `SecretResolver` REFERENCE (`env:NAME` / `file:PATH`) and nowhere else — never a token value,
+ * never at the config top level. Three of its fields carry defaults, so the live arm is the only
+ * one whose key set is required-plus-optional rather than exact; unknown keys are still refused. */
+const PROVIDER_KINDS = Object.freeze(["loopback-fixture", "github-https"] as const);
+const PROVIDER_KEYS_BY_KIND = Object.freeze({
+  "loopback-fixture": Object.freeze(["kind", "fixtureDir"] as const),
+  "github-https": Object.freeze(["kind", "githubAccountIdentity", "githubTokenRef", "repository"] as const),
+});
+/** `github-https` only. Absent means the default, never "unset". */
+const PROVIDER_OPTIONAL_KEYS_BY_KIND = Object.freeze({ "github-https": Object.freeze(["githubBaseUrl", "npmRegistryBaseUrl", "timeoutMs"] as const) });
 const CONFIG_KEYS = Object.freeze(["v", "rootDir", "journalSignerId", "journalKeyFile", "evidenceSignerId", "evidenceKeyFile", "releaseAuthority", "authorizationDir", "provider"] as const);
 const AUTHORITY_KEYS = Object.freeze(["signerId", "publicKeySpkiBase64"] as const);
 const AUTHORIZATION_KEYS = Object.freeze(["authorization", "candidateManifest", "operationPlan", "policy", "evidence", "fileContents"] as const);
@@ -29,8 +35,10 @@ export type GitHubReleaseRunnerProviderKindV1 = (typeof PROVIDER_KINDS)[number];
 
 /** The deterministic, credential-free, network-free arm. */
 export type GitHubReleaseRunnerLoopbackFixtureProviderConfigV1 = Readonly<{ kind: "loopback-fixture"; fixtureDir: string }>;
-/** Lane B's live arm joins this union; it does not widen the loopback arm. */
-export type GitHubReleaseRunnerProviderConfigV1 = GitHubReleaseRunnerLoopbackFixtureProviderConfigV1;
+/** The live arm. Every field is normalized by `parseProvider`, so a parsed value always carries all
+ * seven keys even when the operator wrote only the four required ones. */
+export type GitHubReleaseRunnerGitHubHttpsProviderConfigV1 = Readonly<{ kind: "github-https"; githubAccountIdentity: string; githubBaseUrl: string; githubTokenRef: string; npmRegistryBaseUrl: string; repository: string; timeoutMs: number }>;
+export type GitHubReleaseRunnerProviderConfigV1 = GitHubReleaseRunnerLoopbackFixtureProviderConfigV1 | GitHubReleaseRunnerGitHubHttpsProviderConfigV1;
 
 /** Host-owned operator config for the four reviewed GitHub release Outcomes.
  *
@@ -75,12 +83,24 @@ function parseProvider(value: unknown): GitHubReleaseRunnerProviderConfigV1 {
       const provider = closedRecord(value, PROVIDER_KEYS_BY_KIND["loopback-fixture"], "release runner loopback-fixture provider");
       return Object.freeze({ kind: "loopback-fixture", fixtureDir: absolutePath(provider.fixtureDir, "release runner provider fixture directory") });
     }
+    case "github-https": {
+      const provider = closedRecord(value, PROVIDER_KEYS_BY_KIND["github-https"], "release runner github-https provider", PROVIDER_OPTIONAL_KEYS_BY_KIND["github-https"]);
+      return Object.freeze({
+        kind: "github-https",
+        githubAccountIdentity: assertAccountIdentity(provider.githubAccountIdentity),
+        githubBaseUrl: assertHttpsOrigin(provider.githubBaseUrl ?? GITHUB_RELEASE_HTTPS_DEFAULT_API_BASE_URL, "githubBaseUrl"),
+        githubTokenRef: assertSecretReference(provider.githubTokenRef, "githubTokenRef"),
+        npmRegistryBaseUrl: assertHttpsOrigin(provider.npmRegistryBaseUrl ?? GITHUB_RELEASE_HTTPS_DEFAULT_NPM_REGISTRY_BASE_URL, "npmRegistryBaseUrl"),
+        repository: assertRepositoryIdentity(provider.repository),
+        timeoutMs: assertTimeoutMs(provider.timeoutMs ?? GITHUB_RELEASE_HTTPS_DEFAULT_TIMEOUT_MS),
+      });
+    }
   }
 }
 
 /** Constructs the branded host-owned runner in process. The brand cannot be deserialized, so a
  * runner only ever exists because this function (or another in-process factory) built one. */
-export async function createGitHubReleaseRunnerFromOperatorConfig(config: GitHubReleaseRunnerOperatorConfigV1, now: () => Date = () => new Date()): Promise<GitHubReleaseRunnerV1> {
+export async function createGitHubReleaseRunnerFromOperatorConfig(config: GitHubReleaseRunnerOperatorConfigV1, now: () => Date = () => new Date(), secrets: SecretResolver = createSecretResolver()): Promise<GitHubReleaseRunnerV1> {
   const parsed = parseGitHubReleaseRunnerOperatorConfig(config);
   const journalPrivateKey = createPrivateKey(await readFile(parsed.journalKeyFile));
   const evidencePrivateKey = createPrivateKey(await readFile(parsed.evidenceKeyFile));
@@ -89,7 +109,7 @@ export async function createGitHubReleaseRunnerFromOperatorConfig(config: GitHub
     journalSigner: { signerId: parsed.journalSignerId, privateKey: journalPrivateKey, publicKey: createPublicKey(journalPrivateKey) },
     evidenceSigner: { signerId: parsed.evidenceSignerId, privateKey: evidencePrivateKey },
     authorizationResolver: handle => resolveAuthorization(parsed, handle, now),
-    provider: createReleaseProvider(parsed.provider),
+    provider: createReleaseProvider(parsed.provider, secrets),
     now,
   });
 }
@@ -123,10 +143,10 @@ async function resolveAuthorization(config: GitHubReleaseRunnerOperatorConfigV1,
  * `"github-https"` to `PROVIDER_KINDS` without adding a `case` here fails `tsc` ("not all code
  * paths return a value") instead of shipping an unreachable branch that lies. Unknown kinds are
  * already refused by `parseProvider`, which is the only producer of this argument. */
-function createReleaseProvider(provider: GitHubReleaseRunnerProviderConfigV1): GitHubReleaseProviderV1 {
-  const kind: GitHubReleaseRunnerProviderKindV1 = provider.kind;
-  switch (kind) {
+function createReleaseProvider(provider: GitHubReleaseRunnerProviderConfigV1, secrets: SecretResolver): GitHubReleaseProviderV1 {
+  switch (provider.kind) {
     case "loopback-fixture": return createLoopbackFixtureProvider(provider.fixtureDir);
+    case "github-https": return createGitHubReleaseHttpsProvider({ v: "reelier.github-release-https-provider-config/v1", githubAccountIdentity: provider.githubAccountIdentity, githubBaseUrl: provider.githubBaseUrl, githubTokenRef: provider.githubTokenRef, npmRegistryBaseUrl: provider.npmRegistryBaseUrl, repository: provider.repository, timeoutMs: provider.timeoutMs }, secrets);
   }
 }
 
@@ -151,10 +171,16 @@ function plainRecord(value: unknown, label: string): Record<string, unknown> {
 
 /** Exact key-set equality in BOTH directions: an extra key and a MISSING key are the same refusal.
  * A JSON-parsed `"__proto__"` key is an own enumerable property, so it lands in `Object.keys` and
- * is refused here rather than silently ignored. */
-function closedRecord(value: unknown, keys: readonly string[], label: string): Record<string, unknown> {
+ * is refused here rather than silently ignored.
+ *
+ * `optionalKeys` is the ONLY relaxation, and it relaxes exactly one direction: a listed key may be
+ * absent (its default applies), an unlisted key is still refused, and a required key is still
+ * mandatory. Omit it and the record stays exactly closed. */
+function closedRecord(value: unknown, keys: readonly string[], label: string, optionalKeys: readonly string[] = []): Record<string, unknown> {
   const record = plainRecord(value, label);
-  if (Object.keys(record).sort().join("\0") !== [...keys].sort().join("\0")) throw new TypeError(`${label} is not a closed record`);
+  const present = Object.keys(record);
+  const permitted = new Set([...keys, ...optionalKeys]);
+  if (present.some(key => !permitted.has(key)) || keys.some(key => !Object.prototype.hasOwnProperty.call(record, key))) throw new TypeError(`${label} is not a closed record`);
   return record;
 }
 

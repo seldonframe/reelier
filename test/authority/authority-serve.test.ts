@@ -125,8 +125,11 @@ test("the release runner provider is a closed discriminated union with per-kind 
   assert.throws(() => parseGitHubReleaseRunnerOperatorConfig({ ...valid, provider: { kind: "loopback-fixture", fixtureDir, tokenRef: "env:GITHUB_TOKEN" } }), /loopback-fixture provider is not a closed record/i);
   assert.throws(() => parseGitHubReleaseRunnerOperatorConfig({ ...valid, provider: { kind: "loopback-fixture" } }), /loopback-fixture provider is not a closed record/i);
   // The discriminant is read BEFORE the record is closed, so an unrecognized kind reports the kind
-  // rather than the loopback arm's key set.
-  assert.throws(() => parseGitHubReleaseRunnerOperatorConfig({ ...valid, provider: { kind: "github-https", tokenRef: "env:GITHUB_TOKEN" } }), /provider kind must be one of: loopback-fixture/);
+  // rather than the loopback arm's key set. `github-https` is now a REAL arm (Lane B landed), so an
+  // unrecognized kind needs a kind no arm claims; the live arm is refused on its own key set
+  // instead, which is the property this test exists to hold.
+  assert.throws(() => parseGitHubReleaseRunnerOperatorConfig({ ...valid, provider: { kind: "github-rest", tokenRef: "env:GITHUB_TOKEN" } }), /provider kind must be one of: loopback-fixture, github-https/);
+  assert.throws(() => parseGitHubReleaseRunnerOperatorConfig({ ...valid, provider: { kind: "github-https", tokenRef: "env:GITHUB_TOKEN" } }), /github-https provider is not a closed record/i);
   for (const provider of [null, [], "loopback-fixture", { fixtureDir }, Object.assign(Object.create(null), { kind: "loopback-fixture", fixtureDir })]) {
     assert.throws(() => parseGitHubReleaseRunnerOperatorConfig({ ...valid, provider }), /release runner provider/i, JSON.stringify(provider));
   }

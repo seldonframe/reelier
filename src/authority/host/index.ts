@@ -72,3 +72,4 @@ export { verifyProfileGovernedAuthorityReceipt, type ProfileGovernedAuthorityRec
 export type { ProducedReceiptKindV1, PurposeBoundReceiptSignerV1, AuthorityReceiptSigningAuthorityV1 } from "./receipt-authority.js";
 export type { CertificationArtifactKeyBindingV1, CertificationArtifactKeyBindingCommitmentV1 } from "../certification/lifecycle-authority.js";
 export { createGitHubReleaseRunner, type GitHubReleaseAliasV1, type GitHubReleaseAuthorizationContextV1, type GitHubReleaseProviderFaultV1, type GitHubReleaseProviderV1, type GitHubReleaseRunRequestV1, type GitHubReleaseRunResultV1, type GitHubReleaseRunnerV1 } from "./github-release-runner.js";
+export { createGitHubReleaseHttpsProvider, parseGitHubReleaseHttpsProviderConfigV1, __testSetGitHubReleaseHttpsTransport, type GitHubReleaseHttpsProviderConfigV1, type GitHubReleaseHttpsTransport } from "./github-release-https-provider.js";
