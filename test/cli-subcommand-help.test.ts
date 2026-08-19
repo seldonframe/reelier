@@ -21,14 +21,74 @@ const cliPath = fileURLToPath(new URL("../src/cli.js", import.meta.url));
 const cliSourcePath = fileURLToPath(new URL("../../src/cli.ts", import.meta.url));
 const MAX_RSS_KIB = 256 * 1024;
 const PERMISSION_ARGS = ["--permission", "--allow-fs-read=*"] as const;
+// Node adds low-level network APIs mid-major-version (not just at a major
+// bump), and CI pins float independently per OS (ubuntu: latest 24.x;
+// windows: latest 22.x — see .github/workflows/ci.yml), so a contributor's
+// local Node, and each CI leg, can legitimately see a different callable
+// surface. An exact-match inventory pinned to one snapshot breaks on every
+// Node build that isn't that exact snapshot. So the floors below are
+// checked against the running process, and the inventory (and the escape
+// probe that has nothing to probe below its floor) are built from them,
+// keeping the match exact for whichever Node is actually running instead of
+// exact for only one.
+//
+// Floors verified empirically 2026-08-19 by sweeping node:20, node:22, and
+// node:24.9.0 through node:24.19.0 in Docker (linux/amd64): every surface
+// below is absent through the version just below its floor and present at
+// and above it. Re-run the same sweep before moving a floor.
+const NODE_VERSION_PARTS = process.versions.node.split(".").map(Number) as [number, number, number];
+const nodeAtLeast = (major: number, minor: number, patch: number): boolean =>
+  NODE_VERSION_PARTS[0] !== major ? NODE_VERSION_PARTS[0] > major
+    : NODE_VERSION_PARTS[1] !== minor ? NODE_VERSION_PARTS[1] > minor
+      : NODE_VERSION_PARTS[2] >= patch;
+
+// net.Socket#get/setTypeOfService — Node 24.15.0.
+const HAS_NET_TYPE_OF_SERVICE = nodeAtLeast(24, 15, 0);
+// net.BoundSocket, tls.getCertificateCompressionAlgorithms, and
+// dgram.Socket#bindSync/#connectSync all landed together — Node 24.19.0.
+const HAS_NET_BOUND_SOCKET_BATCH = nodeAtLeast(24, 19, 0);
+
 const NETWORK_CALLABLE_SURFACES = {
-  net: ["Server", "Socket", "Stream", "_createServerHandle", "_normalizeArgs", "connect", "createConnection", "createServer", "getDefaultAutoSelectFamily", "getDefaultAutoSelectFamilyAttemptTimeout", "isIP", "isIPv4", "isIPv6", "setDefaultAutoSelectFamily", "setDefaultAutoSelectFamilyAttemptTimeout"],
-  netSocket: ["_destroy", "_final", "_getpeername", "_getsockname", "_onTimeout", "_read", "_reset", "_unrefTimer", "_write", "_writeGeneric", "_writev", "address", "connect", "constructor", "destroySoon", "end", "pause", "read", "ref", "resetAndDestroy", "resume", "setKeepAlive", "setNoDelay", "setTimeout", "unref"],
+  // BoundSocket's constructor performs a real OS bind() synchronously (the
+  // dangerous half lives in construction itself, not in a later method
+  // call), so it is denied at the module export in the ORACLE below like
+  // dgram's Socket rather than by patching a prototype method.
+  net: [
+    ...(HAS_NET_BOUND_SOCKET_BATCH ? ["BoundSocket"] : []),
+    "Server", "Socket", "Stream", "_createServerHandle", "_normalizeArgs", "connect", "createConnection", "createServer", "getDefaultAutoSelectFamily", "getDefaultAutoSelectFamilyAttemptTimeout", "isIP", "isIPv4", "isIPv6", "setDefaultAutoSelectFamily", "setDefaultAutoSelectFamilyAttemptTimeout",
+  ],
+  // get/setTypeOfService are inert without a live `_handle` (setTypeOfService
+  // just caches the value; getTypeOfService returns the cached value) — the
+  // same shape as the already-unguarded setKeepAlive/setNoDelay/setTimeout
+  // siblings, and a handle only exists after the already-denied connect().
+  // Not blocked in the ORACLE.
+  netSocket: [
+    "_destroy", "_final", "_getpeername", "_getsockname", "_onTimeout", "_read", "_reset", "_unrefTimer", "_write", "_writeGeneric", "_writev", "address", "connect", "constructor", "destroySoon", "end",
+    ...(HAS_NET_TYPE_OF_SERVICE ? ["getTypeOfService"] : []),
+    "pause", "read", "ref", "resetAndDestroy", "resume", "setKeepAlive", "setNoDelay", "setTimeout",
+    ...(HAS_NET_TYPE_OF_SERVICE ? ["setTypeOfService"] : []),
+    "unref",
+  ],
   netServer: ["_emitCloseIfDrained", "_listen2", "_setupWorker", "address", "close", "constructor", "getConnections", "listen", "ref", "unref"],
-  tls: ["SecureContext", "Server", "TLSSocket", "checkServerIdentity", "connect", "convertALPNProtocols", "createSecureContext", "createServer", "getCACertificates", "getCiphers", "setDefaultCACertificates"],
+  // getCertificateCompressionAlgorithms is a pure capability query (no
+  // socket, no I/O) — the same shape as the already-unguarded
+  // getCiphers/getCACertificates siblings. Not blocked in the ORACLE.
+  tls: [
+    "SecureContext", "Server", "TLSSocket", "checkServerIdentity", "connect", "convertALPNProtocols", "createSecureContext", "createServer", "getCACertificates",
+    ...(HAS_NET_BOUND_SOCKET_BATCH ? ["getCertificateCompressionAlgorithms"] : []),
+    "getCiphers", "setDefaultCACertificates",
+  ],
   tlsSocket: ["_destroySSL", "_emitTLSError", "_finishInit", "_handleTimeout", "_init", "_releaseControl", "_start", "_tlsError", "_wrapHandle", "constructor", "disableRenegotiation", "enableTrace", "exportKeyingMaterial", "getCertificate", "getCipher", "getEphemeralKeyInfo", "getFinished", "getPeerCertificate", "getPeerFinished", "getPeerX509Certificate", "getProtocol", "getSession", "getSharedSigalgs", "getTLSTicket", "getX509Certificate", "isSessionReused", "renegotiate", "setKeyCert", "setMaxSendFragment", "setServername", "setSession"],
   dgram: ["Socket", "_createSocketHandle", "createSocket"],
-  dgramSocket: ["_healthCheck", "_stopReceiving", "addMembership", "addSourceSpecificMembership", "address", "bind", "close", "connect", "constructor", "disconnect", "dropMembership", "dropSourceSpecificMembership", "getRecvBufferSize", "getSendBufferSize", "getSendQueueCount", "getSendQueueSize", "ref", "remoteAddress", "send", "sendto", "setBroadcast", "setMulticastInterface", "setMulticastLoopback", "setMulticastTTL", "setRecvBufferSize", "setSendBufferSize", "setTTL", "unref"],
+  // bindSync/connectSync are synchronous twins of the already-denied
+  // bind/connect — same side effect, so blocked identically in the ORACLE.
+  dgramSocket: [
+    "_healthCheck", "_stopReceiving", "addMembership", "addSourceSpecificMembership", "address", "bind",
+    ...(HAS_NET_BOUND_SOCKET_BATCH ? ["bindSync"] : []),
+    "close", "connect",
+    ...(HAS_NET_BOUND_SOCKET_BATCH ? ["connectSync"] : []),
+    "constructor", "disconnect", "dropMembership", "dropSourceSpecificMembership", "getRecvBufferSize", "getSendBufferSize", "getSendQueueCount", "getSendQueueSize", "ref", "remoteAddress", "send", "sendto", "setBroadcast", "setMulticastInterface", "setMulticastLoopback", "setMulticastTTL", "setRecvBufferSize", "setSendBufferSize", "setTTL", "unref",
+  ],
   dns: ["Resolver", "getDefaultResultOrder", "getServers", "lookup", "lookupService", "resolve", "resolve4", "resolve6", "resolveAny", "resolveCaa", "resolveCname", "resolveMx", "resolveNaptr", "resolveNs", "resolvePtr", "resolveSoa", "resolveSrv", "resolveTlsa", "resolveTxt", "reverse", "setDefaultResultOrder", "setServers"],
   dnsResolver: ["constructor", "resolve", "resolve4", "resolve6", "resolveAny", "resolveCaa", "resolveCname", "resolveMx", "resolveNaptr", "resolveNs", "resolvePtr", "resolveSoa", "resolveSrv", "resolveTlsa", "resolveTxt", "reverse"],
   dnsPromises: ["Resolver", "getDefaultResultOrder", "getServers", "lookup", "lookupService", "resolve", "resolve4", "resolve6", "resolveAny", "resolveCaa", "resolveCname", "resolveMx", "resolveNaptr", "resolveNs", "resolvePtr", "resolveSoa", "resolveSrv", "resolveTlsa", "resolveTxt", "reverse", "setDefaultResultOrder", "setServers"],
@@ -45,7 +105,11 @@ const block = (target, label, keys) => {
 // and process.binding. Patch the lowest network surfaces still callable by
 // application code: socket/server/datagram instances and both DNS APIs.
 const net = require("node:net");
-block(net, "node:net", ["_createServerHandle", "connect", "createConnection", "createServer"]);
+// BoundSocket's constructor itself performs the bind() syscall (added
+// Node 24.19), so — unlike Socket/Server, whose construction is inert —
+// the module export must be denied directly; there is no later method call
+// to intercept instead.
+block(net, "node:net", ["BoundSocket", "_createServerHandle", "connect", "createConnection", "createServer"]);
 block(net.Socket.prototype, "node:net.Socket", ["connect"]);
 block(net.Server.prototype, "node:net.Server", ["_listen2", "listen"]);
 const tls = require("node:tls");
@@ -54,10 +118,10 @@ block(tls.TLSSocket.prototype, "node:tls.TLSSocket", ["connect"]);
 const dgram = require("node:dgram");
 block(dgram, "node:dgram", ["_createSocketHandle", "createSocket"]);
 block(dgram.Socket.prototype, "node:dgram.Socket", [
-  "_stopReceiving", "addMembership", "addSourceSpecificMembership", "bind", "close", "connect",
-  "disconnect", "dropMembership", "dropSourceSpecificMembership", "ref", "send", "sendto",
-  "setBroadcast", "setMulticastInterface", "setMulticastLoopback", "setMulticastTTL",
-  "setRecvBufferSize", "setSendBufferSize", "setTTL", "unref",
+  "_stopReceiving", "addMembership", "addSourceSpecificMembership", "bind", "bindSync", "close",
+  "connect", "connectSync", "disconnect", "dropMembership", "dropSourceSpecificMembership", "ref",
+  "send", "sendto", "setBroadcast", "setMulticastInterface", "setMulticastLoopback",
+  "setMulticastTTL", "setRecvBufferSize", "setSendBufferSize", "setTTL", "unref",
 ]);
 block(dgram, "node:dgram", ["Socket"]);
 const dnsKeys = ["lookup", "lookupService", "resolve", "resolve4", "resolve6", "resolveAny", "resolveCaa", "resolveCname", "resolveMx", "resolveNaptr", "resolveNs", "resolvePtr", "resolveSoa", "resolveSrv", "resolveTlsa", "resolveTxt", "reverse"];
@@ -143,18 +207,25 @@ test("the help oracle closes filesystem, subprocess, and low-level network escap
     ["raw TCP server handle", `require("node:net")._createServerHandle("127.0.0.1", 0, 4)`],
     ["direct TCP Server _listen2", `new (require("node:net").Server)()._listen2("127.0.0.1", 0, 4, 511, undefined, 0)`],
     ["direct TLSSocket", `new (require("node:tls").TLSSocket)(new (require("node:net").Socket)()).connect(9, "127.0.0.1")`],
+    // node:net.BoundSocket does not exist below its Node 24.19.0 floor
+    // (see NETWORK_CALLABLE_SURFACES above): there is nothing to construct,
+    // so the probe is skipped rather than asserting a denial that can never
+    // fire on this Node build.
+    ["direct BoundSocket construction", `new (require("node:net").BoundSocket)({ port: 0 })`, HAS_NET_BOUND_SOCKET_BATCH],
     ["direct datagram Socket construction", `new (require("node:dgram").Socket)("udp4")`],
     ["direct datagram Socket", `new (require("node:dgram").Socket)("udp4").send("probe", 9, "127.0.0.1")`],
     ["raw datagram handle", `require("node:dgram")._createSocketHandle("127.0.0.1", 0, "udp4")`],
     ["datagram addMembership", `new (require("node:dgram").Socket)("udp4").addMembership("224.0.0.114")`],
+    ["datagram bindSync", `new (require("node:dgram").Socket)("udp4").bindSync()`],
+    ["datagram connectSync", `new (require("node:dgram").Socket)("udp4").connectSync(9, "127.0.0.1")`],
     ["DNS promises lookup", `require("node:dns/promises").lookup("localhost")`],
     ["DNS promises top-level TLSA", `(() => { const dns = require("node:dns/promises"); dns.setServers(["127.0.0.1"]); return dns.resolveTlsa("localhost"); })()`],
     ["DNS promises TLSA", `(() => { const dns = require("node:dns/promises"); const resolver = new dns.Resolver(); resolver.setServers(["127.0.0.1"]); return resolver.resolveTlsa("localhost"); })()`],
     ["fetch", `fetch("http://127.0.0.1:9/")`],
   ] as const;
   try {
-    for (const [name, expression] of probes) {
-      await t.test(name, () => {
+    for (const [name, expression, available = true] of probes) {
+      await t.test(name, { skip: available ? false : `unavailable on ${process.version}` }, () => {
         const source = `(async () => { try { await (${expression}); console.error("REELIER_HELP_ORACLE_ESCAPE"); process.exitCode = 0; } catch (error) { console.error(error && error.message); process.exitCode = 23; } })()`;
         const result = spawnSync(process.execPath, [...PERMISSION_ARGS, "--require", oraclePath, "-e", source], {
           cwd: sandbox,
