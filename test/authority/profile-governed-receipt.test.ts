@@ -260,6 +260,19 @@ test("live root and reservation swaps cannot redirect a real reservation publica
   }
 });
 
+test("a terminal-expectation governed readback refuses a chain whose terminal node is missing", async t => {
+  const home = await mkdtemp(path.join(os.tmpdir(), "reelier-governed-terminal-expect-"));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const rootDir = path.join(home, "receipt-store"), reservationId = "reservation_terminal_expect";
+  const { publication, value } = await realReservationPublication(home, rootDir, reservationId);
+  await publication.publishReservation!(value);
+  await assert.rejects(
+    () => publication.loadDurableHead!({ v: "reelier.durable-dispatch-publication-query/v1", identity: value.identity, ledgerState: "dispatched", sendStarted: true }, "terminal"),
+    /terminal receipt is absent/,
+    "a terminal-expectation reader must never receive a reservation-phase head",
+  );
+});
+
 test("a node swap after anchored open cannot leave receipt bytes outside the governed root", async t => {
   const home = await mkdtemp(path.join(os.tmpdir(), "reelier-governed-node-swap-"));
   t.after(() => rm(home, { recursive: true, force: true }));
