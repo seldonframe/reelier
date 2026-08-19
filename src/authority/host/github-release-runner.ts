@@ -15,6 +15,8 @@ const ENDPOINTS = Object.freeze(Object.fromEntries(Object.entries(ALIASES).map((
 const LANES = Object.freeze({ "candidate-branch": "candidate-branch", "draft-pr": "candidate-pull-request", "exact-sha-merge": "merge-exact-sha", "non-force-tag": "tag-immutable-ref" } as const);
 const PREDECESSOR = Object.freeze({ "candidate-branch": null, "draft-pr": "candidate-branch", "exact-sha-merge": "draft-pr", "non-force-tag": "exact-sha-merge" } as const);
 const TERMINAL = new Set(["candidate-verified", "pr-verified", "merge-verified", "tag-verified"]);
+const CONFIRMED_PROVIDER_EFFECT_PHASES = new Set(["blob-created", "tree-created", "commit-created", "pr-created", "pr-ready-confirmed"]);
+const POSSIBLE_PROVIDER_EFFECT_PHASES = new Set(["blob-intent", "tree-intent", "commit-intent", "branch-dispatching", "pr-dispatching", "pr-ready-dispatching", "merge-dispatching", "tag-dispatching"]);
 const TRANSITIONS: Readonly<Record<string, readonly string[]>> = Object.freeze({
   authorized: ["base-tree-observed", "pr-intent", "merge-intent", "tag-intent"], "base-tree-observed": ["blob-intent"], "blob-intent": ["blob-created", "expired-refused"], "blob-created": ["blob-intent", "tree-intent"], "tree-intent": ["tree-created", "expired-refused"], "tree-created": ["commit-intent"], "commit-intent": ["commit-created", "expired-refused"], "commit-created": ["branch-intent"], "branch-intent": ["branch-dispatching", "expired-refused"], "branch-dispatching": ["candidate-verified", "expired-refused"],
   "pr-intent": ["pr-dispatching", "expired-refused"], "pr-dispatching": ["pr-created", "expired-refused"], "pr-created": ["pr-ready-intent"], "pr-ready-intent": ["pr-ready-dispatching", "expired-refused"], "pr-ready-dispatching": ["pr-ready-confirmed", "expired-refused"], "pr-ready-confirmed": ["pr-verified"], "merge-intent": ["merge-dispatching", "expired-refused"], "merge-dispatching": ["merge-verified", "expired-refused"], "tag-intent": ["tag-dispatching", "expired-refused"], "tag-dispatching": ["tag-verified", "expired-refused"],
@@ -101,9 +103,9 @@ export async function createGitHubReleaseRunner(input: Readonly<{ rootDir: strin
         const latest = await journal.load(request.requestId);
         if (error instanceof ProviderDefinitiveRefusal) {
           if (latest.at(-1)?.phase !== "provider-refused") await journal.append(request.requestId, request.semanticsDigest, "provider-refused", { reasonDigest: authorityDigest({ reason: error.message }) });
-          throw new ReleaseRunFailure(`provider definitively refused release write: ${error.message}`, false, true);
+          throw new ReleaseRunFailure(`provider definitively refused release write: ${error.message}`, latest.some(event => CONFIRMED_PROVIDER_EFFECT_PHASES.has(event.phase)), true);
         }
-        const effectPossible = latest.some(event => event.phase.endsWith("-intent") && event.phase !== "authorized");
+        const effectPossible = latest.some(event => CONFIRMED_PROVIDER_EFFECT_PHASES.has(event.phase) || POSSIBLE_PROVIDER_EFFECT_PHASES.has(event.phase));
         throw new ReleaseRunFailure(error instanceof Error ? error.message : "release runner failed", effectPossible, error instanceof TypeError);
       }
     });
