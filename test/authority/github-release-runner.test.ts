@@ -265,7 +265,7 @@ test("four-operation release saga converges after ambiguous merge and tag withou
   const root = await mkdtemp(path.join(os.tmpdir(), "reelier-release-saga-"));
   const fixture = releaseAuthorityFixture(), journalKeys = generateKeyPairSync("ed25519");
   const refs = new Map<string, string>([["heads/main", "e600ad5c2dc5e1bde0714915e7a84980c8d5602b"]]);
-  let pullRequest: any = null, mergeCalls = 0, tagCalls = 0, readyCalls = 0, treeBase: string | null = null, loseTagReadback = false, npmPublished = false, npmChecks = 0;
+  let pullRequest: any = null, mergeCalls = 0, tagCalls = 0, readyCalls = 0, treeBase: string | null = null, loseMergeReadback = false, loseTagReadback = false, npmPublished = false, npmChecks = 0;
   const provider = {
     createBlob: async ({ contentBase64 }: any) => ({ sha: blobSha(Buffer.from(contentBase64, "base64")) }),
     createTree: async ({ baseTreeSha }: any) => { treeBase = baseTreeSha; return { sha: gitSha("e") }; },
@@ -276,9 +276,9 @@ test("four-operation release saga converges after ambiguous merge and tag withou
     findPullRequests: async () => pullRequest ? [pullRequest] : [],
     createPullRequest: async (metadata: any) => (pullRequest = { base: metadata.base, body: metadata.body, draft: metadata.draft, head: metadata.head, headSha: gitSha("a"), mergeCommitSha: null, merged: false, number: 1, title: metadata.title }),
     markPullRequestReady: async () => { readyCalls += 1; pullRequest = { ...pullRequest, draft: false }; return pullRequest; },
-    getPullRequest: async () => pullRequest,
+    getPullRequest: async () => { if (loseMergeReadback) { loseMergeReadback = false; throw { v: "reelier.github-release-provider-fault/v1", kind: "transport-uncertain", reason: "merge readback unavailable" }; } return pullRequest; },
     getChecks: async () => ["coverage", "full-tests", "mutation"].map(name => ({ name, status: "success", workflowDigest: digest("3"), workflowPath: ".github/workflows/ci.yml" })),
-    mergePullRequest: async () => { mergeCalls += 1; pullRequest = { ...pullRequest, merged: true, mergeCommitSha: gitSha("9") }; refs.set("heads/main", gitSha("9")); throw new Error("socket lost after merge"); },
+    mergePullRequest: async () => { mergeCalls += 1; pullRequest = { ...pullRequest, merged: true, mergeCommitSha: gitSha("9") }; refs.set("heads/main", gitSha("9")); loseMergeReadback = true; throw new Error("socket lost after merge"); },
     npmVersionExists: async () => { npmChecks += 1; return npmPublished; },
     readPackageManifest: async () => ({ name: "reelier", version: "0.32.1" }),
   };
@@ -293,9 +293,15 @@ test("four-operation release saga converges after ambiguous merge and tag withou
     const prResult = await invoke("github_release_pr_ensure_v1", "pr_1");
     assert.equal(prResult.status, "verified");
     await confirmTestPublication(runner, "pr_1", prResult);
-    const mergeResult = await invoke("github_release_pr_merge_v1", "merge_1");
+    const mergePending = await invoke("github_release_pr_merge_v1", "merge_1");
+    assert.equal(mergePending.status, "pending-reconciliation");
+    await assert.rejects(() => invoke("github_release_tag_create_v1", "tag_1"), /predecessor|receipt/i);
+    const mergeResult = await invoke("github_release_pr_merge_v1", "merge_1", true);
     assert.equal(mergeResult.status, "verified");
-    await confirmTestPublication(runner, "merge_1", mergeResult);
+    await assert.rejects(() => invoke("github_release_tag_create_v1", "tag_1"), /predecessor|receipt/i, "provider reconciliation alone must not unlock the successor");
+    await confirmTestPublication(runner, "merge_1", mergeResult, "reconcile");
+    const conflictingPublication = createGitHubReleaseReceiptPublication({ runner, publication: { async publish() { return { receiptRef: "receipt_conflict", evidenceDigest: digest("c") }; } } });
+    await assert.rejects(() => conflictingPublication.publish({ phase: "reconcile", state: { reservation: { reservationId: "merge_1" }, effect: { endpointId: "github.release.exact-sha-merge" } } as any, outcome: { kind: "acknowledged", resultDigest: mergeResult.evidenceDigest! }, dispatchedRequestDigest: digest("f") }), /conflict/i);
     assert.equal((await invoke("github_release_tag_create_v1", "tag_1")).status, "pending-reconciliation");
     npmPublished = true;
     const reconciledTag = await invoke("github_release_tag_create_v1", "tag_1", true);
