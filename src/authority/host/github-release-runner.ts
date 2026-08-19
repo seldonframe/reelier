@@ -163,7 +163,7 @@ export async function createGitHubReleaseRunner(input: Readonly<{ rootDir: strin
     if (!allocation || allocation.maxEffects !== 1 || allocation.allocationId !== first.data.allocationId || allocation.allocationDigest !== first.data.allocationDigest) throw new TypeError("release durable head allocation binding conflicts");
     const terminal = [...events].reverse().find(event => TERMINAL.has(event.phase));
     if (!terminal || !DIGEST.test(String(terminal.data.evidenceDigest ?? ""))) throw new TypeError("release durable head terminal evidence is absent");
-    await confirmPublication({ requestId: query.identity.reservationId, providerEvidenceDigest: String(terminal.data.evidenceDigest), receiptRef: head.receiptRef, receiptEvidenceDigest: head.evidenceDigest });
+    await confirmPublication({ requestId: normalizeReservationPublicationId(query.identity.reservationId), providerEvidenceDigest: String(terminal.data.evidenceDigest), receiptRef: head.receiptRef, receiptEvidenceDigest: head.evidenceDigest });
     return true;
   };
   const runner = Object.freeze({

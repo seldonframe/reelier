@@ -740,7 +740,7 @@ test("release adapter journals a ledger-minted raw reservation id under the cano
     const result = await governedRun(runner, request);
     assert.equal(result.status, "verified");
     const journal = await createSignedJournal({ rootDir: path.join(root, "journal"), journalId: "github-release", signerId: "release-journal-2026", privateKey: keys.privateKey, publicKey: keys.publicKey });
-    assert.deepEqual(await journal.listRequestIds(), [`reservation_${"4".repeat(64)}`], "journal keys and confirmAuthoritativeHead load the same colon-free identity");
+    assert.deepEqual(await journal.listRequestIds(), [`reservation_${"4".repeat(64)}`], "journal keys the raw ledger-minted reservation id under its canonical colon-free identity");
     assert.equal((await governedRun(runner, request)).status, "verified", "restart-shaped replay finds its request under the same key");
   } finally { await rm(root, { recursive: true, force: true }); }
 });

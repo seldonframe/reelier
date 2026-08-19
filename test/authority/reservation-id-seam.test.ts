@@ -8,7 +8,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { authorityCanonicalBytes, authorityDigest } from "../../src/authority/wire.js";
@@ -86,6 +86,7 @@ test("a raw ledger-minted reservation publishes its durable root and reaches a t
     assert.equal(outcome.kind, "acknowledged");
     assert.match(outcome.receiptRef!, /^sha256:[0-9a-f]{64}$/);
     assert.equal((await ledger.getReservation(reservation.reservationId))?.state, "acknowledged");
+    assert.ok((await readdir(receiptsRoot)).every(name => name.startsWith("durable-")), "the terminal publish must reach the durable chain, not silently fall back to a sibling legacyPublish receipt file");
   } finally { restore(); await rm(ledgerRoot, { recursive: true, force: true }); await rm(receiptsRoot, { recursive: true, force: true }); }
 });
 
