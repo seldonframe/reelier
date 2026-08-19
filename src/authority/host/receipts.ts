@@ -139,13 +139,15 @@ export function createFileReceiptPublication(options: FileReceiptPublicationOpti
   };
   return Object.freeze({
     async publishReservation(input: Parameters<NonNullable<DispatchPublication["publishReservation"]>>[0]) {
-      identities.set(input.identity.reservationId, input.identity);
-      return publishDurable(input.identity, input);
+      const identity = snapshotDurableIdentity(input.identity);
+      identities.set(identity.reservationId, identity);
+      return publishDurable(identity, { phase: input.phase, state: input.state, outcome: input.outcome, dispatchedRequestDigest: input.dispatchedRequestDigest, priorReceiptDigest: input.priorReceiptDigest });
     },
     async loadDurableHead(query: DurableDispatchPublicationQueryV1) {
       assertDurableQuery(query);
-      identities.set(query.identity.reservationId, query.identity);
-      return loadDurableChain(root, query.identity);
+      const identity = snapshotDurableIdentity(query.identity);
+      identities.set(identity.reservationId, identity);
+      return loadDurableChain(root, identity);
     },
     async publish(input: Readonly<{ phase: "dispatch" | "cancelled" | "ambiguous" | "reconcile"; state: DispatchRequestState; outcome: DispatchOutcome; dispatchedRequestDigest: string | null; priorReceiptDigest?: string | null }>) {
       const identity = identities.get(input.state.reservation.reservationId);
@@ -164,6 +166,11 @@ function assertDurableIdentity(value: DurableDispatchPublicationIdentityV1): voi
   const descriptors = Object.getOwnPropertyDescriptors(value), keys = Reflect.ownKeys(value);
   if (keys.length !== IDENTITY_FIELDS.length || keys.some(key => typeof key !== "string" || !IDENTITY_FIELDS.includes(key as typeof IDENTITY_FIELDS[number])) || Object.values(descriptors).some(descriptor => !("value" in descriptor) || !descriptor.enumerable)) throw new TypeError("durable publication identity is not closed");
   if (value.v !== "reelier.durable-dispatch-publication-identity/v1" || !/^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$/.test(value.reservationId) || !/^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$/.test(value.tenant) || [value.requestDigest, value.capabilityDigest, value.effectDigest, value.routeAuthorityDigest, value.expectedDispatchedRequestDigest, value.reservationIntentDigest].some(item => !DIGEST.test(item))) throw new TypeError("durable publication identity is invalid");
+}
+
+function snapshotDurableIdentity(value: DurableDispatchPublicationIdentityV1): DurableDispatchPublicationIdentityV1 {
+  assertDurableIdentity(value);
+  return Object.freeze(Object.fromEntries(IDENTITY_FIELDS.map(field => [field, value[field]]))) as unknown as DurableDispatchPublicationIdentityV1;
 }
 
 function assertDurableQuery(value: DurableDispatchPublicationQueryV1): void {
