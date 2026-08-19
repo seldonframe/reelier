@@ -1,8 +1,8 @@
-import { mkdir, open, readFile, rename, unlink } from "node:fs/promises";
+import { mkdir, open, readFile, readdir, rename, unlink } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
 import path from "node:path";
 import { authorityCanonicalBytes, authorityDigest } from "../wire.js";
-import type { DispatchPublication, DispatchRequestState, DispatchOutcome } from "./dispatch.js";
+import type { DispatchPublication, DispatchRequestState, DispatchOutcome, DurableDispatchPublicationHeadV1, DurableDispatchPublicationIdentityV1, DurableDispatchPublicationQueryV1 } from "./dispatch.js";
 import { assertLinuxAuthorityCellHost } from "./platform.js";
 
 /**
@@ -40,8 +40,8 @@ function fileName(receiptRef: string): string {
 export function createFileReceiptPublication(options: FileReceiptPublicationOptions): DispatchPublication {
   assertLinuxAuthorityCellHost();
   const root = path.resolve(options.rootDir);
-  return Object.freeze({
-    async publish(input: Readonly<{ phase: "dispatch" | "cancelled" | "ambiguous" | "reconcile"; state: DispatchRequestState; outcome: DispatchOutcome; dispatchedRequestDigest: string | null; priorReceiptDigest?: string | null }>) {
+  const identities = new Map<string, DurableDispatchPublicationIdentityV1>();
+  const legacyPublish = async (input: Readonly<{ phase: "dispatch" | "cancelled" | "ambiguous" | "reconcile"; state: DispatchRequestState; outcome: DispatchOutcome; dispatchedRequestDigest: string | null; priorReceiptDigest?: string | null }>) => {
       const reservationId = input.state.reservation.reservationId;
       const stable = {
         v: "reelier.authority-publication-preimage/internal-v1",
@@ -107,6 +107,107 @@ export function createFileReceiptPublication(options: FileReceiptPublicationOpti
         throw new Error("authority publication is missing or unreadable", { cause: error });
       }
       return Object.freeze({ receiptRef, evidenceDigest });
+  };
+  const publishDurable = async (identity: DurableDispatchPublicationIdentityV1, input: Readonly<{ phase: "reservation" | "dispatch" | "ambiguous" | "reconcile"; state: DispatchRequestState; outcome: DispatchOutcome; dispatchedRequestDigest: string | null; priorReceiptDigest: string | null }>) => {
+    assertDurableIdentity(identity);
+    if (identity.reservationId !== input.state.reservation.reservationId || identity.effectDigest !== input.state.effectDigest) throw new TypeError("durable publication state identity mismatch");
+    const current = await loadDurableChain(root, identity);
+    const terminalKind = input.phase === "reservation" ? null : input.phase === "reconcile" ? "reconciled" : input.outcome.kind;
+    if (input.phase === "reservation") {
+      if (input.priorReceiptDigest !== null || input.dispatchedRequestDigest !== null) throw new TypeError("durable reservation root is malformed");
+    } else {
+      if (!current || input.priorReceiptDigest !== (current.phase === "reservation" || current.phase === "ambiguous" ? current.receiptRef : current.priorReceiptRef)) throw new TypeError("durable publication prior head mismatch");
+      if (input.phase === "dispatch" && current.phase !== "reservation" || input.phase === "ambiguous" && current.phase !== "reservation" || input.phase === "reconcile" && current.phase !== "ambiguous") {
+        const repeatPrior = current.priorReceiptRef === input.priorReceiptDigest && current.phase === input.phase;
+        if (!repeatPrior) throw new TypeError("durable publication phase conflicts with the authoritative head");
+      }
+    }
+    const reservationReceiptRef = input.phase === "reservation" ? null : current!.reservationReceiptRef;
+    const preimage = Object.freeze({ v: "reelier.durable-file-publication-preimage/internal-v1", identity, phase: input.phase, terminalKind, reservationReceiptRef, priorReceiptRef: input.priorReceiptDigest, lifecycle: input.outcome.kind, effectDigest: input.state.effectDigest, dispatchedRequestDigest: input.dispatchedRequestDigest, providerResultDigest: input.outcome.resultDigest, reconciliationStatus: input.outcome.reconciliationStatus ?? null, normalizedProjectionDigest: input.outcome.normalizedProjectionDigest ?? null });
+    const receiptRef = authorityDigest(preimage), evidenceDigest = authorityDigest({ v: "reelier.durable-file-publication-evidence/internal-v1", receiptRef, identity, phase: input.phase, terminalKind, providerResultDigest: input.outcome.resultDigest });
+    const head = Object.freeze({ v: "reelier.durable-dispatch-publication-head/v1" as const, identity, receiptRef, evidenceDigest, reservationReceiptRef: input.phase === "reservation" ? receiptRef : current!.reservationReceiptRef, priorReceiptRef: input.priorReceiptDigest, phase: input.phase, terminalKind }) as DurableDispatchPublicationHeadV1;
+    if (current) {
+      if (current.receiptRef === receiptRef && authorityDigest(current) === authorityDigest(head)) return Object.freeze({ receiptRef, evidenceDigest });
+      if (current.phase !== "reservation" && current.phase !== "ambiguous") throw new TypeError("conflicting immutable durable publication");
+    }
+    const directory = durableDirectory(root, identity);
+    await mkdir(directory, { recursive: true });
+    await writeImmutable(path.join(directory, `node-${receiptRef.slice(7)}.json`), Object.freeze({ v: "reelier.durable-file-publication-node/internal-v1", preimage, head }));
+    const reread = await loadDurableChain(root, identity);
+    if (!reread || reread.receiptRef !== receiptRef || authorityDigest(reread) !== authorityDigest(head)) throw new Error("durable publication authoritative readback mismatch");
+    return Object.freeze({ receiptRef, evidenceDigest });
+  };
+  return Object.freeze({
+    async publishReservation(input: Parameters<NonNullable<DispatchPublication["publishReservation"]>>[0]) {
+      identities.set(input.identity.reservationId, input.identity);
+      return publishDurable(input.identity, input);
+    },
+    async loadDurableHead(query: DurableDispatchPublicationQueryV1) {
+      assertDurableQuery(query);
+      identities.set(query.identity.reservationId, query.identity);
+      return loadDurableChain(root, query.identity);
+    },
+    async publish(input: Readonly<{ phase: "dispatch" | "cancelled" | "ambiguous" | "reconcile"; state: DispatchRequestState; outcome: DispatchOutcome; dispatchedRequestDigest: string | null; priorReceiptDigest?: string | null }>) {
+      const identity = identities.get(input.state.reservation.reservationId);
+      if (!identity) return legacyPublish(input);
+      if (input.phase === "cancelled") throw new TypeError("a durable send-started chain cannot publish cancellation");
+      return publishDurable(identity, { phase: input.phase, state: input.state, outcome: input.outcome, dispatchedRequestDigest: input.dispatchedRequestDigest, priorReceiptDigest: input.priorReceiptDigest ?? null });
     },
   });
+}
+
+const DIGEST = /^sha256:(?!0{64}$)[0-9a-f]{64}$/;
+const IDENTITY_FIELDS = ["v", "reservationId", "tenant", "requestDigest", "capabilityDigest", "effectDigest", "routeAuthorityDigest", "expectedDispatchedRequestDigest", "reservationIntentDigest"] as const;
+
+function assertDurableIdentity(value: DurableDispatchPublicationIdentityV1): void {
+  if (!value || typeof value !== "object" || Array.isArray(value) || Object.getPrototypeOf(value) !== Object.prototype) throw new TypeError("durable publication identity is not inert");
+  const descriptors = Object.getOwnPropertyDescriptors(value), keys = Reflect.ownKeys(value);
+  if (keys.length !== IDENTITY_FIELDS.length || keys.some(key => typeof key !== "string" || !IDENTITY_FIELDS.includes(key as typeof IDENTITY_FIELDS[number])) || Object.values(descriptors).some(descriptor => !("value" in descriptor) || !descriptor.enumerable)) throw new TypeError("durable publication identity is not closed");
+  if (value.v !== "reelier.durable-dispatch-publication-identity/v1" || !/^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$/.test(value.reservationId) || !/^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$/.test(value.tenant) || [value.requestDigest, value.capabilityDigest, value.effectDigest, value.routeAuthorityDigest, value.expectedDispatchedRequestDigest, value.reservationIntentDigest].some(item => !DIGEST.test(item))) throw new TypeError("durable publication identity is invalid");
+}
+
+function assertDurableQuery(value: DurableDispatchPublicationQueryV1): void {
+  if (!value || typeof value !== "object" || Array.isArray(value) || Object.getPrototypeOf(value) !== Object.prototype || Reflect.ownKeys(value).length !== 4 || !Object.prototype.hasOwnProperty.call(value, "v") || !Object.prototype.hasOwnProperty.call(value, "identity") || !Object.prototype.hasOwnProperty.call(value, "ledgerState") || !Object.prototype.hasOwnProperty.call(value, "sendStarted")) throw new TypeError("durable publication query is not closed");
+  if (value.v !== "reelier.durable-dispatch-publication-query/v1" || !["dispatched", "ambiguous"].includes(value.ledgerState) || value.sendStarted !== true) throw new TypeError("durable publication query is invalid");
+  assertDurableIdentity(value.identity);
+}
+
+function durableDirectory(root: string, identity: DurableDispatchPublicationIdentityV1): string { return path.join(root, `durable-${authorityDigest(identity).slice(7)}`); }
+
+async function writeImmutable(file: string, value: unknown): Promise<void> {
+  const bytes = Buffer.concat([authorityCanonicalBytes(value), Buffer.from("\n")]);
+  try {
+    const handle = await open(file, "wx", 0o600);
+    try { await handle.writeFile(bytes); await handle.sync(); } finally { await handle.close(); }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    if (!(await readFile(file)).equals(bytes)) throw new Error("conflicting immutable durable publication");
+  }
+}
+
+async function loadDurableChain(root: string, identity: DurableDispatchPublicationIdentityV1): Promise<DurableDispatchPublicationHeadV1 | null> {
+  assertDurableIdentity(identity);
+  const directory = durableDirectory(root, identity);
+  let names: string[];
+  try { names = (await readdir(directory)).filter(name => /^node-[0-9a-f]{64}\.json$/.test(name)).sort(); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return null; throw error; }
+  if (names.length === 0) return null;
+  const nodes = await Promise.all(names.map(async name => JSON.parse(await readFile(path.join(directory, name), "utf8")) as any));
+  for (const node of nodes) {
+    if (!node || node.v !== "reelier.durable-file-publication-node/internal-v1" || authorityDigest(node.head.identity) !== authorityDigest(identity) || authorityDigest(node.preimage) !== node.head.receiptRef || !DIGEST.test(node.head.evidenceDigest)) throw new TypeError("durable publication node is invalid or conflicting");
+  }
+  const roots = nodes.filter(node => node.head.phase === "reservation" && node.head.priorReceiptRef === null && node.head.reservationReceiptRef === node.head.receiptRef);
+  if (roots.length !== 1) throw new TypeError("durable publication reservation root is absent or conflicting");
+  let current = roots[0], consumed = 1;
+  for (;;) {
+    const children = nodes.filter(node => node.head.priorReceiptRef === current.head.receiptRef);
+    if (children.length > 1) throw new TypeError("durable publication chain fork conflicts");
+    if (children.length === 0) break;
+    const next = children[0];
+    if (current.head.phase === "reservation" && !["dispatch", "ambiguous"].includes(next.head.phase) || current.head.phase === "ambiguous" && next.head.phase !== "reconcile" || !["reservation", "ambiguous"].includes(current.head.phase)) throw new TypeError("durable publication chain order conflicts");
+    if (next.head.reservationReceiptRef !== roots[0].head.receiptRef) throw new TypeError("durable publication reservation root binding conflicts");
+    current = next; consumed += 1;
+  }
+  if (consumed !== nodes.length) throw new TypeError("durable publication contains an unreachable node");
+  return Object.freeze(current.head) as DurableDispatchPublicationHeadV1;
 }
