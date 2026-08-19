@@ -81,7 +81,7 @@ export interface ReleaseOperationPlanV1 {
   readonly expectedTreeSha: string;
   readonly files: readonly ReleaseCandidateFileV1[];
   readonly npmPreflight: Readonly<{ packageName: "reelier"; version: "0.32.1"; versionMustBeAbsent: true }>;
-  readonly pullRequest: Readonly<{ base: "main"; body: string; draft: true; head: "reelier/release/0.32.1"; title: string }>;
+  readonly pullRequest: Readonly<{ base: "main"; body: string; draft: true; head: "reelier/release/0.32.1"; readyForReview: true; title: string }>;
   readonly repository: "seldonframe/reelier";
   readonly requiredChecks: readonly string[];
   readonly squash: Readonly<{ commitMessage: string; commitTitle: string }>;
@@ -346,8 +346,8 @@ function parseReleaseOperationPlanV1(value: unknown): ReleaseOperationPlanV1 {
   if (commit.parentSha !== RELEASE_BASE || !boundedText(commit.message, 1, 512)) throw new TypeError("release operation commit parent or message is invalid");
   parseGitIdentity(commit.author, "release commit author");
   parseGitIdentity(commit.committer, "release commit committer");
-  const pullRequest = exact(item.pullRequest, ["base", "body", "draft", "head", "title"], "release pull request");
-  if (pullRequest.base !== "main" || pullRequest.head !== RELEASE_BRANCH || pullRequest.draft !== true || !boundedText(pullRequest.title, 1, 256) || !boundedText(pullRequest.body, 1, 16_384)) throw new TypeError("release pull request plan is invalid");
+  const pullRequest = exact(item.pullRequest, ["base", "body", "draft", "head", "readyForReview", "title"], "release pull request");
+  if (pullRequest.base !== "main" || pullRequest.head !== RELEASE_BRANCH || pullRequest.draft !== true || pullRequest.readyForReview !== true || !boundedText(pullRequest.title, 1, 256) || !boundedText(pullRequest.body, 1, 16_384)) throw new TypeError("release pull request plan is invalid");
   const squash = exact(item.squash, ["commitMessage", "commitTitle"], "release squash metadata");
   if (!boundedText(squash.commitTitle, 1, 256) || !boundedText(squash.commitMessage, 1, 16_384)) throw new TypeError("release squash metadata is invalid");
   const npm = exact(item.npmPreflight, ["packageName", "version", "versionMustBeAbsent"], "release npm preflight");

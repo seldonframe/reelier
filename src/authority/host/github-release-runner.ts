@@ -267,7 +267,8 @@ async function pullRequest(request: GitHubReleaseRunRequestV1, auth: VerifiedRel
   if (pr.draft) {
     const currentEvents = await journal.load(request.requestId);
     if (has(currentEvents, "pr-ready-dispatching")) return pending("pr-ready-dispatching");
-    if (!has(currentEvents, "pr-ready-intent")) await step(journal, request, "pr-ready-intent", { number: pr.number });
+    if (plan.pullRequest.readyForReview !== true) throw new TypeError("pull request ready transition is not authorized");
+    if (!has(currentEvents, "pr-ready-intent")) await step(journal, request, "pr-ready-intent", { number: pr.number, readyForReview: true });
     await assertPostIntentLive(journal, request, auth, now); await assertBaseRef(provider, plan, plan.baseCommit, true);
     const atWrite = parsePullRequest(await provider.getPullRequest({ repository: plan.repository, number: pr.number }));
     assertPullRequestPlan(atWrite, plan, atWrite.draft);
