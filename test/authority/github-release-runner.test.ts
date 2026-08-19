@@ -339,6 +339,53 @@ test("runner does not expose a forgeable receipt-publication confirmation method
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
+test("restart confirms an authoritative terminal receipt committed before the publication callback crashed", async () => {
+  const restore = __testSetAuthorityCellHostPlatform("linux"), root = await mkdtemp(path.join(os.tmpdir(), "reelier-release-post-publication-cut-"));
+  const fixture = releaseAuthorityFixture(), journalKeys = generateKeyPairSync("ed25519");
+  let blobWrites = 0;
+  const provider = candidateProvider({ createBlob: async ({ contentBase64 }: any) => { blobWrites += 1; return { sha: blobSha(Buffer.from(contentBase64, "base64")) }; } });
+  try {
+    const createRunner = () => createGitHubReleaseRunner({ rootDir: path.join(root, "runner"), journalSigner: { signerId: "release-journal-2026", privateKey: journalKeys.privateKey, publicKey: journalKeys.publicKey }, evidenceSigner: fixture.evidenceSigner, authorizationResolver: async () => fixture.context, provider, now: () => new Date("2026-08-18T06:00:00.000Z") });
+    const firstRunner = await createRunner();
+    const request = { alias: "github_release_candidate_publish_v1" as const, allocationId: "release-candidate-branch-01", authorizationHandle: "release_auth_1", requestId: "candidate_post_publication_cut", semanticsDigest: authorityDigest({ request: "candidate_post_publication_cut" }) };
+    const terminal = await governedRun(firstRunner, request);
+    assert.equal(terminal.status, "verified");
+
+    const effect = { v: "reelier.transport-effect/v1", endpointId: "github.release.candidate-branch", method: "POST", path: "/internal/github-release", query: "", headers: {}, bodyBase64: Buffer.from(JSON.stringify({ authorizationHandle: request.authorizationHandle })).toString("base64"), riskClass: "github_release", idempotency: "reconcile-only", preconditions: [], reconciliation: { recipeId: "github_release_authoritative_readback_v1" } };
+    const encodedEffect = Buffer.from(JSON.stringify(effect)).toString("base64"), projection = { v: "reelier.materialized-http-request/v1" as const, method: "POST" as const, origin: "https://api.github.test", normalizedPath: "/internal/github-release", normalizedQuery: "", reviewedHeaders: {}, bodyDigest: digest("a") }, materializedRequestDigest = materializedHttpRequestDigest(projection);
+    const intent: any = { tenant: "tenant_release_test", requestDigest: authorityDigest({ requestId: request.requestId }), capabilityDigest: authorityDigest({ capability: request.requestId }), effectDigest: request.semanticsDigest, effectCanonicalBase64: encodedEffect, executionContext: { allocationId: request.allocationId }, routeAuthority: { routeDigest: digest("b"), expectedMaterializedRequestDigest: materializedRequestDigest } };
+    let reservation: any = { reservationId: request.requestId, state: "ambiguous", sendStarted: true, resultDigest: authorityDigest({ ambiguous: request.requestId }), intent };
+    const identity: any = { v: "reelier.durable-dispatch-publication-identity/v1", reservationId: request.requestId, tenant: intent.tenant, requestDigest: intent.requestDigest, capabilityDigest: intent.capabilityDigest, effectDigest: intent.effectDigest, routeAuthorityDigest: authorityDigest(intent.routeAuthority), expectedDispatchedRequestDigest: materializedRequestDigest, reservationIntentDigest: authorityDigest({ v: "reelier.dispatch-reservation-intent/v1", intent }) };
+    const reservationReceiptRef = authorityDigest({ root: request.requestId });
+    let head: any = { v: "reelier.durable-dispatch-publication-head/v1", identity, receiptRef: authorityDigest({ ambiguous: request.requestId }), evidenceDigest: authorityDigest({ ambiguousEvidence: request.requestId }), reservationReceiptRef, priorReceiptRef: reservationReceiptRef, phase: "ambiguous", terminalKind: "ambiguous" };
+    let cut = true, terminalPublications = 0;
+    const store = {
+      async publishReservation() { throw new Error("reconciliation must not create a second reservation root"); },
+      async loadDurableHead(query: any) { if (authorityDigest(query.identity) !== authorityDigest(identity)) throw new TypeError("durable identity conflict"); return head; },
+      async publish(value: any) {
+        terminalPublications += 1;
+        const published = { receiptRef: authorityDigest({ receipt: request.requestId, phase: value.phase }), evidenceDigest: authorityDigest({ evidence: request.requestId, phase: value.phase }) };
+        head = { v: "reelier.durable-dispatch-publication-head/v1", identity, ...published, reservationReceiptRef, priorReceiptRef: value.priorReceiptDigest, phase: value.phase, terminalKind: "reconciled" };
+        if (cut) { cut = false; throw new Error("injected cut after immutable publication before confirmation"); }
+        return published;
+      },
+    };
+    const ledger: any = { async getReservation() { return reservation; }, async transition(_id: string, expected: string, event: any) { if (reservation.state !== expected) return { ok: false, reason: "state-conflict" }; reservation = { ...reservation, state: event.to, resultDigest: event.resultDigest }; return { ok: true, status: "transitioned", reservation }; }, async recover() { return { ok: true, reservations: [reservation] }; } };
+    const firstHost = createGitHubReleaseHostComposition({ runner: firstRunner, fallback: testFallback, publication: store });
+    await assert.rejects(() => createDispatchCoordinator(ledger, firstHost.adapter, undefined, firstHost.publication).reconcile(request.requestId), /injected cut/);
+    assert.equal(reservation.state, "ambiguous");
+    assert.equal(head.phase, "reconcile");
+
+    const restartedRunner = await createRunner(), restartedHost = createGitHubReleaseHostComposition({ runner: restartedRunner, fallback: testFallback, publication: store });
+    await createDispatchCoordinator(ledger, restartedHost.adapter, undefined, restartedHost.publication).recover();
+    assert.equal(reservation.state, "reconciled");
+    assert.equal(terminalPublications, 1, "recovery must adopt the exact durable head without republishing");
+    assert.equal(blobWrites, 3, "recovery must not resend any provider write");
+    const successor = await governedRun(restartedRunner, { alias: "github_release_pr_ensure_v1", allocationId: "release-draft-pr-01", authorizationHandle: "release_auth_1", requestId: "pr_after_post_publication_cut", semanticsDigest: authorityDigest({ request: "pr_after_post_publication_cut" }) });
+    assert.equal(successor.status, "verified", "the confirmed predecessor must unlock its successor after restart");
+  } finally { restore(); await rm(root, { recursive: true, force: true }); }
+});
+
 test("four-operation release saga converges after ambiguous merge and tag without resend", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "reelier-release-saga-"));
   const fixture = releaseAuthorityFixture(), journalKeys = generateKeyPairSync("ed25519");
