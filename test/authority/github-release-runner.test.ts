@@ -478,6 +478,35 @@ for (const boundary of ["createBlob", "createTree", "createCommit", "createBranc
   });
 }
 
+for (const boundary of ["createBlob", "createTree", "createCommit", "createBranchRef", "createPullRequest", "markPullRequestReady", "mergePullRequest", "createTagRef"] as const) {
+  test(`explicit provider refusal at ${boundary} is terminal and never becomes ambiguous`, async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), `reelier-release-definitive-${boundary}-`));
+    const fixture = releaseAuthorityFixture(), keys = generateKeyPairSync("ed25519"), refs = new Map<string, string>([["heads/main", "e600ad5c2dc5e1bde0714915e7a84980c8d5602b"]]);
+    let pr: any = null, refusedCalls = 0;
+    const provider: any = {
+      createBlob: async ({ contentBase64 }: any) => ({ sha: blobSha(Buffer.from(contentBase64, "base64")) }), createTree: async () => ({ sha: gitSha("e") }), createCommit: async () => ({ sha: gitSha("a") }),
+      getRef: async ({ ref }: any) => refs.has(ref) ? { sha: refs.get(ref)! } : null, createRef: async ({ ref, sha }: any) => { refs.set(ref, sha); return { sha }; },
+      getCommit: async ({ sha }: any) => ({ sha, parentSha: "e600ad5c2dc5e1bde0714915e7a84980c8d5602b", treeSha: sha === "e600ad5c2dc5e1bde0714915e7a84980c8d5602b" ? gitSha("b") : gitSha("e") }),
+      findPullRequests: async () => pr ? [pr] : [], createPullRequest: async (metadata: any) => (pr = { base: metadata.base, body: metadata.body, draft: metadata.draft, head: metadata.head, headSha: gitSha("a"), mergeCommitSha: null, merged: false, number: 1, title: metadata.title }), markPullRequestReady: async () => (pr = { ...pr, draft: false }), getPullRequest: async () => pr,
+      getChecks: async () => ["coverage", "full-tests", "mutation"].map(name => ({ name, status: "success", workflowDigest: digest("3"), workflowPath: ".github/workflows/ci.yml" })),
+      mergePullRequest: async () => { pr = { ...pr, merged: true, mergeCommitSha: gitSha("9") }; refs.set("heads/main", gitSha("9")); return { merged: true, sha: gitSha("9") }; }, readPackageManifest: async () => ({ name: "reelier", version: "0.32.1" }), npmVersionExists: async () => false,
+    };
+    const method = boundary === "createBranchRef" || boundary === "createTagRef" ? "createRef" : boundary;
+    const original = provider[method];
+    provider[method] = async (...args: any[]) => { const ref = args[0]?.ref, matches = boundary === "createBranchRef" ? String(ref).startsWith("heads/") : boundary === "createTagRef" ? String(ref).startsWith("tags/") : true; if (matches) { refusedCalls += 1; throw { v: "reelier.github-release-provider-fault/v1", kind: "definitive-refusal", reason: `provider rejected ${boundary}` }; } return original(...args); };
+    try {
+      const runner = await createGitHubReleaseRunner({ rootDir: root, journalSigner: { signerId: "release-journal-2026", privateKey: keys.privateKey, publicKey: keys.publicKey }, evidenceSigner: fixture.evidenceSigner, authorizationResolver: async () => fixture.context, provider, now: () => new Date("2026-08-18T06:00:00.000Z") });
+      const sequence = [["github_release_candidate_publish_v1", "release-candidate-branch-01"], ["github_release_pr_ensure_v1", "release-draft-pr-01"], ["github_release_pr_merge_v1", "release-exact-sha-merge-01"], ["github_release_tag_create_v1", "release-non-force-tag-01"]] as const;
+      for (const [alias, allocationId] of sequence) {
+        const requestId = `${boundary}_${alias}`, request = { alias, allocationId, authorizationHandle: "release_auth_1", requestId, semanticsDigest: authorityDigest({ boundary, alias }) };
+        try { const result = await governedRun(runner, request); await confirmTestPublication(runner, requestId, result); }
+        catch (error) { assert.match(String(error), /provider rejected/i); const calls = refusedCalls; await assert.rejects(() => governedRun(runner, request), /provider.*refus|terminal/i); assert.equal(refusedCalls, calls, "a definitive refusal must not be resent"); break; }
+      }
+      assert.equal(refusedCalls, 1);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+}
+
 for (const scenario of ["base-drift", "branch-conflict", "duplicate-pr", "failed-check", "wrong-check-workflow", "tampered-merge-tree", "tampered-merge-parent", "tag-conflict"] as const) {
   test(`deterministic ${scenario} refuses without semantic widening`, async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), `reelier-release-refusal-${scenario}-`));
