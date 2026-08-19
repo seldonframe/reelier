@@ -5,7 +5,7 @@ import path from "node:path";
 import { isProxy } from "node:util/types";
 import { authorityDigest } from "../wire.js";
 import { assertVerifiedReleaseAuthorizationV1, type ReleaseContractSignerV1, type ReleaseProviderEffectV1, type VerifiedReleaseAuthorizationV1 } from "../release-contracts.js";
-import type { DispatchAdapter, DispatchOutcome, DispatchPublication, DispatchRequestState } from "./dispatch.js";
+import { consumeCoordinatorPublicationCall, type DispatchAdapter, type DispatchOutcome, type DispatchPublication, type DispatchRequestState } from "./dispatch.js";
 import { consumeCoordinatorReconciliation, createPreparedDispatch, describePreparedDispatch } from "./prepared-dispatch.js";
 import { createSignedJournal, type SignedJournal, type SignedJournalEventV1 } from "./signed-journal.js";
 import { createGitHubReleaseProviderEvidence } from "./github-release-evidence.js";
@@ -198,6 +198,7 @@ export function createGitHubReleaseReceiptPublication(input: Readonly<{ runner: 
   if (!confirmPublication) throw new TypeError("release runner publication capability is unavailable");
   return Object.freeze({
     async publish(value: Parameters<DispatchPublication["publish"]>[0]) {
+      consumeCoordinatorPublicationCall(value as object, { phase: value.phase, reservationId: value.state.reservation.reservationId, effectDigest: value.state.effectDigest });
       const published = await input.publication.publish(value);
       const effect = isPlain(value.state.effect) ? value.state.effect : null;
       if ((value.phase === "dispatch" || value.phase === "reconcile") && value.outcome.kind === "acknowledged" && effect && typeof effect.endpointId === "string" && ENDPOINTS[effect.endpointId]) await confirmPublication({ requestId: value.state.reservation.reservationId, providerEvidenceDigest: value.outcome.resultDigest, receiptRef: published.receiptRef, receiptEvidenceDigest: published.evidenceDigest });

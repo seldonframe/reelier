@@ -35,6 +35,20 @@ export interface DispatchAuthorityRevalidator { revalidate(state: DispatchReques
 export interface CertifiedIdentityVerifier { readonly purpose: "authority-evidence"; readonly signerId: string; readonly publicKey: KeyObject; }
 export interface CertifiedDispatchOptions { readonly identityProbe: () => Promise<AuthenticatedProviderIdentityV1>; readonly verifyIdentity?: CertifiedIdentityVerifier; readonly revalidator: DispatchAuthorityRevalidator; readonly latencyRecorder?: AuthorityLatencyRecorder; readonly onPhase?: (phase: "identity-probe" | "route-reread" | "authority-validation-before-prepare" | "prepare" | "authority-validation-after-prepare" | "dispatch-commit-cas" | "authority-send-boundary" | "send-started" | "send") => void; }
 
+const coordinatorPublicationCalls = new WeakMap<object, Readonly<{ phase: string; reservationId: string; effectDigest: string }>>();
+
+/** @internal Consumed by host-private publication wrappers; never exported from the package barrel. */
+export function consumeCoordinatorPublicationCall(input: object, expected: Readonly<{ phase: string; reservationId: string; effectDigest: string }>): void {
+  const actual = coordinatorPublicationCalls.get(input);
+  coordinatorPublicationCalls.delete(input);
+  if (!actual || actual.phase !== expected.phase || actual.reservationId !== expected.reservationId || actual.effectDigest !== expected.effectDigest) throw new TypeError("release receipt publication requires a coordinator-minted publication capability");
+}
+
+function coordinatorPublicationCall<T extends Readonly<{ phase: string; state: DispatchRequestState }>>(input: T): T {
+  coordinatorPublicationCalls.set(input as object, Object.freeze({ phase: input.phase, reservationId: input.state.reservation.reservationId, effectDigest: input.state.effectDigest }));
+  return input;
+}
+
 export function createDispatchCoordinator(ledger: AuthorityLedger, adapter: DispatchAdapter, evidence?: DispatchEvidenceWriter, publication?: DispatchPublication, budget?: DispatchBudget, certified?: CertifiedDispatchOptions): DispatchCoordinator {
   assertLinuxAuthorityCellHost();
   if(publication&&Boolean(publication.publishReservation)!==Boolean(publication.loadDurableHead))throw new TypeError("durable dispatch publication methods must be configured as a pair");
@@ -126,7 +140,7 @@ export function createDispatchCoordinator(ledger: AuthorityLedger, adapter: Disp
           // durable identity must come from the reservation reread after the prepared CAS.
           const rootState=Object.freeze({...state,reservation:persisted}) as DispatchRequestState;
           const rootOutcome=Object.freeze({kind:"ambiguous" as const,resultDigest:authorityDigest({reservationId,phase:"reservation"})});
-          reservationRoot=await publication.publishReservation({phase:"reservation",identity,state:rootState,outcome:rootOutcome,dispatchedRequestDigest:null,priorReceiptDigest:null});
+          reservationRoot=await publication.publishReservation(coordinatorPublicationCall({phase:"reservation",identity,state:rootState,outcome:rootOutcome,dispatchedRequestDigest:null,priorReceiptDigest:null}));
         }
         authorizeCoordinatorCommittedLease(lease);
         let outcome: DispatchOutcome;
@@ -140,7 +154,7 @@ export function createDispatchCoordinator(ledger: AuthorityLedger, adapter: Disp
         const dispatchedRequestDigest = outcome.materializedRequestDigest ?? description.materializedRequestDigest;
         if (evidence) await evidence.persist({ state, outcome, dispatchedRequestDigest });
         let terminalPublication:Readonly<{receiptRef:string;evidenceDigest:string}>|undefined;
-        if(publication){terminalPublication=await publication.publish({phase:outcome.kind==="ambiguous"?"ambiguous":"dispatch",state,outcome,dispatchedRequestDigest,priorReceiptDigest:reservationRoot?.receiptRef??null});if(outcome.kind!=="ambiguous")outcome=Object.freeze({...outcome,providerResultDigest:outcome.resultDigest,resultDigest:terminalPublication.receiptRef,receiptRef:terminalPublication.receiptRef,evidenceDigest:terminalPublication.evidenceDigest,priorReceiptDigest:reservationRoot?.receiptRef});}
+        if(publication){terminalPublication=await publication.publish(coordinatorPublicationCall({phase:outcome.kind==="ambiguous"?"ambiguous":"dispatch",state,outcome,dispatchedRequestDigest,priorReceiptDigest:reservationRoot?.receiptRef??null}));if(outcome.kind!=="ambiguous")outcome=Object.freeze({...outcome,providerResultDigest:outcome.resultDigest,resultDigest:terminalPublication.receiptRef,receiptRef:terminalPublication.receiptRef,evidenceDigest:terminalPublication.evidenceDigest,priorReceiptDigest:reservationRoot?.receiptRef});}
         const terminal = outcome.kind;
         const result = await measureLatency(certified?.latencyRecorder, "terminal-transition", () => ledger.transition(reservationId, "dispatched", terminal === "ambiguous" ? { to: "ambiguous" } : { to: terminal, resultDigest: outcome.resultDigest }));
         if (!result.ok) throw new Error(`dispatch result transition refused: ${result.reason}`);
@@ -165,7 +179,7 @@ export function createDispatchCoordinator(ledger: AuthorityLedger, adapter: Disp
       if (!/^sha256:[0-9a-f]{64}$/.test(dispatchedRequestDigest)) throw new Error("dispatch request digest is invalid");
       if (evidence) await evidence.persist({ state, outcome, dispatchedRequestDigest });
       let published: Readonly<{ receiptRef: string; evidenceDigest: string }> | undefined;
-      if (publication) { published = await publication.publish({ phase: "dispatch", state, outcome, dispatchedRequestDigest, priorReceiptDigest: null }); outcome = Object.freeze({ ...outcome, providerResultDigest: outcome.resultDigest, resultDigest: published.receiptRef, receiptRef: published.receiptRef, evidenceDigest: published.evidenceDigest }); }
+      if (publication) { published = await publication.publish(coordinatorPublicationCall({ phase: "dispatch", state, outcome, dispatchedRequestDigest, priorReceiptDigest: null })); outcome = Object.freeze({ ...outcome, providerResultDigest: outcome.resultDigest, resultDigest: published.receiptRef, receiptRef: published.receiptRef, evidenceDigest: published.evidenceDigest }); }
       const terminal: LedgerState = outcome.kind;
       const result = await measureLatency(undefined, "terminal-transition", () => outcome.kind === "ambiguous"
         ? ledger.transition(reservationId, "dispatched", { to: "ambiguous" })
@@ -173,7 +187,7 @@ export function createDispatchCoordinator(ledger: AuthorityLedger, adapter: Disp
       if (!result.ok) throw new Error(`dispatch result transition refused: ${result.reason}`);
       if (publication && published && outcome.reconciliationStatus && outcome.reconciliationStatus !== "not-attempted") {
         const reconciledState = { ...state, reservation: result.reservation } as DispatchRequestState;
-        const reconciled = await publication.publish({ phase: "reconcile", state: reconciledState, outcome, dispatchedRequestDigest, priorReceiptDigest: published.receiptRef });
+        const reconciled = await publication.publish(coordinatorPublicationCall({ phase: "reconcile", state: reconciledState, outcome, dispatchedRequestDigest, priorReceiptDigest: published.receiptRef }));
         const reconciliationTransition = await ledger.transition(reservationId, result.reservation.state, { to: "reconciled", resultDigest: reconciled.receiptRef });
         if (!reconciliationTransition.ok) throw new Error(`reconciliation transition refused: ${reconciliationTransition.reason}`);
         outcome = Object.freeze({ ...outcome, resultDigest: reconciled.receiptRef, receiptRef: reconciled.receiptRef, evidenceDigest: reconciled.evidenceDigest, priorReceiptDigest: published.receiptRef });
@@ -187,7 +201,7 @@ export function createDispatchCoordinator(ledger: AuthorityLedger, adapter: Disp
       const budgetClaim = budgetFor(state);
       if (budget && budgetClaim) await budget.returnOnce(budgetClaim);
       const outcome = Object.freeze({ kind: "definitive-failure" as const, resultDigest });
-      const published = publication ? await publication.publish({ phase: "cancelled", state, outcome, dispatchedRequestDigest: null }) : undefined;
+      const published = publication ? await publication.publish(coordinatorPublicationCall({ phase: "cancelled", state, outcome, dispatchedRequestDigest: null })) : undefined;
       const terminalDigest = published?.receiptRef ?? resultDigest;
       const result = await ledger.transition(state.reservation.reservationId, "reserved", { to: "cancelled", resultDigest: terminalDigest });
       if (!result.ok) throw new Error(`cancellation refused: ${result.reason}`);
@@ -227,7 +241,7 @@ export function createDispatchCoordinator(ledger: AuthorityLedger, adapter: Disp
         if (budget.releaseConsumedOnce) await budget.releaseConsumedOnce(budgetClaim);
         else await budget.returnOnce(budgetClaim);
       }
-      const published = publication ? await publication.publish({ phase: "reconcile", state, outcome, dispatchedRequestDigest: authorityDigest({ v: "reelier.dispatched-request/v1", reservationId, effectDigest: state.effectDigest, effect: state.effect }), priorReceiptDigest }) : undefined;
+      const published = publication ? await publication.publish(coordinatorPublicationCall({ phase: "reconcile", state, outcome, dispatchedRequestDigest: authorityDigest({ v: "reelier.dispatched-request/v1", reservationId, effectDigest: state.effectDigest, effect: state.effect }), priorReceiptDigest })) : undefined;
       const resultDigest = published?.receiptRef ?? outcome.resultDigest;
       const terminal = await ledger.transition(reservationId, "ambiguous", { to: "reconciled", resultDigest });
       if (!terminal.ok) throw new Error(`reconciliation transition refused: ${terminal.reason}`);
@@ -244,7 +258,7 @@ export function createDispatchCoordinator(ledger: AuthorityLedger, adapter: Disp
           const budgetClaim = budgetFor(state);
           if (budget && budgetClaim) await budget.returnOnce(budgetClaim);
           const outcome = Object.freeze({ kind: "definitive-failure" as const, resultDigest });
-          const published = publication ? await publication.publish({ phase: "cancelled", state, outcome, dispatchedRequestDigest: null }) : undefined;
+          const published = publication ? await publication.publish(coordinatorPublicationCall({ phase: "cancelled", state, outcome, dispatchedRequestDigest: null })) : undefined;
           const transitioned = await ledger.transition(reservation.reservationId, "reserved", { to: "cancelled", resultDigest: published?.receiptRef ?? resultDigest });
           if (!transitioned.ok) throw new Error(`cancellation recovery transition refused: ${transitioned.reason}`);
           continue;
@@ -269,8 +283,8 @@ export function createDispatchCoordinator(ledger: AuthorityLedger, adapter: Disp
               ambiguous.push(reservation.reservationId);continue;
             }
             if(head.phase!=="reservation")throw new Error("durable governed receipt head is incompatible with dispatched recovery");
-            published=await publication.publish({phase:"ambiguous",state,outcome,dispatchedRequestDigest:identity.expectedDispatchedRequestDigest,priorReceiptDigest:head.receiptRef});
-          }else if(publication)published=await publication.publish({ phase: "ambiguous", state, outcome, dispatchedRequestDigest: authorityDigest({ v: "reelier.dispatched-request/v1", reservationId: reservation.reservationId, effectDigest: reservation.intent.effectDigest }) });
+            published=await publication.publish(coordinatorPublicationCall({phase:"ambiguous",state,outcome,dispatchedRequestDigest:identity.expectedDispatchedRequestDigest,priorReceiptDigest:head.receiptRef}));
+          }else if(publication)published=await publication.publish(coordinatorPublicationCall({ phase: "ambiguous", state, outcome, dispatchedRequestDigest: authorityDigest({ v: "reelier.dispatched-request/v1", reservationId: reservation.reservationId, effectDigest: reservation.intent.effectDigest }) }));
           const transitioned = await ledger.transition(reservation.reservationId, "dispatched", { to: "ambiguous" });
           if (!transitioned.ok) throw new Error(`ambiguity transition refused: ${transitioned.reason}`);
           ambiguous.push(reservation.reservationId);
