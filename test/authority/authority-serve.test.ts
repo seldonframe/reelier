@@ -133,6 +133,16 @@ test("the release runner provider is a closed discriminated union with per-kind 
   for (const provider of [null, [], "loopback-fixture", { fixtureDir }, Object.assign(Object.create(null), { kind: "loopback-fixture", fixtureDir })]) {
     assert.throws(() => parseGitHubReleaseRunnerOperatorConfig({ ...valid, provider }), /release runner provider/i, JSON.stringify(provider));
   }
+  // A required key defined as a NON-ENUMERABLE own property still answers `hasOwnProperty` true,
+  // so a presence check built on `hasOwnProperty` accepts it even though it is invisible to
+  // `Object.keys` — the same enumeration the unknown-key half of this closed-record check walks.
+  // The old exact-sorted-key-set equality refused this shape outright; the presence check must
+  // read from the SAME enumerated key set the unknown-key check does, or the two halves of
+  // "closed" disagree about what "present" means.
+  const hiddenProvider: Record<string, unknown> = { kind: "loopback-fixture" };
+  Object.defineProperty(hiddenProvider, "fixtureDir", { value: fixtureDir, enumerable: false });
+  assert.deepEqual(Object.keys(hiddenProvider), ["kind"]);
+  assert.throws(() => parseGitHubReleaseRunnerOperatorConfig({ ...valid, provider: hiddenProvider }), /loopback-fixture provider is not a closed record/i);
 });
 
 test("the release runner operator config refuses every shape that is not an exact closed record", () => {

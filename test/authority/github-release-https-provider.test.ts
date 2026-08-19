@@ -12,6 +12,7 @@ import {
   type GitHubReleaseHttpsTransport,
 } from "../../src/authority/host/github-release-https-provider.js";
 import { parseGitHubReleaseRunnerOperatorConfig } from "../../src/authority/host/github-release-runner-config.js";
+import { createSecretResolver } from "../../src/authority/host/secret-resolver.js";
 
 const REPOSITORY = "seldonframe-rehearsal/release-rehearsal";
 const SHA_A = "a".repeat(40);
@@ -311,6 +312,22 @@ test("faults are plain closed DTOs: 422 is definitive-refusal, a transport throw
   } finally { restore(); }
 });
 
+/** The driver resolves the credential BEFORE any DNS or socket work (`materializeSecret` in
+ * `json-https.ts`), so a real, unmocked `SecretResolver` reaches its failure mode entirely
+ * hermetically here — no `__testSetGitHubReleaseHttpsTransport` override needed, and no network
+ * touched. A `file:` reference that is really a mistyped token (an operator meant `env:...` and
+ * pasted a token after `file:` instead) must never let the resulting ENOENT text — path tail
+ * included — ride into the persisted `transport-uncertain` fault reason. */
+test("a mistyped file: token reference never leaks its ENOENT path tail into a persisted provider fault reason", async () => {
+  const mistypedTail = "ghp_deadbeef1234567890abcdef1234567890abcd";
+  const provider = createGitHubReleaseHttpsProvider({ ...config, githubTokenRef: `file:${mistypedTail}` }, createSecretResolver());
+  const fault = await refusalOf(provider.getRef({ repository: REPOSITORY, ref: "heads/main" }));
+  assert.equal(fault.kind, "transport-uncertain");
+  assert.equal(fault.reason, "secret is unavailable");
+  assert.equal(String(fault.reason).includes("ENOENT"), false);
+  assert.equal(String(fault.reason).includes(mistypedTail), false);
+});
+
 /** Runs the REAL provider through the REAL json-https driver with `node:https` and
  * `node:dns/promises` mocked at the module boundary — the json-https-driver.test.ts harness shape.
  * A real loopback socket is impossible by construction: the driver's `assertAllPublicAddresses`
@@ -362,21 +379,28 @@ const provider = createGitHubReleaseHttpsProvider(config, { async resolve(refere
 
 const ref = await provider.getRef({ repository: REPOSITORY, ref: "heads/main" });
 const blob = await provider.createBlob({ repository: REPOSITORY, contentBase64: Buffer.from("hello").toString("base64") });
+// The release head branch contains slashes ("reelier/release/0.32.1"). This is the ONE place the
+// percent-encoding regression is exercised against the REAL json-https driver (every other
+// findPullRequests coverage runs through the fakeTransport seam, which never touches the driver's
+// own query validation) — the driver refuses ANY unencoded query slash (validateQuery), so this
+// call only succeeds if the provider percent-encoded it first.
+const pulls = await provider.findPullRequests({ repository: REPOSITORY, head: "reelier/release/0.32.1", base: "main" });
 const registry = await provider.npmVersionExists({ packageName: "reelier", version: "0.32.1" });
 let refusal; try { await provider.createRef({ repository: REPOSITORY, ref: "tags/v0.32.1", sha: "a".repeat(40), force: false }); } catch (error) { refusal = error; }
 let uncertain; try { await provider.getCommit({ repository: REPOSITORY, sha: "b".repeat(40) }); } catch (error) { uncertain = error; }
 
 assert.deepEqual(ref, { sha: "a".repeat(40) });
 assert.deepEqual(blob, { sha: "b".repeat(40) });
+assert.deepEqual(pulls, [{ number: 7, head: "reelier/release/0.32.1", base: "main", draft: true, title: "Release v0.32.1", body: "Governed release v0.32.1", headSha: "a".repeat(40), merged: true, mergeCommitSha: "c".repeat(40) }]);
 assert.equal(registry, true);
 assert.equal(refusal.kind, "definitive-refusal");
 assert.equal(uncertain.kind, "transport-uncertain");
-assert.deepEqual(resolvedReferences, ["env:REELIER_CANARY_TOKEN", "env:REELIER_CANARY_TOKEN", "env:REELIER_CANARY_TOKEN", "env:REELIER_CANARY_TOKEN"]);
+assert.deepEqual(resolvedReferences, ["env:REELIER_CANARY_TOKEN", "env:REELIER_CANARY_TOKEN", "env:REELIER_CANARY_TOKEN", "env:REELIER_CANARY_TOKEN", "env:REELIER_CANARY_TOKEN"]);
 
 // The ONE place the token legitimately appears: the Authorization header the fixture received.
 const github = observed.filter(entry => entry.hostname === "api.github.com");
 const npm = observed.filter(entry => entry.hostname === "registry.npmjs.org");
-assert.equal(github.length, 4);
+assert.equal(github.length, 5);
 assert.equal(npm.length, 1);
 for (const entry of github) assert.equal(entry.headers.authorization, "Bearer " + TOKEN, entry.path);
 // The unauthenticated registry endpoint declares no credential reference, so no bearer exists to attach.
@@ -385,7 +409,7 @@ for (const entry of npm) assert.equal(Object.hasOwn(entry.headers, "authorizatio
 // ...and NOWHERE else. Config, returned values, both fault DTOs, every fault reason string, every
 // request path/query/body, and every non-authorization header value.
 const surfaces = [
-  JSON.stringify(config), JSON.stringify(ref), JSON.stringify(blob), String(registry),
+  JSON.stringify(config), JSON.stringify(ref), JSON.stringify(blob), JSON.stringify(pulls), String(registry),
   JSON.stringify(refusal), String(refusal && refusal.reason), JSON.stringify(uncertain), String(uncertain && uncertain.reason),
   ...observed.map(entry => entry.method + " " + entry.path + " " + entry.bodyUtf8),
   ...observed.flatMap(entry => Object.entries(entry.headers).filter(([name]) => name.toLowerCase() !== "authorization").map(([name, value]) => name + "=" + value)),
@@ -400,6 +424,7 @@ test("the real driver receives the exact request shape and the token appears ONL
   const script: [string, { status: number; body: string }][] = [
     [`GET /repos/${REPOSITORY}/git/ref/heads/main`, { status: 200, body: JSON.stringify({ ref: "refs/heads/main", object: { sha: SHA_A } }) }],
     [`POST /repos/${REPOSITORY}/git/blobs`, { status: 201, body: JSON.stringify({ sha: SHA_B }) }],
+    [`GET /repos/${REPOSITORY}/pulls`, { status: 200, body: JSON.stringify([{ number: 7, head: { ref: "reelier/release/0.32.1", sha: SHA_A }, base: { ref: "main" }, draft: true, title: "Release v0.32.1", body: "Governed release v0.32.1", merged_at: "2026-08-19T00:00:00Z", merge_commit_sha: SHA_C }]) }],
     ["GET /reelier", { status: 200, body: JSON.stringify({ versions: { "0.32.1": {} } }) }],
     [`POST /repos/${REPOSITORY}/git/refs`, { status: 422, body: JSON.stringify({ message: "Validation Failed" }) }],
     [`GET /repos/${REPOSITORY}/git/commits/${SHA_B}`, { status: 500, body: "{}" }],
@@ -412,20 +437,33 @@ test("the real driver receives the exact request shape and the token appears ONL
   child.stdout.setEncoding("utf8"); child.stderr.setEncoding("utf8");
   child.stdout.on("data", chunk => { stdout += chunk; }); child.stderr.on("data", chunk => { stderr += chunk; });
   const code = await new Promise<number | null>((resolve, reject) => { child.once("error", reject); child.once("close", resolve); });
-  assert.equal(code, 0, `fixture-server harness failed\nstdout:\n${stdout}\nstderr:\n${stderr}`);
+  // The token-scan assertions run BEFORE the code===0 assertion on purpose: if a child-side
+  // assertion fails (e.g. a harness `assert.deepEqual` on a value that embeds TOKEN), Node's
+  // AssertionError diff can print the actual/expected values to the child's stderr — and the
+  // code===0 assertion below embeds that entire stderr into ITS OWN failure message. Scanning first
+  // means a leaked token fails on the boolean-comparison message ("must never print the token")
+  // instead of being echoed verbatim through the parent assertion's diff.
   assert.equal(stdout.includes(token), false, "the redacted request log must never carry the token across the process boundary");
   assert.equal(stderr.includes(token), false, "a harness failure must never print the token");
+  assert.equal(code, 0, `fixture-server harness failed\nstdout:\n${stdout}\nstderr:\n${stderr}`);
   const requests = JSON.parse(stdout) as { method: string; path: string; hostname: string; headerNames: string[]; bodyUtf8: string }[];
   assert.deepEqual(requests.map(entry => `${entry.method} https://${entry.hostname}${entry.path}`), [
     `GET https://api.github.com/repos/${REPOSITORY}/git/ref/heads/main`,
     `POST https://api.github.com/repos/${REPOSITORY}/git/blobs`,
+    `GET https://api.github.com/repos/${REPOSITORY}/pulls?head=${encodeURIComponent(`${REPOSITORY.slice(0, REPOSITORY.indexOf("/"))}:reelier/release/0.32.1`)}&base=main&state=all&per_page=100`,
     "GET https://registry.npmjs.org/reelier",
     `POST https://api.github.com/repos/${REPOSITORY}/git/refs`,
     `GET https://api.github.com/repos/${REPOSITORY}/git/commits/${SHA_B}`,
   ]);
+  // The regression this covers: the driver's own query validation (not the fakeTransport seam
+  // exercised elsewhere in this file) refuses ANY query containing a raw slash, so the slashed head
+  // branch is only dispatchable at all because the provider percent-encoded it first.
+  assert.ok(requests[2]!.path.includes("%2F"), "the real request line must carry the percent-encoded slash");
+  assert.equal(requests[2]!.path.includes("/release/0.32.1"), false, "the head branch's slashes must never appear unencoded in the request line");
   assert.deepEqual(requests[0]!.headerNames, ["accept", "authorization", "x-github-api-version"]);
   assert.deepEqual(requests[1]!.headerNames, ["accept", "authorization", "content-length", "x-github-api-version"]);
-  assert.deepEqual(requests[2]!.headerNames, ["accept"]);
+  assert.deepEqual(requests[2]!.headerNames, ["accept", "authorization", "x-github-api-version"]);
+  assert.deepEqual(requests[3]!.headerNames, ["accept"]);
   assert.deepEqual(JSON.parse(requests[1]!.bodyUtf8), { content: Buffer.from("hello").toString("base64"), encoding: "base64" });
 });
 

@@ -128,3 +128,24 @@ test("credential env slots reject empty and NUL values", async () => {
   await assert.rejects(() => resolver.acquireSlot("empty"), /unavailable/i);
   await assert.rejects(() => resolver.acquireSlot("nul"), /unavailable/i);
 });
+
+/** The legacy `file:` branch of `resolve()` used to let a raw `readFile` failure (ENOENT, EACCES,
+ * ...) propagate verbatim. An operator who mistypes an `env:` reference as `file:ghp_...` gets a
+ * Node error whose message is `ENOENT: ..., open 'ghp_...'` — the mistyped token tail riding along
+ * inside an error message that downstream callers (the GitHub release provider) fold directly into
+ * a persisted, signed fault reason. The fixed string mirrors the `env:` branch's own "secret is
+ * unavailable" — no path, no errno text, ever. */
+test("legacy resolve() never leaks a missing file's path or ENOENT text into its error message", async () => {
+  const resolver = createSecretResolver();
+  const mistypedTail = "ghp_deadbeef1234567890abcdef1234567890abcd";
+  await assert.rejects(
+    () => resolver.resolve(`file:${mistypedTail}`),
+    (error: unknown) => {
+      assert.ok(error instanceof Error);
+      assert.equal((error as Error).message, "secret is unavailable");
+      assert.equal((error as Error).message.includes("ENOENT"), false);
+      assert.equal((error as Error).message.includes(mistypedTail), false);
+      return true;
+    },
+  );
+});
