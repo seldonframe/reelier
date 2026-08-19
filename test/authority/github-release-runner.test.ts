@@ -120,13 +120,13 @@ test("request ticket publication never retires a paused live creator by mtime", 
     await journal.append("request_paused", semantics, "first", {});
     const requestDir = path.join(root, authorityDigest({ journalId: "release", requestId: "request_paused" }).slice(7)), queue = path.join(requestDir, "request.lock.d");
     const names = await readdir(queue), next = Math.max(...names.map(name => /^ticket-(\d{12})\.json$/.exec(name)).filter(Boolean).map(match => Number(match![1]))) + 1;
-    const paused = path.join(queue, `ticket-${String(next).padStart(12, "0")}.json`);
-    await writeFile(paused, "");
+    const paused = path.join(queue, `ticket-${String(next).padStart(12, "0")}.claim-${process.pid}-paused-owner`);
+    await mkdir(paused);
     let settled = false;
     const append = journal.append("request_paused", semantics, "after-paused-creator", {}).finally(() => { settled = true; });
     await new Promise(resolve => setTimeout(resolve, 400));
     assert.equal(settled, false, "an incomplete ticket is not proof that its creator died");
-    await writeFile(`${paused}.released`, JSON.stringify({ nonce: "paused-owner", releasedAt: new Date().toISOString() }));
+    await rm(paused, { recursive: true });
     await append;
   } finally { await rm(root, { recursive: true, force: true }); }
 });

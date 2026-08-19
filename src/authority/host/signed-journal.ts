@@ -1,5 +1,5 @@
 import { randomUUID, type KeyObject } from "node:crypto";
-import { open, mkdir, readdir, readFile, rename, stat, unlink } from "node:fs/promises";
+import { open, mkdir, readdir, readFile, rename, rm, stat, unlink } from "node:fs/promises";
 import path from "node:path";
 import { authorityCanonicalBytes, authorityDigest } from "../wire.js";
 import { signAuthorityDigest, verifyAuthoritySignature } from "../crypto.js";
@@ -126,20 +126,23 @@ async function withTicketLease<T>(queueDir: string, scope: string, operation: ()
   let ticket = -1, ticketPath = "";
   for (;;) {
     const names = await readdir(queueDir);
-    const numbers = names.map(name => /^ticket-(\d{12})\.json$/.exec(name)).filter((match): match is RegExpExecArray => Boolean(match)).map(match => Number(match[1]));
+    const numbers = names.map(name => /^ticket-(\d{12})(?:\.json|\.claim-)/.exec(name)).filter((match): match is RegExpExecArray => Boolean(match)).map(match => Number(match[1]));
     ticket = (numbers.length === 0 ? -1 : Math.max(...numbers)) + 1;
     ticketPath = path.join(queueDir, `ticket-${String(ticket).padStart(12, "0")}.json`);
-    let handle;
+    const claimName = `ticket-${String(ticket).padStart(12, "0")}.claim-${process.pid}-${nonce}`, claimPath = path.join(queueDir, claimName);
     try {
-      handle = await open(ticketPath, "wx", 0o600);
-      await handle.writeFile(authorityCanonicalBytes({ acquiredAt: new Date().toISOString(), nonce, pid: process.pid, scope }));
-      await handle.sync();
-      await handle.close();
+      await mkdir(claimPath);
+      const competing = (await readdir(queueDir)).filter(name => name.startsWith(`ticket-${String(ticket).padStart(12, "0")}.claim-`)).sort();
+      if (competing[0] !== claimName) { await rm(claimPath, { recursive: true }); continue; }
+      const pendingPath = `${ticketPath}.pending-${nonce}`;
+      await writeExclusiveFsync(pendingPath, authorityCanonicalBytes({ acquiredAt: new Date().toISOString(), nonce, pid: process.pid, scope }));
+      await rename(pendingPath, ticketPath);
       await fsyncDirectory(queueDir);
+      await rm(claimPath, { recursive: true });
       break;
     } catch (error: any) {
-      await handle?.close().catch(() => undefined);
-      if (error?.code !== "EEXIST") throw error;
+      await rm(claimPath, { recursive: true, force: true }).catch(() => undefined);
+      if (error?.code !== "EEXIST" && error?.code !== "ENOTEMPTY") throw error;
     }
   }
   const releasePath = `${ticketPath}.released`;
@@ -148,7 +151,7 @@ async function withTicketLease<T>(queueDir: string, scope: string, operation: ()
       let blocked = false;
       for (let prior = 0; prior < ticket; prior += 1) {
         const priorPath = path.join(queueDir, `ticket-${String(prior).padStart(12, "0")}.json`);
-        if (await ticketIsActive(priorPath)) { blocked = true; break; }
+        if (await ticketSlotIsActive(queueDir, prior, priorPath)) { blocked = true; break; }
       }
       if (!blocked) return await operation();
       if (Date.now() - started > 10_000) throw new TypeError("signed journal lease is busy");
@@ -158,6 +161,15 @@ async function withTicketLease<T>(queueDir: string, scope: string, operation: ()
     await writeExclusiveFsync(releasePath, authorityCanonicalBytes({ nonce, releasedAt: new Date().toISOString() }));
     await fsyncDirectory(queueDir);
   }
+}
+
+async function ticketSlotIsActive(queueDir: string, ticket: number, ticketPath: string): Promise<boolean> {
+  const prefix = `ticket-${String(ticket).padStart(12, "0")}.claim-`;
+  for (const name of (await readdir(queueDir)).filter(value => value.startsWith(prefix))) {
+    const match = /^ticket-\d{12}\.claim-(\d+)-[0-9a-f-]+$/.exec(name);
+    if (!match || pidIsAlive(Number(match[1]))) return true;
+  }
+  return ticketIsActive(ticketPath);
 }
 
 async function ticketIsActive(ticketPath: string): Promise<boolean> {
@@ -175,8 +187,8 @@ async function ticketIsActive(ticketPath: string): Promise<boolean> {
   }
   const pid = Number((value as Record<string, unknown>).pid);
   if (!Number.isSafeInteger(pid) || pid <= 0) return false;
-  try { process.kill(pid, 0); return true; }
-  catch (error: any) { return error?.code !== "ESRCH"; }
+  return pidIsAlive(pid);
 }
+function pidIsAlive(pid: number): boolean { if (!Number.isSafeInteger(pid) || pid <= 0) return false; try { process.kill(pid, 0); return true; } catch (error: any) { return error?.code !== "ESRCH"; } }
 async function writeExclusiveFsync(file: string, bytes: Uint8Array): Promise<void> { const handle = await open(file, "wx", 0o600); try { await handle.writeFile(bytes); await handle.sync(); } finally { await handle.close(); } }
 async function fsyncDirectory(directory: string): Promise<void> { try { const handle = await open(directory, "r"); try { await handle.sync(); } finally { await handle.close(); } } catch (error: any) { if (process.platform !== "win32") throw error; } }
