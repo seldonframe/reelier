@@ -491,6 +491,30 @@ test("candidate branch write refuses base drift observed after durable intent", 
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
+test("intent-only candidate recovery refuses an externally created exact branch", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "reelier-release-intent-only-branch-"));
+  const fixture = releaseAuthorityFixture(), keys = generateKeyPairSync("ed25519");
+  let candidateReads = 0, externalBranch = false;
+  const provider = candidateProvider({
+    getRef: async ({ ref }: any) => {
+      if (ref === "heads/main") return { sha: "e600ad5c2dc5e1bde0714915e7a84980c8d5602b" };
+      if (ref === "heads/reelier/release/0.32.1") {
+        candidateReads += 1;
+        if (externalBranch) return { sha: gitSha("a") };
+        if (candidateReads === 3) throw { v: "reelier.github-release-provider-fault/v1", kind: "transport-uncertain", reason: "crash after branch intent before dispatching" };
+      }
+      return null;
+    },
+  });
+  try {
+    const runner = await createGitHubReleaseRunner({ rootDir: root, journalSigner: { signerId: "release-journal-2026", privateKey: keys.privateKey, publicKey: keys.publicKey }, evidenceSigner: fixture.evidenceSigner, authorizationResolver: async () => fixture.context, provider, now: () => new Date("2026-08-18T06:00:00.000Z") });
+    const request = { alias: "github_release_candidate_publish_v1" as const, allocationId: "release-candidate-branch-01", authorizationHandle: "release_auth_1", requestId: "intent_only_branch", semanticsDigest: authorityDigest({ intent: "branch" }) };
+    assert.equal((await governedRun(runner, request)).status, "pending-reconciliation");
+    externalBranch = true;
+    await assert.rejects(() => governedRun(runner, request, true), /intent.*dispatch|external|manual|conflict/i);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 test("dedicated dispatch adapter passes only host-owned allocation and durable semantics", async () => {
   let observed: any = null, fallbackCalls = 0;
   const adapter = createGitHubReleaseDispatchAdapter({ runner: { recover: async () => [], run: async (request: any) => { observed = request; return { status: "verified", phase: "candidate-verified", evidenceDigest: digest("a") }; } }, fallback: { dispatch: async () => { fallbackCalls++; return { kind: "acknowledged", resultDigest: digest("f") }; } } });
