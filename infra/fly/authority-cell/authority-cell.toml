@@ -21,6 +21,7 @@ primary_region = "yyz"
   destination = "/data"
 
 [http_service]
+  processes = ["app"]
   internal_port = 8080
   force_https = true
   auto_stop_machines = false
