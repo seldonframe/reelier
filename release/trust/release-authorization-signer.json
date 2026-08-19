@@ -1,0 +1,5 @@
+{
+  "publicKeySpkiBase64": "MCowBQYDK2VwAyEAym4xYb8QrkRJhUh2lv+SaUDfOZlHis9Xt9R8vgmkP3s=",
+  "signerId": "reelier.release-authority.2026",
+  "v": "reelier.release-authorization-trust-pin/v1"
+}
