@@ -62,12 +62,23 @@ async function confirmTestPublication(runner: Awaited<ReturnType<typeof createGi
 async function governedRun(runner: Awaited<ReturnType<typeof createGitHubReleaseRunner>>, request: { alias: any; allocationId: string; authorizationHandle: string; requestId: string; semanticsDigest: string }, reconcile = false): Promise<{ status: "verified" | "pending-reconciliation"; phase: string; evidenceDigest: string | null }> {
   const endpoint = { github_release_candidate_publish_v1: "candidate-branch", github_release_pr_ensure_v1: "draft-pr", github_release_pr_merge_v1: "exact-sha-merge", github_release_tag_create_v1: "non-force-tag" }[request.alias as string];
   const effect = { v: "reelier.transport-effect/v1", endpointId: `github.release.${endpoint}`, method: "POST", path: "/internal/github-release", query: "", headers: {}, bodyBase64: Buffer.from(JSON.stringify({ authorizationHandle: request.authorizationHandle })).toString("base64"), riskClass: "github_release", idempotency: "reconcile-only", preconditions: [], reconciliation: { recipeId: "github_release_authoritative_readback_v1" } };
-  const state = { reservation: { reservationId: request.requestId, state: "reserved", intent: { executionContext: { allocationId: request.allocationId } } }, effect, effectDigest: request.semanticsDigest, effectCanonicalBase64: "" } as any;
+  const encodedEffect = Buffer.from(JSON.stringify(effect)).toString("base64");
+  const state = { reservation: { reservationId: request.requestId, state: "reserved", intent: { effectDigest: request.semanticsDigest, effectCanonicalBase64: encodedEffect, executionContext: { allocationId: request.allocationId } } }, effect, effectDigest: request.semanticsDigest, effectCanonicalBase64: encodedEffect } as any;
   const projection = { v: "reelier.materialized-http-request/v1" as const, method: "POST" as const, origin: "https://api.github.test", normalizedPath: "/internal/github-release", normalizedQuery: "", reviewedHeaders: {}, bodyDigest: digest("a") };
   const materializedRequestDigest = materializedHttpRequestDigest(projection);
   const adapter = createGitHubReleaseDispatchAdapter({ runner, fallback: { async prepare() { return createPreparedDispatch({ description: { v: "reelier.prepared-dispatch-description/v1", routeDigest: digest("b"), materializedRequestDigest, projection, authorityGeneration: "generation_1", authorityExpiresAt: "2099-08-18T17:00:00.000Z", absoluteDeadlineMs: performance.now() + 60_000, reservationId: request.requestId, allocationId: request.allocationId }, send: async () => ({ kind: "definitive-failure", resultDigest: digest("f") }) }); }, async dispatch() { return { kind: "definitive-failure" as const, resultDigest: digest("f") }; } } });
-  const prepared = reconcile ? null : await adapter.prepare!(state);
-  const outcome: any = reconcile ? await adapter.reconcile!(state, { kind: "ambiguous", resultDigest: request.semanticsDigest }) : await consumePreparedDispatch(prepared!, createDispatchCommitLease({ reservationId: request.requestId, allocationId: request.allocationId, preparedDigest: materializedRequestDigest, authorityGeneration: "generation_1", authorityExpiresAt: "2099-08-18T17:00:00.000Z", absoluteDeadlineMs: prepared!.description.absoluteDeadlineMs, commitGeneration: "commit_1" }));
+  let reservation: any = { ...state.reservation, state: reconcile ? "ambiguous" : "reserved", ...(reconcile ? { sendStarted: true } : {}) };
+  const ledger: any = {
+    async getReservation() { return reservation; },
+    async commitPreparedDispatch(input: any) { reservation = { ...reservation, state: "dispatched", sendStarted: true }; return createDispatchCommitLease({ reservationId: input.reservationId, allocationId: input.allocationId, preparedDigest: input.preparedDescription.materializedRequestDigest, authorityGeneration: input.expectedAuthorityGeneration, authorityExpiresAt: input.preparedDescription.authorityExpiresAt, absoluteDeadlineMs: input.absoluteDeadlineMs, commitGeneration: "commit_1" }); },
+    async transition(_id: string, expected: string, event: any) { if (reservation.state !== expected) return { ok: false, reason: "state-conflict" }; reservation = { ...reservation, state: event.to, resultDigest: event.resultDigest }; return { ok: true, status: "transitioned", reservation }; },
+  };
+  const restore = __testSetAuthorityCellHostPlatform("linux");
+  let outcome: any;
+  try {
+    const coordinator = createDispatchCoordinator(ledger, adapter, undefined, undefined, { async consumeOnce() {}, async returnOnce() {}, async releaseConsumedOnce() {} });
+    outcome = reconcile ? await coordinator.reconcile(request.requestId) : await coordinator.dispatch(createReservedDispatchHandle({ ...state, reservation }));
+  } finally { restore(); }
   if (outcome.kind === "definitive-failure") throw new TypeError(outcome.reason ?? "release operation refused");
   return outcome.kind === "acknowledged" ? { status: "verified", phase: "verified", evidenceDigest: outcome.resultDigest } : { status: "pending-reconciliation", phase: "pending", evidenceDigest: null };
 }
