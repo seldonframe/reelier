@@ -213,6 +213,7 @@ export function parseArgv(argv: string[]): ParsedArgs {
       || arg === "--transport"
       || arg === "--port"
       || arg === "--certification-config"
+      || arg === "--release-runner-config"
       || arg === "--config"
       || arg === "--scenario"
       || arg === "--candidate"

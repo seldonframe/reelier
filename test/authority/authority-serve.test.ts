@@ -4,7 +4,7 @@ import { access, mkdtemp, readFile, rm } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { __testSetAuthorityServeRuntime, composeAuthorityServeHost, parseAuthorityServeMode, runAuthorityCommand } from "../../src/authority/cli.js";
+import { __testSetAuthorityServeRuntime, composeAuthorityServeHost, parseAuthorityServeMode, runAuthorityCommand, type AuthorityServeHostCompositionDependencies } from "../../src/authority/cli.js";
 import { validateAuthorityHostConfig } from "../../src/authority/host/config.js";
 import { __testSetAuthorityCellHostPlatform } from "../../src/authority/host/platform.js";
 import { createGitHubReleaseRunnerFromOperatorConfig, parseGitHubReleaseRunnerOperatorConfig } from "../../src/authority/host/github-release-runner-config.js";
@@ -15,28 +15,33 @@ import { githubReleaseAliases } from "../../src/packs/github-release/manifest.js
 import { releaseServeFixture } from "./github-release-serve-fixture.js";
 import { parseArgv } from "../../src/cli.js";
 
-/** The real production composition seam. Only `startHost` is stubbed, so every factory guard in
- * `createGitHubReleaseAuthorityRuntime` runs on the PUBLIC `authority serve` dispatch path. */
-const realServeDependencies = {
-  composeStdio: composeAuthorityServeStdioRuntime,
-  createStdioBoundRuntime: createStdioBoundLocalAuthorityRuntime,
-  createLocalRuntime: createLocalAuthorityRuntime,
-  createGitHubReleaseRuntime: createGitHubReleaseAuthorityRuntime,
-  createHostServer: createAuthorityHostServer,
-};
+/** The real production composition seam. Every factory is the real one, so every guard in
+ * `createGitHubReleaseAuthorityRuntime` runs on the PUBLIC `authority serve` dispatch path; the
+ * wrappers only record WHICH factory the composition selected, which is what separates
+ * "the runner was injected" from "the runner was silently dropped". Only `startHost` is stubbed. */
+function observedServeDependencies(factoryCalls: string[]): AuthorityServeHostCompositionDependencies {
+  return {
+    composeStdio: (config, registry, createRuntime) => { factoryCalls.push("stdio"); return composeAuthorityServeStdioRuntime(config, registry, createRuntime); },
+    createStdioBoundRuntime: (config, executionContext, options) => { factoryCalls.push("stdio-bound-runtime"); return createStdioBoundLocalAuthorityRuntime(config, executionContext, options); },
+    createLocalRuntime: (config, options) => { factoryCalls.push("local-runtime"); return createLocalAuthorityRuntime(config, options); },
+    createGitHubReleaseRuntime: (config, runner, options) => { factoryCalls.push("release-runtime"); return createGitHubReleaseAuthorityRuntime(config, runner, options); },
+    createHostServer: (config, runtime, options) => { factoryCalls.push("host-server"); return createAuthorityHostServer(config, runtime, options); },
+  };
+}
 
 /** Mirrors `main()` in src/cli.ts: the command word is consumed before `parseArgv`, so
  * `runAuthorityCommand` receives the subcommand at positional[0]. */
-async function serveThroughDispatch(argv: readonly string[], onStart?: () => void): Promise<Readonly<{ code: number; stderr: string[] }>> {
+async function serveThroughDispatch(argv: readonly string[], onStart?: () => void): Promise<Readonly<{ code: number; stderr: string[]; factoryCalls: string[] }>> {
   assert.equal(argv[0], "authority", "the dispatch helper must mirror the real root command word");
+  const factoryCalls: string[] = [];
   const restorePlatform = __testSetAuthorityCellHostPlatform("linux");
-  const restoreRuntime = __testSetAuthorityServeRuntime({ hostCompositionDependencies: realServeDependencies, async startHost() { onStart?.(); } });
+  const restoreRuntime = __testSetAuthorityServeRuntime({ hostCompositionDependencies: observedServeDependencies(factoryCalls), async startHost() { onStart?.(); } });
   const stderr: string[] = [];
   const previousError = console.error;
   console.error = (...values: unknown[]) => { stderr.push(values.map(value => String(value)).join(" ")); };
   try {
     const code = await runAuthorityCommand(parseArgv([...argv].slice(1)));
-    return Object.freeze({ code, stderr });
+    return Object.freeze({ code, stderr, factoryCalls });
   } finally {
     console.error = previousError;
     restoreRuntime();
@@ -125,6 +130,7 @@ test("authority serve refuses the four reviewed release definitions without a co
     const result = await serveThroughDispatch(["authority", "serve", "--path", fixture.configFile, "--transport", "http", "--host", "127.0.0.1", "--port", "8080"], () => { started += 1; });
     assert.equal(result.code, 1);
     assert.equal(started, 0, "a refused start must never reach the host transport");
+    assert.deepEqual(result.factoryCalls, [], "refusal precedes every runtime factory");
     const refusal = result.stderr.map(line => { try { return JSON.parse(line); } catch { return undefined; } }).find(value => value?.status === "refused");
     assert.equal(refusal?.reasonCode, "release-runner-config-required");
   } finally { await rm(fixture.root, { recursive: true, force: true }); }
@@ -161,6 +167,9 @@ test("authority serve starts the authenticated HTTP host with the constructed re
     const result = await serveThroughDispatch(["authority", "serve", "--path", fixture.configFile, "--transport", "http", "--host", "127.0.0.1", "--port", "8080", "--release-runner-config", fixture.runnerConfigFile], () => { started += 1; });
     assert.equal(result.code, 0);
     assert.equal(started, 1);
+    // The load-bearing assertion: the release factory ran and the unbound local runtime never did.
+    // Without it this test would also pass if composition silently dropped the runner.
+    assert.deepEqual(result.factoryCalls, ["release-runtime", "host-server"]);
   } finally { await rm(fixture.root, { recursive: true, force: true }); }
 });
 

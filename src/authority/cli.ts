@@ -11,7 +11,10 @@ import { firstPartyPacks } from "../packs/index.js";
 import { verifyAuthorityReceiptBundle } from "./verify.js";
 import { createArtifactStore } from "./host/artifacts.js";
 import { runFirstPartyPackConformance } from "../packs/conformance.js";
-import { createLocalAuthorityRuntime, createStdioBoundLocalAuthorityRuntime, type LocalAuthorityRuntime, type LocalAuthorityRuntimeOptions } from "./host/local.js";
+import { createGitHubReleaseAuthorityRuntime, createLocalAuthorityRuntime, createStdioBoundLocalAuthorityRuntime, type LocalAuthorityRuntime, type LocalAuthorityRuntimeOptions } from "./host/local.js";
+import { createGitHubReleaseRunnerFromOperatorConfig, parseGitHubReleaseRunnerOperatorConfig } from "./host/github-release-runner-config.js";
+import { githubReleaseAliases } from "../packs/github-release/manifest.js";
+import type { GitHubReleaseRunnerV1 } from "./host/github-release-runner.js";
 import { CERTIFICATION_TARGET_PACKAGE_VERSION, createCertificationPreflight } from "./host/certification.js";
 import { verifyReleaseEvidenceManifest } from "./host/release-evidence.js";
 import { inspectCertificationResourceIdentifiers, inspectCertificationSecretReferences, parseCertificationOperatorConfig, probePinnedCodexBinary } from "./host/certification-config.js";
@@ -279,6 +282,16 @@ async function authorityServe(args: Readonly<{ opts: Record<string, string> }>):
   assertLinuxAuthorityCellHost();
   const serveMode = parseAuthorityServeMode(args.opts);
   const loaded = await loadAuthorityHostConfig(args.opts.path ?? "authority/authority.yml");
+  // The release runner is a host-owned capability constructed in this process from operator-owned
+  // key files. It is never an agent-reachable option and never travels through authority.yml.
+  const releaseRunnerConfig = args.opts["release-runner-config"]
+    ? parseGitHubReleaseRunnerOperatorConfig(JSON.parse(await readFile(path.resolve(args.opts["release-runner-config"]), "utf8")))
+    : undefined;
+  const githubReleaseRunner = releaseRunnerConfig ? await createGitHubReleaseRunnerFromOperatorConfig(releaseRunnerConfig) : undefined;
+  if (!githubReleaseRunner && authorityDigest([...loaded.config.definitions].sort()) === authorityDigest([...githubReleaseAliases].sort())) {
+    console.error(JSON.stringify({ status: "refused", reasonCode: "release-runner-config-required", message: "the four reviewed GitHub release definitions refuse permanently (dedicated-release-runner-absent) without --release-runner-config" }));
+    return 1;
+  }
   const artifactRoot = path.dirname(loaded.file);
   const artifactDataKey = await loadOrCreateArtifactKey(artifactRoot, "artifact-data.key");
   const artifactMasterKey = await loadOrCreateArtifactKey(artifactRoot, "artifact-master.key");
@@ -300,7 +313,7 @@ async function authorityServe(args: Readonly<{ opts: Record<string, string> }>):
     ...(delegation ? { delegation } : {}),
   };
   const serveRuntime = authorityServeTestRuntime ?? authorityServeRuntimeDefaults;
-  const server = await composeAuthorityServeHost(loaded.config, serveMode.transport, principalRegistry, localRuntimeOptions, async input => {
+  const server = await composeAuthorityServeHost(loaded.config, serveMode.transport, principalRegistry, localRuntimeOptions, githubReleaseRunner, async input => {
       const value = input as Record<string, unknown>;
       const requestId = typeof value?.requestId === "string" ? value.requestId : "";
       if (typeof value?.text !== "string" || value.mediaType !== "text/plain") return { requestId, verdict: "refused", reasonCode: "invalid-artifact", lifecycleState: "refused" };
@@ -315,10 +328,11 @@ export interface AuthorityServeHostCompositionDependencies {
   readonly composeStdio: (config: import("./host/config.js").AuthorityHostConfig, registry: PrincipalRegistry | undefined, createRuntime: (context: AuthorityExecutionContextV1 | undefined) => Promise<LocalAuthorityRuntime>) => Promise<Readonly<{ executionContext: AuthorityExecutionContextV1 | undefined; runtime: LocalAuthorityRuntime }>>;
   readonly createStdioBoundRuntime: typeof createStdioBoundLocalAuthorityRuntime;
   readonly createLocalRuntime: typeof createLocalAuthorityRuntime;
+  readonly createGitHubReleaseRuntime: typeof createGitHubReleaseAuthorityRuntime;
   readonly createHostServer: typeof createAuthorityHostServer;
 }
 
-const authorityServeHostDependencies: AuthorityServeHostCompositionDependencies = { composeStdio: composeAuthorityServeStdioRuntime, createStdioBoundRuntime: createStdioBoundLocalAuthorityRuntime, createLocalRuntime: createLocalAuthorityRuntime, createHostServer: createAuthorityHostServer };
+const authorityServeHostDependencies: AuthorityServeHostCompositionDependencies = { composeStdio: composeAuthorityServeStdioRuntime, createStdioBoundRuntime: createStdioBoundLocalAuthorityRuntime, createLocalRuntime: createLocalAuthorityRuntime, createGitHubReleaseRuntime: createGitHubReleaseAuthorityRuntime, createHostServer: createAuthorityHostServer };
 
 interface AuthorityServeRuntime {
   readonly hostCompositionDependencies: AuthorityServeHostCompositionDependencies;
@@ -346,13 +360,28 @@ export function __testSetAuthorityServeRuntime(runtime: AuthorityServeRuntime | 
   return () => { authorityServeTestRuntime = previous; };
 }
 
-/** Package-internal production composition boundary. It creates but never starts the host server. */
-export async function composeAuthorityServeHost(config: import("./host/config.js").AuthorityHostConfig, transport: "stdio" | "http", principalRegistry: PrincipalRegistry | undefined, localRuntimeOptions: LocalAuthorityRuntimeOptions, artifactStage?: NonNullable<AuthorityHostRuntime["artifactStage"]>, dependencies: AuthorityServeHostCompositionDependencies = authorityServeHostDependencies): Promise<AuthorityHostServer> {
+/** Package-internal production composition boundary. It creates but never starts the host server.
+ *
+ * `githubReleaseRunner` is an EXPLICIT parameter, never an options key: the production factory
+ * refuses an options record carrying one (`local.ts` — "exactly one host-owned release runner
+ * capability"). */
+export async function composeAuthorityServeHost(config: import("./host/config.js").AuthorityHostConfig, transport: "stdio" | "http", principalRegistry: PrincipalRegistry | undefined, localRuntimeOptions: LocalAuthorityRuntimeOptions, githubReleaseRunner?: GitHubReleaseRunnerV1, artifactStage?: NonNullable<AuthorityHostRuntime["artifactStage"]>, dependencies: AuthorityServeHostCompositionDependencies = authorityServeHostDependencies): Promise<AuthorityHostServer> {
+  if (githubReleaseRunner) {
+    // Fly serves the release Cell over the authenticated HTTP transport. stdio would bind the
+    // host-owned runner to an unauthenticated local pipe, so it refuses instead.
+    if (transport === "stdio") throw new TypeError("the release runner requires the authenticated HTTP transport");
+    const releaseRuntime = await dependencies.createGitHubReleaseRuntime(config, githubReleaseRunner, localRuntimeOptions);
+    return dependencies.createHostServer(config, projectHostRuntime(releaseRuntime, artifactStage), { ...(principalRegistry ? { principalRegistry } : {}) });
+  }
   const composed = transport === "stdio" ? await dependencies.composeStdio(config, principalRegistry, context => context ? dependencies.createStdioBoundRuntime(config, context, localRuntimeOptions) : dependencies.createLocalRuntime(config, localRuntimeOptions)) : undefined;
   const executionContext = composed?.executionContext;
   const authorityRuntime = composed?.runtime ?? await dependencies.createLocalRuntime(config, localRuntimeOptions);
-  const runtime: AuthorityHostRuntime = { directOutcomeAliases: authorityRuntime.directOutcomeAliases, requiresAuthenticatedExecutionContext: authorityRuntime.requiresAuthenticatedExecutionContext, outcome: authorityRuntime.outcome, status: authorityRuntime.status, jobsSearch: authorityRuntime.jobsSearch, jobLoad: authorityRuntime.jobLoad, invoke: authorityRuntime.invoke, delegationRequest: authorityRuntime.delegationRequest, delegationStatus: authorityRuntime.delegationStatus, taskCreate: authorityRuntime.taskCreate, taskStatus: authorityRuntime.taskStatus, ...(artifactStage ? { artifactStage } : {}) };
-  return dependencies.createHostServer(config, runtime, { ...(principalRegistry ? { principalRegistry } : {}), ...(executionContext ? { stdioExecutionContext: executionContext } : {}) });
+  return dependencies.createHostServer(config, projectHostRuntime(authorityRuntime, artifactStage), { ...(principalRegistry ? { principalRegistry } : {}), ...(executionContext ? { stdioExecutionContext: executionContext } : {}) });
+}
+
+/** Projects the closed host surface. Nothing local-only ever reaches the served runtime. */
+function projectHostRuntime(authorityRuntime: LocalAuthorityRuntime, artifactStage?: NonNullable<AuthorityHostRuntime["artifactStage"]>): AuthorityHostRuntime {
+  return { directOutcomeAliases: authorityRuntime.directOutcomeAliases, requiresAuthenticatedExecutionContext: authorityRuntime.requiresAuthenticatedExecutionContext, outcome: authorityRuntime.outcome, status: authorityRuntime.status, jobsSearch: authorityRuntime.jobsSearch, jobLoad: authorityRuntime.jobLoad, invoke: authorityRuntime.invoke, delegationRequest: authorityRuntime.delegationRequest, delegationStatus: authorityRuntime.delegationStatus, taskCreate: authorityRuntime.taskCreate, taskStatus: authorityRuntime.taskStatus, ...(artifactStage ? { artifactStage } : {}) };
 }
 
 async function authorityCertify(args: Readonly<{ positional: string[]; flags: Set<string>; opts: Record<string, string> }>): Promise<number> {
