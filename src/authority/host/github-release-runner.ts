@@ -6,7 +6,7 @@ import { isProxy } from "node:util/types";
 import { authorityDigest } from "../wire.js";
 import { assertVerifiedReleaseAuthorizationV1, type ReleaseContractSignerV1, type ReleaseProviderEffectV1, type VerifiedReleaseAuthorizationV1 } from "../release-contracts.js";
 import type { DispatchAdapter, DispatchOutcome, DispatchPublication, DispatchRequestState } from "./dispatch.js";
-import { createPreparedDispatch, describePreparedDispatch } from "./prepared-dispatch.js";
+import { consumeCoordinatorReconciliation, createPreparedDispatch, describePreparedDispatch } from "./prepared-dispatch.js";
 import { createSignedJournal, type SignedJournal, type SignedJournalEventV1 } from "./signed-journal.js";
 import { createGitHubReleaseProviderEvidence } from "./github-release-evidence.js";
 
@@ -168,6 +168,7 @@ export function createGitHubReleaseDispatchAdapter(input: Readonly<{ runner: Git
     catch { return failure("release-dispatch-body-invalid"); }
     try {
       const request = { alias, allocationId: execution.allocationId, authorizationHandle: String(body.authorizationHandle), requestId: state.reservation.reservationId, semanticsDigest: state.effectDigest };
+      if (reconcileOnly) consumeCoordinatorReconciliation(state, { reservationId: request.requestId, allocationId: request.allocationId, effectDigest: request.semanticsDigest });
       const result = reconcileOnly ? await controller.reconcile(request) : await controller.execute(request);
       if (result.status === "verified") return Object.freeze({ kind: "acknowledged", resultDigest: result.evidenceDigest!, reconciliationStatus: "matched", normalizedProjectionDigest: result.evidenceDigest });
       if (result.status === "pending-reconciliation") return Object.freeze({ kind: "ambiguous", resultDigest: authorityDigest(result), reconciliationStatus: "unavailable", normalizedProjectionDigest: null });
@@ -183,7 +184,7 @@ export function createGitHubReleaseDispatchAdapter(input: Readonly<{ runner: Git
       const fallbackPrepared = await input.fallback.prepare!(state);
       if (!ENDPOINTS[inertEndpointId(state.effect) ?? ""]) return fallbackPrepared;
       const description = describePreparedDispatch(fallbackPrepared);
-      return createPreparedDispatch({ description, send: async () => await invoke(state) ?? failure("dedicated-release-runner-absent") });
+      return createPreparedDispatch({ description, send: async () => await invoke(state) ?? failure("dedicated-release-runner-absent"), requireCoordinatorCommit: true });
     } } : {}),
     async dispatch(state: DispatchRequestState) { if (ENDPOINTS[inertEndpointId(state.effect) ?? ""]) return failure("release-provider-execution-requires-prepared-dispatch"); return input.fallback.dispatch(state); },
     async reconcile(state: DispatchRequestState, outcome: DispatchOutcome) { return await invoke(state, true) ?? (input.fallback.reconcile ? input.fallback.reconcile(state, outcome) : outcome); },
