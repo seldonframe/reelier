@@ -729,3 +729,18 @@ for (const scenario of ["base-drift", "branch-conflict", "duplicate-pr", "failed
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 }
+
+test("release adapter journals a ledger-minted raw reservation id under the canonical colon-free key", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "reelier-release-raw-id-"));
+  const fixture = releaseAuthorityFixture(), keys = generateKeyPairSync("ed25519");
+  try {
+    const runner = await createGitHubReleaseRunner({ rootDir: root, journalSigner: { signerId: "release-journal-2026", privateKey: keys.privateKey, publicKey: keys.publicKey }, evidenceSigner: fixture.evidenceSigner, authorizationResolver: async () => fixture.context, provider: candidateProvider(), now: () => new Date("2026-08-18T06:00:00.000Z") });
+    const rawReservationId = `sha256:${"4".repeat(64)}`;
+    const request = { alias: "github_release_candidate_publish_v1" as const, allocationId: "release-candidate-branch-01", authorizationHandle: "release_auth_1", requestId: rawReservationId, semanticsDigest: authorityDigest({ raw: true }) };
+    const result = await governedRun(runner, request);
+    assert.equal(result.status, "verified");
+    const journal = await createSignedJournal({ rootDir: path.join(root, "journal"), journalId: "github-release", signerId: "release-journal-2026", privateKey: keys.privateKey, publicKey: keys.publicKey });
+    assert.deepEqual(await journal.listRequestIds(), [`reservation_${"4".repeat(64)}`], "journal keys and confirmAuthoritativeHead load the same colon-free identity");
+    assert.equal((await governedRun(runner, request)).status, "verified", "restart-shaped replay finds its request under the same key");
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
