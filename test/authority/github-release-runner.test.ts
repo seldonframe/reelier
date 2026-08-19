@@ -112,6 +112,25 @@ test("signed journal serializes concurrent writers and recovers an abandoned req
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
+test("request ticket publication never retires a paused live creator by mtime", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "reelier-release-paused-ticket-"));
+  const keys = generateKeyPairSync("ed25519"), semantics = authorityDigest({ request: "paused-ticket" });
+  try {
+    const journal = await createSignedJournal({ rootDir: root, journalId: "release", signerId: "release-journal-2026", privateKey: keys.privateKey, publicKey: keys.publicKey });
+    await journal.append("request_paused", semantics, "first", {});
+    const requestDir = path.join(root, authorityDigest({ journalId: "release", requestId: "request_paused" }).slice(7)), queue = path.join(requestDir, "request.lock.d");
+    const names = await readdir(queue), next = Math.max(...names.map(name => /^ticket-(\d{12})\.json$/.exec(name)).filter(Boolean).map(match => Number(match![1]))) + 1;
+    const paused = path.join(queue, `ticket-${String(next).padStart(12, "0")}.json`);
+    await writeFile(paused, "");
+    let settled = false;
+    const append = journal.append("request_paused", semantics, "after-paused-creator", {}).finally(() => { settled = true; });
+    await new Promise(resolve => setTimeout(resolve, 400));
+    assert.equal(settled, false, "an incomplete ticket is not proof that its creator died");
+    await writeFile(`${paused}.released`, JSON.stringify({ nonce: "paused-owner", releasedAt: new Date().toISOString() }));
+    await append;
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 test("signed journal authorization lease serializes independent processes", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "reelier-release-process-lease-"));
   const keys = generateKeyPairSync("ed25519"), moduleUrl = new URL("../../src/authority/host/signed-journal.js", import.meta.url).href;
