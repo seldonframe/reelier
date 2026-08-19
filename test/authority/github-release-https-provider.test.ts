@@ -226,42 +226,83 @@ test("a GraphQL errors payload on ready-for-review is a definitive refusal, neve
   });
 });
 
-test("getChecks joins check suites to workflow paths and digests the workflow bytes at the head sha", async () => {
+/** The checks source is the Actions JOBS API, never the check-runs API: a fine-grained PAT has no
+ * Checks permission to grant, so the check-runs route is unreadable by the release credential.
+ * An Actions job's `name` is byte-identical to the check name GitHub renders for that job. */
+test("getChecks reads Actions jobs per workflow run and digests the workflow bytes at the head sha", async () => {
   const workflowBytes = Buffer.from("name: CI\n");
   const workflowDigest = `sha256:${createHash("sha256").update(workflowBytes).digest("hex")}`;
   await withTransport([
-    json(200, { check_runs: [
-      { id: 2, name: "full-tests", status: "completed", conclusion: "success", check_suite: { id: 11 } },
-      { id: 3, name: "external-scan", status: "completed", conclusion: "success", check_suite: { id: 99 } },
+    json(200, { workflow_runs: [{ id: 4242, path: ".github/workflows/ci.yml", head_sha: SHA_A, check_suite_id: 11 }] }),
+    json(200, { jobs: [
+      { id: 2, name: "test (ubuntu-latest)", status: "completed", conclusion: "success" },
+      { id: 3, name: "coverage", status: "completed", conclusion: "success" },
     ] }),
-    json(200, { workflow_runs: [{ check_suite_id: 11, path: ".github/workflows/ci.yml", head_sha: SHA_A }] }),
     json(200, { content: workflowBytes.toString("base64"), encoding: "base64" }),
   ], async (provider, calls) => {
+    // The job NAME is the check name, verbatim — including the matrix suffix GitHub renders.
     assert.deepEqual(await provider.getChecks({ repository: REPOSITORY, sha: SHA_A }), [
-      // An unjoined external check maps to the ZERO digest, which the runner's assertChecks can
-      // never match against a signed workflow commitment. Visible, and fail-closed.
-      { name: "external-scan", status: "success", workflowDigest: ZERO_DIGEST, workflowPath: "(unjoined-check-suite)" },
-      { name: "full-tests", status: "success", workflowDigest, workflowPath: ".github/workflows/ci.yml" },
+      { name: "coverage", status: "success", workflowDigest, workflowPath: ".github/workflows/ci.yml" },
+      { name: "test (ubuntu-latest)", status: "success", workflowDigest, workflowPath: ".github/workflows/ci.yml" },
     ]);
     assert.deepEqual(calls.map(call => `${call.path}?${call.query}`), [
-      `/repos/${REPOSITORY}/commits/${SHA_A}/check-runs?per_page=100`,
       `/repos/${REPOSITORY}/actions/runs?head_sha=${SHA_A}&per_page=100`,
+      `/repos/${REPOSITORY}/actions/runs/4242/jobs?per_page=100`,
       `/repos/${REPOSITORY}/contents/.github/workflows/ci.yml?ref=${SHA_A}`,
+    ]);
+    // Single-page posture on BOTH listings, unchanged from the check-runs sourcing: overflow can
+    // only REMOVE a name from the set the merge gate compares, so it degrades closed.
+    assert.ok(calls.every(call => call.query.includes("per_page=100") || call.query.startsWith("ref=")));
+  });
+});
+
+test("getChecks keeps only the latest job per name and never reports a pending job as success", async () => {
+  const workflowBytes = Buffer.from("name: CI\n");
+  await withTransport([
+    json(200, { workflow_runs: [{ id: 4242, path: ".github/workflows/ci.yml", head_sha: SHA_A }] }),
+    json(200, { jobs: [
+      { id: 2, name: "full-tests", status: "completed", conclusion: "failure" },
+      { id: 9, name: "full-tests", status: "in_progress", conclusion: null },
+    ] }),
+    json(200, { content: workflowBytes.toString("base64"), encoding: "base64" }),
+  ], async provider => {
+    assert.deepEqual(await provider.getChecks({ repository: REPOSITORY, sha: SHA_A }), [
+      { name: "full-tests", status: "in_progress", workflowDigest: `sha256:${createHash("sha256").update(workflowBytes).digest("hex")}`, workflowPath: ".github/workflows/ci.yml" },
     ]);
   });
 });
 
-test("getChecks keeps only the latest run per check name and never reports a pending run as success", async () => {
+/** A workflow run whose `path` this provider cannot read still contributes its job names, at the
+ * ZERO digest — which can never equal a signed workflow commitment, so `assertChecks` refuses. */
+test("getChecks maps a job whose run names no readable workflow file to the zero digest", async () => {
   await withTransport([
-    json(200, { check_runs: [
-      { id: 2, name: "full-tests", status: "completed", conclusion: "failure", check_suite: { id: 11 } },
-      { id: 9, name: "full-tests", status: "in_progress", conclusion: null, check_suite: { id: 11 } },
-    ] }),
-    json(200, { workflow_runs: [] }),
-  ], async provider => {
+    json(200, { workflow_runs: [{ id: 4242, path: "not-a-workflow-path", head_sha: SHA_A }] }),
+    json(200, { jobs: [{ id: 2, name: "full-tests", status: "completed", conclusion: "success" }] }),
+  ], async (provider, calls) => {
     assert.deepEqual(await provider.getChecks({ repository: REPOSITORY, sha: SHA_A }), [
-      { name: "full-tests", status: "in_progress", workflowDigest: ZERO_DIGEST, workflowPath: "(unjoined-check-suite)" },
+      { name: "full-tests", status: "success", workflowDigest: ZERO_DIGEST, workflowPath: "(unresolved-workflow-path)" },
     ]);
+    // No workflow-file read is dispatched at all when there is no path to address.
+    assert.equal(calls.length, 2);
+  });
+});
+
+/** Non-Actions checks are out of scope BY DESIGN, and the design is enforced by construction: the
+ * provider never asks for a check run at all, so a third-party App's check can never enter the name
+ * set. The fail-closed consequence — a `requiredChecks` naming one refuses the merge — is pinned
+ * against the REAL `assertChecks` by the `external-required-check` scenario in
+ * `github-release-runner.test.ts`, never by a reimplemented gate here. */
+test("getChecks never dispatches a check-runs read, so an external app's check cannot enter the name set", async () => {
+  const workflowBytes = Buffer.from("name: CI\n");
+  await withTransport([
+    json(200, { workflow_runs: [{ id: 4242, path: ".github/workflows/ci.yml", head_sha: SHA_A, check_suite_id: 11 }] }),
+    json(200, { jobs: [{ id: 2, name: "full-tests", status: "completed", conclusion: "success" }] }),
+    json(200, { content: workflowBytes.toString("base64"), encoding: "base64" }),
+  ], async (provider, calls) => {
+    const checks = await provider.getChecks({ repository: REPOSITORY, sha: SHA_A }) as readonly { name: string }[];
+    assert.deepEqual(checks.map(check => check.name), ["full-tests"]);
+    assert.equal(calls.some(call => call.path.includes("/check-runs")), false, "the check-runs route is unreadable by a fine-grained PAT and must never be dispatched");
+    assert.equal(calls.some(call => call.path.includes("/check-suites")), false);
   });
 });
 
@@ -338,6 +379,7 @@ test("a mistyped file: token reference never leaks its ENOENT path tail into a p
  * never reach a test snapshot. */
 const fixtureServerHarness = String.raw`
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { mock } from "node:test";
 
@@ -385,6 +427,10 @@ const blob = await provider.createBlob({ repository: REPOSITORY, contentBase64: 
 // own query validation) — the driver refuses ANY unencoded query slash (validateQuery), so this
 // call only succeeds if the provider percent-encoded it first.
 const pulls = await provider.findPullRequests({ repository: REPOSITORY, head: "reelier/release/0.32.1", base: "main" });
+// The checks source: the Actions runs listing for the head SHA, then that run's JOBS — never the
+// check-runs API, which a fine-grained PAT cannot read at all. Exercised through the REAL driver so
+// the two request shapes (and their single-page queries) are pinned at the transport boundary.
+const checks = await provider.getChecks({ repository: REPOSITORY, sha: "a".repeat(40) });
 const registry = await provider.npmVersionExists({ packageName: "reelier", version: "0.32.1" });
 let refusal; try { await provider.createRef({ repository: REPOSITORY, ref: "tags/v0.32.1", sha: "a".repeat(40), force: false }); } catch (error) { refusal = error; }
 let uncertain; try { await provider.getCommit({ repository: REPOSITORY, sha: "b".repeat(40) }); } catch (error) { uncertain = error; }
@@ -393,14 +439,18 @@ assert.deepEqual(ref, { sha: "a".repeat(40) });
 assert.deepEqual(blob, { sha: "b".repeat(40) });
 assert.deepEqual(pulls, [{ number: 7, head: "reelier/release/0.32.1", base: "main", draft: true, title: "Release v0.32.1", body: "Governed release v0.32.1", headSha: "a".repeat(40), merged: true, mergeCommitSha: "c".repeat(40) }]);
 assert.equal(registry, true);
+// The Actions JOB name is the check name, verbatim — matrix suffix included.
+assert.deepEqual(checks, [{ name: "test (ubuntu-latest)", status: "success", workflowDigest: "sha256:" + createHash("sha256").update(Buffer.from("name: CI\n")).digest("hex"), workflowPath: ".github/workflows/ci.yml" }]);
 assert.equal(refusal.kind, "definitive-refusal");
 assert.equal(uncertain.kind, "transport-uncertain");
-assert.deepEqual(resolvedReferences, ["env:REELIER_CANARY_TOKEN", "env:REELIER_CANARY_TOKEN", "env:REELIER_CANARY_TOKEN", "env:REELIER_CANARY_TOKEN", "env:REELIER_CANARY_TOKEN"]);
+assert.deepEqual(resolvedReferences, new Array(8).fill("env:REELIER_CANARY_TOKEN"));
 
 // The ONE place the token legitimately appears: the Authorization header the fixture received.
 const github = observed.filter(entry => entry.hostname === "api.github.com");
 const npm = observed.filter(entry => entry.hostname === "registry.npmjs.org");
-assert.equal(github.length, 5);
+assert.equal(github.length, 8);
+// Nothing on this path may ask for a check run: the fine-grained PAT has no Checks permission.
+assert.equal(observed.some(entry => String(entry.path).includes("/check-runs")), false);
 assert.equal(npm.length, 1);
 for (const entry of github) assert.equal(entry.headers.authorization, "Bearer " + TOKEN, entry.path);
 // The unauthenticated registry endpoint declares no credential reference, so no bearer exists to attach.
@@ -413,7 +463,7 @@ for (const entry of observed) assert.equal(entry.headers["user-agent"], "reelier
 // ...and NOWHERE else. Config, returned values, both fault DTOs, every fault reason string, every
 // request path/query/body, and every non-authorization header value.
 const surfaces = [
-  JSON.stringify(config), JSON.stringify(ref), JSON.stringify(blob), JSON.stringify(pulls), String(registry),
+  JSON.stringify(config), JSON.stringify(ref), JSON.stringify(blob), JSON.stringify(pulls), JSON.stringify(checks), String(registry),
   JSON.stringify(refusal), String(refusal && refusal.reason), JSON.stringify(uncertain), String(uncertain && uncertain.reason),
   ...observed.map(entry => entry.method + " " + entry.path + " " + entry.bodyUtf8),
   ...observed.flatMap(entry => Object.entries(entry.headers).filter(([name]) => name.toLowerCase() !== "authorization").map(([name, value]) => name + "=" + value)),
@@ -429,6 +479,9 @@ test("the real driver receives the exact request shape and the token appears ONL
     [`GET /repos/${REPOSITORY}/git/ref/heads/main`, { status: 200, body: JSON.stringify({ ref: "refs/heads/main", object: { sha: SHA_A } }) }],
     [`POST /repos/${REPOSITORY}/git/blobs`, { status: 201, body: JSON.stringify({ sha: SHA_B }) }],
     [`GET /repos/${REPOSITORY}/pulls`, { status: 200, body: JSON.stringify([{ number: 7, head: { ref: "reelier/release/0.32.1", sha: SHA_A }, base: { ref: "main" }, draft: true, title: "Release v0.32.1", body: "Governed release v0.32.1", merged_at: "2026-08-19T00:00:00Z", merge_commit_sha: SHA_C }]) }],
+    [`GET /repos/${REPOSITORY}/actions/runs`, { status: 200, body: JSON.stringify({ workflow_runs: [{ id: 4242, path: ".github/workflows/ci.yml", head_sha: SHA_A }] }) }],
+    [`GET /repos/${REPOSITORY}/actions/runs/4242/jobs`, { status: 200, body: JSON.stringify({ jobs: [{ id: 2, name: "test (ubuntu-latest)", status: "completed", conclusion: "success" }] }) }],
+    [`GET /repos/${REPOSITORY}/contents/.github/workflows/ci.yml`, { status: 200, body: JSON.stringify({ content: Buffer.from("name: CI\n").toString("base64"), encoding: "base64" }) }],
     ["GET /reelier", { status: 200, body: JSON.stringify({ versions: { "0.32.1": {} } }) }],
     [`POST /repos/${REPOSITORY}/git/refs`, { status: 422, body: JSON.stringify({ message: "Validation Failed" }) }],
     [`GET /repos/${REPOSITORY}/git/commits/${SHA_B}`, { status: 500, body: "{}" }],
@@ -455,6 +508,9 @@ test("the real driver receives the exact request shape and the token appears ONL
     `GET https://api.github.com/repos/${REPOSITORY}/git/ref/heads/main`,
     `POST https://api.github.com/repos/${REPOSITORY}/git/blobs`,
     `GET https://api.github.com/repos/${REPOSITORY}/pulls?head=${encodeURIComponent(`${REPOSITORY.slice(0, REPOSITORY.indexOf("/"))}:reelier/release/0.32.1`)}&base=main&state=all&per_page=100`,
+    `GET https://api.github.com/repos/${REPOSITORY}/actions/runs?head_sha=${SHA_A}&per_page=100`,
+    `GET https://api.github.com/repos/${REPOSITORY}/actions/runs/4242/jobs?per_page=100`,
+    `GET https://api.github.com/repos/${REPOSITORY}/contents/.github/workflows/ci.yml?ref=${SHA_A}`,
     "GET https://registry.npmjs.org/reelier",
     `POST https://api.github.com/repos/${REPOSITORY}/git/refs`,
     `GET https://api.github.com/repos/${REPOSITORY}/git/commits/${SHA_B}`,
@@ -467,7 +523,10 @@ test("the real driver receives the exact request shape and the token appears ONL
   assert.deepEqual(requests[0]!.headerNames, ["accept", "authorization", "user-agent", "x-github-api-version"]);
   assert.deepEqual(requests[1]!.headerNames, ["accept", "authorization", "content-length", "user-agent", "x-github-api-version"]);
   assert.deepEqual(requests[2]!.headerNames, ["accept", "authorization", "user-agent", "x-github-api-version"]);
-  assert.deepEqual(requests[3]!.headerNames, ["accept", "user-agent"]);
+  // The two Actions-jobs reads carry the same closed header set as every other GitHub read.
+  assert.deepEqual(requests[3]!.headerNames, ["accept", "authorization", "user-agent", "x-github-api-version"]);
+  assert.deepEqual(requests[4]!.headerNames, ["accept", "authorization", "user-agent", "x-github-api-version"]);
+  assert.deepEqual(requests[6]!.headerNames, ["accept", "user-agent"]);
   assert.deepEqual(JSON.parse(requests[1]!.bodyUtf8), { content: Buffer.from("hello").toString("base64"), encoding: "base64" });
   // GitHub 403s a UA-less REST request (live-verified 2026-08-19: identical token+endpoint ->
   // HTTP 200 with this header, HTTP 403/HTML without it); npm expects one too. Every request the

@@ -12,7 +12,9 @@ const SECRET_REF = /^(?:env:[A-Za-z_][A-Za-z0-9_]{0,127}|file:.+)$/;
 const WORKFLOW_PATH = /^\.github\/workflows\/[A-Za-z0-9][A-Za-z0-9._-]{0,127}\.ya?ml$/;
 const CONFIG_KEYS = ["githubAccountIdentity", "githubBaseUrl", "githubTokenRef", "npmRegistryBaseUrl", "repository", "timeoutMs", "v"] as const;
 const ZERO_DIGEST = `sha256:${"0".repeat(64)}`;
-const UNJOINED_WORKFLOW_PATH = "(unjoined-check-suite)";
+/** A job whose own workflow run does not name a readable workflow file. It keeps the ZERO digest,
+ * which can never equal a signed workflow commitment, so it fails closed in `assertChecks`. */
+const UNRESOLVED_WORKFLOW_PATH = "(unresolved-workflow-path)";
 const GITHUB_ENDPOINT_ID = "github.release.provider";
 const NPM_ENDPOINT_ID = "npm.registry.read";
 /** GitHub administratively 403s any UA-less REST request (confirmed live 2026-08-19: the identical
@@ -128,6 +130,10 @@ export function createGitHubReleaseHttpsProvider(config: GitHubReleaseHttpsProvi
   if (!secrets || typeof secrets.resolve !== "function") throw new TypeError("GitHub release HTTPS provider requires a secret resolver");
   const repository = parsed.repository;
   const owner = repository.slice(0, repository.indexOf("/"));
+  /** `allowedPathPrefixes` is the driver's closed path surface (`validatePath`, json-https.ts). It
+   * is pinned by PREFIX, not per-path, and the configured repository is baked into that prefix, so
+   * re-sourcing checks from `/commits/{sha}/check-runs` to `/actions/runs/{id}/jobs` moves within
+   * one already-allowed prefix and neither widens nor narrows what this endpoint can address. */
   const github: JsonHttpsEndpoint = Object.freeze({
     endpointId: GITHUB_ENDPOINT_ID,
     baseUrl: parsed.githubBaseUrl,
@@ -320,36 +326,51 @@ export function createGitHubReleaseHttpsProvider(config: GitHubReleaseHttpsProvi
       requireNumber(number, "pull request number");
       return readPullRequest(Number(number), "pull request read");
     },
+    /** The checks source is the Actions JOBS API, never the check-runs API. A fine-grained PAT has
+     * no Checks permission to grant — GitHub's fine-grained-PAT permission list contains no such
+     * entry at all — so `GET /repos/{owner}/{repo}/commits/{sha}/check-runs` is unreadable by this
+     * credential. `Actions: Read-only` covers BOTH requests below, and an Actions job's `name` is
+     * byte-identical to the check name GitHub renders for that job ("test (ubuntu-latest)"), so the
+     * name set the merge gate compares is unchanged for every Actions-created check.
+     *
+     * Non-Actions checks — a third-party App's check runs, an external scanner — are STRUCTURALLY
+     * invisible to this source, out of scope by design, and that is fail-closed rather than a gap:
+     * `assertChecks` (`github-release-runner.ts`) demands exact name-set equality against the
+     * signed `requiredChecks`, so a required check no Actions job provides leaves the name sets
+     * unequal and the merge refuses. Nothing on this path can manufacture a passing external check.
+     *
+     * Pagination posture is unchanged and deliberately single-page (`per_page=100`) on BOTH
+     * requests: a head SHA carrying more than 100 workflow runs, or a run carrying more than 100
+     * jobs, drops the overflow from this listing. That can only ever REMOVE a name from the set,
+     * never add one, so the exact-equality gate above degrades CLOSED. */
     async getChecks({ repository: target, sha }) {
       requireConfiguredRepository(target);
       requireGitSha(sha, "checks commit SHA");
-      const checkPayload = asRecord(requireStatus(await get(github, `/repos/${repository}/commits/${sha}/check-runs`, "per_page=100"), [200], "check-run listing"), "check-run listing");
       const runsPayload = asRecord(requireStatus(await get(github, `/repos/${repository}/actions/runs`, `head_sha=${sha}&per_page=100`), [200], "workflow-run listing"), "workflow-run listing");
-      // A check run names no workflow file; only a workflow RUN does, joined by check_suite id.
-      const pathBySuite = new Map<number, string>();
-      for (const raw of Array.isArray(runsPayload.workflow_runs) ? runsPayload.workflow_runs : []) {
-        const run = asRecord(raw, "workflow run");
-        if (Number.isSafeInteger(run.check_suite_id) && typeof run.path === "string" && WORKFLOW_PATH.test(run.path)) pathBySuite.set(Number(run.check_suite_id), run.path);
-      }
       const digestByPath = new Map<string, string>();
       const entries: { id: number; name: string; status: string; workflowDigest: string; workflowPath: string }[] = [];
-      for (const raw of Array.isArray(checkPayload.check_runs) ? checkPayload.check_runs : []) {
-        const run = asRecord(raw, "check run");
-        const suite = run.check_suite === undefined || run.check_suite === null ? {} : asRecord(run.check_suite, "check suite");
-        const workflowPath = pathBySuite.get(Number(suite.id)) ?? UNJOINED_WORKFLOW_PATH;
-        let workflowDigest = ZERO_DIGEST;
-        if (workflowPath !== UNJOINED_WORKFLOW_PATH) {
-          if (!digestByPath.has(workflowPath)) digestByPath.set(workflowPath, await readWorkflowFileDigest(workflowPath, sha));
-          workflowDigest = digestByPath.get(workflowPath)!;
+      for (const raw of Array.isArray(runsPayload.workflow_runs) ? runsPayload.workflow_runs : []) {
+        const run = asRecord(raw, "workflow run");
+        // A run this listing cannot address contributes no job name at all — a subtraction from the
+        // compared name set, which the exact-equality gate reads as a refusal.
+        if (!Number.isSafeInteger(run.id) || Number(run.id) <= 0) continue;
+        // A job names no workflow file; only its workflow RUN does, and the job inherits it.
+        const workflowPath = typeof run.path === "string" && WORKFLOW_PATH.test(run.path) ? run.path : UNRESOLVED_WORKFLOW_PATH;
+        const jobsPayload = asRecord(requireStatus(await get(github, `/repos/${repository}/actions/runs/${Number(run.id)}/jobs`, "per_page=100"), [200], "workflow-run job listing"), "workflow-run job listing");
+        const jobs = Array.isArray(jobsPayload.jobs) ? jobsPayload.jobs : [];
+        if (jobs.length > 0 && workflowPath !== UNRESOLVED_WORKFLOW_PATH && !digestByPath.has(workflowPath)) digestByPath.set(workflowPath, await readWorkflowFileDigest(workflowPath, sha));
+        const workflowDigest = digestByPath.get(workflowPath) ?? ZERO_DIGEST;
+        for (const rawJob of jobs) {
+          const job = asRecord(rawJob, "workflow job");
+          entries.push({
+            id: Number.isSafeInteger(job.id) ? Number(job.id) : 0,
+            name: typeof job.name === "string" ? job.name : "",
+            status: job.status === "completed" && job.conclusion === "success" ? "success" : String(job.conclusion ?? job.status ?? "unknown"),
+            workflowDigest, workflowPath,
+          });
         }
-        entries.push({
-          id: Number.isSafeInteger(run.id) ? Number(run.id) : 0,
-          name: typeof run.name === "string" ? run.name : "",
-          status: run.status === "completed" && run.conclusion === "success" ? "success" : String(run.conclusion ?? run.status ?? "unknown"),
-          workflowDigest, workflowPath,
-        });
       }
-      // GitHub keeps every re-run; only the newest run of a name describes the commit's state now.
+      // GitHub keeps every re-run; only the newest job of a name describes the commit's state now.
       const latestByName = new Map<string, (typeof entries)[number]>();
       for (const entry of entries) { const prior = latestByName.get(entry.name); if (!prior || entry.id > prior.id) latestByName.set(entry.name, entry); }
       return Object.freeze([...latestByName.values()]

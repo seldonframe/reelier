@@ -693,7 +693,11 @@ test("a later candidate refusal reports earlier content-addressed writes as a pa
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
-for (const scenario of ["base-drift", "branch-conflict", "duplicate-pr", "failed-check", "wrong-check-workflow", "tampered-merge-tree", "tampered-merge-parent", "tag-conflict"] as const) {
+// `external-required-check`: the signed plan requires "mutation", but the provider's checks source
+// is the Actions JOBS API (a fine-grained PAT has no Checks permission), so a check produced by a
+// third-party App is STRUCTURALLY invisible and simply never appears. The gate is exact name-set
+// equality, so the observed set {coverage, full-tests} refuses the merge — visible, and fail-closed.
+for (const scenario of ["base-drift", "branch-conflict", "duplicate-pr", "failed-check", "wrong-check-workflow", "external-required-check", "tampered-merge-tree", "tampered-merge-parent", "tag-conflict"] as const) {
   test(`deterministic ${scenario} refuses without semantic widening`, async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), `reelier-release-refusal-${scenario}-`));
     const fixture = releaseAuthorityFixture(), keys = generateKeyPairSync("ed25519"), refs = new Map<string, string>([["heads/main", scenario === "base-drift" ? gitSha("7") : "e600ad5c2dc5e1bde0714915e7a84980c8d5602b"]]);
@@ -704,7 +708,7 @@ for (const scenario of ["base-drift", "branch-conflict", "duplicate-pr", "failed
       getRef: async ({ ref }: any) => refs.has(ref) ? { sha: refs.get(ref)! } : null, createRef: async ({ ref, sha }: any) => { refs.set(ref, sha); if (ref.startsWith("tags/")) tagCalls++; return { sha }; },
       getCommit: async ({ sha }: any) => ({ sha, parentSha: scenario === "tampered-merge-parent" && sha === gitSha("9") ? gitSha("7") : "e600ad5c2dc5e1bde0714915e7a84980c8d5602b", treeSha: sha === "e600ad5c2dc5e1bde0714915e7a84980c8d5602b" ? gitSha("b") : scenario === "tampered-merge-tree" && sha === gitSha("9") ? gitSha("0") : gitSha("e") }),
       findPullRequests: async () => scenario === "duplicate-pr" && pr ? [pr, { ...pr, number: 2 }] : pr ? [pr] : [], createPullRequest: async (metadata: any) => (pr = { base: metadata.base, body: metadata.body, draft: metadata.draft, head: metadata.head, headSha: gitSha("a"), mergeCommitSha: null, merged: false, number: 1, title: metadata.title }), markPullRequestReady: async () => (pr = { ...pr, draft: false }), getPullRequest: async () => pr,
-      getChecks: async () => ["coverage", "full-tests", "mutation"].map(name => ({ name, status: scenario === "failed-check" ? "failure" : "success", workflowDigest: digest("3"), workflowPath: scenario === "wrong-check-workflow" ? ".github/workflows/npm-publish.yml" : ".github/workflows/ci.yml" })),
+      getChecks: async () => (scenario === "external-required-check" ? ["coverage", "full-tests"] : ["coverage", "full-tests", "mutation"]).map(name => ({ name, status: scenario === "failed-check" ? "failure" : "success", workflowDigest: digest("3"), workflowPath: scenario === "wrong-check-workflow" ? ".github/workflows/npm-publish.yml" : ".github/workflows/ci.yml" })),
       mergePullRequest: async () => { mergeCalls++; pr = { ...pr, merged: true, mergeCommitSha: gitSha("9") }; refs.set("heads/main", gitSha("9")); return { merged: true, sha: gitSha("9") }; }, readPackageManifest: async () => ({ name: "reelier", version: "0.32.1" }), npmVersionExists: async () => false,
     };
     try {
@@ -717,14 +721,14 @@ for (const scenario of ["base-drift", "branch-conflict", "duplicate-pr", "failed
         if (scenario === "duplicate-pr") { pr = { base: "main", body: "Governed release v0.32.1", draft: true, head: "reelier/release/0.32.1", headSha: gitSha("a"), mergeCommitSha: null, merged: false, number: 1, title: "Release v0.32.1" }; await assert.rejects(() => run("github_release_pr_ensure_v1", "release-draft-pr-01", `${scenario}_pr`), /multiple|conflict/i); }
         else {
           assert.equal((await run("github_release_pr_ensure_v1", "release-draft-pr-01", `${scenario}_pr`)).status, "verified");
-          if (scenario === "failed-check" || scenario === "wrong-check-workflow") await assert.rejects(() => run("github_release_pr_merge_v1", "release-exact-sha-merge-01", `${scenario}_merge`), /checks|failed|workflow/i);
+          if (scenario === "failed-check" || scenario === "wrong-check-workflow" || scenario === "external-required-check") await assert.rejects(() => run("github_release_pr_merge_v1", "release-exact-sha-merge-01", `${scenario}_merge`), /checks|failed|workflow/i);
           else {
             if (scenario === "tampered-merge-tree" || scenario === "tampered-merge-parent") await assert.rejects(() => run("github_release_pr_merge_v1", "release-exact-sha-merge-01", `${scenario}_merge`), /tree|parent|tamper/i);
             else { assert.equal((await run("github_release_pr_merge_v1", "release-exact-sha-merge-01", `${scenario}_merge`)).status, "verified"); refs.set("tags/v0.32.1", gitSha("8")); await assert.rejects(() => run("github_release_tag_create_v1", "release-non-force-tag-01", `${scenario}_tag`), /tag.*conflict/i); }
           }
         }
       }
-      if (scenario === "failed-check") assert.equal(mergeCalls, 0);
+      if (scenario === "failed-check" || scenario === "external-required-check") assert.equal(mergeCalls, 0);
       if (scenario === "tag-conflict") assert.equal(tagCalls, 0);
     } finally { await rm(root, { recursive: true, force: true }); }
   });

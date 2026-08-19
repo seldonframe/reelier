@@ -9,6 +9,9 @@
 // Gate:   REELIER_RELEASE_PROVIDER_LIVE_SMOKE=1
 // Inputs: REELIER_SMOKE_REPOSITORY  owner/name of the disposable rehearsal repo
 //         REELIER_SMOKE_TOKEN_REF   env:NAME or file:PATH — a secret REFERENCE, never a token value
+// Token:  a fine-grained PAT carrying Actions: Read-only + Contents: Read + Metadata: Read covers
+//         every read below. A fine-grained PAT has NO Checks permission to grant at all, which is
+//         exactly why getChecks reads the Actions JOBS API and not the check-runs API.
 // Build prerequisite: npm run build (this imports dist/authority/host/index.js).
 import { readFileSync } from "node:fs";
 import process from "node:process";
