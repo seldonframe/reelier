@@ -92,6 +92,13 @@ const GENERATED_KEYS = Object.freeze(["job-signer.key.pem", "readiness-signer.ke
 const REPOSITORY = /^[A-Za-z0-9._-]{1,100}\/[A-Za-z0-9._-]{1,100}$/;
 const OPAQUE_HANDLE = /^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$/;
 const PRINCIPAL = /^[A-Za-z0-9][A-Za-z0-9._~:-]{0,127}$/;
+/** Mirrors `assertSecretReference` (`src/authority/host/github-release-https-provider.ts`) exactly —
+ * the only shape `parseGitHubReleaseRunnerOperatorConfig` accepts for `githubTokenRef`. Checked here
+ * too, at pure argument-parsing time, so a pasted raw credential (e.g. a `ghp_…` token) refuses
+ * before this process reads a single key file or creates a single byte under `--out`. This is the
+ * FIRST of two gates — see the second at the top of `main()`, which validates the fully-assembled
+ * runner-config object before the first filesystem write under `--out`. */
+const SECRET_REF = /^(?:env:[A-Za-z_][A-Za-z0-9_]{0,127}|file:.+)$/;
 
 function fail(message) {
   console.error(`stage-cell-bundle: ${message}`);
@@ -120,11 +127,19 @@ function parseArgs(argv) {
   if (!PRINCIPAL.test(audience)) fail("--audience must be a principal identity");
   const handle = opts.get("authorization-handle") ?? DEFAULT_AUTHORIZATION_HANDLE;
   if (!OPAQUE_HANDLE.test(handle)) fail("--authorization-handle is not an opaque handle");
+  const tokenRef = opts.get("token-ref") ?? DEFAULT_TOKEN_REF;
+  // Refuses a pasted raw credential (a bearer token, a PAT) before ANYTHING else runs — no key read,
+  // no computation, no write. The refusal names the required shape, never the offending value: do
+  // NOT interpolate `tokenRef` into this message, because doing so is exactly the leak this check
+  // exists to prevent.
+  if (typeof tokenRef !== "string" || tokenRef.length > 512 || !SECRET_REF.test(tokenRef)) {
+    fail("--token-ref must be an env:NAME or file:path secret reference, never a raw credential value");
+  }
   return Object.freeze({
     keysDir: path.resolve(opts.get("keys")),
     outDir: path.resolve(opts.get("out")),
     repository,
-    tokenRef: opts.get("token-ref") ?? DEFAULT_TOKEN_REF,
+    tokenRef,
     audience,
     authorizationHandle: handle,
   });
@@ -375,67 +390,13 @@ async function main() {
     packDigests: [githubReleaseManifest.packDigest], exceptionPolicy: ["ambiguous-reconcile"], coverage: "declared-surface",
   }, JOB_CARD_KEY_ID, jobSigner.privateKey);
 
-  const candidateRoot = await mkdtemp(path.join(os.tmpdir(), "reelier-stage-cell-"));
-  let deploymentFile;
-  try {
-    await mkdir(path.join(candidateRoot, "keys"), { recursive: true });
-    await mkdir(path.join(candidateRoot, "sources"), { recursive: true });
-    await writeFile(path.join(candidateRoot, "keys", "operator.pem"), publicPem(operatorSigner.publicKey), "utf8");
-    await writeFile(path.join(candidateRoot, "keys", "contract.pem"), publicPem(contractSigner.publicKey), "utf8");
-    // The source projection the four definitions ground `/authorizationHandle` against. The handle
-    // is STABLE; the per-release signed bundle that lands at `authorizations/<handle>.json` is not.
-    await writeFile(path.join(candidateRoot, "sources", `${args.authorizationHandle}.json`), `${JSON.stringify({ authorizationHandle: args.authorizationHandle })}\n`, "utf8");
-    const candidate = {
-      v: "reelier.authority-deployment-candidate/v1", jobCard, connectionDescriptors: [descriptor],
-      connectionAdoptions: [{ ...adoptionBody, signedDeploymentBinding: signedJobCardDigest(jobCard) }],
-      state: states[0],
-      connectors: [{ tenant: TENANT, connectorId: "github", accountId: "account_release", providerAccountIdentity: accountIdentity, allowedReadEndpointIds: [githubReleaseReadEndpointId], allowedWriteEndpointIds: writeEndpointIds, riskClasses: [githubReleaseRiskClass], operatorConfigurationDigest }],
-      trust: [
-        { signerId: OPERATOR_SIGNER_ID, principalId: OPERATOR_SIGNER_ID, publicKeyFile: "keys/operator.pem", purposes: ["delegation-grant"] },
-        { signerId: CONTRACT_SIGNER_ID, principalId: CONTRACT_SIGNER_ID, publicKeyFile: "keys/contract.pem", purposes: ["outcome-contract"] },
-      ],
-      sourceDirectory: "sources",
-    };
-    const candidateFile = path.join(candidateRoot, "candidate.json");
-    await writeFile(candidateFile, `${JSON.stringify(candidate)}\n`, "utf8");
-    const built = await buildAuthorityDeployment(candidateFile, path.join(authorityOut, "deployment"), trustPin);
-    deploymentFile = built.deploymentFile;
-    // `buildAuthorityDeployment` materializes one state; the other three reviewed definitions are
-    // appended and the whole manifest is re-loaded below, so nothing is trusted unverified.
-    const manifest = JSON.parse(await readFile(built.deploymentFile, "utf8"));
-    manifest.states.push(...states.slice(1));
-    await writeFile(built.deploymentFile, `${JSON.stringify(manifest, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
-  } finally {
-    await rm(candidateRoot, { recursive: true, force: true }).catch(() => undefined);
-  }
-
-  const trustPinFile = path.join(authorityOut, "trust", "job-card.json");
-  await mkdir(path.dirname(trustPinFile), { recursive: true });
-  await writeFile(trustPinFile, `${JSON.stringify(trustPin, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
-
-  const keysOut = path.join(authorityOut, "keys");
-  await mkdir(keysOut, { recursive: true });
-  await copyFile(path.join(args.keysDir, "journal-signer.key.pem"), path.join(keysOut, "journal-signer.key.pem"));
-  await copyFile(path.join(args.keysDir, "evidence-signer.key.pem"), path.join(keysOut, "evidence-signer.key.pem"));
-  await mkdir(path.join(authorityOut, "authorizations"), { recursive: true });
-  await mkdir(path.join(authorityOut, "principals"), { recursive: true });
-
-  // ---- the two configs -------------------------------------------------------------------------
-  // Every path is the ABSOLUTE GUEST path. `ingress.principalRegistryFile` is not decoration: a
-  // four-alias signed Job Card makes the runtime multi-definition, and `resolveBoundJobs`
-  // (`local.ts`) refuses every job reference without a delegation authority, which `authority serve`
-  // only constructs when the config names a durable principal registry.
-  const configBody = {
-    version: 1, tenant: TENANT, requester: args.audience, authorityCellId: identifiers.authorityCellId,
-    definitions: [...githubReleaseAliases], topology: "isolated",
-    ingress: { principalRegistryFile: guest("principals", "registry.jsonl"), allowedRequester: args.audience },
-    ledgerDir: guest("ledger"), decisionDir: guest("decisions"), receiptDir: guest("receipts"),
-    gateKeyFile: guest("keys", "local-gate.pem"),
-    endpoints: [], deploymentPath: guest("deployment", "deployment.json"), jobCardTrustPinPath: guest("trust", "job-card.json"),
-  };
-  const configFile = path.join(authorityOut, "authority.yml");
-  await writeFile(configFile, `${JSON.stringify(configBody, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
-
+  // The closed release-runner config, assembled but not yet written anywhere. Validated against the
+  // SAME parser the live Cell uses (`parseGitHubReleaseRunnerOperatorConfig`) BEFORE this process
+  // creates a single byte under `--out` — the second of the two token-ref gates (the first is the
+  // shape check in `parseArgs`). This also re-checks every OTHER field the parser is closed over
+  // (account identity, repository shape, absolute guest paths, signer ids, the release-authority
+  // SPKI), not just the token reference, so a bug anywhere in the assembly above is caught here,
+  // in memory, instead of on disk.
   const runnerConfigBody = {
     v: "reelier.github-release-runner-config/v1",
     rootDir: guest("release-runner"),
@@ -447,73 +408,167 @@ async function main() {
     authorizationDir: guest("authorizations"),
     provider: { kind: "github-https", githubAccountIdentity: accountIdentity, githubTokenRef: args.tokenRef, repository: args.repository },
   };
-  const runnerConfigFile = path.join(authorityOut, "release-runner.config.json");
-  await writeFile(runnerConfigFile, `${JSON.stringify(runnerConfigBody, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+  try {
+    parseGitHubReleaseRunnerOperatorConfig(runnerConfigBody);
+  } catch (error) {
+    fail(`assembled release-runner config is invalid: ${error instanceof Error ? error.message : String(error)}`);
+  }
 
-  // ---- verify the bundle the same way the serve path will --------------------------------------
-  parseGitHubReleaseRunnerOperatorConfig(JSON.parse(await readFile(runnerConfigFile, "utf8")));
-  validateAuthorityHostConfig(JSON.parse(await readFile(configFile, "utf8")), authorityOut);
-  const loaded = await loadAuthorityDeployment(deploymentFile, { jobCardTrustPin: trustPin });
-  if (loaded.states.length !== githubReleaseAliases.length) fail("staged deployment does not carry all four reviewed definitions");
+  // ---- everything below writes under `--out`. The top guard already proved `authorityOut` did not
+  // exist when this run started, so any residue found there on the way out is THIS run's alone, and
+  // is safe to remove wholesale on failure — never a pre-existing bundle the guard already refused
+  // on. `fail()` never returns, so the catch below is the only exit for every error raised in this
+  // block: no bare Node stack trace reaches the operator's terminal, and (because `runnerConfigBody`
+  // was already proven valid above) no credential value can be sitting in a half-written bundle for
+  // the catch to have to worry about scrubbing.
+  try {
+    const candidateRoot = await mkdtemp(path.join(os.tmpdir(), "reelier-stage-cell-"));
+    let deploymentFile;
+    try {
+      await mkdir(path.join(candidateRoot, "keys"), { recursive: true });
+      await mkdir(path.join(candidateRoot, "sources"), { recursive: true });
+      await writeFile(path.join(candidateRoot, "keys", "operator.pem"), publicPem(operatorSigner.publicKey), "utf8");
+      await writeFile(path.join(candidateRoot, "keys", "contract.pem"), publicPem(contractSigner.publicKey), "utf8");
+      // The source projection the four definitions ground `/authorizationHandle` against. The handle
+      // is STABLE; the per-release signed bundle that lands at `authorizations/<handle>.json` is not.
+      await writeFile(path.join(candidateRoot, "sources", `${args.authorizationHandle}.json`), `${JSON.stringify({ authorizationHandle: args.authorizationHandle })}\n`, "utf8");
+      const candidate = {
+        v: "reelier.authority-deployment-candidate/v1", jobCard, connectionDescriptors: [descriptor],
+        connectionAdoptions: [{ ...adoptionBody, signedDeploymentBinding: signedJobCardDigest(jobCard) }],
+        state: states[0],
+        connectors: [{ tenant: TENANT, connectorId: "github", accountId: "account_release", providerAccountIdentity: accountIdentity, allowedReadEndpointIds: [githubReleaseReadEndpointId], allowedWriteEndpointIds: writeEndpointIds, riskClasses: [githubReleaseRiskClass], operatorConfigurationDigest }],
+        trust: [
+          { signerId: OPERATOR_SIGNER_ID, principalId: OPERATOR_SIGNER_ID, publicKeyFile: "keys/operator.pem", purposes: ["delegation-grant"] },
+          { signerId: CONTRACT_SIGNER_ID, principalId: CONTRACT_SIGNER_ID, publicKeyFile: "keys/contract.pem", purposes: ["outcome-contract"] },
+        ],
+        sourceDirectory: "sources",
+      };
+      const candidateFile = path.join(candidateRoot, "candidate.json");
+      await writeFile(candidateFile, `${JSON.stringify(candidate)}\n`, "utf8");
+      const built = await buildAuthorityDeployment(candidateFile, path.join(authorityOut, "deployment"), trustPin);
+      deploymentFile = built.deploymentFile;
+      // `buildAuthorityDeployment` materializes one state and re-loads the manifest it just wrote,
+      // which re-checks structural shape, the Job Card trust chain, and connector registration — NOT
+      // the cryptographic signature on each state candidate's contract/delegation envelopes. Those
+      // are verified at DISPATCH time on the live Cell, against the deployment's trust roots, never
+      // here at staging. The other three reviewed definitions are appended below and carry the SAME
+      // guarantee as the first: well-formed and job-card-trusted, not signature-checked yet.
+      const manifest = JSON.parse(await readFile(built.deploymentFile, "utf8"));
+      manifest.states.push(...states.slice(1));
+      await writeFile(built.deploymentFile, `${JSON.stringify(manifest, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+    } finally {
+      await rm(candidateRoot, { recursive: true, force: true }).catch(() => undefined);
+    }
 
-  // ---- the operator summary --------------------------------------------------------------------
-  const files = [
-    ["authority/authority.yml", configFile],
-    ["authority/release-runner.config.json", runnerConfigFile],
-    ["authority/deployment/deployment.json", deploymentFile],
-    ["authority/deployment/job.json", path.join(authorityOut, "deployment", "job.json")],
-    ["authority/deployment/job-card-trust-evidence.json", path.join(authorityOut, "deployment", "job-card-trust-evidence.json")],
-    ["authority/deployment/trust/keys/operator.pem", path.join(authorityOut, "deployment", "trust", "keys", "operator.pem")],
-    ["authority/deployment/trust/keys/contract.pem", path.join(authorityOut, "deployment", "trust", "keys", "contract.pem")],
-    ["authority/deployment/sources/" + args.authorizationHandle + ".json", path.join(authorityOut, "deployment", "sources", `${args.authorizationHandle}.json`)],
-    ["authority/trust/job-card.json", trustPinFile],
-    ["authority/keys/journal-signer.key.pem", path.join(keysOut, "journal-signer.key.pem")],
-    ["authority/keys/evidence-signer.key.pem", path.join(keysOut, "evidence-signer.key.pem")],
-  ];
-  const manifest = [];
-  for (const [relative, file] of files) manifest.push({ path: relative, sha256: await sha256File(file) });
+    const trustPinFile = path.join(authorityOut, "trust", "job-card.json");
+    await mkdir(path.dirname(trustPinFile), { recursive: true });
+    await writeFile(trustPinFile, `${JSON.stringify(trustPin, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
 
-  const generated = [
-    ["job-signer.key.pem", jobSigner.created], ["readiness-signer.key.pem", readinessSigner.created],
-    ["deployment-operator.key.pem", operatorSigner.created], ["deployment-contract.key.pem", contractSigner.created],
-  ];
-  const lines = [];
-  lines.push(`staged bundle: ${authorityOut}`);
-  lines.push(`repository: ${args.repository}   audience: ${args.audience}   tenant: ${TENANT}   cell: ${identifiers.authorityCellId}`);
-  lines.push(`authorization handle: ${args.authorizationHandle}   job card signer: ${JOB_CARD_KEY_ID}`);
-  lines.push("");
-  lines.push("FILES WRITTEN");
-  for (const entry of manifest) lines.push(`  ${entry.sha256}  ${entry.path}`);
-  lines.push("  (empty)                                                                     authority/authorizations/");
-  lines.push("  (empty)                                                                     authority/principals/");
-  lines.push("");
-  lines.push("KEY MATERIAL IN THE BUNDLE — exactly two files, both PRIVATE Cell signer keys:");
-  lines.push("  authority/keys/journal-signer.key.pem");
-  lines.push("  authority/keys/evidence-signer.key.pem");
-  lines.push("The release-authority PRIVATE key is NOT in the bundle. Only its public SPKI is, inside");
-  lines.push("release-runner.config.json (releaseAuthority.publicKeySpkiBase64).");
-  lines.push("");
-  lines.push("OPERATOR-HELD KEYS IN " + args.keysDir + " (never deployed):");
-  lines.push("  release-authority.key.pem  (supplied)");
-  for (const [name, created] of generated) lines.push(`  ${name}  (${created ? "GENERATED this run" : "reused, not overwritten"})`);
-  lines.push("");
-  lines.push("UPLOAD SEQUENCE — run from the repository root against the deployed Cell app:");
-  lines.push("  fly ssh console -a <app> -C \"mkdir -p /data/authority/deployment/trust/keys /data/authority/deployment/sources /data/authority/trust /data/authority/keys /data/authority/authorizations /data/authority/principals\"");
-  lines.push("  fly ssh sftp shell -a <app>");
-  for (const entry of manifest) lines.push(`    put ${path.posix.join(args.outDir.replaceAll("\\", "/"), entry.path)} /data/${entry.path}`);
-  lines.push("    exit");
-  lines.push("  fly ssh console -a <app> -C \"chmod 600 /data/authority/keys/journal-signer.key.pem /data/authority/keys/evidence-signer.key.pem\"");
-  lines.push("");
-  lines.push("SECRETS STILL OWED (values never pass through this script):");
-  lines.push(`  fly secrets set -a <app> ${args.tokenRef.startsWith("env:") ? args.tokenRef.slice(4) : args.tokenRef}=<github pat>`);
-  lines.push("  No ingress bearer secret is owed: authority.yml authenticates ingress through the durable");
-  lines.push("  principal registry at /data/authority/principals/registry.jsonl (ingress.bearerRef and");
-  lines.push("  ingress.principalRegistryFile are mutually exclusive, and the four-alias signed Job Card");
-  lines.push("  requires the registry). Per-session bearers are minted inside the Cell, never set here.");
-  lines.push("");
-  lines.push("NOT CLAIMED: this bundle is staged and self-verified offline. Nothing here attests that the");
-  lines.push("Cell booted, that the volume received these exact bytes, or that any release is authorized.");
-  console.log(lines.join("\n"));
+    const keysOut = path.join(authorityOut, "keys");
+    await mkdir(keysOut, { recursive: true });
+    await copyFile(path.join(args.keysDir, "journal-signer.key.pem"), path.join(keysOut, "journal-signer.key.pem"));
+    await copyFile(path.join(args.keysDir, "evidence-signer.key.pem"), path.join(keysOut, "evidence-signer.key.pem"));
+    await mkdir(path.join(authorityOut, "authorizations"), { recursive: true });
+    await mkdir(path.join(authorityOut, "principals"), { recursive: true });
+
+    // ---- the two configs -----------------------------------------------------------------------
+    // Every path is the ABSOLUTE GUEST path. `ingress.principalRegistryFile` is not decoration: a
+    // four-alias signed Job Card makes the runtime multi-definition, and `resolveBoundJobs`
+    // (`local.ts`) refuses every job reference without a delegation authority, which `authority
+    // serve` only constructs when the config names a durable principal registry.
+    const configBody = {
+      version: 1, tenant: TENANT, requester: args.audience, authorityCellId: identifiers.authorityCellId,
+      definitions: [...githubReleaseAliases], topology: "isolated",
+      ingress: { principalRegistryFile: guest("principals", "registry.jsonl"), allowedRequester: args.audience },
+      ledgerDir: guest("ledger"), decisionDir: guest("decisions"), receiptDir: guest("receipts"),
+      gateKeyFile: guest("keys", "local-gate.pem"),
+      endpoints: [], deploymentPath: guest("deployment", "deployment.json"), jobCardTrustPinPath: guest("trust", "job-card.json"),
+    };
+    const configFile = path.join(authorityOut, "authority.yml");
+    await writeFile(configFile, `${JSON.stringify(configBody, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+
+    // Serializes the SAME `runnerConfigBody` object validated above, before any write under `--out`
+    // — not a fresh reconstruction, so there is no gap between what was validated and what is written.
+    const runnerConfigFile = path.join(authorityOut, "release-runner.config.json");
+    await writeFile(runnerConfigFile, `${JSON.stringify(runnerConfigBody, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+
+    // ---- verify the bundle the same way the serve path will ------------------------------------
+    // Re-parses what actually landed on disk, not just the in-memory object: a belt-and-braces check
+    // for serialization drift. It is no longer the PRIMARY gate on `githubTokenRef` — that already
+    // ran, in memory, before the first write above — so a failure here is a bug in this script, not
+    // a way for an operator's input to reach a half-written bundle.
+    parseGitHubReleaseRunnerOperatorConfig(JSON.parse(await readFile(runnerConfigFile, "utf8")));
+    validateAuthorityHostConfig(JSON.parse(await readFile(configFile, "utf8")), authorityOut);
+    const loaded = await loadAuthorityDeployment(deploymentFile, { jobCardTrustPin: trustPin });
+    if (loaded.states.length !== githubReleaseAliases.length) throw new Error("staged deployment does not carry all four reviewed definitions");
+
+    // ---- the operator summary --------------------------------------------------------------------
+    const files = [
+      ["authority/authority.yml", configFile],
+      ["authority/release-runner.config.json", runnerConfigFile],
+      ["authority/deployment/deployment.json", deploymentFile],
+      ["authority/deployment/job.json", path.join(authorityOut, "deployment", "job.json")],
+      ["authority/deployment/job-card-trust-evidence.json", path.join(authorityOut, "deployment", "job-card-trust-evidence.json")],
+      ["authority/deployment/trust/keys/operator.pem", path.join(authorityOut, "deployment", "trust", "keys", "operator.pem")],
+      ["authority/deployment/trust/keys/contract.pem", path.join(authorityOut, "deployment", "trust", "keys", "contract.pem")],
+      ["authority/deployment/sources/" + args.authorizationHandle + ".json", path.join(authorityOut, "deployment", "sources", `${args.authorizationHandle}.json`)],
+      ["authority/trust/job-card.json", trustPinFile],
+      ["authority/keys/journal-signer.key.pem", path.join(keysOut, "journal-signer.key.pem")],
+      ["authority/keys/evidence-signer.key.pem", path.join(keysOut, "evidence-signer.key.pem")],
+    ];
+    const manifest = [];
+    for (const [relative, file] of files) manifest.push({ path: relative, sha256: await sha256File(file) });
+
+    const generated = [
+      ["job-signer.key.pem", jobSigner.created], ["readiness-signer.key.pem", readinessSigner.created],
+      ["deployment-operator.key.pem", operatorSigner.created], ["deployment-contract.key.pem", contractSigner.created],
+    ];
+    const lines = [];
+    lines.push(`staged bundle: ${authorityOut}`);
+    lines.push(`repository: ${args.repository}   audience: ${args.audience}   tenant: ${TENANT}   cell: ${identifiers.authorityCellId}`);
+    lines.push(`authorization handle: ${args.authorizationHandle}   job card signer: ${JOB_CARD_KEY_ID}`);
+    lines.push("");
+    lines.push("FILES WRITTEN");
+    for (const entry of manifest) lines.push(`  ${entry.sha256}  ${entry.path}`);
+    lines.push("  (empty)                                                                     authority/authorizations/");
+    lines.push("  (empty)                                                                     authority/principals/");
+    lines.push("");
+    lines.push("KEY MATERIAL IN THE BUNDLE — exactly two files, both PRIVATE Cell signer keys:");
+    lines.push("  authority/keys/journal-signer.key.pem");
+    lines.push("  authority/keys/evidence-signer.key.pem");
+    lines.push("The release-authority PRIVATE key is NOT in the bundle. Only its public SPKI is, inside");
+    lines.push("release-runner.config.json (releaseAuthority.publicKeySpkiBase64).");
+    lines.push("");
+    lines.push("OPERATOR-HELD KEYS IN " + args.keysDir + " (never deployed):");
+    lines.push("  release-authority.key.pem  (supplied)");
+    for (const [name, created] of generated) lines.push(`  ${name}  (${created ? "GENERATED this run" : "reused, not overwritten"})`);
+    lines.push("");
+    lines.push("UPLOAD SEQUENCE — run from the repository root against the deployed Cell app:");
+    lines.push("  fly ssh console -a <app> -C \"mkdir -p /data/authority/deployment/trust/keys /data/authority/deployment/sources /data/authority/trust /data/authority/keys /data/authority/authorizations /data/authority/principals\"");
+    lines.push("  fly ssh sftp shell -a <app>");
+    for (const entry of manifest) lines.push(`    put ${path.posix.join(args.outDir.replaceAll("\\", "/"), entry.path)} /data/${entry.path}`);
+    lines.push("    exit");
+    lines.push("  fly ssh console -a <app> -C \"chmod 600 /data/authority/keys/journal-signer.key.pem /data/authority/keys/evidence-signer.key.pem\"");
+    lines.push("");
+    lines.push("SECRETS STILL OWED (values never pass through this script):");
+    lines.push(`  fly secrets set -a <app> ${args.tokenRef.startsWith("env:") ? args.tokenRef.slice(4) : args.tokenRef}=<github pat>`);
+    lines.push("  No ingress bearer secret is owed: authority.yml authenticates ingress through the durable");
+    lines.push("  principal registry at /data/authority/principals/registry.jsonl (ingress.bearerRef and");
+    lines.push("  ingress.principalRegistryFile are mutually exclusive, and the four-alias signed Job Card");
+    lines.push("  requires the registry). Per-session bearers are minted inside the Cell, never set here.");
+    lines.push("");
+    lines.push("NOT CLAIMED: this bundle is staged and self-verified offline. Nothing here attests that the");
+    lines.push("Cell booted, that the volume received these exact bytes, or that any release is authorized.");
+    console.log(lines.join("\n"));
+  } catch (error) {
+    // Covers an in-build refusal (e.g. `buildAuthorityDeployment` throwing after it has already
+    // mkdir'd `authorityOut` and written into it — `deploy.ts` only cleans up its own subdirectory,
+    // not the parent) AND any later post-build throw (the bundle is otherwise complete by then). In
+    // both cases `authorityOut` is entirely this run's, per the header comment above, so the whole
+    // directory is removed rather than left half- or fully-written to block every retry.
+    await rm(authorityOut, { recursive: true, force: true }).catch(() => undefined);
+    fail(`bundle staging failed after ${authorityOut} was created; it has been removed for a clean retry: ${error instanceof Error ? error.message : String(error)}`);
+  }
 }
 
 await main();

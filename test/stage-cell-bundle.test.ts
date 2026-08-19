@@ -196,3 +196,86 @@ test("stage-cell-bundle reuses, never regenerates, the ceremony keys it minted",
     assert.match(second.stdout, /job-signer\.key\.pem {2}\(reused, not overwritten\)/);
   } finally { rmSync(staged.root, { recursive: true, force: true }); }
 });
+
+// ---- task C1: --token-ref and authority/ cleanup hardening ------------------------------------
+//
+// Before this fix, `--token-ref` was validated only at the post-write self-verify near the end of
+// the script: a pasted raw credential (e.g. a GitHub PAT) was written verbatim into
+// `out/authority/release-runner.config.json` before the run refused. These tests are the reviewer's
+// RED cases for the two Important findings (plus the two folded Minors) fixed alongside them.
+
+test("stage-cell-bundle refuses a raw credential passed as --token-ref before creating anything under --out", () => {
+  const staged = workspace();
+  try {
+    // Shaped like a real GitHub PAT. If this ever leaked into a file or the process output, that
+    // would BE the vulnerability — so this exact string is also asserted absent from both streams.
+    const secretValue = "ghp_ThisLooksLikeARealGitHubPatAndMustNeverBeWrittenOrPrinted123456";
+    const result = run(staged, ["--token-ref", secretValue]);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /--token-ref must be an env:NAME or file:path secret reference/);
+    // Nothing was created under --out at all — not even an empty `authority/` root. This is the
+    // first gate (parseArgs' own shape check), which refuses before any key is read or any
+    // computation happens, so it is also the strongest possible form of "before the first write".
+    assert.deepEqual(readdirSync(staged.outDir), []);
+    assert.equal(result.stdout.includes(secretValue), false, "stdout must not echo the raw --token-ref value");
+    assert.equal(result.stderr.includes(secretValue), false, "stderr must not echo the raw --token-ref value");
+  } finally { rmSync(staged.root, { recursive: true, force: true }); }
+});
+
+test("stage-cell-bundle cleans up the authority/ root on an in-build refusal and allows a clean retry (RED case 2a)", () => {
+  const staged = workspace();
+  try {
+    // The reviewer's live repro: this audience collides with the Job Card's OWN signer id
+    // (`JOB_CARD_KEY_ID` in the script), which `verifyJobCardTrust` refuses. That check runs inside
+    // `loadAuthorityDeployment`, which `buildAuthorityDeployment` calls internally AFTER it has
+    // already mkdir'd `authorityOut` and written into it — so this is a genuine in-build refusal,
+    // not something caught by earlier argument validation.
+    const collision = run(staged, ["--audience", "reelier_cell_jobcard_2026"]);
+    assert.equal(collision.status, 1);
+    assert.match(collision.stderr, /human Job Card signer must be distinct from agent audiences/);
+    // No bare Node stack trace: `fail()` produced a clean, single-line refusal (Minor: post-build/
+    // in-build failures now route through `fail()`, never an uncaught exception).
+    assert.match(collision.stderr, /^stage-cell-bundle: /);
+    assert.equal(/\n\s+at /.test(collision.stderr), false, "stderr must not contain a Node stack trace");
+    // `--out` is left entirely pristine: no `authority/` root at all, empty or otherwise. Before
+    // this fix, `deploy.ts` cleaned up only its own `deployment/` subdirectory, leaving `authority/`
+    // behind as an empty directory that the top-of-run guard would then refuse to restage over.
+    assert.deepEqual(readdirSync(staged.outDir), []);
+
+    // A rerun with a good audience must succeed outright — the failed run must not have left any
+    // residue that trips the "already exists; refusing to overwrite a staged bundle" guard.
+    const retry = run(staged);
+    assert.equal(retry.status, 0, `${retry.stdout}\n${retry.stderr}`);
+    assert.equal(statSync(staged.authorityDir).isDirectory(), true);
+  } finally { rmSync(staged.root, { recursive: true, force: true }); }
+});
+
+test("stage-cell-bundle: the old post-build token-ref reproduction is unreachable (RED case 2b, documented choice)", () => {
+  // Task C1 explicitly permits either (i) an injectable post-build failure, or (ii) asserting that
+  // the bad-token-ref class is unreachable post-build, and asks the fix to say which. This is (ii).
+  //
+  // Why not (i): every remaining post-build step (copying already-`assertEd25519`-validated PEMs,
+  // writing deterministic JSON built from validated inputs, and the final re-verify of content this
+  // script itself already proved valid before the FIRST write) is deterministic given validated CLI
+  // args — none of it is independently triggerable through arguments alone the way the audience
+  // collision above is. So there is no clean, non-fragile way to force a "build succeeds, full
+  // bundle written, THEN something throws" failure purely through this script's public CLI surface.
+  //
+  // What we assert instead: the exact input that used to demonstrate that "full bundle, then a late
+  // throw" scenario — a bad --token-ref reaching the old check at the very end of the script, after
+  // release-runner.config.json (and everything else) had already been written — can no longer reach
+  // that point at all. It is refused at the FIRST of the two new gates (parseArgs), before this
+  // process reads a single key file, let alone creates `authorityOut`. A different secret value from
+  // the sibling test above, so this assertion does not merely restate it under a new name.
+  const staged = workspace();
+  try {
+    const secretValue = "ghp_UnreachablePostBuildReproductionProbe0000000000000000";
+    const result = run(staged, ["--token-ref", secretValue]);
+    assert.equal(result.status, 1);
+    // Nothing under --out, at any point during the run: there is no "full bundle" left for the
+    // cleanup path in the catch around the build to ever have to remove for this input.
+    assert.deepEqual(readdirSync(staged.outDir), []);
+    assert.equal(result.stdout.includes(secretValue), false);
+    assert.equal(result.stderr.includes(secretValue), false);
+  } finally { rmSync(staged.root, { recursive: true, force: true }); }
+});
