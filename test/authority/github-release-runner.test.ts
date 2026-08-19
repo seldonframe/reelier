@@ -316,8 +316,7 @@ test("runner does not expose a forgeable receipt-publication confirmation method
     await assert.rejects(() => guarded.recover(), /coordinator|prepared|capability/i);
     assert.equal(calls, 0, "public runner methods must not reach the provider");
     let fakePublications = 0;
-    const fake = createGitHubReleaseReceiptPublication({ runner, publication: { async publish() { fakePublications += 1; return { receiptRef: "receipt_forged", evidenceDigest: digest("f") }; } } });
-    await assert.rejects(() => fake.publish({ phase: "dispatch", state: { reservation: { reservationId: "forged" }, effect: { endpointId: "github.release.candidate-branch" } } as any, outcome: { kind: "acknowledged", resultDigest: digest("e") }, dispatchedRequestDigest: digest("d") }), /coordinator|publication capability/i);
+    assert.throws(() => createGitHubReleaseReceiptPublication({ runner, publication: { async publish() { fakePublications += 1; return { receiptRef: "receipt_forged", evidenceDigest: digest("f") }; } } }), /durable|authoritative|head/i);
     assert.equal(fakePublications, 0, "a direct caller cannot reach even a structural receipt publisher");
   } finally { await rm(root, { recursive: true, force: true }); }
 });
