@@ -111,7 +111,7 @@ export function createFileReceiptPublication(options: FileReceiptPublicationOpti
   const publishDurable = async (identity: DurableDispatchPublicationIdentityV1, input: Readonly<{ phase: "reservation" | "dispatch" | "ambiguous" | "reconcile"; state: DispatchRequestState; outcome: DispatchOutcome; dispatchedRequestDigest: string | null; priorReceiptDigest: string | null }>) => {
     assertDurableIdentity(identity);
     if (identity.reservationId !== input.state.reservation.reservationId || identity.effectDigest !== input.state.effectDigest) throw new TypeError("durable publication state identity mismatch");
-    const current = await loadDurableChain(root, identity);
+    const current = await loadDurableChain(root, identity, "root-or-terminal");
     const terminalKind = input.phase === "reservation" ? null : input.phase === "reconcile" ? "reconciled" : input.outcome.kind;
     if (input.phase === "reservation") {
       if (input.priorReceiptDigest !== null || input.dispatchedRequestDigest !== null) throw new TypeError("durable reservation root is malformed");
@@ -133,7 +133,7 @@ export function createFileReceiptPublication(options: FileReceiptPublicationOpti
     const directory = durableDirectory(root, identity);
     await mkdir(directory, { recursive: true });
     await writeImmutable(path.join(directory, `node-${receiptRef.slice(7)}.json`), Object.freeze({ v: "reelier.durable-file-publication-node/internal-v1", preimage, head }));
-    const reread = await loadDurableChain(root, identity);
+    const reread = await loadDurableChain(root, identity, "root-or-terminal");
     if (!reread || reread.receiptRef !== receiptRef || authorityDigest(reread) !== authorityDigest(head)) throw new Error("durable publication authoritative readback mismatch");
     return Object.freeze({ receiptRef, evidenceDigest });
   };
@@ -143,11 +143,11 @@ export function createFileReceiptPublication(options: FileReceiptPublicationOpti
       identities.set(identity.reservationId, identity);
       return publishDurable(identity, { phase: input.phase, state: input.state, outcome: input.outcome, dispatchedRequestDigest: input.dispatchedRequestDigest, priorReceiptDigest: input.priorReceiptDigest });
     },
-    async loadDurableHead(query: DurableDispatchPublicationQueryV1) {
+    async loadDurableHead(query: DurableDispatchPublicationQueryV1, expect: "terminal" | "root-or-terminal" = "terminal") {
       assertDurableQuery(query);
       const identity = snapshotDurableIdentity(query.identity);
       identities.set(identity.reservationId, identity);
-      return loadDurableChain(root, identity);
+      return loadDurableChain(root, identity, expect);
     },
     async publish(input: Readonly<{ phase: "dispatch" | "cancelled" | "ambiguous" | "reconcile"; state: DispatchRequestState; outcome: DispatchOutcome; dispatchedRequestDigest: string | null; priorReceiptDigest?: string | null }>) {
       const identity = identities.get(input.state.reservation.reservationId);
@@ -192,8 +192,9 @@ async function writeImmutable(file: string, value: unknown): Promise<void> {
   }
 }
 
-async function loadDurableChain(root: string, identity: DurableDispatchPublicationIdentityV1): Promise<DurableDispatchPublicationHeadV1 | null> {
+async function loadDurableChain(root: string, identity: DurableDispatchPublicationIdentityV1, expect: "terminal" | "root-or-terminal"): Promise<DurableDispatchPublicationHeadV1 | null> {
   assertDurableIdentity(identity);
+  if (expect !== "terminal" && expect !== "root-or-terminal") throw new TypeError("durable publication head expectation is invalid");
   const directory = durableDirectory(root, identity);
   let names: string[];
   try { names = (await readdir(directory)).filter(name => /^node-[0-9a-f]{64}\.json$/.test(name)).sort(); }
@@ -202,6 +203,10 @@ async function loadDurableChain(root: string, identity: DurableDispatchPublicati
   const nodes = await Promise.all(names.map(async name => JSON.parse(await readFile(path.join(directory, name), "utf8")) as any));
   for (const node of nodes) {
     if (!node || node.v !== "reelier.durable-file-publication-node/internal-v1" || authorityDigest(node.head.identity) !== authorityDigest(identity) || authorityDigest(node.preimage) !== node.head.receiptRef || !DIGEST.test(node.head.evidenceDigest)) throw new TypeError("durable publication node is invalid or conflicting");
+    // The receiptRef binds the preimage only. Recompute the evidence digest and cross-check every
+    // head field the preimage already determines, so a tampered head cannot ride a valid receiptRef.
+    const expectedEvidenceDigest = authorityDigest({ v: "reelier.durable-file-publication-evidence/internal-v1", receiptRef: node.head.receiptRef, identity: node.head.identity, phase: node.preimage.phase, terminalKind: node.preimage.terminalKind, providerResultDigest: node.preimage.providerResultDigest });
+    if (node.head.evidenceDigest !== expectedEvidenceDigest || node.head.v !== "reelier.durable-dispatch-publication-head/v1" || node.head.phase !== node.preimage.phase || node.head.terminalKind !== node.preimage.terminalKind || node.head.priorReceiptRef !== node.preimage.priorReceiptRef || node.head.reservationReceiptRef !== (node.preimage.phase === "reservation" ? node.head.receiptRef : node.preimage.reservationReceiptRef)) throw new TypeError("durable publication node is invalid or conflicting");
   }
   const roots = nodes.filter(node => node.head.phase === "reservation" && node.head.priorReceiptRef === null && node.head.reservationReceiptRef === node.head.receiptRef);
   if (roots.length !== 1) throw new TypeError("durable publication reservation root is absent or conflicting");
@@ -216,5 +221,6 @@ async function loadDurableChain(root: string, identity: DurableDispatchPublicati
     current = next; consumed += 1;
   }
   if (consumed !== nodes.length) throw new TypeError("durable publication contains an unreachable node");
+  if (expect === "terminal" && current.head.phase === "reservation") throw new TypeError("durable publication terminal receipt is absent for a send-started reservation");
   return Object.freeze(current.head) as DurableDispatchPublicationHeadV1;
 }

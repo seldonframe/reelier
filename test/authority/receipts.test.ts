@@ -60,9 +60,9 @@ test("restart validation rejects a forged evidence digest and a forged terminal 
     const { identity, durableDir, terminalNode } = await publishedDurableChain(root);
     const query = { v: "reelier.durable-dispatch-publication-query/v1", identity, ledgerState: "dispatched", sendStarted: true } as const;
     await writeFile(path.join(durableDir, terminalNode.name), JSON.stringify({ ...terminalNode.node, head: { ...terminalNode.node.head, evidenceDigest: "sha256:" + "e".repeat(64) } }));
-    await assert.rejects(() => createFileReceiptPublication({ rootDir: root }).loadDurableHead!(query), /invalid or conflicting/);
+    await assert.rejects(() => createFileReceiptPublication({ rootDir: root }).loadDurableHead!(query, "terminal"), /invalid or conflicting/);
     await writeFile(path.join(durableDir, terminalNode.name), JSON.stringify({ ...terminalNode.node, head: { ...terminalNode.node.head, terminalKind: "definitive-failure" } }));
-    await assert.rejects(() => createFileReceiptPublication({ rootDir: root }).loadDurableHead!(query), /invalid or conflicting/);
+    await assert.rejects(() => createFileReceiptPublication({ rootDir: root }).loadDurableHead!(query, "terminal"), /invalid or conflicting/);
   } finally { restore(); }
 });
 
@@ -70,9 +70,13 @@ test("a dispatched query refuses a chain whose terminal dirent is lost", async (
   const restore = __testSetAuthorityCellHostPlatform("linux");
   const root = await mkdtemp(path.join(tmpdir(), "reelier-durable-lost-dirent-"));
   try {
-    const { identity, durableDir, terminalNode } = await publishedDurableChain(root);
+    const { identity, rootReceipt, durableDir, terminalNode } = await publishedDurableChain(root);
+    const query = { v: "reelier.durable-dispatch-publication-query/v1", identity, ledgerState: "dispatched", sendStarted: true } as const;
     await unlink(path.join(durableDir, terminalNode.name));
-    await assert.rejects(() => createFileReceiptPublication({ rootDir: root }).loadDurableHead!({ v: "reelier.durable-dispatch-publication-query/v1", identity, ledgerState: "dispatched", sendStarted: true }), /terminal receipt is absent/);
+    await assert.rejects(() => createFileReceiptPublication({ rootDir: root }).loadDurableHead!(query, "terminal"), /terminal receipt is absent/);
+    const recovering = await createFileReceiptPublication({ rootDir: root }).loadDurableHead!(query, "root-or-terminal");
+    assert.equal(recovering?.receiptRef, rootReceipt.receiptRef, "recovery of a pre-terminal crash still reads the reservation root");
+    assert.equal(recovering?.phase, "reservation");
   } finally { restore(); }
 });
 

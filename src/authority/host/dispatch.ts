@@ -26,7 +26,11 @@ export type DurableDispatchPublicationHeadV1 = Readonly<{v:"reelier.durable-disp
 export interface DispatchPublication {
   publish(input: Readonly<{ phase: "dispatch" | "cancelled" | "ambiguous" | "reconcile"; state: DispatchRequestState; outcome: DispatchOutcome; dispatchedRequestDigest: string | null; priorReceiptDigest?: string | null; }>): Promise<Readonly<{ receiptRef: string; evidenceDigest: string }>>;
   publishReservation?(input:Readonly<{phase:"reservation";identity:DurableDispatchPublicationIdentityV1;state:DispatchRequestState;outcome:DispatchOutcome;dispatchedRequestDigest:null;priorReceiptDigest:null}>):Promise<Readonly<{receiptRef:string;evidenceDigest:string}>>;
-  loadDurableHead?(query:DurableDispatchPublicationQueryV1):Promise<DurableDispatchPublicationHeadV1|null>;
+  /** `expect` states what the caller is entitled to see. `"terminal"` refuses a chain that stopped
+   * at its reservation root, so a rolled-back or lost terminal receipt can never read as absent
+   * progress. `"root-or-terminal"` is only for the two readbacks with a legitimate reservation-only
+   * window: recovery of a pre-terminal crash, and the root publication's own readback. */
+  loadDurableHead?(query:DurableDispatchPublicationQueryV1,expect?:"terminal"|"root-or-terminal"):Promise<DurableDispatchPublicationHeadV1|null>;
 }
 export interface DispatchCoordinator { dispatch(handle: ReservedDispatchHandle): Promise<DispatchOutcome>; cancel(handle: ReservedDispatchHandle, reason?: string): Promise<DispatchOutcome>; reconcile(reservationId: string): Promise<DispatchOutcome>; recover(): Promise<readonly string[]>; }
 export interface DispatchBudget { consumeOnce(input: Readonly<{ allocationId: string; reservationId: string; effects: number }>): Promise<unknown>; returnOnce(input: Readonly<{ allocationId: string; reservationId: string; effects: number }>): Promise<unknown>; releaseConsumedOnce?(input: Readonly<{ allocationId: string; reservationId: string; effects: number }>): Promise<unknown>; }
@@ -216,7 +220,7 @@ export function createDispatchCoordinator(ledger: AuthorityLedger, adapter: Disp
       let priorReceiptDigest = reservation.resultDigest ?? null;
       if(publication?.loadDurableHead){
         if(reservation.sendStarted!==true)throw new Error("ambiguous reservation is missing send-started marker");
-        const identity=durableIdentity(reservation),head=assertDurableHead(await publication.loadDurableHead(durableQuery(identity,"ambiguous")),identity);
+        const identity=durableIdentity(reservation),head=assertDurableHead(await publication.loadDurableHead(durableQuery(identity,"ambiguous"),"terminal"),identity);
         if(!head)throw new Error("durable governed receipt chain is absent");
         if(head.phase==="reconcile"){
           const adopted=await ledger.transition(reservationId,"ambiguous",{to:"reconciled",resultDigest:head.receiptRef});
@@ -270,7 +274,9 @@ export function createDispatchCoordinator(ledger: AuthorityLedger, adapter: Disp
           const outcome = Object.freeze({ kind: "ambiguous" as const, resultDigest });
           let published:Readonly<{receiptRef:string;evidenceDigest:string}>|undefined;
           if(publication?.loadDurableHead){
-            const identity=durableIdentity(reservation),head=assertDurableHead(await publication.loadDurableHead(durableQuery(identity,"dispatched")),identity);
+            // The only legitimate reservation-only window: the root is published and the terminal
+            // receipt was about to be written when the Cell crashed, so this branch republishes it.
+            const identity=durableIdentity(reservation),head=assertDurableHead(await publication.loadDurableHead(durableQuery(identity,"dispatched"),"root-or-terminal"),identity);
             if(!head)throw new Error("send-started reservation is missing durable reservation root");
             if(head.phase==="dispatch"&&(head.terminalKind==="acknowledged"||head.terminalKind==="definitive-failure")){
               const adopted=await ledger.transition(reservation.reservationId,"dispatched",{to:head.terminalKind,resultDigest:head.receiptRef});
@@ -292,7 +298,7 @@ export function createDispatchCoordinator(ledger: AuthorityLedger, adapter: Disp
         }
         if(reservation.state==="ambiguous"&&publication?.loadDurableHead){
           if(reservation.sendStarted!==true)throw new Error("ambiguous reservation is missing send-started marker");
-          const identity=durableIdentity(reservation),head=assertDurableHead(await publication.loadDurableHead(durableQuery(identity,"ambiguous")),identity);
+          const identity=durableIdentity(reservation),head=assertDurableHead(await publication.loadDurableHead(durableQuery(identity,"ambiguous"),"terminal"),identity);
           if(!head)throw new Error("ambiguous reservation is missing durable governed receipt chain");
           if(head.phase==="reconcile"){
             const adopted=await ledger.transition(reservation.reservationId,"ambiguous",{to:"reconciled",resultDigest:head.receiptRef});
