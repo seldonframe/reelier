@@ -4,8 +4,9 @@ import { access, mkdtemp, readFile, rm } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { parseAuthorityServeMode } from "../../src/authority/cli.js";
+import { composeAuthorityServeHost, parseAuthorityServeMode } from "../../src/authority/cli.js";
 import { validateAuthorityHostConfig } from "../../src/authority/host/config.js";
+import { __testSetAuthorityCellHostPlatform } from "../../src/authority/host/platform.js";
 import { parseArgv } from "../../src/cli.js";
 
 test("authority serve defaults to stdio and accepts an explicit authenticated HTTP bind", () => {
@@ -23,6 +24,23 @@ test("authority serve refuses ambiguous transports, ports, and bind hosts", () =
   assert.throws(() => parseAuthorityServeMode({ transport: "http", port: "8080x" }), /port/);
   assert.throws(() => parseAuthorityServeMode({ transport: "http", host: "0.0.0.0\nattacker" }), /host/);
   assert.throws(() => parseAuthorityServeMode({ transport: "stdio", port: "8080" }), /stdio/);
+});
+
+test("authority serve carries the explicit host-owned release runner through normal composition", async () => {
+  const restore = __testSetAuthorityCellHostPlatform("linux");
+  const runner = Object.freeze({ run: async () => { throw new Error("not public"); }, recover: async () => [] });
+  const config = { version: 1 as const, tenant: "tenant_1", requester: "agent_1", definitions: ["github_release_candidate_publish_v1", "github_release_pr_ensure_v1", "github_release_pr_merge_v1", "github_release_tag_create_v1"], ledgerDir: "ledger", decisionDir: "decisions", receiptDir: "receipts", endpoints: [] };
+  let observedRunner: unknown;
+  const runtime = { directOutcomeAliases: [], requiresAuthenticatedExecutionContext: false, async outcome() { return { verdict: "refused", reasonCode: "unused" }; }, async status() { return {}; } } as any;
+  try {
+    await composeAuthorityServeHost(config, "http", undefined, { githubReleaseRunner: runner as never }, undefined, {
+      async composeStdio() { throw new Error("stdio should not be selected"); },
+      async createStdioBoundRuntime() { throw new Error("stdio should not be selected"); },
+      async createLocalRuntime(_config, options) { observedRunner = options?.githubReleaseRunner; return runtime; },
+      createHostServer(_config, received) { assert.equal(received.outcome, runtime.outcome); return { mcp: {} } as never; },
+    });
+    assert.equal(observedRunner, runner);
+  } finally { restore(); }
 });
 
 test("the Fly Authority Cell starts the authenticated HTTP transport with durable state", async () => {

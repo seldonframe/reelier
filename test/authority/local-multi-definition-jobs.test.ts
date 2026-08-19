@@ -11,7 +11,7 @@ import { connectionAdoptionCommitmentDigest, connectionDescriptorDigest, digestN
 import { buildAuthorityDeployment } from "../../src/authority/host/deploy.js";
 import { createDelegationAuthority } from "../../src/authority/host/delegation-service.js";
 import type { DispatchAdapter } from "../../src/authority/host/dispatch.js";
-import { createLocalAuthorityRuntime, createStdioBoundLocalAuthorityRuntime } from "../../src/authority/host/local.js";
+import { createGitHubReleaseAuthorityRuntime, createLocalAuthorityRuntime, createStdioBoundLocalAuthorityRuntime } from "../../src/authority/host/local.js";
 import { createAuthorityHostServer } from "../../src/authority/host/server.js";
 import { createPrincipalRegistry } from "../../src/authority/host/principal-registry.js";
 import { __testSetAuthorityCellHostPlatform } from "../../src/authority/host/platform.js";
@@ -133,6 +133,15 @@ test("multi-definition signed Job Card returns deterministic opaque references i
     assert.equal(loaded.jobRef, refs[0]);
     assert.equal((await restarted.jobLoad!({ jobId: "production_release" }, fixture.context) as { verdict: string }).verdict, "refused");
     assert.equal((await restarted.jobLoad!({ jobId: GMAIL }, fixture.context) as { verdict: string }).verdict, "refused");
+  } finally { await rm(fixture.root, { recursive: true, force: true }); }
+});
+
+test("production GitHub release runtime is a public closed four-definition composition", async () => {
+  const fixture = await multiDefinitionFixture();
+  try {
+    await assert.rejects(() => createGitHubReleaseAuthorityRuntime(fixture.config, undefined as never, { jobCardTrustPin: fixture.trustPin, delegation: fixture.delegation }), /four reviewed|release runner|capability/i);
+    const host = await import("../../src/authority/host/index.js") as Record<string, unknown>;
+    assert.equal(typeof host.createGitHubReleaseAuthorityRuntime, "function");
   } finally { await rm(fixture.root, { recursive: true, force: true }); }
 });
 
