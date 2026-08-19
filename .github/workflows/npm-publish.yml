@@ -1,0 +1,93 @@
+# Publishes reelier to npm on release tags — the governed fourth workflow.
+# This path is digest-bound in RELEASE_WORKFLOWS (src/authority/release-contracts.ts):
+# any edit here changes the workflow digest every signed StagedCandidateManifestV1 pins.
+# Auth: npm Trusted Publisher via GitHub OIDC (admin checklist, spec section 6) — no token secret.
+#
+# The authorization-signer trust pin (R4) is read only from the committed file
+# release/trust/release-authorization-signer.json (landed by the D1 infra PR)
+# — never from repo/environment variables, which the verifier script itself
+# refuses to accept (REELIER_RELEASE_SIGNER_ID / REELIER_RELEASE_SIGNER_SPKI
+# are a hard failure, not an ignored fallback).
+name: Publish to npm
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+permissions:
+  id-token: write
+  contents: read
+
+# Per-version concurrency: one publish attempt per tag, never cancelled mid-publish.
+concurrency:
+  group: npm-publish-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: production-release
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history: the ancestor guard and the verifier's --check-head
+          # both compute against parent commits, impossible at depth 1.
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Release guard — tag must be an ancestor of main
+        run: node scripts/check-release-ancestor.mjs
+
+      # The signed release-authorization artifact set lives on an out-of-band
+      # ref namespace, not in the normal branch/tag history actions/checkout
+      # follows — it has to be fetched explicitly before the verifier can
+      # read it.
+      - name: Fetch release-authorization refs
+        run: git fetch origin "+refs/reelier/*:refs/reelier/*"
+
+      - name: Install and build (release verifier prerequisite)
+        run: |
+          npm ci
+          npm run build
+
+      # github.ref_name is bound through RELEASE_AUTHORIZATION_REF (env-var
+      # indirection) rather than interpolated directly into the run: script,
+      # and it only ever appears as a fixed prefix-bound substring — never as
+      # a bare standalone argv token a value like "--help" could be read as.
+      - name: Verify release authorization (offline, fail closed)
+        env:
+          RELEASE_AUTHORIZATION_REF: refs/reelier/release-authorizations/${{ github.ref_name }}
+        run: node scripts/verify-release-authorization.mjs --ref "$RELEASE_AUTHORIZATION_REF" --check-head --emit /tmp/verified-release.json
+
+      - name: Pack
+        run: npm pack
+
+      # Tarball digest must equal the signed StagedCandidateManifestV1's
+      # packedTarballDigest — the verifier script performs this comparison
+      # itself and refuses (exit 1) on any mismatch.
+      - name: Tarball digest must equal the signed manifest value
+        env:
+          RELEASE_AUTHORIZATION_REF: refs/reelier/release-authorizations/${{ github.ref_name }}
+        run: node scripts/verify-release-authorization.mjs --ref "$RELEASE_AUTHORIZATION_REF" --tarball "reelier-$(node -p "require('./package.json').version").tgz"
+
+      # Runs BEFORE publish and before any retry: matching published integrity ->
+      # reconciled success (publish skipped); conflicting -> terminal failure;
+      # uncertain -> pending (exit 2), never resent.
+      - name: Destination reconciliation — refuse duplicate or conflicting publish
+        id: reconcile
+        run: node scripts/reconcile-npm-destination.mjs --package reelier --version "$(node -p "require('./package.json').version")" --tarball "reelier-$(node -p "require('./package.json').version").tgz"
+
+      # Publishes the exact digest-checked tarball file: npm does not re-pack or run
+      # pack scripts for a tarball path, so the published bytes are the verified bytes.
+      - name: Publish to npm with provenance
+        if: steps.reconcile.outputs.state == 'absent'
+        run: npm publish "reelier-$(node -p "require('./package.json').version").tgz" --provenance --access public
+
+      - name: Post-publish destination reconciliation
+        if: steps.reconcile.outputs.state == 'absent'
+        run: node scripts/reconcile-npm-destination.mjs --package reelier --version "$(node -p "require('./package.json').version")" --tarball "reelier-$(node -p "require('./package.json').version").tgz" --expect reconciled
