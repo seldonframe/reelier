@@ -21,9 +21,10 @@ const spki = (key: ReturnType<typeof generateKeyPairSync>["publicKey"]) => key.e
 const spkiDigest = (key: ReturnType<typeof generateKeyPairSync>["publicKey"]) => `sha256:${createHash("sha256").update(key.export({ type: "spki", format: "der" })).digest("hex")}`;
 const blobSha = (bytes: Buffer) => createHash("sha1").update(`blob ${bytes.length}\0`).update(bytes).digest("hex");
 const testFallback = { async dispatch() { return { kind: "definitive-failure" as const, resultDigest: digest("f") }; } };
-const testPublication = { async publish() { return { receiptRef: "receipt_test", evidenceDigest: digest("e") }; } };
+const testPublication = { async publish() { return { receiptRef: "receipt_test", evidenceDigest: digest("e") }; }, async publishReservation() { return { receiptRef: "receipt_root", evidenceDigest: digest("d") }; }, async loadDurableHead() { return null; } };
 const createGitHubReleaseDispatchAdapter = (input: any) => createGitHubReleaseHostComposition({ ...input, publication: testPublication }).adapter;
 const createGitHubReleaseReceiptPublication = (input: any) => createGitHubReleaseHostComposition({ runner: input.runner, fallback: testFallback, publication: input.publication }).publication;
+const governedRequests = new WeakMap<object, Map<string, { alias: any; allocationId: string; authorizationHandle: string; requestId: string; semanticsDigest: string }>>();
 const allLanes: ReleaseEvidenceLaneV1[] = ["ci-coverage", "ci-full-tests", "ci-mutation", "candidate-branch", "candidate-pull-request", "ghcr-immutable-manifest", "ghcr-tags", "human-authorization", "human-exceptions", "human-interruptions", "human-post-release-review", "installed-linux", "installed-windows", "mcp-registry-version", "merge-exact-sha", "npm-integrity", "npm-provenance", "tag-immutable-ref"];
 
 function releaseAuthorityFixture() {
@@ -58,12 +59,34 @@ function candidateProvider(overrides: Record<string, unknown> = {}) {
 
 async function confirmTestPublication(runner: Awaited<ReturnType<typeof createGitHubReleaseRunner>>, requestId: string, result: { status: string; evidenceDigest: string | null }, phase: "dispatch" | "reconcile" = "dispatch"): Promise<void> {
   if (result.status === "verified" && result.evidenceDigest) {
-    const publication = createGitHubReleaseReceiptPublication({ runner, publication: { async publish() { return { receiptRef: `receipt_${requestId}`, evidenceDigest: authorityDigest({ published: requestId }) }; } } });
-    await publication.publish({ phase, state: { reservation: { reservationId: requestId }, effect: { endpointId: "github.release.candidate-branch" } } as any, outcome: { kind: "acknowledged", resultDigest: result.evidenceDigest }, dispatchedRequestDigest: digest("f") });
+    void phase;
+    const request = governedRequests.get(runner)?.get(requestId);
+    if (!request) throw new TypeError("governed publication request fixture is absent");
+    const endpoint = { github_release_candidate_publish_v1: "candidate-branch", github_release_pr_ensure_v1: "draft-pr", github_release_pr_merge_v1: "exact-sha-merge", github_release_tag_create_v1: "non-force-tag" }[request.alias as string];
+    const effect = { v: "reelier.transport-effect/v1", endpointId: `github.release.${endpoint}`, method: "POST", path: "/internal/github-release", query: "", headers: {}, bodyBase64: Buffer.from(JSON.stringify({ authorizationHandle: request.authorizationHandle })).toString("base64"), riskClass: "github_release", idempotency: "reconcile-only", preconditions: [], reconciliation: { recipeId: "github_release_authoritative_readback_v1" } };
+    const encodedEffect = Buffer.from(JSON.stringify(effect)).toString("base64"), projection = { v: "reelier.materialized-http-request/v1" as const, method: "POST" as const, origin: "https://api.github.test", normalizedPath: "/internal/github-release", normalizedQuery: "", reviewedHeaders: {}, bodyDigest: digest("a") }, materializedRequestDigest = materializedHttpRequestDigest(projection);
+    const intent: any = { tenant: "tenant_release_test", requestDigest: authorityDigest({ requestId }), capabilityDigest: authorityDigest({ capability: requestId }), effectDigest: request.semanticsDigest, effectCanonicalBase64: encodedEffect, executionContext: { allocationId: request.allocationId }, routeAuthority: { routeDigest: digest("b"), expectedMaterializedRequestDigest: materializedRequestDigest } };
+    let reservation: any = { reservationId: requestId, state: "ambiguous", sendStarted: true, resultDigest: authorityDigest({ ambiguous: requestId }), intent };
+    const identity: any = { v: "reelier.durable-dispatch-publication-identity/v1", reservationId: requestId, tenant: intent.tenant, requestDigest: intent.requestDigest, capabilityDigest: intent.capabilityDigest, effectDigest: intent.effectDigest, routeAuthorityDigest: authorityDigest(intent.routeAuthority), expectedDispatchedRequestDigest: materializedRequestDigest, reservationIntentDigest: authorityDigest({ v: "reelier.dispatch-reservation-intent/v1", intent }) };
+    const reservationReceiptRef = authorityDigest({ root: requestId });
+    let head: any = { v: "reelier.durable-dispatch-publication-head/v1", identity, receiptRef: authorityDigest({ ambiguous: requestId }), evidenceDigest: authorityDigest({ ambiguousEvidence: requestId }), reservationReceiptRef, priorReceiptRef: reservationReceiptRef, phase: "ambiguous", terminalKind: "ambiguous" };
+    const store = {
+      async publishReservation() { throw new Error("reconciliation must not create a second reservation root"); },
+      async loadDurableHead(query: any) { if (authorityDigest(query.identity) !== authorityDigest(identity)) throw new TypeError("durable identity conflict"); return head; },
+      async publish(value: any) { const published = { receiptRef: authorityDigest({ receipt: requestId, phase: value.phase }), evidenceDigest: authorityDigest({ evidence: requestId, phase: value.phase }) }; head = { v: "reelier.durable-dispatch-publication-head/v1", identity, ...published, reservationReceiptRef, priorReceiptRef: value.priorReceiptDigest ?? null, phase: value.phase, terminalKind: value.phase === "reconcile" ? "reconciled" : value.outcome.kind }; return published; },
+    };
+    const host = createGitHubReleaseHostComposition({ runner, fallback: testFallback, publication: store });
+    const ledger: any = { async getReservation() { return reservation; }, async transition(_id: string, expected: string, event: any) { if (reservation.state !== expected) return { ok: false, reason: "state-conflict" }; reservation = { ...reservation, state: event.to, resultDigest: event.resultDigest }; return { ok: true, status: "transitioned", reservation }; } };
+    const restore = __testSetAuthorityCellHostPlatform("linux");
+    try { await createDispatchCoordinator(ledger, host.adapter, undefined, host.publication, { async consumeOnce() {}, async returnOnce() {}, async releaseConsumedOnce() {} }).reconcile(requestId); }
+    finally { restore(); }
   }
 }
 
 async function governedRun(runner: Awaited<ReturnType<typeof createGitHubReleaseRunner>>, request: { alias: any; allocationId: string; authorizationHandle: string; requestId: string; semanticsDigest: string }, reconcile = false): Promise<{ status: "verified" | "pending-reconciliation"; phase: string; evidenceDigest: string | null }> {
+  const requests = governedRequests.get(runner) ?? new Map();
+  requests.set(request.requestId, request);
+  governedRequests.set(runner, requests);
   const endpoint = { github_release_candidate_publish_v1: "candidate-branch", github_release_pr_ensure_v1: "draft-pr", github_release_pr_merge_v1: "exact-sha-merge", github_release_tag_create_v1: "non-force-tag" }[request.alias as string];
   const effect = { v: "reelier.transport-effect/v1", endpointId: `github.release.${endpoint}`, method: "POST", path: "/internal/github-release", query: "", headers: {}, bodyBase64: Buffer.from(JSON.stringify({ authorizationHandle: request.authorizationHandle })).toString("base64"), riskClass: "github_release", idempotency: "reconcile-only", preconditions: [], reconciliation: { recipeId: "github_release_authoritative_readback_v1" } };
   const encodedEffect = Buffer.from(JSON.stringify(effect)).toString("base64");
@@ -286,18 +309,17 @@ test("actual dispatch coordinator consumes the release budget before the prepare
     const forgedLease = createDispatchCommitLease({ reservationId: requestId, allocationId, preparedDigest: materializedRequestDigest, authorityGeneration: "generation_1", authorityExpiresAt: "2099-08-18T17:00:00.000Z", absoluteDeadlineMs: forgedPrepared.description.absoluteDeadlineMs, commitGeneration: "forged" });
     await assert.rejects(() => consumePreparedDispatch(forgedPrepared, forgedLease), /coordinator|commit capability/i);
     assert.equal(providerWrites, 0, "public prepared/lease helpers cannot invoke the release provider");
-    const publication = createGitHubReleaseReceiptPublication({ runner, publication: { async publish() { return { receiptRef: "receipt_coordinator_budget", evidenceDigest: digest("d") }; } } });
     const makeLedger = () => {
       let reservation: any = { reservationId: requestId, state: "reserved", intent: { effectDigest, effectCanonicalBase64: "", executionContext: { allocationId } } };
       return { state: () => reservation, ledger: { async getReservation() { return reservation; }, async commitPreparedDispatch(input: any) { reservation = { ...reservation, state: "dispatched", sendStarted: true }; return createDispatchCommitLease({ reservationId: input.reservationId, allocationId: input.allocationId, preparedDigest: input.preparedDescription.materializedRequestDigest, authorityGeneration: input.expectedAuthorityGeneration, authorityExpiresAt: input.preparedDescription.authorityExpiresAt, absoluteDeadlineMs: input.absoluteDeadlineMs, commitGeneration: "commit_1" }); }, async transition(_id: string, expected: string, event: any) { if (reservation.state !== expected) return { ok: false, reason: "state-conflict" }; reservation = { ...reservation, state: event.to, resultDigest: event.resultDigest }; return { ok: true, status: "transitioned", reservation }; } } as any };
     };
     const budget = { async consumeOnce() { budgetAttempts += 1; if (failBudget) throw new TypeError("budget exhausted"); }, async returnOnce() {}, async releaseConsumedOnce() {} };
     const first = makeLedger(), firstState = { reservation: first.state(), effect, effectCanonicalBase64: "", effectDigest };
-    await assert.rejects(() => createDispatchCoordinator(first.ledger, adapter, undefined, publication, budget).dispatch(createReservedDispatchHandle(firstState)), /budget exhausted/i);
+    await assert.rejects(() => createDispatchCoordinator(first.ledger, adapter, undefined, undefined, budget).dispatch(createReservedDispatchHandle(firstState)), /budget exhausted/i);
     assert.equal(providerWrites, 0);
     failBudget = false;
     const second = makeLedger(), secondState = { reservation: second.state(), effect, effectCanonicalBase64: "", effectDigest };
-    const outcome = await createDispatchCoordinator(second.ledger, adapter, undefined, publication, budget).dispatch(createReservedDispatchHandle(secondState));
+    const outcome = await createDispatchCoordinator(second.ledger, adapter, undefined, undefined, budget).dispatch(createReservedDispatchHandle(secondState));
     assert.equal(outcome.kind, "acknowledged");
     assert.equal(providerWrites, 3);
     assert.equal(budgetAttempts, 2);
@@ -360,8 +382,7 @@ test("four-operation release saga converges after ambiguous merge and tag withou
     assert.equal(mergeResult.status, "verified");
     await assert.rejects(() => invoke("github_release_tag_create_v1", "tag_1"), /predecessor|receipt/i, "provider reconciliation alone must not unlock the successor");
     await confirmTestPublication(runner, "merge_1", mergeResult, "reconcile");
-    const conflictingPublication = createGitHubReleaseReceiptPublication({ runner, publication: { async publish() { return { receiptRef: "receipt_conflict", evidenceDigest: digest("c") }; } } });
-    await assert.rejects(() => conflictingPublication.publish({ phase: "reconcile", state: { reservation: { reservationId: "merge_1" }, effect: { endpointId: "github.release.exact-sha-merge" } } as any, outcome: { kind: "acknowledged", resultDigest: mergeResult.evidenceDigest! }, dispatchedRequestDigest: digest("f") }), /conflict/i);
+    assert.throws(() => createGitHubReleaseReceiptPublication({ runner, publication: { async publish() { return { receiptRef: "receipt_conflict", evidenceDigest: digest("c") }; } } }), /durable|authoritative|head/i);
     assert.equal((await invoke("github_release_tag_create_v1", "tag_1")).status, "pending-reconciliation");
     npmPublished = true;
     const reconciledTag = await invoke("github_release_tag_create_v1", "tag_1", true);
