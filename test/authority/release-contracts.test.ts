@@ -74,7 +74,7 @@ function releaseInputs() {
     expectedTreeSha: sha("e"),
     files: operationFiles,
     npmPreflight: { packageName: "reelier", version: "0.32.1", versionMustBeAbsent: true },
-    pullRequest: { base: "main", body: "Governed release v0.32.1", draft: true, head: "reelier/release/0.32.1", title: "Release v0.32.1" },
+    pullRequest: { base: "main", body: "Governed release v0.32.1", draft: true, head: "reelier/release/0.32.1", readyForReview: true, title: "Release v0.32.1" },
     repository: "seldonframe/reelier",
     requiredChecks: ["coverage", "full-tests", "mutation"],
     squash: { commitMessage: "release: v0.32.1", commitTitle: "Release v0.32.1" },
