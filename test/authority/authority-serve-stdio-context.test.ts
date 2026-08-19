@@ -123,10 +123,11 @@ test("authority serve host composition binds stdio resolver, bound runtime, and 
   const executionContext = { v: "reelier.authority-execution-context/v1" as const, taskId: "task_1", principalId: "agent_1", grantId: "grant_1", grantDigest: digest, allocationId: "root", runtimeSessionId: "session_1", jobId: "production_release", authorityCellId: "cell_1" };
   const calls: string[] = [];
   const server = { marker: "server" };
-  const result = await composeAuthorityServeHost(config, "stdio", {} as PrincipalRegistry, {}, undefined, {
+  const result = await composeAuthorityServeHost(config, "stdio", {} as PrincipalRegistry, {}, undefined, undefined, {
     async composeStdio(_config, _registry, createRuntime) { calls.push("compose"); return { executionContext, runtime: await createRuntime(executionContext) }; },
     async createStdioBoundRuntime(_config, context) { calls.push("bound-runtime"); assert.deepEqual(context, executionContext); return { outcome: async () => ({ requestId: "", verdict: "refused" as const, reasonCode: "unused", lifecycleState: "refused" }), status: async () => ({ requestId: "", verdict: "refused" as const, reasonCode: "unused", lifecycleState: "refused" }) } as never; },
     async createLocalRuntime() { calls.push("unbound-runtime"); throw new Error("must not use unbound runtime"); },
+    async createGitHubReleaseRuntime() { calls.push("release-runtime"); throw new Error("must not use the release runtime without an injected runner"); },
     createHostServer(_config, _runtime, options) { calls.push("host-server"); assert.deepEqual(options?.stdioExecutionContext, executionContext); return server as never; },
   });
   assert.equal(result, server);
@@ -153,6 +154,7 @@ test("authority serve command dispatch uses production host composition with the
         composeStdio: composeAuthorityServeStdioRuntime,
         async createStdioBoundRuntime(_config, context) { calls.push("bound-runtime"); assert.deepEqual(context, executionContext); return { outcome: async () => ({ requestId: "", verdict: "refused" as const, reasonCode: "unused", lifecycleState: "refused" }), status: async () => ({ requestId: "", verdict: "refused" as const, reasonCode: "unused", lifecycleState: "refused" }) } as never; },
         async createLocalRuntime() { calls.push("unbound-runtime"); throw new Error("must not use unbound runtime"); },
+        async createGitHubReleaseRuntime() { calls.push("release-runtime"); throw new Error("must not use the release runtime without an injected runner"); },
         createHostServer(_config, _runtime, options) { calls.push("host-server"); assert.deepEqual(options?.stdioExecutionContext, executionContext); return server as never; },
       },
       async startHost(composed, mode) { calls.push("no-start"); assert.equal(composed, server); assert.deepEqual(mode, { transport: "stdio" }); },
