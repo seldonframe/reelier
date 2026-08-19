@@ -259,6 +259,11 @@ test("actual dispatch coordinator consumes the release budget before the prepare
     const effectDigest = authorityDigest(effect), projection = { v: "reelier.materialized-http-request/v1" as const, method: "POST" as const, origin: "https://api.github.test", normalizedPath: "/internal/github-release", normalizedQuery: "", reviewedHeaders: {}, bodyDigest: digest("a") }, materializedRequestDigest = materializedHttpRequestDigest(projection);
     const fallback = { async prepare() { return createPreparedDispatch({ description: { v: "reelier.prepared-dispatch-description/v1", routeDigest: digest("b"), materializedRequestDigest, projection, authorityGeneration: "generation_1", authorityExpiresAt: "2099-08-18T17:00:00.000Z", absoluteDeadlineMs: performance.now() + 60_000, reservationId: requestId, allocationId }, send: async () => ({ kind: "definitive-failure", resultDigest: digest("f") }) }); }, async dispatch() { return { kind: "definitive-failure" as const, resultDigest: digest("f") }; } };
     const adapter = createGitHubReleaseDispatchAdapter({ runner, fallback });
+    const forgedState = { reservation: { reservationId: requestId, state: "reserved", intent: { effectDigest, executionContext: { allocationId } } }, effect, effectCanonicalBase64: "", effectDigest } as any;
+    const forgedPrepared = await adapter.prepare!(forgedState);
+    const forgedLease = createDispatchCommitLease({ reservationId: requestId, allocationId, preparedDigest: materializedRequestDigest, authorityGeneration: "generation_1", authorityExpiresAt: "2099-08-18T17:00:00.000Z", absoluteDeadlineMs: forgedPrepared.description.absoluteDeadlineMs, commitGeneration: "forged" });
+    await assert.rejects(() => consumePreparedDispatch(forgedPrepared, forgedLease), /coordinator|commit capability/i);
+    assert.equal(providerWrites, 0, "public prepared/lease helpers cannot invoke the release provider");
     const publication = createGitHubReleaseReceiptPublication({ runner, publication: { async publish() { return { receiptRef: "receipt_coordinator_budget", evidenceDigest: digest("d") }; } } });
     const makeLedger = () => {
       let reservation: any = { reservationId: requestId, state: "reserved", intent: { effectDigest, effectCanonicalBase64: "", executionContext: { allocationId } } };
