@@ -66,6 +66,9 @@ Files touched:
 - `src/authority/host/local.ts`
 - `src/authority/host/prepared-dispatch.ts`
 - `src/authority/host/dispatch.ts`
+- `src/authority/host/receipts.ts`
+- `src/authority/host/governed-cell.ts`
+- `src/authority/cli.ts`
 - `src/authority/pack.ts`
 - `src/packs/github-release/manifest.ts`
 - `src/packs/github-release/source.ts`
@@ -79,6 +82,9 @@ Files touched:
 - `test/authority/local-multi-definition-jobs.test.ts`
 - `test/authority/prepared-dispatch.test.ts`
 - `test/authority/dispatch-coordinator.test.ts`
+- `test/authority/receipts.test.ts`
+- `test/authority/governed-cell.test.ts`
+- `test/authority/authority-serve.test.ts`
 - `test/authority/release-contracts.test.ts`
 - `test/authority/certification-runner-abi-v2.test.ts`
 - `test/packs/github-release.test.ts`
