@@ -282,13 +282,7 @@ test("release provider execution stays behind the prepared commit boundary", asy
     async dispatch() { fallbackWrites += 1; return { kind: "acknowledged" as const, resultDigest: digest("d") }; },
   };
   const runner = { recover: async () => [], run: async () => { releaseWrites += 1; return { status: "verified" as const, phase: "candidate-verified", evidenceDigest: digest("e") }; } };
-  const adapter = createGitHubReleaseDispatchAdapter({ runner, fallback });
-  const effect = { v: "reelier.transport-effect/v1", endpointId: "github.release.candidate-branch", method: "POST", path: "/internal/github-release", query: "", headers: {}, bodyBase64: Buffer.from('{"authorizationHandle":"release_auth_1"}').toString("base64"), riskClass: "github_release", idempotency: "reconcile-only", preconditions: [], reconciliation: { recipeId: "github_release_authoritative_readback_v1" } };
-  const state = { reservation: { reservationId: "reservation_1", state: "reserved", intent: { executionContext: { allocationId: "release-candidate-branch-01" } } }, effect, effectDigest: digest("f"), effectCanonicalBase64: "" } as any;
-  const prepared = await adapter.prepare!(state);
-  assert.equal(releaseWrites, 0);
-  const lease = createDispatchCommitLease({ reservationId: "reservation_1", allocationId: "release-candidate-branch-01", preparedDigest: materializedRequestDigest, authorityGeneration: "generation_1", authorityExpiresAt: "2099-08-18T17:00:00.000Z", absoluteDeadlineMs: prepared.description.absoluteDeadlineMs, commitGeneration: "commit_1" });
-  assert.equal((await consumePreparedDispatch(prepared, lease)).kind, "definitive-failure");
+  assert.throws(() => createGitHubReleaseDispatchAdapter({ runner, fallback }), /runner publication capability|capability is unavailable/i);
   assert.deepEqual([releaseWrites, fallbackWrites], [0, 0], "an unminted fake runner cannot cross the prepared boundary");
 });
 
@@ -517,10 +511,7 @@ test("intent-only candidate recovery refuses an externally created exact branch"
 
 test("dedicated dispatch adapter passes only host-owned allocation and durable semantics", async () => {
   let observed: any = null, fallbackCalls = 0;
-  const adapter = createGitHubReleaseDispatchAdapter({ runner: { recover: async () => [], run: async (request: any) => { observed = request; return { status: "verified", phase: "candidate-verified", evidenceDigest: digest("a") }; } }, fallback: { dispatch: async () => { fallbackCalls++; return { kind: "acknowledged", resultDigest: digest("f") }; } } });
-  const effect = { v: "reelier.transport-effect/v1", endpointId: "github.release.candidate-branch", method: "POST", path: "/internal/github-release", query: "", headers: { "Content-Type": "application/json" }, bodyBase64: Buffer.from(JSON.stringify({ authorizationHandle: "release_auth_1" })).toString("base64"), riskClass: "github_release", idempotency: "reconcile-only", preconditions: [], reconciliation: { recipeId: "github_release_authoritative_readback_v1" } };
-  const outcome = await adapter.dispatch({ reservation: { reservationId: "reservation_1", state: "reserved" as any, intent: { effectDigest: authorityDigest(effect), effectCanonicalBase64: "", executionContext: { allocationId: "release-candidate-branch-01" } as any } }, effect, effectCanonicalBase64: "", effectDigest: authorityDigest(effect) });
-  assert.equal(outcome.kind, "definitive-failure");
+  assert.throws(() => createGitHubReleaseDispatchAdapter({ runner: { recover: async () => [], run: async (request: any) => { observed = request; return { status: "verified", phase: "candidate-verified", evidenceDigest: digest("a") }; } }, fallback: { dispatch: async () => { fallbackCalls++; return { kind: "acknowledged", resultDigest: digest("f") }; } } }), /runner publication capability|capability is unavailable/i);
   assert.equal(fallbackCalls, 0);
   assert.equal(observed, null, "public adapter dispatch cannot bypass prepared coordinator consumption");
   assert.throws(() => createGitHubReleaseReceiptPublication({ runner: { recover: async () => [], run: async () => ({ status: "verified", phase: "candidate-verified", evidenceDigest: digest("a") }) }, publication: { publish: async () => ({ receiptRef: "receipt_reservation_1", evidenceDigest: digest("b") }) } }), /capability/i);
