@@ -252,7 +252,7 @@ test("live root and reservation swaps cannot redirect a real reservation publica
       const stored = await publication.publishReservation!(value);
       assert.match(stored.receiptRef, /^sha256:/);
       assert.deepEqual(await readdir(replacement, { recursive: true }), [], `${targetKind} replacement must contain no governed artifact`);
-      const head = await publication.loadDurableHead!({ v: "reelier.durable-dispatch-publication-query/v1", identity: value.identity, ledgerState: "dispatched", sendStarted: true });
+      const head = await publication.loadDurableHead!({ v: "reelier.durable-dispatch-publication-query/v1", identity: value.identity, ledgerState: "dispatched", sendStarted: true }, "root-or-terminal");
       assert.equal(head?.phase, "reservation");
     } finally {
       restore();
@@ -291,7 +291,7 @@ test("a node swap after anchored open cannot leave receipt bytes outside the gov
   try {
     await publication.publishReservation!(value);
     assert.deepEqual(await readdir(outside), [], "the opened receipt inode must be restored inside the admitted store");
-    const head = await publication.loadDurableHead!({ v: "reelier.durable-dispatch-publication-query/v1", identity: value.identity, ledgerState: "dispatched", sendStarted: true });
+    const head = await publication.loadDurableHead!({ v: "reelier.durable-dispatch-publication-query/v1", identity: value.identity, ledgerState: "dispatched", sendStarted: true }, "root-or-terminal");
     assert.equal(head?.phase, "reservation");
   } finally {
     restore();
