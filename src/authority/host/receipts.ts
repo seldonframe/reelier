@@ -4,7 +4,10 @@ import path from "node:path";
 import { authorityCanonicalBytes, authorityDigest } from "../wire.js";
 import type { DispatchPublication, DispatchRequestState, DispatchOutcome, DurableDispatchPublicationHeadV1, DurableDispatchPublicationIdentityV1, DurableDispatchPublicationQueryV1 } from "./dispatch.js";
 import { assertLinuxAuthorityCellHost } from "./platform.js";
+import { noteDurableEntryCreated, syncDirectory } from "./durability.js";
 import { normalizeReservationPublicationId } from "./reservation-identity.js";
+
+export { __testSetReceiptsDurabilityProbe, type ReceiptsDurabilityProbeEventV1 } from "./durability.js";
 
 /**
  * Minimal local publication used by the host before a terminal ledger transition.
@@ -97,7 +100,7 @@ export function createFileReceiptPublication(options: FileReceiptPublicationOpti
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "EEXIST" && (error as NodeJS.ErrnoException).code !== "EPERM") throw error;
       } finally { await unlink(temporary).catch(() => {}); }
-      testDurabilityProbe?.({ kind: "created", site: "legacy-rename", target: file });
+      noteDurableEntryCreated("legacy-rename", file);
       await syncDirectory(root, "legacy-rename");
       try {
         const existingBytes = await readFile(file);
@@ -135,7 +138,7 @@ export function createFileReceiptPublication(options: FileReceiptPublicationOpti
     }
     const directory = durableDirectory(root, identity);
     await mkdir(directory, { recursive: true });
-    testDurabilityProbe?.({ kind: "created", site: "durable-mkdir", target: directory });
+    noteDurableEntryCreated("durable-mkdir", directory);
     await syncDirectory(root, "durable-mkdir");
     await writeImmutable(path.join(directory, `node-${receiptRef.slice(7)}.json`), Object.freeze({ v: "reelier.durable-file-publication-node/internal-v1", preimage, head }));
     const reread = await loadDurableChain(root, identity, "root-or-terminal");
@@ -165,28 +168,6 @@ export function createFileReceiptPublication(options: FileReceiptPublicationOpti
 
 const DIGEST = /^sha256:(?!0{64}$)[0-9a-f]{64}$/;
 const IDENTITY_FIELDS = ["v", "reservationId", "tenant", "requestDigest", "capabilityDigest", "effectDigest", "routeAuthorityDigest", "expectedDispatchedRequestDigest", "reservationIntentDigest"] as const;
-
-export type ReceiptsDurabilityProbeEventV1 = Readonly<{ kind: "created" | "synced"; site: "node-create" | "durable-mkdir" | "legacy-rename"; target: string }>;
-
-let testDurabilityProbe: ((event: ReceiptsDurabilityProbeEventV1) => void) | undefined;
-
-/** Internal test seam. It is intentionally not re-exported from the host barrel. */
-export function __testSetReceiptsDurabilityProbe(probe: ((event: ReceiptsDurabilityProbeEventV1) => void) | undefined): () => void {
-  const previous = testDurabilityProbe;
-  testDurabilityProbe = probe;
-  return () => { testDurabilityProbe = previous; };
-}
-
-/** Persists a new directory entry. Hard-required on a real Linux Authority Cell; failure codes are tolerated elsewhere so win32 tests under the platform override still run. */
-async function syncDirectory(directory: string, site: ReceiptsDurabilityProbeEventV1["site"]): Promise<void> {
-  try {
-    const handle = await open(directory, "r");
-    try { await handle.sync(); } finally { await handle.close(); }
-  } catch (error) {
-    if (process.platform === "linux") throw error;
-  }
-  testDurabilityProbe?.({ kind: "synced", site, target: directory });
-}
 
 function assertDurableIdentity(value: DurableDispatchPublicationIdentityV1): void {
   if (!value || typeof value !== "object" || Array.isArray(value) || Object.getPrototypeOf(value) !== Object.prototype) throw new TypeError("durable publication identity is not inert");
@@ -228,7 +209,7 @@ async function writeImmutable(file: string, value: unknown): Promise<void> {
   let existing: Buffer;
   try { existing = await readFile(file); } catch (error) { throw new Error("durable publication node is missing or unreadable", { cause: error }); }
   if (!existing.equals(bytes)) throw new Error("conflicting immutable durable publication");
-  testDurabilityProbe?.({ kind: "created", site: "node-create", target: file });
+  noteDurableEntryCreated("node-create", file);
   await syncDirectory(directory, "node-create");
 }
 

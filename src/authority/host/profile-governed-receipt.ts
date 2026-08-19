@@ -21,6 +21,7 @@ import type { DispatchOutcome, DispatchPublication, DispatchRequestState, Durabl
 import { lstat, mkdir, open, readdir, realpath, unlink, type FileHandle } from "node:fs/promises";
 import { constants } from "node:fs";
 import path from "node:path";
+import { noteDurableEntryCreated, syncDirectory } from "./durability.js";
 import { normalizeReservationPublicationId } from "./reservation-identity.js";
 
 export interface ProfileGovernedAuthorityReceiptV1{readonly v:"reelier.profile-governed-authority-receipt/v1";readonly profileDraft:OutcomeProfileDraftV1;readonly profileConformanceReport:ProfileConformanceReportV1;readonly profileConformance:SignedOutcomeProfileConformanceV1;readonly profileActivation:SignedTenantProfileActivationV1;readonly authorityReceiptBundle:AuthorityReceiptBundle;readonly authorityBindingEvidence:Readonly<{signedJobCard:SignedJobCardV1;artifactKeyBinding:CertificationArtifactKeyBindingV1;artifactKeyBindingCommitment:CertificationArtifactKeyBindingCommitmentV1;deploymentSnapshot:AuthorityDeploymentSnapshotV1;routeScope:AuthorityRouteScopeV1;routeAuthoritySnapshot:RouteAuthoritySnapshotV1;binding:SignedProfileAuthorityBindingV1}>;readonly edges:Readonly<{profileDigest:string;conformanceReportDigest:string;conformanceDigest:string;activationDigest:string;innerReceiptDigest:string;authorityBindingDigest:string}>}
@@ -108,15 +109,25 @@ async function storeNode(root:string,node:StoredGovernedNode,existing:readonly S
     throw new TypeError("governed receipt semantic CAS conflict");
   }
   const governed=path.join(root,"governed"),directory=path.join(governed,node.identity.reservationId);
-  await mkdir(governed).catch(error=>{if((error as NodeJS.ErrnoException).code!=="EEXIST")throw error;});
+  // A directory the crash loses is a receipt the crash loses. Each mkdir that actually creates a
+  // dirent is persisted by fsyncing its PARENT before anything is written underneath it.
+  const createdGoverned=await createStoreDirectory(governed);
   await assertConfinedStoreDirectory(root,governed);
-  await mkdir(directory).catch(error=>{if((error as NodeJS.ErrnoException).code!=="EEXIST")throw error;});
+  if(createdGoverned){noteDurableEntryCreated("governed-store-mkdir",governed);await syncDirectory(root,"governed-store-mkdir");}
+  const createdReservation=await createStoreDirectory(directory);
   await assertConfinedStoreDirectory(root,directory);
+  if(createdReservation){noteDurableEntryCreated("governed-store-mkdir",directory);await syncDirectory(governed,"governed-store-mkdir");}
   const anchors=await captureStoreAnchors(root,governed,directory);
   const slot=node.phase==="reservation"?"root.json":`${node.priorReceiptRef!.slice(7)}.successor.json`;
   const file=path.join(directory,slot),bytes=Buffer.from(`${JSON.stringify(node)}\n`);
   try{return await createAnchoredNode(anchors,file,slot,bytes,node);}
   finally{await closeStoreAnchors(anchors);}
+}
+/** Reports whether THIS call created the directory entry, so an already-present directory does not
+ * claim a durable creation it did not make. */
+async function createStoreDirectory(directory:string):Promise<boolean>{
+  try{await mkdir(directory);return true;}
+  catch(error){if((error as NodeJS.ErrnoException).code!=="EEXIST")throw error;return false;}
 }
 async function findIdentity(root:string,reservationId:string):Promise<DurableDispatchPublicationIdentityV1>{
   assertCanonicalStoreId(reservationId,"reservation");
@@ -281,6 +292,11 @@ async function createAnchoredNode(anchors:StoreAnchors,canonicalFile:string,slot
     if(pathStat.isSymbolicLink()||!pathStat.isFile()||pathStat.dev!==before.dev||pathStat.ino!==before.ino||await realpath(currentFile)!==canonicalFile)throw new TypeError("governed receipt node escaped its anchored directory");
     const raw=await readConfinedNode(currentFile,canonicalFile);
     if(authorityDigest(raw)!==authorityDigest(node))throw new TypeError("governed receipt bytes changed after write");
+    // `handle.sync()` persisted the node's BYTES; only this persists the dirent that names them.
+    // Without it a crash can leave a fsynced receipt with no path reaching it — a terminal receipt
+    // that silently reads back as absent.
+    noteDurableEntryCreated("governed-node-create",canonicalFile);
+    await syncDirectory(anchors.reservation.path,"governed-node-create");
     return false;
   }catch(error){
     await handle?.close().catch(()=>undefined);

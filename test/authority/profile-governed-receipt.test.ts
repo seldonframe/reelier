@@ -7,6 +7,7 @@ import { generateKeyPairSync } from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { createProfileGovernedAuthorityReceiptPublication, verifyProfileGovernedAuthorityReceipt, type ProfileGovernedAuthorityReceiptVerificationOptionsV1 } from "../../src/authority/host/profile-governed-receipt.js";
+import { __testSetReceiptsDurabilityProbe, type ReceiptsDurabilityProbeEventV1 } from "../../src/authority/host/durability.js";
 import { loadProfileGovernanceFromOperatorTrust } from "../../src/authority/host/profile-governance-loader.js";
 import { validateLifecycleAuthorityReceiptSigningAuthority } from "../../src/authority/host/receipt-authority.js";
 import { signJobCard } from "../../src/authority/job.js";
@@ -257,6 +258,34 @@ test("live root and reservation swaps cannot redirect a real reservation publica
     } finally {
       restore();
     }
+  }
+});
+
+test("every governed store dirent is followed by a parent-directory sync", async t => {
+  const home = await mkdtemp(path.join(os.tmpdir(), "reelier-governed-fsync-order-"));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const rootDir = path.join(home, "receipt-store"), reservationId = "reservation_fsync_order";
+  const governed = path.join(rootDir, "governed"), reservation = path.join(governed, reservationId);
+  const { publication, value } = await realReservationPublication(home, rootDir, reservationId);
+  const events: ReceiptsDurabilityProbeEventV1[] = [];
+  const restoreProbe = __testSetReceiptsDurabilityProbe(event => events.push(event));
+  try { await publication.publishReservation!(value); } finally { restoreProbe(); }
+
+  // `handle.sync()` on the node persists its BYTES. Only a parent-directory sync persists the
+  // dirent that NAMES them, and the same is true of each store directory the publication creates.
+  // Without these the crash window loses a terminal receipt to "absent" with the bytes still there.
+  assert.deepEqual(events.map(event => `${event.kind}:${event.site}`), [
+    "created:governed-store-mkdir", "synced:governed-store-mkdir",
+    "created:governed-store-mkdir", "synced:governed-store-mkdir",
+    "created:governed-node-create", "synced:governed-node-create",
+  ]);
+  assert.deepEqual(events.map(event => event.target), [governed, rootDir, reservation, governed, path.join(reservation, "root.json"), reservation]);
+  // Every `created` is answered by a `synced` whose target is the created entry's PARENT.
+  for (let index = 0; index < events.length; index += 2) {
+    assert.equal(events[index]!.kind, "created");
+    assert.equal(events[index + 1]!.kind, "synced");
+    assert.equal(events[index + 1]!.target, path.dirname(events[index]!.target));
+    assert.equal(events[index + 1]!.site, events[index]!.site);
   }
 });
 
