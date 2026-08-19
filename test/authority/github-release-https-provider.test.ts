@@ -130,7 +130,7 @@ test("getRef maps 200 to the closed sha record and 404 to null", async () => {
     assert.equal(await provider.getRef({ repository: REPOSITORY, ref: "tags/v0.32.1" }), null);
     assert.deepEqual(calls.map(call => call.path), [`/repos/${REPOSITORY}/git/ref/heads/main`, `/repos/${REPOSITORY}/git/ref/tags/v0.32.1`]);
     assert.ok(calls.every(call => call.kind === "read" && call.method === "GET" && call.endpointId === "github.release.provider"));
-    assert.deepEqual(calls[0]!.headers, { accept: "application/vnd.github+json", "x-github-api-version": "2022-11-28" });
+    assert.deepEqual(calls[0]!.headers, { accept: "application/vnd.github+json", "user-agent": "reelier-release-provider/1", "x-github-api-version": "2022-11-28" });
   });
 });
 
@@ -283,7 +283,7 @@ test("npmVersionExists reads the registry endpoint and maps absence, presence, a
     assert.equal(fault.kind, "transport-uncertain");
     assert.ok(calls.every(call => call.endpointId === "npm.registry.read" && call.path === "/reelier" && call.query === ""));
     // The registry endpoint carries no credential reference at all, so no bearer can be attached.
-    assert.deepEqual(calls[0]!.headers, { accept: "application/json" });
+    assert.deepEqual(calls[0]!.headers, { accept: "application/json", "user-agent": "reelier-release-provider/1" });
   });
 });
 
@@ -405,6 +405,10 @@ assert.equal(npm.length, 1);
 for (const entry of github) assert.equal(entry.headers.authorization, "Bearer " + TOKEN, entry.path);
 // The unauthenticated registry endpoint declares no credential reference, so no bearer exists to attach.
 for (const entry of npm) assert.equal(Object.hasOwn(entry.headers, "authorization"), false);
+// GitHub 403s a UA-less REST request (live-verified 2026-08-19); npm expects one too. EVERY request
+// the real driver actually dispatches — both endpoints — must carry the exact fixed literal, never a
+// version-interpolated one.
+for (const entry of observed) assert.equal(entry.headers["user-agent"], "reelier-release-provider/1", entry.path);
 
 // ...and NOWHERE else. Config, returned values, both fault DTOs, every fault reason string, every
 // request path/query/body, and every non-authorization header value.
@@ -416,7 +420,7 @@ const surfaces = [
 ];
 for (const surface of surfaces) assert.equal(surface.includes(TOKEN), false, "secret canary leaked outside the Authorization header");
 
-process.stdout.write(JSON.stringify(observed.map(entry => ({ method: entry.method, path: entry.path, hostname: entry.hostname, headerNames: Object.keys(entry.headers).map(name => name.toLowerCase()).sort(), bodyUtf8: entry.bodyUtf8 }))));
+process.stdout.write(JSON.stringify(observed.map(entry => ({ method: entry.method, path: entry.path, hostname: entry.hostname, headerNames: Object.keys(entry.headers).map(name => name.toLowerCase()).sort(), userAgent: entry.headers["user-agent"] ?? null, bodyUtf8: entry.bodyUtf8 }))));
 `;
 
 test("the real driver receives the exact request shape and the token appears ONLY in the Authorization header", async () => {
@@ -446,7 +450,7 @@ test("the real driver receives the exact request shape and the token appears ONL
   assert.equal(stdout.includes(token), false, "the redacted request log must never carry the token across the process boundary");
   assert.equal(stderr.includes(token), false, "a harness failure must never print the token");
   assert.equal(code, 0, `fixture-server harness failed\nstdout:\n${stdout}\nstderr:\n${stderr}`);
-  const requests = JSON.parse(stdout) as { method: string; path: string; hostname: string; headerNames: string[]; bodyUtf8: string }[];
+  const requests = JSON.parse(stdout) as { method: string; path: string; hostname: string; headerNames: string[]; userAgent: string | null; bodyUtf8: string }[];
   assert.deepEqual(requests.map(entry => `${entry.method} https://${entry.hostname}${entry.path}`), [
     `GET https://api.github.com/repos/${REPOSITORY}/git/ref/heads/main`,
     `POST https://api.github.com/repos/${REPOSITORY}/git/blobs`,
@@ -460,11 +464,15 @@ test("the real driver receives the exact request shape and the token appears ONL
   // branch is only dispatchable at all because the provider percent-encoded it first.
   assert.ok(requests[2]!.path.includes("%2F"), "the real request line must carry the percent-encoded slash");
   assert.equal(requests[2]!.path.includes("/release/0.32.1"), false, "the head branch's slashes must never appear unencoded in the request line");
-  assert.deepEqual(requests[0]!.headerNames, ["accept", "authorization", "x-github-api-version"]);
-  assert.deepEqual(requests[1]!.headerNames, ["accept", "authorization", "content-length", "x-github-api-version"]);
-  assert.deepEqual(requests[2]!.headerNames, ["accept", "authorization", "x-github-api-version"]);
-  assert.deepEqual(requests[3]!.headerNames, ["accept"]);
+  assert.deepEqual(requests[0]!.headerNames, ["accept", "authorization", "user-agent", "x-github-api-version"]);
+  assert.deepEqual(requests[1]!.headerNames, ["accept", "authorization", "content-length", "user-agent", "x-github-api-version"]);
+  assert.deepEqual(requests[2]!.headerNames, ["accept", "authorization", "user-agent", "x-github-api-version"]);
+  assert.deepEqual(requests[3]!.headerNames, ["accept", "user-agent"]);
   assert.deepEqual(JSON.parse(requests[1]!.bodyUtf8), { content: Buffer.from("hello").toString("base64"), encoding: "base64" });
+  // GitHub 403s a UA-less REST request (live-verified 2026-08-19: identical token+endpoint ->
+  // HTTP 200 with this header, HTTP 403/HTML without it); npm expects one too. Every request the
+  // REAL driver dispatched — both endpoints, read and write — must carry the exact fixed literal.
+  for (const entry of requests) assert.equal(entry.userAgent, "reelier-release-provider/1", `${entry.method} https://${entry.hostname}${entry.path}`);
 });
 
 test("the live smoke script default-skips without its explicit env flag and never targets the production repository", () => {

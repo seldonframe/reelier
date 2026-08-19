@@ -15,6 +15,14 @@ const ZERO_DIGEST = `sha256:${"0".repeat(64)}`;
 const UNJOINED_WORKFLOW_PATH = "(unjoined-check-suite)";
 const GITHUB_ENDPOINT_ID = "github.release.provider";
 const NPM_ENDPOINT_ID = "npm.registry.read";
+/** GitHub administratively 403s any UA-less REST request (confirmed live 2026-08-19: the identical
+ * token+endpoint returns HTTP 200 with this header present, HTTP 403 with an HTML body — not JSON —
+ * without it), and npm's registry documents the same expectation. The json-https DRIVER does not own
+ * `user-agent` the way it owns `authorization` (no secret is involved, and it is not in the driver's
+ * `FORBIDDEN` header denylist — `src/authority/drivers/json-https.ts`); ownership here follows the
+ * codebase's existing pattern of a caller-declared per-endpoint header, same as `founder-source-adapter.ts`'s
+ * own `"User-Agent"` entry. A fixed literal, never version-interpolated, so it never becomes a fingerprint. */
+const USER_AGENT = "reelier-release-provider/1";
 /** Every status GitHub uses to say "this will never succeed as asked". Anything else — 5xx, 429,
  * an unreadable body — stays `transport-uncertain`, because the runner must be free to reconcile. */
 const DEFINITIVE_STATUSES = new Set([400, 401, 403, 404, 405, 409, 410, 422]);
@@ -136,8 +144,8 @@ export function createGitHubReleaseHttpsProvider(config: GitHubReleaseHttpsProvi
     allowedPathPrefixes: Object.freeze(["/"]),
     accountIdentity: "npm-registry-anonymous",
   });
-  const githubHeaders = Object.freeze({ accept: "application/vnd.github+json", "x-github-api-version": "2022-11-28" });
-  const npmHeaders = Object.freeze({ accept: "application/json" });
+  const githubHeaders = Object.freeze({ accept: "application/vnd.github+json", "user-agent": USER_AGENT, "x-github-api-version": "2022-11-28" });
+  const npmHeaders = Object.freeze({ accept: "application/json", "user-agent": USER_AGENT });
   const realTransport: GitHubReleaseHttpsTransport = {
     async read(read, endpoint) { const response = await executeJsonHttpsRead(read, endpoint, secrets, { timeoutMs: parsed.timeoutMs }); return { status: response.status, body: response.body }; },
     async write(effect, endpoint) { const response = await executeJsonHttpsEffect(effect, endpoint, secrets, { timeoutMs: parsed.timeoutMs }); return { status: response.status, body: response.body }; },
