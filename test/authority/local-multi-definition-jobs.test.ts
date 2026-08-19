@@ -141,6 +141,8 @@ test("production GitHub release runtime is a public closed four-definition compo
   try {
     await assert.rejects(() => createGitHubReleaseAuthorityRuntime(fixture.config, undefined as never, { jobCardTrustPin: fixture.trustPin, delegation: fixture.delegation }), /four reviewed/i);
     const releaseConfig = { ...fixture.config, definitions: ["github_release_candidate_publish_v1", "github_release_pr_ensure_v1", "github_release_pr_merge_v1", "github_release_tag_create_v1"] };
+    const { deploymentPath: _deploymentPath, jobCardTrustPinPath: _jobCardTrustPinPath, ...unsignedReleaseConfig } = releaseConfig;
+    await assert.rejects(() => createGitHubReleaseAuthorityRuntime(unsignedReleaseConfig, {} as never), /signed deployment.*trust pin/i);
     await assert.rejects(() => createGitHubReleaseAuthorityRuntime(releaseConfig, undefined as never, { jobCardTrustPin: fixture.trustPin, delegation: fixture.delegation }), /release runner capability/i);
     await assert.rejects(() => createGitHubReleaseAuthorityRuntime(releaseConfig, { run: async () => ({ status: "verified", phase: "forged", evidenceDigest: sha("1") }), recover: async () => [] } as never, { jobCardTrustPin: fixture.trustPin, delegation: fixture.delegation }), /release runner capability/i);
     const host = await import("../../src/authority/host/index.js") as Record<string, unknown>;
