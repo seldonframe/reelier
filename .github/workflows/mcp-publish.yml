@@ -40,8 +40,12 @@ jobs:
       # ref namespace, not in the normal branch/tag history actions/checkout
       # follows — it has to be fetched explicitly before the verifier can
       # read it. Tags-only (R5): the pre-existing workflow_dispatch path has
-      # no release tag and no authorization ref to fetch, and keeps working
-      # unchanged.
+      # no release tag and no authorization ref to fetch, so this step is
+      # skipped on that path — but the job-level `environment:
+      # production-release` above still applies to every run, dispatch
+      # included, and gates it on the mission-#1 required reviewer before any
+      # step executes. That gate is deliberate: all three publish workflows
+      # carry it during mission #1.
       - name: Fetch release-authorization refs
         if: startsWith(github.ref, 'refs/tags/')
         run: git fetch origin "+refs/reelier/*:refs/reelier/*"
@@ -52,9 +56,12 @@ jobs:
           npm ci
           npm run build
 
-      # Tags-only (R5): tag-triggered runs are always verified; the
-      # pre-existing workflow_dispatch path is unaffected. The ref argument
-      # carries a fixed, hard-coded prefix — only the suffix is
+      # Tags-only (R5): tag-triggered runs are always verified; on the
+      # pre-existing workflow_dispatch path this step itself does not run —
+      # step execution is unchanged there — but the run as a whole still
+      # waits on the job-level `environment: production-release` approval
+      # above before any step, this one included, can start. The ref
+      # argument carries a fixed, hard-coded prefix — only the suffix is
       # runtime-supplied, via the shell variable $GITHUB_REF_NAME, never a
       # raw ${{ github.ref_name }} expression interpolated into the script.
       - name: Verify release authorization (offline, fail closed)
