@@ -161,13 +161,19 @@ release evidence consumes Task 5 until this passes.
   stays after the reviewer is removed (it then gates nothing). Receipt-graph verification
   (`verifyReleaseReceiptGraphV1`, 15 lanes, provider readback) is **post-publish only**: mission final
   verification and the Task-8 gate — never claimed pre-publish.
-- **Authorization transport (decision with owner):** recommended — the governed
-  `github_release_tag_create_v1` creates an **annotated tag whose message carries the canonical signed
-  artifact set**; the trigger carries its own authorization, immutable, digest-verified by the script.
-  Fallback: an authorization ref `refs/reelier/release-authorizations/v0.32.1` written by
-  `github_release_candidate_publish_v1`. **Lane 2's first work item is the contract check** of both
-  against the frozen Task-4 definitions; if neither fits without amending a frozen contract, escalate
-  to the operator as an explicit exception — never a silent widening.
+- **Authorization transport (DECIDED 2026-08-19 by the operator, after the B1 contract check
+  escalated):** the B1 investigation
+  (`.superpowers/sdd/2026-08-19-breaker-fixes-and-tasks-6-8/task-B1-report.md`) found neither
+  original carrier fits the frozen Task-4 contracts: tag creation is a lightweight `createRef` with
+  no message surface, and candidate publish writes exactly one governed ref. Decided transport: an
+  **out-of-band authorization ref** `refs/reelier/release-authorizations/v0.32.1`, written by the
+  Cell's mission tooling outside the four governed definitions. This is sound because the artifacts
+  are **self-authenticating** — Ed25519-signed and digest-bound, verified against the committed
+  trust pin (R4) — so the transport is untrusted by construction: tampering fails signature
+  verification, absence fails closed. The ref write is evidence transport, never a provider effect
+  on the release path, and is recorded in the mission evidence. Workflows add one explicit
+  `git fetch origin +refs/reelier/*:refs/reelier/*` step before the verifier. No frozen contract is
+  amended.
 - **Live GitHub HTTPS provider** `src/authority/host/github-release-https-provider.ts`: the 14 closed
   `GitHubReleaseProviderV1` methods (incl. `npmVersionExists`) over the existing json-https driver;
   credentials via `SecretResolver` refs. Hermetic tests against the existing fake-provider suites plus
