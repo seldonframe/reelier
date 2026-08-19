@@ -14,6 +14,8 @@ import { profileGovernanceFixture, writeGovernedPublicFactoryFixture } from "./p
 type Assert<T extends true> = T;
 type PublicOptionsHaveNoSecondBindingSigner = Assert<"authorityBindingSigner" extends keyof GovernedAuthorityCellOptionsV1 ? false : true>;
 const publicOptionsHaveNoSecondBindingSigner: PublicOptionsHaveNoSecondBindingSigner = true;
+type PublicOptionsHaveReleaseRunner = Assert<"githubReleaseRunner" extends keyof GovernedAuthorityCellOptionsV1 ? true : false>;
+const publicOptionsHaveReleaseRunner: PublicOptionsHaveReleaseRunner = true;
 
 type GovernedFactoryCase = "correct" | "wrong-write" | "wrong-read" | "provider-mismatch" | "extra-route"
   | "draft-only" | "conformance-only" | "activation-only" | "self-certified" | "revoked-activation"
@@ -44,6 +46,7 @@ test("governed Cell refuses Windows before config, reference, options, or filesy
 
 test("the public governed options expose one receipt signing authority and no second binding signer", async () => {
   assert.equal(publicOptionsHaveNoSecondBindingSigner, true);
+  assert.equal(publicOptionsHaveReleaseRunner, true);
   profileGovernanceFixture();
   const restore = __testSetAuthorityCellHostPlatform("linux");
   const config = { version: 1 as const, tenant: "tenant_1", requester: "operator", definitions: [], ledgerDir: "ledger", decisionDir: "decisions", receiptDir: "receipts", endpoints: [] };
