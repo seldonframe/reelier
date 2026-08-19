@@ -19,7 +19,7 @@ jobs:
     # stays after the required reviewer is removed; it then gates nothing.
     environment: production-release
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           # Full history: the release guard below computes a merge-base, which
           # is impossible at the default depth of 1.

@@ -65,6 +65,9 @@ test("mcp-publish.yml gates tag publishes behind the environment and verifier", 
     "npm run build",
     "if: startsWith(github.ref, 'refs/tags/')", // R5: tags-only, so workflow_dispatch keeps working unchanged
     "uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4",
+    // D1 prep pass: pin the remaining mutable tag on this gated workflow so a
+    // future edit can't silently regress it back to a floating major tag.
+    "uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4",
   ]) assert.ok(workflow.includes(required), `mcp-publish.yml is missing: ${required}`);
   assert.ok(workflow.indexOf("check-release-ancestor.mjs") < workflow.indexOf("verify-release-authorization.mjs"), "verifier must run after the ancestor guard");
   assert.ok(workflow.indexOf("verify-release-authorization.mjs") < workflow.indexOf("Install mcp-publisher"), "verifier must run before mcp-publisher install");
@@ -92,6 +95,14 @@ test("docker-publish.yml gates tag/release publishes behind the environment and 
     "npm run build",
     "if: startsWith(github.ref, 'refs/tags/')", // R5: same tags-only condition already on the ancestor guard
     "uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4",
+    // D1 prep pass: pin the remaining mutable tags on this gated workflow
+    // (checkout + the three docker/* actions) so a future edit can't
+    // silently regress it back to floating major tags.
+    "uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4",
+    "uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3",
+    "uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3",
+    "uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5",
+    "uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6",
   ]) assert.ok(workflow.includes(required), `docker-publish.yml is missing: ${required}`);
   assert.ok(workflow.indexOf("check-release-ancestor.mjs") < workflow.indexOf("verify-release-authorization.mjs"), "verifier must run after the ancestor guard");
   assert.ok(workflow.indexOf("verify-release-authorization.mjs") < workflow.indexOf("docker/setup-buildx-action"), "verifier must run before the docker buildx step");
