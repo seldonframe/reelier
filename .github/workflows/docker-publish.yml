@@ -24,6 +24,9 @@ permissions:
 jobs:
   docker:
     runs-on: ubuntu-latest
+    # Tag/release publishes queue on the mission-#1 environment reviewer; the PR
+    # validation path evaluates to '' and runs ungated.
+    environment: ${{ github.event_name != 'pull_request' && 'production-release' || '' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -37,6 +40,34 @@ jobs:
       - name: Release guard — tag must be an ancestor of main
         if: startsWith(github.ref, 'refs/tags/')
         run: node scripts/check-release-ancestor.mjs
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          node-version: 24
+
+      # The signed release-authorization artifact set lives on an out-of-band
+      # ref namespace — fetch it explicitly before the verifier reads it.
+      # Tags-only (R5), same condition as the ancestor guard above: the PR
+      # validation path and the `release: published` non-tag edge case never
+      # need it.
+      - name: Fetch release-authorization refs
+        if: startsWith(github.ref, 'refs/tags/')
+        run: git fetch origin "+refs/reelier/*:refs/reelier/*"
+
+      - name: Install and build (release verifier prerequisite)
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          npm ci
+          npm run build
+
+      # Tags-only (R5): the ref argument carries a fixed, hard-coded prefix —
+      # only the suffix is runtime-supplied, via the shell variable
+      # $GITHUB_REF_NAME, never a raw ${{ github.ref_name }} expression
+      # interpolated into the script.
+      - name: Verify release authorization (offline, fail closed)
+        if: startsWith(github.ref, 'refs/tags/')
+        run: node scripts/verify-release-authorization.mjs --ref "refs/reelier/release-authorizations/$GITHUB_REF_NAME" --check-head
 
       - uses: docker/setup-buildx-action@v3
 

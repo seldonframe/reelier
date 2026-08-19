@@ -15,6 +15,9 @@ permissions:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    # Mission-#1 pre-publish human review gate (spec 2.1). The environment reference
+    # stays after the required reviewer is removed; it then gates nothing.
+    environment: production-release
     steps:
       - uses: actions/checkout@v4
         with:
@@ -27,6 +30,36 @@ jobs:
       # reached main. See scripts/check-release-ancestor.mjs.
       - name: Release guard — tag must be an ancestor of main
         run: node scripts/check-release-ancestor.mjs
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          node-version: 24
+
+      # The signed release-authorization artifact set lives on an out-of-band
+      # ref namespace, not in the normal branch/tag history actions/checkout
+      # follows — it has to be fetched explicitly before the verifier can
+      # read it. Tags-only (R5): the pre-existing workflow_dispatch path has
+      # no release tag and no authorization ref to fetch, and keeps working
+      # unchanged.
+      - name: Fetch release-authorization refs
+        if: startsWith(github.ref, 'refs/tags/')
+        run: git fetch origin "+refs/reelier/*:refs/reelier/*"
+
+      - name: Install and build (release verifier prerequisite)
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          npm ci
+          npm run build
+
+      # Tags-only (R5): tag-triggered runs are always verified; the
+      # pre-existing workflow_dispatch path is unaffected. The ref argument
+      # carries a fixed, hard-coded prefix — only the suffix is
+      # runtime-supplied, via the shell variable $GITHUB_REF_NAME, never a
+      # raw ${{ github.ref_name }} expression interpolated into the script.
+      - name: Verify release authorization (offline, fail closed)
+        if: startsWith(github.ref, 'refs/tags/')
+        run: node scripts/verify-release-authorization.mjs --ref "refs/reelier/release-authorizations/$GITHUB_REF_NAME" --check-head
 
       - name: Install mcp-publisher
         run: |
