@@ -1,8 +1,9 @@
-import { generateKeyPairSync } from "node:crypto";
+import { createHash, generateKeyPairSync, type KeyObject } from "node:crypto";
 import { copyFile, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { authorityCanonicalBytes, authorityDigest, signAuthorityDigest, signJobCard, signedJobCardDigest } from "../../src/authority/index.js";
+import { createSignedReleaseAuthorizationBundleV1, createSignedReleaseOperationPlanV1, createSignedReleasePolicyV1, createSignedReleaseVerifierEvidenceV1, createSignedStagedCandidateManifestV1, type ReleaseEvidenceLaneV1, type ReleaseVerifierEvidenceV1 } from "../../src/authority/release-contracts.js";
 import { connectionAdoptionCommitmentDigest, connectionDescriptorDigest, digestNormalizedMcpToolSchemas } from "../../src/connections.js";
 import { buildAuthorityDeployment } from "../../src/authority/host/deploy.js";
 import { githubReleasePacks } from "../../src/packs/github-release/index.js";
@@ -11,6 +12,30 @@ import { jobCardTrustPinFixture } from "./job-card-trust-pin-fixture.js";
 
 const sha = (seed: string) => `sha256:${seed.repeat(64).slice(0, 64)}`;
 const AUTHORIZATION_HANDLE = "release-authorization-01";
+const WRONG_SIGNER_HANDLE = "release-authorization-wrong-signer";
+
+/** Signed with the SAME shapes `release-contracts.test.ts` verifies, using the same public
+ * `createSigned*` helpers, so a bundle this fixture writes is one the production verifier accepts. */
+const RELEASE_AUTHORITY_SIGNER_ID = "release-authority-2026";
+const RELEASE_GRAPH_MAKER_SIGNER_ID = "release-graph-maker-2026";
+const AUTHORIZATION_ISSUED_AT = "2026-08-18T05:00:00.000Z";
+const AUTHORIZATION_EXPIRES_AT = "2026-08-18T17:00:00.000Z";
+const AUTHORIZATION_OBSERVED_AT = "2026-08-18T05:30:00.000Z";
+/** Inside `[issuedAt, expiresAt)` and at or after every evidence `observedAt`. */
+const AUTHORIZATION_NOW = new Date("2026-08-18T06:00:00.000Z");
+const RELEASE_BASE_COMMIT = "e600ad5c2dc5e1bde0714915e7a84980c8d5602b";
+/** `[...QUALITY_LANES, ...RECEIPT_LANES]` in the exact order `parseReleaseAuthorizationBundleV1` pins. */
+const LANE_SIGNERS: ReadonlyArray<readonly [ReleaseEvidenceLaneV1, string]> = [
+  ["ci-coverage", "quality-coverage-verifier"], ["ci-full-tests", "quality-full-tests-verifier"], ["ci-mutation", "quality-mutation-verifier"],
+  ["candidate-branch", "receipt-candidate-branch"], ["candidate-pull-request", "receipt-candidate-pr"], ["ghcr-immutable-manifest", "receipt-ghcr-manifest"], ["ghcr-tags", "receipt-ghcr-tags"],
+  ["human-authorization", "receipt-human-authorization"], ["human-exceptions", "receipt-human-exceptions"], ["human-interruptions", "receipt-human-interruptions"], ["human-post-release-review", "receipt-human-review"],
+  ["installed-linux", "receipt-installed-linux"], ["installed-windows", "receipt-installed-windows"], ["mcp-registry-version", "receipt-mcp-version"], ["merge-exact-sha", "receipt-merge-sha"],
+  ["npm-integrity", "receipt-npm-integrity"], ["npm-provenance", "receipt-npm-provenance"], ["tag-immutable-ref", "receipt-tag-ref"],
+];
+const releaseDigest = (character: string) => `sha256:${character.repeat(64)}`;
+const releaseCommit = (character: string) => character.repeat(40);
+const spkiBase64 = (key: KeyObject) => key.export({ format: "der", type: "spki" }).toString("base64");
+const spkiDigest = (key: KeyObject) => `sha256:${createHash("sha256").update(key.export({ format: "der", type: "spki" })).digest("hex")}`;
 
 export interface ReleaseServeFixture {
   readonly root: string;
@@ -20,8 +45,21 @@ export interface ReleaseServeFixture {
   readonly runnerConfigFile: string;
   readonly configBody: Record<string, unknown>;
   readonly runnerConfigBody: Record<string, unknown>;
+  /** `<authorizationDir>/<handle>.json` — a bundle the release verifier ACCEPTS under
+   * `runnerConfigBody.releaseAuthority` at `authorizationNow`. */
+  readonly authorizationHandle: string;
+  /** Same shapes, every artifact re-signed by a foreign key. Signature verification must refuse. */
+  readonly wrongSignerHandle: string;
+  readonly authorizationDir: string;
+  readonly authorizationBundleBody: Record<string, unknown>;
+  /** The signed authorization bundle's digest — the identity the verifier brands. */
+  readonly authorizationDigest: string;
+  /** A verification clock inside the authorization's exact 12-hour validity window. */
+  readonly authorizationNow: Date;
   /** Writes a sibling config file so relative paths resolve identically. */
   writeConfig(name: string, body: Record<string, unknown>): Promise<string>;
+  /** Writes an arbitrary bundle body at `<authorizationDir>/<handle>.json` for refusal cases. */
+  writeAuthorizationBundle(handle: string, body: unknown): Promise<string>;
 }
 
 /** A real signed four-definition GitHub release deployment plus the operator-owned runner config
@@ -123,6 +161,88 @@ export async function releaseServeFixture(title = "Governed production release")
   await writeFile(journalKeyFile, journalKeys.privateKey.export({ type: "pkcs8", format: "pem" }), { mode: 0o600 });
   await writeFile(evidenceKeyFile, evidenceKeys.privateKey.export({ type: "pkcs8", format: "pem" }), { mode: 0o600 });
 
+  // One REAL signed authorization bundle set, plus a wrong-signer twin. Everything the resolver
+  // reads at `<authorizationDir>/<handle>.json` is produced here by the production signing helpers.
+  const laneKeys = new Map(LANE_SIGNERS.map(([lane, laneSignerId]) => [lane, { signerId: laneSignerId, pair: generateKeyPairSync("ed25519") }]));
+  const graphMakerKeys = generateKeyPairSync("ed25519");
+  const foreignAuthorityKeys = generateKeyPairSync("ed25519");
+  const evidenceVerifierBindings = LANE_SIGNERS.map(([lane, laneSignerId]) => ({ lane, publicKeySpkiDigest: spkiDigest(laneKeys.get(lane)!.pair.publicKey), signerId: laneSignerId }));
+  const receiptGraphMakerBinding = { publicKeySpkiDigest: spkiDigest(graphMakerKeys.publicKey), signerId: RELEASE_GRAPH_MAKER_SIGNER_ID };
+
+  const laneEvidence = (lane: ReleaseEvidenceLaneV1, overrides: Partial<ReleaseVerifierEvidenceV1>) => {
+    const trusted = laneKeys.get(lane)!;
+    return {
+      evidence: createSignedReleaseVerifierEvidenceV1({
+        v: "reelier.release-verifier-evidence/v1", authorizationBundleDigest: null, candidateCommit: null, count: null, freshUntil: null,
+        lane, observation: "workflow-run", observedAt: AUTHORIZATION_OBSERVED_AT, resultValue: null, status: "verified",
+        subjectDigest: releaseDigest("f"), workflowDigest: null, workflowPath: null, ...overrides,
+      }, { signerId: trusted.signerId, privateKey: trusted.pair.privateKey }),
+      verifier: { publicKeySpkiBase64: spkiBase64(trusted.pair.publicKey), signerId: trusted.signerId },
+    };
+  };
+
+  const authorizationBundle = (privateKey: KeyObject): Record<string, unknown> => {
+    const signer = { signerId: RELEASE_AUTHORITY_SIGNER_ID, privateKey };
+    const files = [
+      { blobSha: releaseCommit("b"), contentDigest: releaseDigest("b"), mode: "100644" as const, path: "CHANGELOG.md" },
+      { blobSha: releaseCommit("c"), contentDigest: releaseDigest("c"), mode: "100644" as const, path: "src/cli.ts" },
+      { blobSha: releaseCommit("d"), contentDigest: releaseDigest("d"), mode: "100644" as const, path: "test/cli-subcommand-help.test.ts" },
+    ];
+    const candidateTreeDigest = authorityDigest({ v: "reelier.release-candidate-tree/v1", files });
+    const workflowCommitments = [
+      { digest: releaseDigest("3"), path: ".github/workflows/ci.yml" }, { digest: releaseDigest("4"), path: ".github/workflows/docker-publish.yml" },
+      { digest: releaseDigest("5"), path: ".github/workflows/mcp-publish.yml" }, { digest: releaseDigest("a"), path: ".github/workflows/npm-publish.yml" },
+    ];
+    const quality = { coverageEvidenceDigest: releaseDigest("6"), coverageStatus: "non-regressed" as const, fullTestEvidenceDigest: releaseDigest("7"), fullTestsStatus: "verified" as const, headCommit: releaseCommit("a"), mutationEvidenceDigest: releaseDigest("8"), mutationScoreBasisPoints: 9_137 };
+    const operationPlan = createSignedReleaseOperationPlanV1({
+      v: "reelier.release-operation-plan/v1", baseCommit: RELEASE_BASE_COMMIT, baseTreeSha: releaseCommit("b"), candidateBranch: "reelier/release/0.32.1", candidateTreeDigest,
+      commit: { author: { date: "2026-08-18T05:00:00.000Z", email: "release@seldonframe.com", name: "SeldonFrame Release" }, committer: { date: "2026-08-18T05:00:00.000Z", email: "release@seldonframe.com", name: "SeldonFrame Release" }, message: "release: v0.32.1", parentSha: RELEASE_BASE_COMMIT },
+      destinationBranch: "main", expectedCommitSha: releaseCommit("a"), expectedTreeSha: releaseCommit("e"), files,
+      npmPreflight: { packageName: "reelier", version: "0.32.1", versionMustBeAbsent: true },
+      pullRequest: { base: "main", body: "Governed release v0.32.1", draft: true, head: "reelier/release/0.32.1", readyForReview: true, title: "Release v0.32.1" },
+      repository: "seldonframe/reelier", requiredChecks: ["coverage", "full-tests", "mutation"],
+      squash: { commitMessage: "release: v0.32.1", commitTitle: "Release v0.32.1" }, tag: "v0.32.1", workflowCommitments,
+    } as never, signer);
+    const candidateManifest = createSignedStagedCandidateManifestV1({
+      v: "reelier.staged-candidate-manifest/v1", baseCommit: RELEASE_BASE_COMMIT, branch: "reelier/release/0.32.1", candidateCommit: releaseCommit("a"), candidateTreeDigest,
+      changedBytes: 4_096, changedPaths: ["CHANGELOG.md", "src/cli.ts", "test/cli-subcommand-help.test.ts"], destinationBranch: "main", qualityEvidence: quality,
+      packageName: "reelier", packageVersion: "0.32.1", packedTarballDigest: releaseDigest("2"), repository: "seldonframe/reelier", tag: "v0.32.1", workflowCommitments,
+    }, signer);
+    const policy = createSignedReleasePolicyV1({
+      v: "reelier.release-policy/v1", allowedPaths: ["CHANGELOG.md", "src/cli.ts", "test/cli-subcommand-help.test.ts"], destinations: ["ghcr", "mcp-registry", "npm"],
+      effectAllocations: ["candidate-branch", "draft-pr", "exact-sha-merge", "non-force-tag"], expirySeconds: 43_200,
+      forbiddenChangeClasses: ["authority-contract", "credential", "dependency", "generated-contract", "lockfile", "policy", "release-script", "workflow"],
+      maxChangedBytes: 65_536, maxChangedFiles: 3,
+    }, signer);
+    const authorization = createSignedReleaseAuthorizationBundleV1({
+      v: "reelier.release-authorization-bundle/v1", authorityCellDigest: releaseDigest("9"),
+      effectAllocations: [
+        { allocationDigest: releaseDigest("a"), allocationId: "release-candidate-branch-01", effect: "candidate-branch", maxEffects: 1 },
+        { allocationDigest: releaseDigest("b"), allocationId: "release-draft-pr-01", effect: "draft-pr", maxEffects: 1 },
+        { allocationDigest: releaseDigest("c"), allocationId: "release-exact-sha-merge-01", effect: "exact-sha-merge", maxEffects: 1 },
+        { allocationDigest: releaseDigest("d"), allocationId: "release-non-force-tag-01", effect: "non-force-tag", maxEffects: 1 },
+      ],
+      evidenceVerifierBindings, expiresAt: AUTHORIZATION_EXPIRES_AT, issuedAt: AUTHORIZATION_ISSUED_AT, jobCardDigest: releaseDigest("e"), missionDigest: releaseDigest("f"),
+      operationPlanDigest: operationPlan.digest, packDigest: releaseDigest("0"), policyDigest: policy.digest, receiptGraphMakerBinding,
+      rootGrantDigest: releaseDigest("1"), stagedCandidateManifestDigest: candidateManifest.digest, taskDigest: releaseDigest("2"),
+    }, signer);
+    const evidence = [
+      laneEvidence("ci-coverage", { candidateCommit: releaseCommit("a"), resultValue: 1, subjectDigest: quality.coverageEvidenceDigest, workflowDigest: workflowCommitments[0]!.digest, workflowPath: workflowCommitments[0]!.path as ReleaseVerifierEvidenceV1["workflowPath"] }),
+      laneEvidence("ci-full-tests", { candidateCommit: releaseCommit("a"), resultValue: 1, subjectDigest: quality.fullTestEvidenceDigest, workflowDigest: workflowCommitments[0]!.digest, workflowPath: workflowCommitments[0]!.path as ReleaseVerifierEvidenceV1["workflowPath"] }),
+      laneEvidence("ci-mutation", { candidateCommit: releaseCommit("a"), resultValue: quality.mutationScoreBasisPoints, subjectDigest: quality.mutationEvidenceDigest, workflowDigest: workflowCommitments[0]!.digest, workflowPath: workflowCommitments[0]!.path as ReleaseVerifierEvidenceV1["workflowPath"] }),
+    ];
+    return { authorization, candidateManifest, operationPlan, policy, evidence, fileContents: [] };
+  };
+
+  const writeAuthorizationBundle = async (handle: string, body: unknown): Promise<string> => {
+    const file = path.join(authorizationDir, `${handle}.json`);
+    await writeFile(file, `${JSON.stringify(body)}\n`, { mode: 0o600 });
+    return file;
+  };
+  const authorizationBundleBody = authorizationBundle(releaseAuthorityKeys.privateKey);
+  await writeAuthorizationBundle(AUTHORIZATION_HANDLE, authorizationBundleBody);
+  await writeAuthorizationBundle(WRONG_SIGNER_HANDLE, authorizationBundle(foreignAuthorityKeys.privateKey));
+
   const runnerConfigBody = {
     v: "reelier.github-release-runner-config/v1",
     rootDir: path.join(runnerRoot, "state"),
@@ -130,7 +250,7 @@ export async function releaseServeFixture(title = "Governed production release")
     journalKeyFile,
     evidenceSignerId: "release-provider-verifier",
     evidenceKeyFile,
-    releaseAuthority: { signerId: "release-authority-2026", publicKeySpkiBase64: releaseAuthorityKeys.publicKey.export({ type: "spki", format: "der" }).toString("base64") },
+    releaseAuthority: { signerId: RELEASE_AUTHORITY_SIGNER_ID, publicKeySpkiBase64: spkiBase64(releaseAuthorityKeys.publicKey) },
     authorizationDir,
     provider: { kind: "loopback-fixture", fixtureDir },
   };
@@ -149,5 +269,10 @@ export async function releaseServeFixture(title = "Governed production release")
     return file;
   };
   const configFile = await writeConfig("authority.yml", configBody);
-  return Object.freeze({ root, configFile, runnerConfigFile, configBody, runnerConfigBody, writeConfig });
+  return Object.freeze({
+    root, configFile, runnerConfigFile, configBody, runnerConfigBody, writeConfig,
+    authorizationHandle: AUTHORIZATION_HANDLE, wrongSignerHandle: WRONG_SIGNER_HANDLE, authorizationDir, authorizationBundleBody,
+    authorizationDigest: (authorizationBundleBody.authorization as Readonly<{ digest: string }>).digest,
+    authorizationNow: AUTHORIZATION_NOW, writeAuthorizationBundle,
+  });
 }

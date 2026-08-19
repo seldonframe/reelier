@@ -1,13 +1,16 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { access, mkdtemp, readFile, rm } from "node:fs/promises";
+import { access, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { generateKeyPairSync } from "node:crypto";
 import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { __testSetAuthorityServeRuntime, composeAuthorityServeHost, parseAuthorityServeMode, runAuthorityCommand, type AuthorityServeHostCompositionDependencies } from "../../src/authority/cli.js";
 import { validateAuthorityHostConfig } from "../../src/authority/host/config.js";
 import { __testSetAuthorityCellHostPlatform } from "../../src/authority/host/platform.js";
-import { createGitHubReleaseRunnerFromOperatorConfig, parseGitHubReleaseRunnerOperatorConfig } from "../../src/authority/host/github-release-runner-config.js";
+import { createGitHubReleaseRunnerFromOperatorConfig, createReleaseAuthorizationResolver, parseGitHubReleaseRunnerOperatorConfig } from "../../src/authority/host/github-release-runner-config.js";
+import { assertGitHubReleaseRunnerCapability } from "../../src/authority/host/github-release-runner.js";
+import { assertVerifiedReleaseAuthorizationV1 } from "../../src/authority/release-contracts.js";
 import { composeAuthorityServeStdioRuntime } from "../../src/authority/host/stdio-context.js";
 import { createGitHubReleaseAuthorityRuntime, createLocalAuthorityRuntime, createStdioBoundLocalAuthorityRuntime } from "../../src/authority/host/local.js";
 import { createAuthorityHostServer } from "../../src/authority/host/server.js";
@@ -66,18 +69,38 @@ test("authority serve refuses ambiguous transports, ports, and bind hosts", () =
   assert.throws(() => parseAuthorityServeMode({ transport: "stdio", port: "8080" }), /stdio/);
 });
 
-test("the release runner operator config parser is closed and absolute", () => {
-  const valid = {
+/** A REAL canonical ed25519 SPKI. The parser now resolves it with `createPublicKey`, so a
+ * placeholder like "AA==" is no longer a usable positive fixture — it is a negative case below. */
+const operatorSpkiBase64 = generateKeyPairSync("ed25519").publicKey.export({ format: "der", type: "spki" }).toString("base64");
+
+function validRunnerConfig() {
+  return {
     v: "reelier.github-release-runner-config/v1",
     rootDir: path.resolve("/data/runner"),
     journalSignerId: "release-journal-2026",
     journalKeyFile: path.resolve("/data/keys/journal.pem"),
     evidenceSignerId: "release-provider-verifier",
     evidenceKeyFile: path.resolve("/data/keys/evidence.pem"),
-    releaseAuthority: { signerId: "release-authority-2026", publicKeySpkiBase64: "AA==" },
+    releaseAuthority: { signerId: "release-authority-2026", publicKeySpkiBase64: operatorSpkiBase64 },
     authorizationDir: path.resolve("/data/authorizations"),
     provider: { kind: "loopback-fixture", fixtureDir: path.resolve("/data/fixtures") },
   };
+}
+
+/** Every entry the walk creates, relative to `root`, sorted. Directories included. */
+async function listTree(root: string, prefix = ""): Promise<string[]> {
+  const entries = await readdir(path.join(root, prefix), { withFileTypes: true });
+  const names: string[] = [];
+  for (const entry of entries) {
+    const relative = path.join(prefix, entry.name);
+    names.push(relative);
+    if (entry.isDirectory()) names.push(...await listTree(root, relative));
+  }
+  return names.sort();
+}
+
+test("the release runner operator config parser is closed and absolute", () => {
+  const valid = validRunnerConfig();
   assert.deepEqual(parseGitHubReleaseRunnerOperatorConfig(valid), valid);
   assert.throws(() => parseGitHubReleaseRunnerOperatorConfig({ ...valid, extra: true }), /closed/i);
   assert.throws(() => parseGitHubReleaseRunnerOperatorConfig({ ...valid, v: "reelier.github-release-runner-config/v2" }), /closed/i);
@@ -89,9 +112,59 @@ test("the release runner operator config parser is closed and absolute", () => {
   assert.throws(() => parseGitHubReleaseRunnerOperatorConfig({ ...valid, provider: { kind: "github-https", fixtureDir: valid.provider.fixtureDir } }), /provider/i);
   assert.throws(() => parseGitHubReleaseRunnerOperatorConfig({ ...valid, journalSignerId: "X" }), /signer/i);
   assert.throws(() => parseGitHubReleaseRunnerOperatorConfig({ ...valid, evidenceSignerId: "X" }), /signer/i);
-  assert.throws(() => parseGitHubReleaseRunnerOperatorConfig({ ...valid, releaseAuthority: { signerId: "X", publicKeySpkiBase64: "AA==" } }), /signer/i);
+  assert.throws(() => parseGitHubReleaseRunnerOperatorConfig({ ...valid, releaseAuthority: { signerId: "X", publicKeySpkiBase64: operatorSpkiBase64 } }), /signer/i);
   // Credential material never appears inline: only PEM key FILES and a PUBLIC SPKI reference.
   assert.throws(() => parseGitHubReleaseRunnerOperatorConfig({ ...valid, journalPrivateKeyPem: "-----BEGIN PRIVATE KEY-----" }), /closed/i);
+});
+
+test("the release runner provider is a closed discriminated union with per-kind key sets", () => {
+  const valid = validRunnerConfig();
+  const fixtureDir = valid.provider.fixtureDir;
+  // The loopback arm's key set is its OWN, so a field belonging to no arm is refused even when the
+  // discriminant is recognized — this is what keeps Lane B's live arm from widening THIS arm.
+  assert.throws(() => parseGitHubReleaseRunnerOperatorConfig({ ...valid, provider: { kind: "loopback-fixture", fixtureDir, tokenRef: "env:GITHUB_TOKEN" } }), /loopback-fixture provider is not a closed record/i);
+  assert.throws(() => parseGitHubReleaseRunnerOperatorConfig({ ...valid, provider: { kind: "loopback-fixture" } }), /loopback-fixture provider is not a closed record/i);
+  // The discriminant is read BEFORE the record is closed, so an unrecognized kind reports the kind
+  // rather than the loopback arm's key set.
+  assert.throws(() => parseGitHubReleaseRunnerOperatorConfig({ ...valid, provider: { kind: "github-https", tokenRef: "env:GITHUB_TOKEN" } }), /provider kind must be one of: loopback-fixture/);
+  for (const provider of [null, [], "loopback-fixture", { fixtureDir }, Object.assign(Object.create(null), { kind: "loopback-fixture", fixtureDir })]) {
+    assert.throws(() => parseGitHubReleaseRunnerOperatorConfig({ ...valid, provider }), /release runner provider/i, JSON.stringify(provider));
+  }
+});
+
+test("the release runner operator config refuses every shape that is not an exact closed record", () => {
+  const valid = validRunnerConfig();
+  // A MISSING key is the same refusal as an extra one — exact set equality in both directions.
+  for (const key of Object.keys(valid)) {
+    const { [key]: _removed, ...missing } = valid as Record<string, unknown>;
+    assert.throws(() => parseGitHubReleaseRunnerOperatorConfig(missing), /operator config is not a closed record/i, key);
+  }
+  const { signerId: _signerId, ...missingAuthoritySigner } = valid.releaseAuthority;
+  assert.throws(() => parseGitHubReleaseRunnerOperatorConfig({ ...valid, releaseAuthority: missingAuthoritySigner }), /authorization authority is not a closed record/i);
+  // JSON.parse materializes "__proto__" as an OWN enumerable key, so it is a refused key, never a
+  // silently-ignored one — and it never reaches Object.prototype.
+  assert.throws(() => parseGitHubReleaseRunnerOperatorConfig(JSON.parse('{"__proto__":{}}')), /operator config is not a closed record/i);
+  assert.throws(() => parseGitHubReleaseRunnerOperatorConfig({ ...valid, releaseAuthority: JSON.parse('{"__proto__":{}}') }), /authorization authority is not a closed record/i);
+  assert.equal(Object.prototype.hasOwnProperty.call(Object.prototype, "polluted"), false);
+  const shapes = [["null", null], ["undefined", undefined], ["empty array", []], ["array of configs", [valid]], ["string", "config"], ["number", 7], ["boolean", true], ["null-prototype record", Object.assign(Object.create(null), valid)]] as const;
+  for (const [label, value] of shapes) assert.throws(() => parseGitHubReleaseRunnerOperatorConfig(value), /operator config is not a closed record/i, label);
+});
+
+test("the release authority public SPKI is resolved at parse time, not at first dispatch", () => {
+  const valid = validRunnerConfig();
+  const rsaSpki = generateKeyPairSync("rsa", { modulusLength: 2048 }).publicKey.export({ format: "der", type: "spki" }).toString("base64");
+  for (const [label, publicKeySpkiBase64] of [
+    ["empty", ""],
+    ["one zero byte", "AA=="],
+    // Decodes to the exact same DER, but is not the canonical encoding of it.
+    ["unpadded base64", operatorSpkiBase64.replace(/=+$/, "")],
+    ["not base64 at all", "-----BEGIN PUBLIC KEY-----"],
+    ["truncated DER", operatorSpkiBase64.slice(0, 8)],
+    ["wrong algorithm", rsaSpki],
+  ] as const) {
+    assert.throws(() => parseGitHubReleaseRunnerOperatorConfig({ ...valid, releaseAuthority: { ...valid.releaseAuthority, publicKeySpkiBase64 } }), /public SPKI/i, label);
+  }
+  assert.equal(parseGitHubReleaseRunnerOperatorConfig(valid).releaseAuthority.publicKeySpkiBase64, operatorSpkiBase64);
 });
 
 test("authority serve routes the explicit host-owned release runner to the production release factory", async () => {
@@ -127,10 +200,12 @@ test("authority serve refuses the four reviewed release definitions without a co
   const fixture = await releaseServeFixture();
   try {
     let started = 0;
+    const before = await listTree(fixture.root);
     const result = await serveThroughDispatch(["authority", "serve", "--path", fixture.configFile, "--transport", "http", "--host", "127.0.0.1", "--port", "8080"], () => { started += 1; });
     assert.equal(result.code, 1);
     assert.equal(started, 0, "a refused start must never reach the host transport");
     assert.deepEqual(result.factoryCalls, [], "refusal precedes every runtime factory");
+    assert.deepEqual(await listTree(fixture.root), before, "refusal precedes every filesystem side effect");
     const refusal = result.stderr.map(line => { try { return JSON.parse(line); } catch { return undefined; } }).find(value => value?.status === "refused");
     assert.equal(refusal?.reasonCode, "release-runner-config-required");
   } finally { await rm(fixture.root, { recursive: true, force: true }); }
@@ -173,14 +248,105 @@ test("authority serve starts the authenticated HTTP host with the constructed re
   } finally { await rm(fixture.root, { recursive: true, force: true }); }
 });
 
-test("a config-constructed release runner still refuses its public surface", async () => {
+test("a config-constructed release runner is really built from the operator config, and still refuses its public surface", async () => {
   const fixture = await releaseServeFixture();
   const restore = __testSetAuthorityCellHostPlatform("linux");
   try {
-    const runner = await createGitHubReleaseRunnerFromOperatorConfig(parseGitHubReleaseRunnerOperatorConfig(JSON.parse(await readFile(fixture.runnerConfigFile, "utf8"))));
-    await assert.rejects(() => runner.run({ alias: "github_release_candidate_publish_v1", allocationId: "release-candidate-branch-01", authorizationHandle: "h", requestId: "r", semanticsDigest: `sha256:${"1".repeat(64)}` }), /prepared-dispatch capability/);
+    const config = parseGitHubReleaseRunnerOperatorConfig(JSON.parse(await readFile(fixture.runnerConfigFile, "utf8")));
+    const runner = await createGitHubReleaseRunnerFromOperatorConfig(config, () => fixture.authorizationNow);
+    // The two refusals below are the ONLY thing this test used to assert, and an inert stub
+    // (`{ run: reject, recover: reject }`) satisfies both. These three assertions do not:
+    //   1. the WeakMap brand is set only by `createGitHubReleaseRunner` in this process;
+    //   2. the journal root is the config's `rootDir`, so the config reached the constructor;
+    //   3. an unreadable `journalKeyFile` refuses, so the config's key FILES are really opened.
+    assertGitHubReleaseRunnerCapability(runner);
+    await access(path.join(config.rootDir, "journal"));
+    await assert.rejects(() => createGitHubReleaseRunnerFromOperatorConfig({ ...config, journalKeyFile: path.join(config.rootDir, "absent.pem") }), /ENOENT|no such file/i);
+    // The authorization resolver the constructed runner is wired to is pinned end to end by
+    // "the release authorization resolver verifies a real signed bundle end to end" below.
+    await assert.rejects(() => runner.run({ alias: "github_release_candidate_publish_v1", allocationId: "release-candidate-branch-01", authorizationHandle: fixture.authorizationHandle, requestId: "r", semanticsDigest: `sha256:${"1".repeat(64)}` }), /prepared-dispatch capability/);
     await assert.rejects(() => runner.recover(), /reconciliation capability/);
   } finally { restore(); await rm(fixture.root, { recursive: true, force: true }); }
+});
+
+test("the release runner constructor re-parses its argument instead of trusting a pre-built object", async () => {
+  const fixture = await releaseServeFixture();
+  const restore = __testSetAuthorityCellHostPlatform("linux");
+  try {
+    const config = parseGitHubReleaseRunnerOperatorConfig(JSON.parse(await readFile(fixture.runnerConfigFile, "utf8")));
+    // Every field is valid and every key file is readable, so the ONLY thing that can refuse this
+    // is the constructor re-running the closed parse on its own argument. Drop that re-parse and a
+    // config carrying an unreviewed extra field constructs a live runner.
+    await assert.rejects(() => createGitHubReleaseRunnerFromOperatorConfig({ ...config, extra: true } as never), /operator config is not a closed record/i);
+    await assert.rejects(() => createGitHubReleaseRunnerFromOperatorConfig({ ...config, rootDir: "relative/runner" }), /absolute/i);
+    await assert.rejects(() => createGitHubReleaseRunnerFromOperatorConfig({ ...config, releaseAuthority: { ...config.releaseAuthority, publicKeySpkiBase64: "AA==" } }), /public SPKI/i);
+  } finally { restore(); await rm(fixture.root, { recursive: true, force: true }); }
+});
+
+test("the release authorization resolver verifies a real signed bundle end to end", async () => {
+  const fixture = await releaseServeFixture();
+  try {
+    const config = parseGitHubReleaseRunnerOperatorConfig(JSON.parse(await readFile(fixture.runnerConfigFile, "utf8")));
+    const resolve = createReleaseAuthorizationResolver(config, () => fixture.authorizationNow);
+    const resolved = await resolve(fixture.authorizationHandle);
+    // The brand is granted only by `verifyReleaseAuthorizationBundleV1` and cannot be
+    // deserialized, so reaching it proves the four signed artifacts, the operator's verifier
+    // descriptor, the clock, and the quality-evidence array all arrived in their correct slots.
+    assertVerifiedReleaseAuthorizationV1(resolved.authorization);
+    assert.equal(resolved.authorization.authorization.digest, fixture.authorizationDigest);
+    assert.equal(resolved.authorization.authorization.signerId, config.releaseAuthority.signerId);
+    assert.equal(resolved.authorization.authorization.value.operationPlanDigest, resolved.authorization.operationPlan.digest);
+    assert.equal(resolved.authorization.authorization.value.policyDigest, resolved.authorization.policy.digest);
+    assert.equal(resolved.authorization.authorization.value.stagedCandidateManifestDigest, resolved.authorization.candidateManifest.digest);
+    assert.deepEqual(resolved.fileContents, []);
+    assert.equal(Object.isFrozen(resolved), true);
+
+    const body = fixture.authorizationBundleBody;
+    // …and these are the falsifiers for "arrived in their correct slots".
+    await fixture.writeAuthorizationBundle("swapped-plan-policy", { ...body, operationPlan: body.policy, policy: body.operationPlan });
+    await assert.rejects(() => resolve("swapped-plan-policy"), /release/i);
+    await fixture.writeAuthorizationBundle("dropped-evidence", { ...body, evidence: [] });
+    await assert.rejects(() => resolve("dropped-evidence"), /evidence/i);
+  } finally { await rm(fixture.root, { recursive: true, force: true }); }
+});
+
+test("the release authorization resolver refuses a wrong signer, an unclosed bundle, and an escaping handle", async () => {
+  const fixture = await releaseServeFixture();
+  try {
+    const config = parseGitHubReleaseRunnerOperatorConfig(JSON.parse(await readFile(fixture.runnerConfigFile, "utf8")));
+    const resolve = createReleaseAuthorizationResolver(config, () => fixture.authorizationNow);
+    // Same artifact shapes, every one re-signed by a foreign key under the SAME signerId.
+    await assert.rejects(() => resolve(fixture.wrongSignerHandle), /signature is invalid/i);
+    await fixture.writeAuthorizationBundle("extra-key", { ...fixture.authorizationBundleBody, extra: true });
+    await assert.rejects(() => resolve("extra-key"), /authorization bundle is not a closed record/i);
+    const { fileContents: _fileContents, ...missingFileContents } = fixture.authorizationBundleBody;
+    await fixture.writeAuthorizationBundle("missing-key", missingFileContents);
+    await assert.rejects(() => resolve("missing-key"), /authorization bundle is not a closed record/i);
+    // The handle is checked before it ever reaches `path.join`, so a real readable file one
+    // directory up is still unreachable.
+    await writeFile(path.join(fixture.authorizationDir, "..", "escape.json"), `${JSON.stringify(fixture.authorizationBundleBody)}\n`);
+    await assert.rejects(() => resolve("../escape"), /authorization handle is invalid/i);
+    for (const handle of ["", ".", "..", "a/b", "a\\b", "-leading", "x".repeat(129)]) {
+      await assert.rejects(() => resolve(handle), /authorization handle is invalid/i, JSON.stringify(handle));
+    }
+    // An expired-window clock refuses even the genuine bundle: the verifier's clock is the config's.
+    await assert.rejects(() => createReleaseAuthorizationResolver(config, () => new Date("2027-01-01T00:00:00.000Z"))(fixture.authorizationHandle), /expired/i);
+  } finally { await rm(fixture.root, { recursive: true, force: true }); }
+});
+
+test("a pre-side-effect release-runner refusal creates no keys, journals, or state directories", async () => {
+  const fixture = await releaseServeFixture();
+  try {
+    const before = await listTree(fixture.root);
+    await assert.rejects(() => serveThroughDispatch(["authority", "serve", "--path", fixture.configFile, "--release-runner-config", fixture.runnerConfigFile]), /HTTP transport/);
+    // The transport and the flag are both known before anything is constructed. A refusal that has
+    // already minted artifact keys and a runner journal leaves the operator a half-initialized Cell.
+    assert.deepEqual(await listTree(fixture.root), before, "the stdio+runner refusal must precede every filesystem side effect");
+    const widened = await fixture.writeConfig("authority-widened.yml", { ...fixture.configBody, definitions: ["gmail_reply_send_v1"] });
+    const afterWiden = await listTree(fixture.root);
+    await assert.rejects(() => serveThroughDispatch(["authority", "serve", "--path", widened, "--release-runner-config", fixture.runnerConfigFile]), /HTTP transport/);
+    assert.deepEqual(await listTree(fixture.root), afterWiden, "the refusal does not depend on the definition set");
+  } finally { await rm(fixture.root, { recursive: true, force: true }); }
 });
 
 test("the Fly Authority Cell starts the authenticated HTTP transport with durable state", async () => {

@@ -282,16 +282,22 @@ async function authorityServe(args: Readonly<{ opts: Record<string, string> }>):
   assertLinuxAuthorityCellHost();
   const serveMode = parseAuthorityServeMode(args.opts);
   const loaded = await loadAuthorityHostConfig(args.opts.path ?? "authority/authority.yml");
-  // The release runner is a host-owned capability constructed in this process from operator-owned
-  // key files. It is never an agent-reachable option and never travels through authority.yml.
-  const releaseRunnerConfig = args.opts["release-runner-config"]
-    ? parseGitHubReleaseRunnerOperatorConfig(JSON.parse(await readFile(path.resolve(args.opts["release-runner-config"]), "utf8")))
-    : undefined;
-  const githubReleaseRunner = releaseRunnerConfig ? await createGitHubReleaseRunnerFromOperatorConfig(releaseRunnerConfig) : undefined;
-  if (!githubReleaseRunner && authorityDigest([...loaded.config.definitions].sort()) === authorityDigest([...githubReleaseAliases].sort())) {
+  // EVERY release-runner refusal decidable from (transport, flag presence, definition set) is
+  // decided HERE — before the runner is constructed and before any key, journal, or state
+  // directory is created. A refusal that has already written artifact keys and a runner journal is
+  // a refusal that left the operator a half-initialized Cell to clean up.
+  const releaseRunnerConfigPath = args.opts["release-runner-config"];
+  if (releaseRunnerConfigPath && serveMode.transport === "stdio") throw new TypeError("the release runner requires the authenticated HTTP transport");
+  if (!releaseRunnerConfigPath && authorityDigest([...loaded.config.definitions].sort()) === authorityDigest([...githubReleaseAliases].sort())) {
     console.error(JSON.stringify({ status: "refused", reasonCode: "release-runner-config-required", message: "the four reviewed GitHub release definitions refuse permanently (dedicated-release-runner-absent) without --release-runner-config" }));
     return 1;
   }
+  // The release runner is a host-owned capability constructed in this process from operator-owned
+  // key files. It is never an agent-reachable option and never travels through authority.yml.
+  const releaseRunnerConfig = releaseRunnerConfigPath
+    ? parseGitHubReleaseRunnerOperatorConfig(JSON.parse(await readFile(path.resolve(releaseRunnerConfigPath), "utf8")))
+    : undefined;
+  const githubReleaseRunner = releaseRunnerConfig ? await createGitHubReleaseRunnerFromOperatorConfig(releaseRunnerConfig) : undefined;
   const artifactRoot = path.dirname(loaded.file);
   const artifactDataKey = await loadOrCreateArtifactKey(artifactRoot, "artifact-data.key");
   const artifactMasterKey = await loadOrCreateArtifactKey(artifactRoot, "artifact-master.key");

@@ -8,16 +8,29 @@ import { createGitHubReleaseRunner, type GitHubReleaseAuthorizationContextV1, ty
 const SIGNER_ID = /^[a-z0-9][a-z0-9._:-]{7,127}$/;
 const OPAQUE_HANDLE = /^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$/;
 
-/** Closed enum. Lane B widens it with the live `github-https` kind; an unrecognized kind is a
- * refusal, never a silent fallback to the fixture provider. */
+/** Closed DISCRIMINATED UNION of provider kinds, keyed on `kind`. Every kind carries its OWN key
+ * set, so a config for one kind can never carry another kind's fields.
+ *
+ * Lane B adds the live `github-https` provider as a NEW UNION ARM and touches exactly three
+ * places, none of which alters this arm:
+ *   1. `PROVIDER_KINDS` — append `"github-https"`.
+ *   2. `PROVIDER_KEYS_BY_KIND` — add the `github-https` key tuple (its own credential-reference
+ *      fields live HERE, inside the arm, never at the config top level).
+ *   3. `parseProvider` and `createReleaseProvider` — one new `case` each.
+ * An unrecognized kind is a refusal, never a silent fallback to the fixture provider. */
 const PROVIDER_KINDS = Object.freeze(["loopback-fixture"] as const);
+const PROVIDER_KEYS_BY_KIND = Object.freeze({ "loopback-fixture": Object.freeze(["kind", "fixtureDir"] as const) });
 const CONFIG_KEYS = Object.freeze(["v", "rootDir", "journalSignerId", "journalKeyFile", "evidenceSignerId", "evidenceKeyFile", "releaseAuthority", "authorizationDir", "provider"] as const);
 const AUTHORITY_KEYS = Object.freeze(["signerId", "publicKeySpkiBase64"] as const);
-const PROVIDER_KEYS = Object.freeze(["kind", "fixtureDir"] as const);
 const AUTHORIZATION_KEYS = Object.freeze(["authorization", "candidateManifest", "operationPlan", "policy", "evidence", "fileContents"] as const);
 const PROVIDER_METHODS = Object.freeze(["createBlob", "createTree", "createCommit", "getRef", "createRef", "getCommit", "findPullRequests", "createPullRequest", "markPullRequestReady", "getPullRequest", "getChecks", "mergePullRequest", "npmVersionExists", "readPackageManifest"] as const);
 
 export type GitHubReleaseRunnerProviderKindV1 = (typeof PROVIDER_KINDS)[number];
+
+/** The deterministic, credential-free, network-free arm. */
+export type GitHubReleaseRunnerLoopbackFixtureProviderConfigV1 = Readonly<{ kind: "loopback-fixture"; fixtureDir: string }>;
+/** Lane B's live arm joins this union; it does not widen the loopback arm. */
+export type GitHubReleaseRunnerProviderConfigV1 = GitHubReleaseRunnerLoopbackFixtureProviderConfigV1;
 
 /** Host-owned operator config for the four reviewed GitHub release Outcomes.
  *
@@ -33,16 +46,13 @@ export interface GitHubReleaseRunnerOperatorConfigV1 {
   readonly evidenceKeyFile: string;
   readonly releaseAuthority: Readonly<{ signerId: string; publicKeySpkiBase64: string }>;
   readonly authorizationDir: string;
-  readonly provider: Readonly<{ kind: GitHubReleaseRunnerProviderKindV1; fixtureDir: string }>;
+  readonly provider: GitHubReleaseRunnerProviderConfigV1;
 }
 
 export function parseGitHubReleaseRunnerOperatorConfig(value: unknown): GitHubReleaseRunnerOperatorConfigV1 {
   const raw = closedRecord(value, CONFIG_KEYS, "release runner operator config");
   if (raw.v !== "reelier.github-release-runner-config/v1") throw new TypeError("release runner operator config is not a closed reelier.github-release-runner-config/v1 record");
   const releaseAuthority = closedRecord(raw.releaseAuthority, AUTHORITY_KEYS, "release runner authorization authority");
-  const provider = closedRecord(raw.provider, PROVIDER_KEYS, "release runner provider");
-  if (typeof provider.kind !== "string" || !(PROVIDER_KINDS as readonly string[]).includes(provider.kind)) throw new TypeError(`release runner provider kind must be one of ${PROVIDER_KINDS.join(", ")}`);
-  if (typeof releaseAuthority.publicKeySpkiBase64 !== "string" || !releaseAuthority.publicKeySpkiBase64) throw new TypeError("release runner authorization authority public SPKI is required");
   return Object.freeze({
     v: "reelier.github-release-runner-config/v1",
     rootDir: absolutePath(raw.rootDir, "release runner root directory"),
@@ -50,10 +60,22 @@ export function parseGitHubReleaseRunnerOperatorConfig(value: unknown): GitHubRe
     journalKeyFile: absolutePath(raw.journalKeyFile, "release runner journal key file"),
     evidenceSignerId: signerId(raw.evidenceSignerId, "release runner evidence signer"),
     evidenceKeyFile: absolutePath(raw.evidenceKeyFile, "release runner evidence key file"),
-    releaseAuthority: Object.freeze({ signerId: signerId(releaseAuthority.signerId, "release authorization authority signer"), publicKeySpkiBase64: releaseAuthority.publicKeySpkiBase64 }),
+    releaseAuthority: Object.freeze({ signerId: signerId(releaseAuthority.signerId, "release authorization authority signer"), publicKeySpkiBase64: publicKeySpki(releaseAuthority.publicKeySpkiBase64, "release runner authorization authority") }),
     authorizationDir: absolutePath(raw.authorizationDir, "release runner authorization directory"),
-    provider: Object.freeze({ kind: provider.kind as GitHubReleaseRunnerProviderKindV1, fixtureDir: absolutePath(provider.fixtureDir, "release runner provider fixture directory") }),
+    provider: parseProvider(raw.provider),
   });
+}
+
+/** Reads the discriminant BEFORE closing the record, so each arm is closed on its own key set. */
+function parseProvider(value: unknown): GitHubReleaseRunnerProviderConfigV1 {
+  const kind = plainRecord(value, "release runner provider").kind;
+  if (typeof kind !== "string" || !(PROVIDER_KINDS as readonly string[]).includes(kind)) throw new TypeError(`release runner provider kind must be one of: ${PROVIDER_KINDS.join(", ")}`);
+  switch (kind as GitHubReleaseRunnerProviderKindV1) {
+    case "loopback-fixture": {
+      const provider = closedRecord(value, PROVIDER_KEYS_BY_KIND["loopback-fixture"], "release runner loopback-fixture provider");
+      return Object.freeze({ kind: "loopback-fixture", fixtureDir: absolutePath(provider.fixtureDir, "release runner provider fixture directory") });
+    }
+  }
 }
 
 /** Constructs the branded host-owned runner in process. The brand cannot be deserialized, so a
@@ -72,6 +94,14 @@ export async function createGitHubReleaseRunnerFromOperatorConfig(config: GitHub
   });
 }
 
+/** @internal The exact resolver the constructed runner is wired to — same private
+ * `resolveAuthorization`, same arguments. Exported so the verification trust boundary is directly
+ * testable end to end; deliberately absent from the public host barrel. */
+export function createReleaseAuthorizationResolver(config: GitHubReleaseRunnerOperatorConfigV1, now: () => Date = () => new Date()): (handle: string) => Promise<GitHubReleaseAuthorizationContextV1> {
+  const parsed = parseGitHubReleaseRunnerOperatorConfig(config);
+  return handle => resolveAuthorization(parsed, handle, now);
+}
+
 async function resolveAuthorization(config: GitHubReleaseRunnerOperatorConfigV1, handle: string, now: () => Date): Promise<GitHubReleaseAuthorizationContextV1> {
   if (typeof handle !== "string" || !OPAQUE_HANDLE.test(handle)) throw new TypeError("release authorization handle is invalid");
   const bundle = closedRecord(JSON.parse(await readFile(path.join(config.authorizationDir, `${handle}.json`), "utf8")), AUTHORIZATION_KEYS, "release authorization bundle");
@@ -84,9 +114,20 @@ async function resolveAuthorization(config: GitHubReleaseRunnerOperatorConfigV1,
   return Object.freeze({ authorization, fileContents: Object.freeze((bundle.fileContents ?? []) as readonly Readonly<{ path: string; bytesBase64: string }>[]) });
 }
 
-function createReleaseProvider(provider: GitHubReleaseRunnerOperatorConfigV1["provider"]): GitHubReleaseProviderV1 {
-  if (provider.kind !== "loopback-fixture") throw new TypeError(`release runner provider kind must be one of ${PROVIDER_KINDS.join(", ")}`);
-  return createLoopbackFixtureProvider(provider.fixtureDir);
+/** One `case` per union arm, and NO default.
+ *
+ * The removed default said "provider kind must be one of ${PROVIDER_KINDS.join(", ")}" on a value
+ * whose kind was already IN `PROVIDER_KINDS` — a message that contradicts itself the moment the
+ * tuple carries a kind this switch cannot build, which is exactly the state Lane B passes through.
+ * Deleting it is the fix, not rewording it: the scrutinee is the closed kind tuple, so adding
+ * `"github-https"` to `PROVIDER_KINDS` without adding a `case` here fails `tsc` ("not all code
+ * paths return a value") instead of shipping an unreachable branch that lies. Unknown kinds are
+ * already refused by `parseProvider`, which is the only producer of this argument. */
+function createReleaseProvider(provider: GitHubReleaseRunnerProviderConfigV1): GitHubReleaseProviderV1 {
+  const kind: GitHubReleaseRunnerProviderKindV1 = provider.kind;
+  switch (kind) {
+    case "loopback-fixture": return createLoopbackFixtureProvider(provider.fixtureDir);
+  }
 }
 
 /** Deterministic, credential-free, network-free provider. It is sufficient for startup and every
@@ -101,9 +142,20 @@ function createLoopbackFixtureProvider(fixtureDir: string): GitHubReleaseProvide
   return Object.freeze(Object.fromEntries(PROVIDER_METHODS.map(method => [method, () => call(method)])) as unknown as GitHubReleaseProviderV1);
 }
 
-function closedRecord(value: unknown, keys: readonly string[], label: string): Record<string, unknown> {
-  if (!value || typeof value !== "object" || Array.isArray(value) || Object.getPrototypeOf(value) !== Object.prototype || Object.keys(value as object).sort().join("\0") !== [...keys].sort().join("\0")) throw new TypeError(`${label} is not a closed record`);
+/** Refuses arrays, `null`, class instances, and `Object.create(null)` — but NOT an unexpected key
+ * set, which only `closedRecord` decides once the key set is known. */
+function plainRecord(value: unknown, label: string): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value) || Object.getPrototypeOf(value) !== Object.prototype) throw new TypeError(`${label} is not a closed record`);
   return value as Record<string, unknown>;
+}
+
+/** Exact key-set equality in BOTH directions: an extra key and a MISSING key are the same refusal.
+ * A JSON-parsed `"__proto__"` key is an own enumerable property, so it lands in `Object.keys` and
+ * is refused here rather than silently ignored. */
+function closedRecord(value: unknown, keys: readonly string[], label: string): Record<string, unknown> {
+  const record = plainRecord(value, label);
+  if (Object.keys(record).sort().join("\0") !== [...keys].sort().join("\0")) throw new TypeError(`${label} is not a closed record`);
+  return record;
 }
 
 function absolutePath(value: unknown, label: string): string {
@@ -113,5 +165,19 @@ function absolutePath(value: unknown, label: string): string {
 
 function signerId(value: unknown, label: string): string {
   if (typeof value !== "string" || !SIGNER_ID.test(value)) throw new TypeError(`${label} identity is invalid`);
+  return value;
+}
+
+/** The release verifier hard-requires a canonical ed25519 SPKI (`release-contracts.ts` —
+ * `parseReleaseContractVerifierInput`). Checking the SAME property here means a garbage or
+ * wrong-algorithm operator key refuses at STARTUP, not on the first authorization dispatch. */
+function publicKeySpki(value: unknown, label: string): string {
+  if (typeof value !== "string" || !value) throw new TypeError(`${label} public SPKI is required`);
+  const bytes = Buffer.from(value, "base64");
+  if (bytes.length === 0 || bytes.toString("base64") !== value) throw new TypeError(`${label} public SPKI is not canonical base64`);
+  try {
+    const key = createPublicKey({ key: bytes, format: "der", type: "spki" });
+    if (key.type !== "public" || key.asymmetricKeyType !== "ed25519" || !Buffer.from(key.export({ format: "der", type: "spki" })).equals(bytes)) throw new TypeError("noncanonical");
+  } catch { throw new TypeError(`${label} public SPKI is not a canonical ed25519 SPKI public key`); }
   return value;
 }
