@@ -64,6 +64,8 @@ Files touched:
 - `src/authority/host/github-release-evidence.ts`
 - `src/authority/host/index.ts`
 - `src/authority/host/local.ts`
+- `src/authority/host/prepared-dispatch.ts`
+- `src/authority/host/dispatch.ts`
 - `src/authority/pack.ts`
 - `src/packs/github-release/manifest.ts`
 - `src/packs/github-release/source.ts`
@@ -75,6 +77,8 @@ Files touched:
 - `src/packs/semantic.ts`
 - `test/authority/github-release-runner.test.ts`
 - `test/authority/local-multi-definition-jobs.test.ts`
+- `test/authority/prepared-dispatch.test.ts`
+- `test/authority/dispatch-coordinator.test.ts`
 - `test/authority/release-contracts.test.ts`
 - `test/authority/certification-runner-abi-v2.test.ts`
 - `test/packs/github-release.test.ts`
