@@ -79,6 +79,7 @@ export async function createGitHubReleaseRunner(input: Readonly<{ rootDir: strin
         const terminal = [...events].reverse().find(event => TERMINAL.has(event.phase));
         if (terminal) return Object.freeze({ status: "verified", phase: terminal.phase, evidenceDigest: String(terminal.data.evidenceDigest) });
         if (events.at(-1)?.phase === "expired-refused") throw new TypeError("release authorization expired after durable intent; provider dispatch is refused");
+        if (events.at(-1)?.phase === "provider-refused") throw new TypeError("release provider definitive refusal is terminal for this request");
       } else {
         assertLive(authorization, input.now());
         if (effect === "candidate-branch") validateCandidate(context);
@@ -98,6 +99,10 @@ export async function createGitHubReleaseRunner(input: Readonly<{ rootDir: strin
         return await tag(request, authorization, events, journal, provider, input.evidenceSigner, input.now);
       } catch (error) {
         const latest = await journal.load(request.requestId);
+        if (error instanceof ProviderDefinitiveRefusal) {
+          if (latest.at(-1)?.phase !== "provider-refused") await journal.append(request.requestId, request.semanticsDigest, "provider-refused", { reasonDigest: authorityDigest({ reason: error.message }) });
+          throw new ReleaseRunFailure(`provider definitively refused release write: ${error.message}`, false, true);
+        }
         const effectPossible = latest.some(event => event.phase.endsWith("-intent") && event.phase !== "authorized");
         throw new ReleaseRunFailure(error instanceof Error ? error.message : "release runner failed", effectPossible, error instanceof TypeError);
       }
@@ -229,7 +234,7 @@ async function candidate(request: GitHubReleaseRunRequestV1, context: GitHubRele
     await assertPostIntentLive(journal, request, auth, now); await assertBaseRef(provider, plan, plan.baseCommit);
     const atWrite = parseRef(await provider.getRef({ repository: plan.repository, ref: refName }));
     if (atWrite && atWrite.sha !== plan.expectedCommitSha) throw new TypeError("candidate branch ref drifted immediately before provider write");
-    if (!atWrite) { await step(journal, request, "branch-dispatching", {}); await assertPostIntentLive(journal, request, auth, now); await assertBaseRef(provider, plan, plan.baseCommit); const finalRef = parseRef(await provider.getRef({ repository: plan.repository, ref: refName })); if (finalRef) throw new TypeError("candidate branch appeared immediately before provider write"); await assertPostIntentLive(journal, request, auth, now); try { parseSha(await provider.createRef({ repository: plan.repository, ref: refName, sha: plan.expectedCommitSha, force: false }), "created ref"); } catch { /* authoritative readback below */ } }
+    if (!atWrite) { await step(journal, request, "branch-dispatching", {}); await assertPostIntentLive(journal, request, auth, now); await assertBaseRef(provider, plan, plan.baseCommit); const finalRef = parseRef(await provider.getRef({ repository: plan.repository, ref: refName })); if (finalRef) throw new TypeError("candidate branch appeared immediately before provider write"); await assertPostIntentLive(journal, request, auth, now); await consequentialWrite(() => provider.createRef({ repository: plan.repository, ref: refName, sha: plan.expectedCommitSha, force: false }), raw => parseSha(raw, "created ref")); }
     existing = await safeRead(() => provider.getRef({ repository: plan.repository, ref: refName }), parseRef);
   }
   if (!existing || existing.sha !== plan.expectedCommitSha) return pending("branch-intent");
@@ -251,7 +256,7 @@ async function pullRequest(request: GitHubReleaseRunRequestV1, auth: VerifiedRel
     await assertPostIntentLive(journal, request, auth, now); await assertBaseRef(provider, plan, plan.baseCommit, true);
     const atWrite = parsePullRequests(await provider.findPullRequests({ repository: plan.repository, head: plan.pullRequest.head, base: plan.pullRequest.base }));
     if (atWrite.length > 1) throw new TypeError("multiple release pull requests conflict immediately before create");
-    if (atWrite.length === 0) { await step(journal, request, "pr-dispatching", {}); await assertPostIntentLive(journal, request, auth, now); await assertBaseRef(provider, plan, plan.baseCommit, true); const finalMatches = parsePullRequests(await provider.findPullRequests({ repository: plan.repository, head: plan.pullRequest.head, base: plan.pullRequest.base })); if (finalMatches.length !== 0) throw new TypeError("release pull request appeared immediately before provider write"); await assertPostIntentLive(journal, request, auth, now); try { parsePullRequest(await provider.createPullRequest({ repository: plan.repository, ...plan.pullRequest })); } catch { /* exact lookup below */ } }
+    if (atWrite.length === 0) { await step(journal, request, "pr-dispatching", {}); await assertPostIntentLive(journal, request, auth, now); await assertBaseRef(provider, plan, plan.baseCommit, true); const finalMatches = parsePullRequests(await provider.findPullRequests({ repository: plan.repository, head: plan.pullRequest.head, base: plan.pullRequest.base })); if (finalMatches.length !== 0) throw new TypeError("release pull request appeared immediately before provider write"); await assertPostIntentLive(journal, request, auth, now); await consequentialWrite(() => provider.createPullRequest({ repository: plan.repository, ...plan.pullRequest }), parsePullRequest); }
     matches = await safeRead(() => provider.findPullRequests({ repository: plan.repository, head: plan.pullRequest.head, base: plan.pullRequest.base }), parsePullRequests) ?? [];
     if (matches.length === 0) return pending("pr-intent");
     if (matches.length > 1) throw new TypeError("multiple release pull requests conflict after ambiguous create");
@@ -266,7 +271,7 @@ async function pullRequest(request: GitHubReleaseRunRequestV1, auth: VerifiedRel
     await assertPostIntentLive(journal, request, auth, now); await assertBaseRef(provider, plan, plan.baseCommit, true);
     const atWrite = parsePullRequest(await provider.getPullRequest({ repository: plan.repository, number: pr.number }));
     assertPullRequestPlan(atWrite, plan, atWrite.draft);
-    if (atWrite.draft) { await step(journal, request, "pr-ready-dispatching", { number: pr.number }); await assertPostIntentLive(journal, request, auth, now); await assertBaseRef(provider, plan, plan.baseCommit, true); const finalPr = parsePullRequest(await provider.getPullRequest({ repository: plan.repository, number: pr.number })); assertPullRequestPlan(finalPr, plan, true); await assertPostIntentLive(journal, request, auth, now); try { parsePullRequest(await provider.markPullRequestReady({ repository: plan.repository, number: pr.number })); } catch { /* exact readback below */ } }
+    if (atWrite.draft) { await step(journal, request, "pr-ready-dispatching", { number: pr.number }); await assertPostIntentLive(journal, request, auth, now); await assertBaseRef(provider, plan, plan.baseCommit, true); const finalPr = parsePullRequest(await provider.getPullRequest({ repository: plan.repository, number: pr.number })); assertPullRequestPlan(finalPr, plan, true); await assertPostIntentLive(journal, request, auth, now); await consequentialWrite(() => provider.markPullRequestReady({ repository: plan.repository, number: pr.number }), parsePullRequest); }
     pr = await safeRead(() => provider.getPullRequest({ repository: plan.repository, number: pr.number }), parsePullRequest) ?? pr;
   } else if (!has(await journal.load(request.requestId), "pr-ready-intent")) throw new TypeError("pull request became ready without this authorized transition");
   if (pr.draft) return pending("pr-ready-intent");
@@ -292,7 +297,7 @@ async function merge(request: GitHubReleaseRunRequestV1, auth: VerifiedReleaseAu
     const atWritePr = parsePullRequest(await provider.getPullRequest({ repository: plan.repository, number: pr.number })); assertPullRequestPlan(atWritePr, plan, false); if (atWritePr.merged) throw new TypeError("pull request merge state changed immediately before authorized write");
     const atWriteChecks = parseChecks(await provider.getChecks({ repository: plan.repository, sha: plan.expectedCommitSha })); assertChecks(atWriteChecks, plan);
     await step(journal, request, "merge-dispatching", { number: pr.number }); await assertPostIntentLive(journal, request, auth, now); await assertBaseRef(provider, plan, plan.baseCommit, true); const finalPr = parsePullRequest(await provider.getPullRequest({ repository: plan.repository, number: pr.number })); assertPullRequestPlan(finalPr, plan, false); if (finalPr.merged) throw new TypeError("pull request merged immediately before authorized write"); assertChecks(parseChecks(await provider.getChecks({ repository: plan.repository, sha: plan.expectedCommitSha })), plan); await assertPostIntentLive(journal, request, auth, now);
-    try { const result = parseMerge(await provider.mergePullRequest({ repository: plan.repository, number: pr.number, expectedHeadSha: plan.expectedCommitSha, method: "squash", ...plan.squash })); if (result.merged) mergeSha = result.sha; } catch { /* no resend; authoritative readback below */ }
+    const result = await consequentialWrite(() => provider.mergePullRequest({ repository: plan.repository, number: pr.number, expectedHeadSha: plan.expectedCommitSha, method: "squash", ...plan.squash }), parseMerge); if (result?.merged) mergeSha = result.sha;
     pr = await safeRead(() => provider.getPullRequest({ repository: plan.repository, number: pr.number }), parsePullRequest) ?? pr;
   } else if (!has(events, "merge-intent")) throw new TypeError("pull request was merged without this authorized write intent");
   mergeSha ??= pr.mergeCommitSha;
@@ -307,26 +312,30 @@ async function merge(request: GitHubReleaseRunRequestV1, auth: VerifiedReleaseAu
 async function tag(request: GitHubReleaseRunRequestV1, auth: VerifiedReleaseAuthorizationV1, events: readonly SignedJournalEventV1[], journal: SignedJournal, provider: GitHubReleaseProviderV1, signer: ReleaseContractSignerV1, now: () => Date): Promise<GitHubReleaseRunResultV1> {
   const plan = auth.operationPlan.value, predecessor = await requirePredecessor(journal, auth.authorization.digest, "non-force-tag"), mergeSha = String(predecessor.data.mergeSha ?? "");
   if (!GIT_SHA.test(mergeSha)) throw new TypeError("verified merge predecessor lacks an authoritative merge SHA");
-  const manifest = parseManifest(await provider.readPackageManifest({ repository: plan.repository, sha: mergeSha }));
-  if (manifest.name !== plan.npmPreflight.packageName || manifest.version !== plan.npmPreflight.version) throw new TypeError("release package name or version mismatch");
-  if (parseBoolean(await provider.npmVersionExists({ packageName: manifest.name, version: manifest.version }), "npm version state")) throw new TypeError("release npm version already exists");
   const main = parseRef(await provider.getRef({ repository: plan.repository, ref: `heads/${plan.destinationBranch}` }));
   if (!main || main.sha !== mergeSha) throw new TypeError("release main ref does not match reconciled squash commit");
   const ref = `tags/${plan.tag}`;
   let existing = parseRef(await provider.getRef({ repository: plan.repository, ref }));
   if (existing && existing.sha !== mergeSha) throw new TypeError("release tag ref conflicts");
   if (existing && !has(events, "tag-intent")) throw new TypeError("release tag exists without this authorized write intent");
+  const manifest = parseManifest(await provider.readPackageManifest({ repository: plan.repository, sha: mergeSha }));
+  if (manifest.name !== plan.npmPreflight.packageName || manifest.version !== plan.npmPreflight.version) throw new TypeError("release package name or version mismatch");
+  if (existing && has(events, "tag-dispatching")) return finish(journal, request, auth, "tag-immutable-ref", "tag-verified", authorityDigest({ tagged: existing, manifest, npmVersionAbsentAtDispatch: true, mergeSha }), signer, now(), { mergeSha });
+  if (parseBoolean(await provider.npmVersionExists({ packageName: manifest.name, version: manifest.version }), "npm version state")) throw new TypeError("release npm version already exists");
   if (!existing) {
     if (has(events, "tag-dispatching")) return pending("tag-dispatching");
-    if (!has(events, "tag-intent")) { assertWriteLive(auth, now); await step(journal, request, "tag-intent", {}); }
+    if (!has(events, "tag-intent")) { assertWriteLive(auth, now); await step(journal, request, "tag-intent", { npmVersionAbsent: true, packageName: manifest.name, packageVersion: manifest.version }); }
     await assertPostIntentLive(journal, request, auth, now); await assertBaseRef(provider, plan, mergeSha);
+    const atIntentManifest = parseManifest(await provider.readPackageManifest({ repository: plan.repository, sha: mergeSha }));
+    if (atIntentManifest.name !== plan.npmPreflight.packageName || atIntentManifest.version !== plan.npmPreflight.version) throw new TypeError("release package name or version changed after tag intent");
+    if (parseBoolean(await provider.npmVersionExists({ packageName: atIntentManifest.name, version: atIntentManifest.version }), "npm version state")) throw new TypeError("release npm version appeared after tag intent");
     const atWrite = parseRef(await provider.getRef({ repository: plan.repository, ref }));
     if (atWrite && atWrite.sha !== mergeSha) throw new TypeError("release tag drifted immediately before provider write");
-    if (!atWrite) { await step(journal, request, "tag-dispatching", {}); await assertPostIntentLive(journal, request, auth, now); await assertBaseRef(provider, plan, mergeSha); const finalTag = parseRef(await provider.getRef({ repository: plan.repository, ref })); if (finalTag) throw new TypeError("release tag appeared immediately before provider write"); await assertPostIntentLive(journal, request, auth, now); try { parseSha(await provider.createRef({ repository: plan.repository, ref, sha: mergeSha, force: false }), "created tag"); } catch { /* never resend; read below */ } }
+    if (!atWrite) { await step(journal, request, "tag-dispatching", {}); await assertPostIntentLive(journal, request, auth, now); await assertBaseRef(provider, plan, mergeSha); const finalTag = parseRef(await provider.getRef({ repository: plan.repository, ref })); if (finalTag) throw new TypeError("release tag appeared immediately before provider write"); const finalManifest = parseManifest(await provider.readPackageManifest({ repository: plan.repository, sha: mergeSha })); if (finalManifest.name !== plan.npmPreflight.packageName || finalManifest.version !== plan.npmPreflight.version || parseBoolean(await provider.npmVersionExists({ packageName: finalManifest.name, version: finalManifest.version }), "npm version state")) throw new TypeError("release package or npm state changed immediately before tag write"); await assertPostIntentLive(journal, request, auth, now); await consequentialWrite(() => provider.createRef({ repository: plan.repository, ref, sha: mergeSha, force: false }), raw => parseSha(raw, "created tag")); }
     existing = await safeRead(() => provider.getRef({ repository: plan.repository, ref }), parseRef);
   }
   if (!existing || existing.sha !== mergeSha) return pending("tag-intent");
-  return finish(journal, request, auth, "tag-immutable-ref", "tag-verified", authorityDigest({ tagged: existing, manifest, npmVersionAbsent: true, mergeSha }), signer, now(), { mergeSha });
+  return finish(journal, request, auth, "tag-immutable-ref", "tag-verified", authorityDigest({ tagged: existing, manifest, npmVersionAbsentAtDispatch: true, mergeSha }), signer, now(), { mergeSha });
 }
 
 async function requirePredecessor(journal: SignedJournal, authorizationDigest: string, effect: ReleaseProviderEffectV1): Promise<SignedJournalEventV1> {
@@ -378,6 +387,7 @@ function parseManifest(value: unknown): Readonly<{ name: string; version: string
 function parseBoolean(value: unknown, label: string): boolean { if (typeof value !== "boolean") throw new TypeError(`${label} is invalid`); return value; }
 async function safeRead<T>(read: () => Promise<unknown>, parse: (value: unknown) => T): Promise<T | null> { let raw: unknown; try { raw = await read(); } catch { return null; } return parse(raw); }
 async function providerWrite<T>(write: () => Promise<unknown>, parse: (value: unknown) => T): Promise<T> { let raw: unknown; try { raw = await write(); } catch (error) { if (error instanceof ProviderDefinitiveRefusal) throw error; throw new ProviderWriteAmbiguity(error instanceof Error ? error.message : "provider write response is ambiguous"); } return parse(raw); }
+async function consequentialWrite<T>(write: () => Promise<unknown>, parse: (value: unknown) => T): Promise<T | null> { try { return parse(await write()); } catch (error) { if (error instanceof ProviderDefinitiveRefusal) throw error; return null; } }
 
 function inertArray(value: unknown, label: string): readonly unknown[] {
   if (!value || typeof value !== "object" || isProxy(value) || !Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype) throw new TypeError(`${label} is not a closed inert array`);
