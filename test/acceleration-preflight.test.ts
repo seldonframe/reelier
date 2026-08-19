@@ -3,6 +3,7 @@ import { test } from "node:test";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 
 // The production change that must make these tests fail is accepting an open
 // command/profile, or reporting a result above the preflight evidence class.
@@ -25,6 +26,16 @@ function captureSpawn(calls: SpawnCall[]) {
     return { status: 0 };
   };
 }
+
+test("built pack index contains eleven unique manifests and one closed four-definition release pack", () => {
+  const index = JSON.parse(readFileSync(path.resolve("dist/packs/manifests.json"), "utf8")) as { v: string; packs: Array<{ packId: string; definitions: string[] }> };
+  assert.equal(index.v, "reelier.pack-index/v1");
+  assert.equal(index.packs.length, 11);
+  assert.equal(new Set(index.packs.map(pack => pack.packId)).size, 11);
+  const release = index.packs.find(pack => pack.packId === "github_release");
+  assert.deepEqual(release?.definitions, ["github_release_candidate_publish_v1", "github_release_pr_ensure_v1", "github_release_pr_merge_v1", "github_release_tag_create_v1"]);
+  assert.equal(index.packs.filter(pack => pack.packId !== "github_release").every(pack => pack.definitions.length === 1), true);
+});
 
 test("each preflight profile dispatches its closed local Node commands with a controlled environment", () => {
   const expected = {
