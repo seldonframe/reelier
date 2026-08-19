@@ -35,6 +35,7 @@ import { connectorRegistrationDigest } from "../connector.js";
 import { selectEligibleAuthorityContract } from "../gate.js";
 import { jsonHttpsRouteDigest } from "./json-https-route.js";
 import { lookupStaticPackDefinition } from "../pack.js";
+import type { GitHubReleaseRunnerV1 } from "./github-release-runner.js";
 
 export interface GovernedAuthorityCellReferenceV1 { readonly v: "reelier.governed-authority-cell-reference/v1"; readonly tenant: string; readonly governanceRef: string; readonly expectedManifestDigest: string; readonly expectedTrustHeadDigest: string }
 export interface GovernedAuthorityCellOptionsV1 {
@@ -46,10 +47,11 @@ export interface GovernedAuthorityCellOptionsV1 {
   readonly authenticatedProviderIdentity?: () => Promise<AuthenticatedProviderIdentityV1>; readonly verifyAuthenticatedProviderIdentity?: CertifiedIdentityVerifier;
   readonly certifiedDispatch?: CertifiedDispatchOptions; readonly portableReceiptPublication?: DispatchPublication; readonly latencyRecorder?: AuthorityLatencyRecorder;
   readonly receiptSigningAuthority?: AuthorityReceiptSigningAuthorityV1;
+  readonly githubReleaseRunner?: GitHubReleaseRunnerV1;
 }
 
 const REFERENCE_FIELDS = ["v", "tenant", "governanceRef", "expectedManifestDigest", "expectedTrustHeadDigest"] as const;
-const OPTION_FIELDS = ["principalRegistry", "dispatchAdapter", "delegation", "signedTopologyEvidence", "topologySigner", "signedLease", "leaseSigner", "sourceReadAdapter", "connectionRoutes", "secretResolver", "routeAuthority", "authenticatedProviderIdentity", "verifyAuthenticatedProviderIdentity", "certifiedDispatch", "portableReceiptPublication", "latencyRecorder", "receiptSigningAuthority"] as const;
+const OPTION_FIELDS = ["principalRegistry", "dispatchAdapter", "delegation", "signedTopologyEvidence", "topologySigner", "signedLease", "leaseSigner", "sourceReadAdapter", "connectionRoutes", "secretResolver", "routeAuthority", "authenticatedProviderIdentity", "verifyAuthenticatedProviderIdentity", "certifiedDispatch", "portableReceiptPublication", "latencyRecorder", "receiptSigningAuthority", "githubReleaseRunner"] as const;
 const ID = /^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$/;
 const DIGEST = /^sha256:[0-9a-f]{64}$/;
 
