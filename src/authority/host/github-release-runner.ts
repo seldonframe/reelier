@@ -248,6 +248,7 @@ async function candidate(request: GitHubReleaseRunRequestV1, context: GitHubRele
   const before = parseRef(await provider.getRef({ repository: plan.repository, ref: refName }));
   if (before && before.sha !== plan.expectedCommitSha) throw new TypeError("candidate branch ref conflicts with authorization");
   if (before && !has(initial, "branch-intent")) throw new TypeError("candidate branch exists without this authorized write intent");
+  if (before && has(initial, "branch-intent") && !has(initial, "branch-dispatching")) throw new TypeError("candidate branch appeared after intent but before the authorized dispatching boundary");
   for (let index = 0; index < plan.files.length; index += 1) {
     const file = plan.files[index], bytesBase64 = byPath.get(file.path)!;
     if (!has(initial, "blob-created", "index", index)) { assertWriteLive(auth, now); await step(journal, request, "blob-intent", { index, path: file.path }); await assertPostIntentLive(journal, request, auth, now); await assertBaseRef(provider, plan, plan.baseCommit); await assertPostIntentLive(journal, request, auth, now); const result = await providerWrite(() => provider.createBlob({ repository: plan.repository, contentBase64: bytesBase64 }), raw => parseSha(raw, "blob")); if (result.sha !== file.blobSha) throw new TypeError("provider blob readback does not match expected Git SHA"); await step(journal, request, "blob-created", { index, sha: result.sha }); }
@@ -280,6 +281,7 @@ async function pullRequest(request: GitHubReleaseRunRequestV1, auth: VerifiedRel
   if (!base || base.sha !== plan.baseCommit || !branch || branch.sha !== plan.expectedCommitSha) throw new TypeError("pull request base or candidate ref drifted");
   let matches = parsePullRequests(await provider.findPullRequests({ repository: plan.repository, head: plan.pullRequest.head, base: plan.pullRequest.base }));
   if (matches.length > 1) throw new TypeError("multiple release pull requests conflict");
+  if (matches.length === 1 && has(events, "pr-intent") && !has(events, "pr-dispatching")) throw new TypeError("pull request appeared after intent but before the authorized dispatching boundary");
   if (matches.length === 0) {
     if (has(events, "pr-dispatching")) return pending("pr-dispatching");
     if (!has(events, "pr-intent")) { assertWriteLive(auth, now); await step(journal, request, "pr-intent", {}); }
@@ -294,6 +296,7 @@ async function pullRequest(request: GitHubReleaseRunRequestV1, auth: VerifiedRel
   } else if (!has(events, "pr-intent")) throw new TypeError("pull request exists without this authorized write intent");
   if (!has(await journal.load(request.requestId), "pr-created")) await step(journal, request, "pr-created", { number: matches[0]!.number });
   let pr = matches[0]!; assertPullRequestPlan(pr, plan, pr.draft);
+  if (!pr.draft && has(await journal.load(request.requestId), "pr-ready-intent") && !has(await journal.load(request.requestId), "pr-ready-dispatching")) throw new TypeError("pull request became ready after intent but before the authorized dispatching boundary");
   if (pr.draft) {
     const currentEvents = await journal.load(request.requestId);
     if (has(currentEvents, "pr-ready-dispatching")) return pending("pr-ready-dispatching");
@@ -316,6 +319,7 @@ async function merge(request: GitHubReleaseRunRequestV1, auth: VerifiedReleaseAu
   const matches = parsePullRequests(await provider.findPullRequests({ repository: plan.repository, head: plan.pullRequest.head, base: plan.pullRequest.base }));
   if (matches.length !== 1) throw new TypeError("release merge requires exactly one pull request");
   let pr = matches[0]!; assertPullRequestPlan(pr, plan, false);
+  if (pr.merged && has(events, "merge-intent") && !has(events, "merge-dispatching")) throw new TypeError("pull request was merged after intent but before the authorized dispatching boundary");
   let mergeSha: string | null = null;
   if (!pr.merged) {
     const base = parseRef(await provider.getRef({ repository: plan.repository, ref: `heads/${plan.destinationBranch}` }));
@@ -349,6 +353,7 @@ async function tag(request: GitHubReleaseRunRequestV1, auth: VerifiedReleaseAuth
   let existing = parseRef(await provider.getRef({ repository: plan.repository, ref }));
   if (existing && existing.sha !== mergeSha) throw new TypeError("release tag ref conflicts");
   if (existing && !has(events, "tag-intent")) throw new TypeError("release tag exists without this authorized write intent");
+  if (existing && has(events, "tag-intent") && !has(events, "tag-dispatching")) throw new TypeError("release tag appeared after intent but before the authorized dispatching boundary");
   const manifest = parseManifest(await provider.readPackageManifest({ repository: plan.repository, sha: mergeSha }));
   if (manifest.name !== plan.npmPreflight.packageName || manifest.version !== plan.npmPreflight.version) throw new TypeError("release package name or version mismatch");
   if (existing && has(events, "tag-dispatching")) return finish(journal, request, auth, "tag-immutable-ref", "tag-verified", authorityDigest({ tagged: existing, manifest, npmVersionAbsentAtDispatch: true, mergeSha }), signer, now(), { mergeSha });
