@@ -69,17 +69,19 @@ async function confirmTestPublication(runner: Awaited<ReturnType<typeof createGi
     let reservation: any = { reservationId: requestId, state: "ambiguous", sendStarted: true, resultDigest: authorityDigest({ ambiguous: requestId }), intent };
     const identity: any = { v: "reelier.durable-dispatch-publication-identity/v1", reservationId: requestId, tenant: intent.tenant, requestDigest: intent.requestDigest, capabilityDigest: intent.capabilityDigest, effectDigest: intent.effectDigest, routeAuthorityDigest: authorityDigest(intent.routeAuthority), expectedDispatchedRequestDigest: materializedRequestDigest, reservationIntentDigest: authorityDigest({ v: "reelier.dispatch-reservation-intent/v1", intent }) };
     const reservationReceiptRef = authorityDigest({ root: requestId });
-    let head: any = { v: "reelier.durable-dispatch-publication-head/v1", identity, receiptRef: authorityDigest({ ambiguous: requestId }), evidenceDigest: authorityDigest({ ambiguousEvidence: requestId }), reservationReceiptRef, priorReceiptRef: reservationReceiptRef, phase: "ambiguous", terminalKind: "ambiguous" };
+    const receiptRoot = await mkdtemp(path.join(os.tmpdir(), "reelier-release-receipt-head-"));
+    let headPath = path.join(receiptRoot, "000000-ambiguous.json");
+    await writeFile(headPath, JSON.stringify({ v: "reelier.durable-dispatch-publication-head/v1", identity, receiptRef: authorityDigest({ ambiguous: requestId }), evidenceDigest: authorityDigest({ ambiguousEvidence: requestId }), reservationReceiptRef, priorReceiptRef: reservationReceiptRef, phase: "ambiguous", terminalKind: "ambiguous" }), { flag: "wx", mode: 0o600 });
     const store = {
       async publishReservation() { throw new Error("reconciliation must not create a second reservation root"); },
-      async loadDurableHead(query: any) { if (authorityDigest(query.identity) !== authorityDigest(identity)) throw new TypeError("durable identity conflict"); return head; },
-      async publish(value: any) { const published = { receiptRef: authorityDigest({ receipt: requestId, phase: value.phase }), evidenceDigest: authorityDigest({ evidence: requestId, phase: value.phase }) }; head = { v: "reelier.durable-dispatch-publication-head/v1", identity, ...published, reservationReceiptRef, priorReceiptRef: value.priorReceiptDigest ?? null, phase: value.phase, terminalKind: value.phase === "reconcile" ? "reconciled" : value.outcome.kind }; return published; },
+      async loadDurableHead(query: any) { if (authorityDigest(query.identity) !== authorityDigest(identity)) throw new TypeError("durable identity conflict"); return JSON.parse(await readFile(headPath, "utf8")); },
+      async publish(value: any) { const published = { receiptRef: authorityDigest({ receipt: requestId, phase: value.phase }), evidenceDigest: authorityDigest({ evidence: requestId, phase: value.phase }) }; const next = { v: "reelier.durable-dispatch-publication-head/v1", identity, ...published, reservationReceiptRef, priorReceiptRef: value.priorReceiptDigest ?? null, phase: value.phase, terminalKind: value.phase === "reconcile" ? "reconciled" : value.outcome.kind }; const nextPath = path.join(receiptRoot, "000001-reconcile.json"); await writeFile(nextPath, JSON.stringify(next), { flag: "wx", mode: 0o600 }); headPath = nextPath; return published; },
     };
     const host = createGitHubReleaseHostComposition({ runner, fallback: testFallback, publication: store });
     const ledger: any = { async getReservation() { return reservation; }, async transition(_id: string, expected: string, event: any) { if (reservation.state !== expected) return { ok: false, reason: "state-conflict" }; reservation = { ...reservation, state: event.to, resultDigest: event.resultDigest }; return { ok: true, status: "transitioned", reservation }; } };
     const restore = __testSetAuthorityCellHostPlatform("linux");
     try { await createDispatchCoordinator(ledger, host.adapter, undefined, host.publication, { async consumeOnce() {}, async returnOnce() {}, async releaseConsumedOnce() {} }).reconcile(requestId); }
-    finally { restore(); }
+    finally { restore(); await rm(receiptRoot, { recursive: true, force: true }); }
   }
 }
 
