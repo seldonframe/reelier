@@ -104,6 +104,7 @@ export async function createGitHubReleaseAuthorityRuntime(config: AuthorityHostC
   if (Object.prototype.hasOwnProperty.call(options, "githubReleaseRunner")) throw new TypeError("production release runtime accepts exactly one host-owned release runner capability");
   const configured = [...config.definitions].sort(), expected = [...githubReleaseAliases].sort();
   if (authorityDigest(configured) !== authorityDigest(expected)) throw new TypeError("production release runtime requires exactly the four reviewed GitHub release definitions");
+  if (!config.deploymentPath || !config.jobCardTrustPinPath) throw new TypeError("production release runtime requires a signed deployment and external Job Card trust pin");
   assertGitHubReleaseRunnerCapability(runner);
   return createLocalAuthorityRuntimeCore(config, Object.freeze({ ...options, githubReleaseRunner: runner }), {});
 }
