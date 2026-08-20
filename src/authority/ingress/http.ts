@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { authenticateOutcomeRequest } from "../keys.js";
+import { bindInvokeJobRef, normalizeOutcomeRequestV1 } from "./request.js";
 import type { AuthorityMcpHandler } from "./mcp.js";
 import type { AuthorityExecutionContextV1 } from "../types.js";
 
@@ -21,6 +22,16 @@ export async function handleAuthorityHttp(request: IncomingMessage, response: Se
       if (!handler.jobLoad) return write(response, 503, { verdict: "refused", reasonCode: "job-catalog-unavailable", lifecycleState: "unavailable", requestId: "" });
       await readJson(request);
       return write(response, 200, await handler.jobLoad({ jobId: decodeURIComponent(jobLoad[1]) }, publicContext(requestContext)));
+    }
+    // Invocation is scoped to the opaque reference the load route hands out, never to an alias: the
+    // handler is the SAME `handler.invoke` the MCP tool reaches, with the same authenticated context
+    // and the same refusal semantics, so the alias-direct refusal a signed multi-definition
+    // deployment enforces is not reachable around this route.
+    const jobInvoke = /^\/v1\/jobs\/([^/]+)\/invoke$/.exec(url.pathname);
+    if (jobInvoke && request.method === "POST") {
+      if (!handler.invoke) return write(response, 503, { verdict: "refused", reasonCode: "job-invocation-unavailable", lifecycleState: "unavailable", requestId: "" });
+      const invokeRequest = normalizeOutcomeRequestV1(bindInvokeJobRef(await readJson(request), decodeURIComponent(jobInvoke[1])));
+      return write(response, 202, await handler.invoke(invokeRequest, publicContext(requestContext)));
     }
     if (url.pathname === "/v1/delegations" && request.method === "POST") {
       if (!handler.delegationRequest) return write(response, 503, { verdict: "refused", reasonCode: "delegation-unavailable", lifecycleState: "unavailable" });
@@ -53,7 +64,7 @@ export async function handleAuthorityHttp(request: IncomingMessage, response: Se
     const alias = decodeURIComponent(match[1]);
     const body = request.method === "POST" ? await readJson(request) : { requestId: match[2] };
     if (request.method === "GET") return write(response, 200, await handler.status(body, publicContext(requestContext)));
-    const normalized = normalizeIngressRequest(body);
+    const normalized = normalizeOutcomeRequestV1(body);
     authenticateOutcomeRequest({ tenant: requestContext.tenant, requester: requestContext.requester, definitionAlias: alias, request: normalized, ...(requestContext.executionContext ? { executionContext: requestContext.executionContext } : {}) });
     return write(response, 202, await handler.outcome(alias, normalized, publicContext(requestContext)));
   } catch { return write(response, 400, { verdict: "refused", reasonCode: "invalid-request", lifecycleState: "refused", requestId: "" }); }
@@ -62,4 +73,3 @@ async function readJson(request: IncomingMessage, maxBytes = 64 * 1024): Promise
 function write(response: ServerResponse, status: number, value: unknown): void { response.statusCode = status; response.setHeader("content-type", "application/json"); response.setHeader("connection", "close"); response.end(JSON.stringify(value)); }
 function publicContext(context: { readonly tenant: string; readonly requester: string; readonly executionContext?: AuthorityExecutionContextV1 }): { readonly tenant: string; readonly requester: string; readonly executionContext?: AuthorityExecutionContextV1 } { return { tenant: context.tenant, requester: context.requester, ...(context.executionContext ? { executionContext: context.executionContext } : {}) }; }
 function hasIdentityOverride(value: unknown): boolean { return Boolean(value && typeof value === "object" && !Array.isArray(value) && Object.keys(value as Record<string, unknown>).some(key => key === "tenant" || key === "requester" || key === "parentPrincipal")); }
-function normalizeIngressRequest(value: unknown): unknown { if (!value || typeof value !== "object" || Array.isArray(value)) return value; const raw = value as Record<string, unknown>; return raw.v === undefined ? { v: "reelier.outcome-request/v1", ...raw } : value; }
