@@ -4,6 +4,23 @@ export { authorityCanonicalBytes, authorityDigest, parseAuthorityWire, parseCano
 export { AUTHORITY_ADAPTER_CONTRACT_V1, AUTHORITY_ADAPTER_CONTRACT_V1_DIGEST, verifyAuthorityAdapterContractV1, type AuthorityAdapterContractV1 } from "./adapter-contract.js";
 export { signAuthorityDigest, verifyAuthoritySignature } from "./crypto.js";
 export {
+  createApprovalReplayProtectorV1,
+  parseTrustDomainDescriptorV1,
+  parseCustomerApprovalProofV1,
+  parseStandingAuthorityEnvelopeV1,
+  parseHostedAuthorityEnvelopeV1,
+  parseMissionChildGrantV1,
+  verifyCustomerRootedAuthorityV1,
+  type AuthorityLimitsV1,
+  type TrustDomainDescriptorV1,
+  type CustomerApprovalProofV1,
+  type StandingAuthorityEnvelopeV1,
+  type HostedAuthorityEnvelopeV1,
+  type MissionChildGrantV1,
+  type ApprovalReplayProtectorV1,
+  type VerifiedCustomerRootedAuthorityV1,
+} from "./ambient-authority.js";
+export {
   createSignedReleaseVerifierEvidenceV1,
   parseSignedReleaseVerifierEvidenceV1,
   createSignedStagedCandidateManifestV1,
