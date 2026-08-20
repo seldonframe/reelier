@@ -42,6 +42,8 @@ Error [AuthorityCellLinuxRequiredError]: Authority Cell hosting requires Linux. 
     code: 'AUTHORITY_CELL_LINUX_REQUIRED'
 ```
 
+Final focused regression tail (verbatim): `tests 13`, `pass 13`, `fail 0`, `cancelled 0`, `skipped 0`.
+
 Commands run
 
 - `npx tsc -p tsconfig.test.json --pretty false` — pass.
