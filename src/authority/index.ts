@@ -4,6 +4,27 @@ export { authorityCanonicalBytes, authorityDigest, parseAuthorityWire, parseCano
 export { AUTHORITY_ADAPTER_CONTRACT_V1, AUTHORITY_ADAPTER_CONTRACT_V1_DIGEST, verifyAuthorityAdapterContractV1, type AuthorityAdapterContractV1 } from "./adapter-contract.js";
 export { signAuthorityDigest, verifyAuthoritySignature } from "./crypto.js";
 export {
+  AGENT_MANDATE_CONTRACT_V1,
+  AGENT_MANDATE_CONTRACT_V1_DIGEST,
+  parseAgentMandateV1,
+  parseAgentDocumentV1,
+  digestAgentMandateV1,
+  parseMandateLockV1,
+  createMandateLockV1,
+  verifyMandateLockV1,
+  deriveMandatedMissionV1,
+  parseReconciledOutcomeV1,
+  type AgentHarnessV1,
+  type AgentDestinationV1,
+  type ReconciledOutcomeStatusV1,
+  type AgentMandateV1,
+  type AgentDocumentV1,
+  type MandateLockV1,
+  type VerifiedMandateLockV1,
+  type MandatedMissionV1,
+  type ReconciledOutcomeV1,
+} from "./agent-mandate.js";
+export {
   createApprovalReplayProtectorV1,
   parseCustomerAuthorityPayloadV1,
   parseTrustDomainDescriptorV1,
