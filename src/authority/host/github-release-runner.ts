@@ -165,6 +165,8 @@ export async function createGitHubReleaseRunner(input: Readonly<{ rootDir: strin
     const context = normalizeContext(await input.authorizationResolver(String(first.data.authorizationHandle))), authorization = context.authorization;
     assertVerifiedReleaseAuthorizationV1(authorization);
     if (authorization.authorization.digest !== first.data.authorizationDigest) throw new TypeError("release durable head authorization binding conflicts");
+    const hostedAuthorityBindingDigest = context.hostedAuthority ? assertGitHubReleaseHostedAuthorityBindingV1(context.hostedAuthority, authorization, input.now()) : null;
+    if ((first.data.hostedAuthorityBindingDigest ?? null) !== hostedAuthorityBindingDigest) throw new TypeError("release durable head hosted authority binding conflicts");
     const allocation = authorization.authorization.value.effectAllocations.find(candidate => candidate.effect === effect);
     if (!allocation || allocation.maxEffects !== 1 || allocation.allocationId !== first.data.allocationId || allocation.allocationDigest !== first.data.allocationDigest) throw new TypeError("release durable head allocation binding conflicts");
     const terminal = [...events].reverse().find(event => TERMINAL.has(event.phase));

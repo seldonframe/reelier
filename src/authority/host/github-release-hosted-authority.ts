@@ -42,7 +42,15 @@ export function assertGitHubReleaseHostedAuthorityBindingV1(value: unknown, auth
   if (authority.mission.connector.connectorId !== "github" || authority.mission.connector.accountId !== authorization.operationPlan.value.repository) throw new TypeError("hosted release authority GitHub account does not match the signed release repository");
   const time = now.getTime();
   for (const [label, validFrom, validUntil] of [["customer approval", authority.proof.issuedAt, authority.proof.expiresAt], ["standing authority", authority.standing.validFrom, authority.standing.validUntil], ["hosted authority", authority.hosted.validFrom, authority.hosted.validUntil], ["mission child grant", authority.mission.validFrom, authority.mission.validUntil]] as const) {
-    if (time < Date.parse(validFrom) || time >= Date.parse(validUntil)) throw new TypeError(`${label} is stale for the release outcome`);
+    const start = canonicalTimestamp(validFrom, `${label} validFrom`), end = canonicalTimestamp(validUntil, `${label} validUntil`);
+    if (end <= start || time < start || time >= end) throw new TypeError(`${label} is stale for the release outcome`);
   }
   return authorityDigest({ v: "reelier.github-release-hosted-release-binding/v1", hostedAuthorityBindingDigest: record.digest, releaseAuthorizationDigest: authorization.authorization.digest });
+}
+
+function canonicalTimestamp(value: unknown, label: string): number {
+  if (typeof value !== "string") throw new TypeError(`${label} is invalid`);
+  const parsed = Date.parse(value);
+  if (!Number.isFinite(parsed) || new Date(parsed).toISOString() !== value) throw new TypeError(`${label} is invalid`);
+  return parsed;
 }

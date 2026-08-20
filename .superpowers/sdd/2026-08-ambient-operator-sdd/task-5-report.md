@@ -3,15 +3,17 @@ Files changed
 - `src/authority/host/github-release-hosted-authority.ts`
 - `src/authority/host/github-release-runner.ts`
 - `test/authority/github-release-runner.test.ts`
+- `.superpowers/sdd/2026-08-ambient-operator-sdd/task-5-brief.md`
 - `.superpowers/sdd/2026-08-ambient-operator-sdd/progress.md`
 - `.superpowers/sdd/2026-08-ambient-operator-sdd/task-5-report.md`
 
 What changed
 
-- `github-release-hosted-authority.ts`: adds an opaque host-only binding created from an already verified customer-rooted authority. It carries no provider credential, requires the GitHub connector/account to equal the signed release repository, rechecks proof/standing/hosted/mission validity, and derives a canonical release-binding digest.
-- `github-release-runner.ts`: accepts the optional host binding in the existing authorization context, validates it before any provider read/write, commits its digest to the durable saga root, rejects a changed binding on re-entry, and folds it into the signed provider-readback evidence that the existing durable `DispatchPublication` confirmation persists.
+- `github-release-hosted-authority.ts`: adds an opaque host-only binding created from an already verified customer-rooted authority. It carries no provider credential, requires the GitHub connector/account to equal the signed release repository, strictly validates canonical timestamps and validity ordering, and derives a canonical release-binding digest.
+- `github-release-runner.ts`: accepts the optional host binding in the existing authorization context, validates it before any provider read/write, commits its digest to the durable saga root, revalidates that binding during authoritative durable-head restart confirmation, rejects a changed binding on re-entry, and folds it into signed provider-readback evidence.
 - `github-release-runner.test.ts`: RED-first test proves an unrecognized binding is refused before any provider call.
 - `progress.md`: records the Task 5 handoff status and platform-limited full-suite result.
+- `task-5-brief.md`: freezes the exact touched-file allowlist for review.
 
 Deviations from plan
 

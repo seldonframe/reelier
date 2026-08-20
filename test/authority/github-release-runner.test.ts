@@ -363,7 +363,7 @@ test("runner does not expose a forgeable receipt-publication confirmation method
 test("restart confirms an authoritative terminal receipt committed before the publication callback crashed", async () => {
   const restore = __testSetAuthorityCellHostPlatform("linux"), root = await mkdtemp(path.join(os.tmpdir(), "reelier-release-post-publication-cut-"));
   const fixture = releaseAuthorityFixture(), journalKeys = generateKeyPairSync("ed25519");
-  const hostedAuthority = createGitHubReleaseHostedAuthorityBindingV1({ domain: {}, proof: {}, standing: {}, hosted: {}, mission: { connector: { connectorId: "github", accountId: "seldonframe/reelier" }, authorityDigest: digest("a"), hostedAuthorityDigest: digest("b"), standingAuthorityDigest: digest("c"), trustDomainDigest: digest("d"), validFrom: "2026-08-18T01:00:00.000Z", validUntil: "2026-08-18T12:00:00.000Z" } } as any);
+  const hostedAuthority = createGitHubReleaseHostedAuthorityBindingV1({ domain: {}, proof: { issuedAt: "2026-08-18T00:00:00.000Z", expiresAt: "2026-08-18T12:00:00.000Z" }, standing: { validFrom: "2026-08-18T00:30:00.000Z", validUntil: "2026-08-18T11:30:00.000Z" }, hosted: { validFrom: "2026-08-18T01:00:00.000Z", validUntil: "2026-08-18T11:00:00.000Z" }, mission: { connector: { connectorId: "github", accountId: "seldonframe/reelier" }, authorityDigest: digest("a"), hostedAuthorityDigest: digest("b"), standingAuthorityDigest: digest("c"), trustDomainDigest: digest("d"), validFrom: "2026-08-18T01:30:00.000Z", validUntil: "2026-08-18T10:00:00.000Z" } } as any);
   let includeHostedAuthority = true;
   let blobWrites = 0, pullRequest: any = null;
   const provider = candidateProvider({
@@ -408,11 +408,14 @@ test("restart confirms an authoritative terminal receipt committed before the pu
     includeHostedAuthority = false;
     const restartedRunner = await createRunner(), restartedHost = createGitHubReleaseHostComposition({ runner: restartedRunner, fallback: testFallback, publication: store });
     await assert.rejects(() => createDispatchCoordinator(ledger, restartedHost.adapter, undefined, restartedHost.publication).recover(), /authority binding/i);
+    assert.equal(reservation.state, "ambiguous", "restart must not adopt a durable head whose hosted binding cannot be revalidated");
     includeHostedAuthority = true;
+    const verifiedRestartRunner = await createRunner(), verifiedRestartHost = createGitHubReleaseHostComposition({ runner: verifiedRestartRunner, fallback: testFallback, publication: store });
+    await createDispatchCoordinator(ledger, verifiedRestartHost.adapter, undefined, verifiedRestartHost.publication).recover();
     assert.equal(reservation.state, "reconciled");
     assert.equal(terminalPublications, 1, "recovery must adopt the exact durable head without republishing");
     assert.equal(blobWrites, 3, "recovery must not resend any provider write");
-    const successor = await governedRun(restartedRunner, { alias: "github_release_pr_ensure_v1", allocationId: "release-draft-pr-01", authorizationHandle: "release_auth_1", requestId: "pr_after_post_publication_cut", semanticsDigest: authorityDigest({ request: "pr_after_post_publication_cut" }) });
+    const successor = await governedRun(verifiedRestartRunner, { alias: "github_release_pr_ensure_v1", allocationId: "release-draft-pr-01", authorizationHandle: "release_auth_1", requestId: "pr_after_post_publication_cut", semanticsDigest: authorityDigest({ request: "pr_after_post_publication_cut" }) });
     assert.equal(successor.status, "verified", "the confirmed predecessor must unlock its successor after restart");
   } finally { restore(); await rm(root, { recursive: true, force: true }); }
 });
