@@ -325,6 +325,14 @@ test("production MCP and HTTP keep signed multi-definition aliases behind authen
     assert.equal(aliasAsRef.body.reasonCode, "job-not-found");
     assert.equal(dispatches, 2);
 
+    // Identity is the session's, never the body's: an invoke body that tries to carry one is
+    // refused by the same closed wire schema the alias-direct route is refused by.
+    const forged = await httpInvoke(slackRef, { ...slackRequest, requestId: "http_forged", tenant: "attacker", principalId: "attacker" }, credential.token);
+    assert.equal(forged.body.verdict, "refused");
+    assert.equal(forged.body.reasonCode, "invalid-request");
+    assert.equal(forged.body.requestId, "http_forged");
+    assert.equal(dispatches, 2);
+
     // A session outside this task carries a resolvable bearer and still refuses with the MCP
     // ingress's own reason code, not a transport-level error.
     const isolatedCredential = await principals.issue({ ...fixture.context.executionContext, taskId: "task_other", runtimeSessionId: "session_other", expiresAt: "2027-01-01T00:00:00.000Z" });
