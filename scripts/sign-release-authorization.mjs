@@ -30,6 +30,11 @@
 //     evidence that the workflow ran.
 //   - It does not verify the receipt graph. That is post-publish and belongs to
 //     verifyReleaseReceiptGraphV1.
+//   - It does not decide the repository. Since the R3 amendment (2026-08-20) --repository is
+//     signed bundle data, so signing it proves what was AUTHORIZED, never that it was the right
+//     repository. The independent control is the operator's runner config: the provider refuses
+//     any repository but the configured one as a definitive-refusal, before any credential or
+//     socket (github-release-https-provider.ts requireConfiguredRepository).
 //   - It never prints, echoes, or copies a private key. Keys are read from files and
 //     used in-process only.
 //
@@ -97,6 +102,13 @@ const DIGEST = /^sha256:[0-9a-f]{64}$/;
 const COMMIT = /^[0-9a-f]{40}$/;
 const SIGNER_ID = /^[a-z0-9][a-z0-9._:-]{7,127}$/;
 const ALLOCATION_ID = /^[a-z0-9][a-z0-9-]{7,127}$/;
+/** Same pattern as `release-contracts.ts` REPOSITORY and the provider's own (R3 amendment,
+ * 2026-08-20). Checked here so a malformed --repository names the flag instead of surfacing as a
+ * composition failure; the contract refuses it again regardless. */
+const REPOSITORY = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}\/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
+/** The production release repository. R3 made this signed bundle data rather than a contract
+ * constant, so it is a DEFAULT here, not a pin — see --repository. */
+const DEFAULT_REPOSITORY = "seldonframe/reelier";
 
 const USAGE = `sign-release-authorization.mjs — operator release-authorization signing ceremony (fail closed)
 
@@ -110,7 +122,14 @@ Required:
   --out <dir>          directory to write the closed seven-file artifact set into
 
 Options:
-  --repo <dir>         repository to read workflow bytes from (default: the current directory)
+  --repo <dir>         local DIRECTORY to read workflow bytes from (default: the current directory)
+  --repository <owner/name>
+                       the GitHub repository the signed artifacts name, owner/name
+                       (default: ${DEFAULT_REPOSITORY}). Frozen-contract amendment under
+                       operator exception R3, 2026-08-20: the repository travels in the signed
+                       bundle, so a rehearsal set can name a scratch repository. It is NOT
+                       proof the repository is the right one — the runner's own config decides
+                       what the provider will touch, and refuses anything else at dispatch.
   --now <iso8601>      issuedAt instant; expiresAt is exactly +12h (default: now)
   --tarball <path>     recompute packedTarballDigest from this file and require the
                        parameters file to already agree — a measured value, not a supplied one
@@ -209,7 +228,7 @@ if (argv.includes("--print-parameters-template")) {
 }
 
 function parseArgs(args) {
-  const parsed = { candidate: null, envelope: null, keys: null, now: null, out: null, repo: ".", tarball: null };
+  const parsed = { candidate: null, envelope: null, keys: null, now: null, out: null, repo: ".", repository: DEFAULT_REPOSITORY, tarball: null };
   for (let index = 0; index < args.length; index += 1) {
     const flag = args[index];
     const take = () => {
@@ -222,6 +241,7 @@ function parseArgs(args) {
     else if (flag === "--keys") parsed.keys = take();
     else if (flag === "--out") parsed.out = take();
     else if (flag === "--repo") parsed.repo = take();
+    else if (flag === "--repository") parsed.repository = take();
     else if (flag === "--now") parsed.now = take();
     else if (flag === "--tarball") parsed.tarball = take();
     else if (flag === "--envelope") parsed.envelope = take();
@@ -230,6 +250,7 @@ function parseArgs(args) {
   for (const [flag, value] of [["--candidate", parsed.candidate], ["--keys", parsed.keys], ["--out", parsed.out]]) {
     if (!value) fail(`${flag} is required (run --help for the usage)`);
   }
+  if (!REPOSITORY.test(parsed.repository)) fail(`--repository ${parsed.repository} must be an owner/name repository identity`);
   return parsed;
 }
 
@@ -535,7 +556,7 @@ try {
     files: parameters.files,
     npmPreflight: { packageName: "reelier", version: "0.32.1", versionMustBeAbsent: true },
     pullRequest: { base: "main", body: parameters.pullRequest.body, draft: true, head: "reelier/release/0.32.1", readyForReview: true, title: parameters.pullRequest.title },
-    repository: "seldonframe/reelier",
+    repository: args.repository,
     requiredChecks: parameters.requiredChecks,
     squash: parameters.squash,
     tag: "v0.32.1",
@@ -563,7 +584,9 @@ try {
       mutationEvidenceDigest: parameters.qualityEvidence.mutationEvidenceDigest,
       mutationScoreBasisPoints: parameters.qualityEvidence.mutationScoreBasisPoints,
     },
-    repository: "seldonframe/reelier",
+    // R3: one value for both artifacts. verifyReleaseAuthorizationBundleV1 refuses a manifest and a
+    // plan that name different repositories, so they cannot be composed apart here.
+    repository: args.repository,
     tag: "v0.32.1",
     v: "reelier.staged-candidate-manifest/v1",
     workflowCommitments: workflows,
@@ -707,6 +730,7 @@ const lines = [
     ? `  VERIFIED: packedTarballDigest equals the measured digest of ${args.tarball}`
     : "  NOT CHECKED: packedTarballDigest against a real tarball — pass --tarball <path> to measure it instead of trusting the parameters file",
   "  NOT CHECKED: that the parameters describe the candidate you intended. Every commit, tree, blob, and quality digest was taken on trust from the parameters file.",
+  `  NOT CHECKED: that ${args.repository} is the repository your runner config names. A signed repository is what was authorized, not proof it was the right one; the provider refuses any other repository at dispatch (definitive-refusal, before any credential or socket).`,
   "  NOT CHECKED: that CI actually ran. The quality lanes attest results you supplied; they are not evidence of a workflow run.",
   "  NOT CHECKED: the receipt graph. That is post-publish and is never this script's claim.",
   "",
