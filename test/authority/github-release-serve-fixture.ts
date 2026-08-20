@@ -24,6 +24,11 @@ const AUTHORIZATION_OBSERVED_AT = "2026-08-18T05:30:00.000Z";
 /** Inside `[issuedAt, expiresAt)` and at or after every evidence `observedAt`. */
 const AUTHORIZATION_NOW = new Date("2026-08-18T06:00:00.000Z");
 const RELEASE_BASE_COMMIT = "e600ad5c2dc5e1bde0714915e7a84980c8d5602b";
+/** R3 frozen-contract amendment (operator exception, 2026-08-20): the repository is signed bundle
+ * data, not a contract constant. One knob for both artifacts — `verifyReleaseAuthorizationBundleV1`
+ * now refuses a manifest and a plan that name different repositories, so they cannot drift apart
+ * here by accident. Pass a rehearsal repository to `authorizationBundle` to scope a bundle to one. */
+const RELEASE_REPOSITORY = "seldonframe/reelier";
 /** `[...QUALITY_LANES, ...RECEIPT_LANES]` in the exact order `parseReleaseAuthorizationBundleV1` pins. */
 const LANE_SIGNERS: ReadonlyArray<readonly [ReleaseEvidenceLaneV1, string]> = [
   ["ci-coverage", "quality-coverage-verifier"], ["ci-full-tests", "quality-full-tests-verifier"], ["ci-mutation", "quality-mutation-verifier"],
@@ -181,7 +186,7 @@ export async function releaseServeFixture(title = "Governed production release")
     };
   };
 
-  const authorizationBundle = (privateKey: KeyObject): Record<string, unknown> => {
+  const authorizationBundle = (privateKey: KeyObject, repository: string = RELEASE_REPOSITORY): Record<string, unknown> => {
     const signer = { signerId: RELEASE_AUTHORITY_SIGNER_ID, privateKey };
     const files = [
       { blobSha: releaseCommit("b"), contentDigest: releaseDigest("b"), mode: "100644" as const, path: "CHANGELOG.md" },
@@ -200,13 +205,13 @@ export async function releaseServeFixture(title = "Governed production release")
       destinationBranch: "main", expectedCommitSha: releaseCommit("a"), expectedTreeSha: releaseCommit("e"), files,
       npmPreflight: { packageName: "reelier", version: "0.32.1", versionMustBeAbsent: true },
       pullRequest: { base: "main", body: "Governed release v0.32.1", draft: true, head: "reelier/release/0.32.1", readyForReview: true, title: "Release v0.32.1" },
-      repository: "seldonframe/reelier", requiredChecks: ["coverage", "full-tests", "mutation"],
+      repository, requiredChecks: ["coverage", "full-tests", "mutation"],
       squash: { commitMessage: "release: v0.32.1", commitTitle: "Release v0.32.1" }, tag: "v0.32.1", workflowCommitments,
     } as never, signer);
     const candidateManifest = createSignedStagedCandidateManifestV1({
       v: "reelier.staged-candidate-manifest/v1", baseCommit: RELEASE_BASE_COMMIT, branch: "reelier/release/0.32.1", candidateCommit: releaseCommit("a"), candidateTreeDigest,
       changedBytes: 4_096, changedPaths: ["CHANGELOG.md", "src/cli.ts", "test/cli-subcommand-help.test.ts"], destinationBranch: "main", qualityEvidence: quality,
-      packageName: "reelier", packageVersion: "0.32.1", packedTarballDigest: releaseDigest("2"), repository: "seldonframe/reelier", tag: "v0.32.1", workflowCommitments,
+      packageName: "reelier", packageVersion: "0.32.1", packedTarballDigest: releaseDigest("2"), repository, tag: "v0.32.1", workflowCommitments,
     }, signer);
     const policy = createSignedReleasePolicyV1({
       v: "reelier.release-policy/v1", allowedPaths: ["CHANGELOG.md", "src/cli.ts", "test/cli-subcommand-help.test.ts"], destinations: ["ghcr", "mcp-registry", "npm"],

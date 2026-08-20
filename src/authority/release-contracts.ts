@@ -6,6 +6,30 @@ import { authorityCanonicalBytes, authorityDigest } from "./wire.js";
 
 const DIGEST = /^sha256:[0-9a-f]{64}$/;
 const COMMIT = /^[0-9a-f]{40}$/;
+// R3 frozen-contract amendment — operator exception recorded 2026-08-20.
+//
+// The repository is no longer the constant `"seldonframe/reelier"`. It is an owner/name-format
+// string carried by the Ed25519-signed, operator-reviewed authorization bundle, and the staged
+// candidate manifest and the operation plan must name the SAME repository. This is what lets a
+// rehearsal set (`seldonframe/reelier-release-rehearsal`) exist at all: under the constant, a
+// rehearsal-scoped artifact set refused at parse, before any signature, key, or provider was
+// consulted, so the release path could never be rehearsed end to end against a scratch repository.
+//
+// THE SAFETY CASE, and it is a runtime control the bundle signer cannot influence:
+// `requireConfiguredRepository` (`src/authority/host/github-release-https-provider.ts:161-165`)
+// refuses any repository other than the operator's own runner-config repository as a
+// `definitive-refusal`, before any credential, DNS, or socket work — and the configured value is
+// additionally baked into the provider's closed path prefix (`/repos/<repository>/`). A signed
+// repository the operator has not independently configured therefore produces no provider effect.
+// A signed repository is proof of what was AUTHORIZED, never proof that the authorized repository
+// was the right one — that stays an operator review claim.
+//
+// The pattern below is character-for-character the provider's own `REPOSITORY`
+// (`github-release-https-provider.ts:6`), duplicated rather than imported because
+// `host/github-release-https-provider.ts` -> `host/github-release-runner.ts` -> this module is an
+// existing import chain, and importing back would make it a cycle. One slash, alphanumeric-led on
+// both sides: `..`, `a/../b`, absolute and URL forms have no accepting form.
+const REPOSITORY = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}\/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
 // R2 frozen-contract amendment — operator exception recorded 2026-08-19.
 //
 // There is no RELEASE_BASE constant. There cannot be one: the PR that re-pins the base advances
@@ -25,7 +49,8 @@ const COMMIT = /^[0-9a-f]{40}$/;
 //   - `merge()` (:360)            the same equality again before the squash merge
 //   - `candidate()` (:307) / `merge()` (:377)  the candidate and squash commits' parentSha readback
 //                                 must equal plan.baseCommit — direct-child ancestry on main
-// Branch, tag, package name/version, changed paths, and workflow paths below stay constant-pinned.
+// Branch, tag, package name/version, changed paths, and workflow paths below stay constant-pinned
+// under both amendments — R3 moved the repository only.
 const RELEASE_BRANCH = "reelier/release/0.32.1";
 const RELEASE_PATHS = ["CHANGELOG.md", "src/cli.ts", "test/cli-subcommand-help.test.ts"] as const;
 const RELEASE_DESTINATIONS = ["ghcr", "mcp-registry", "npm"] as const;
@@ -78,7 +103,8 @@ export interface StagedCandidateManifestV1 {
     mutationEvidenceDigest: string;
     mutationScoreBasisPoints: number;
   }>;
-  readonly repository: "seldonframe/reelier";
+  /** R3 amendment: owner/name format, carried by the signed bundle, equal to the plan's. */
+  readonly repository: string;
   readonly tag: "v0.32.1";
   readonly workflowCommitments: readonly Readonly<{ digest: string; path: string }>[];
 }
@@ -101,7 +127,8 @@ export interface ReleaseOperationPlanV1 {
   readonly files: readonly ReleaseCandidateFileV1[];
   readonly npmPreflight: Readonly<{ packageName: "reelier"; version: "0.32.1"; versionMustBeAbsent: true }>;
   readonly pullRequest: Readonly<{ base: "main"; body: string; draft: true; head: "reelier/release/0.32.1"; readyForReview: true; title: string }>;
-  readonly repository: "seldonframe/reelier";
+  /** R3 amendment: owner/name format, carried by the signed bundle, equal to the manifest's. */
+  readonly repository: string;
   readonly requiredChecks: readonly string[];
   readonly squash: Readonly<{ commitMessage: string; commitTitle: string }>;
   readonly tag: "v0.32.1";
@@ -292,6 +319,10 @@ export function verifyReleaseAuthorizationBundleV1(
   // R2 amendment (2026-08-19): with no constant to compare against, one base commit agreed across
   // both signed artifacts is what makes the runner's heads/main equality a claim about this release.
   if (candidateManifest.value.baseCommit !== operationPlan.value.baseCommit) throw new TypeError("release authorization base commit is inconsistent between the staged candidate manifest and the operation plan");
+  // R3 amendment (2026-08-20), the same shape one line up: with no constant to compare against, one
+  // repository agreed across both signed artifacts is what makes the provider's configured-repository
+  // refusal a claim about THIS release rather than about two unrelated halves of one bundle.
+  if (candidateManifest.value.repository !== operationPlan.value.repository) throw new TypeError("release authorization repository is inconsistent between the staged candidate manifest and the operation plan");
   if (authorization.value.policyDigest !== policy.digest) throw new TypeError("release authorization policy digest mismatch");
   if (verificationTime < Date.parse(authorization.value.issuedAt)) throw new TypeError("release authorization is not yet valid before issuedAt");
   if (verificationTime >= Date.parse(authorization.value.expiresAt)) throw new TypeError("release authorization is expired");
@@ -326,7 +357,8 @@ export function verifyReleaseReceiptGraphV1(value: unknown, verifier: ReleaseCon
 
 function parseStagedCandidateManifestV1(value: unknown): StagedCandidateManifestV1 {
   const item = exact(value, ["baseCommit", "branch", "candidateCommit", "candidateTreeDigest", "changedBytes", "changedPaths", "destinationBranch", "packageName", "packageVersion", "packedTarballDigest", "qualityEvidence", "repository", "tag", "v", "workflowCommitments"], "staged candidate manifest") as unknown as StagedCandidateManifestV1;
-  if (item.v !== "reelier.staged-candidate-manifest/v1" || item.repository !== "seldonframe/reelier" || item.destinationBranch !== "main" || item.branch !== RELEASE_BRANCH || item.tag !== "v0.32.1" || item.packageName !== "reelier" || item.packageVersion !== "0.32.1") throw new TypeError("staged candidate manifest release identity or ref is invalid");
+  if (item.v !== "reelier.staged-candidate-manifest/v1" || item.destinationBranch !== "main" || item.branch !== RELEASE_BRANCH || item.tag !== "v0.32.1" || item.packageName !== "reelier" || item.packageVersion !== "0.32.1") throw new TypeError("staged candidate manifest release identity or ref is invalid");
+  requireRepository(item.repository, "staged candidate manifest repository");
   requireCommit(item.baseCommit, "staged candidate manifest base commit");
   requireCommit(item.candidateCommit, "candidate commit");
   requireDigest(item.candidateTreeDigest, "candidate tree");
@@ -350,7 +382,8 @@ function parseStagedCandidateManifestV1(value: unknown): StagedCandidateManifest
 
 function parseReleaseOperationPlanV1(value: unknown): ReleaseOperationPlanV1 {
   const item = exact(value, ["baseCommit", "baseTreeSha", "candidateBranch", "candidateTreeDigest", "commit", "destinationBranch", "expectedCommitSha", "expectedTreeSha", "files", "npmPreflight", "pullRequest", "repository", "requiredChecks", "squash", "tag", "v", "workflowCommitments"], "release operation plan") as unknown as ReleaseOperationPlanV1;
-  if (item.v !== "reelier.release-operation-plan/v1" || item.repository !== "seldonframe/reelier" || item.candidateBranch !== RELEASE_BRANCH || item.destinationBranch !== "main" || item.tag !== "v0.32.1") throw new TypeError("release operation plan identity or ref is invalid");
+  if (item.v !== "reelier.release-operation-plan/v1" || item.candidateBranch !== RELEASE_BRANCH || item.destinationBranch !== "main" || item.tag !== "v0.32.1") throw new TypeError("release operation plan identity or ref is invalid");
+  requireRepository(item.repository, "release operation plan repository");
   requireCommit(item.baseCommit, "release operation plan base commit");
   requireCommit(item.expectedCommitSha, "release expected commit");
   requireCommit(item.expectedTreeSha, "release expected tree");
@@ -746,6 +779,7 @@ function deepFreeze<T>(value: T): T {
 
 function requireDigest(value: unknown, label: string): asserts value is string { if (typeof value !== "string" || !DIGEST.test(value)) throw new TypeError(`${label} digest is invalid`); }
 function requireCommit(value: unknown, label: string): asserts value is string { if (typeof value !== "string" || !COMMIT.test(value)) throw new TypeError(`${label} is invalid`); }
+function requireRepository(value: unknown, label: string): asserts value is string { if (typeof value !== "string" || !REPOSITORY.test(value)) throw new TypeError(`${label} must be an owner/name repository identity`); }
 function requireTime(value: unknown, label: string): number { if (typeof value !== "string") throw new TypeError(`${label} is invalid`); const time = Date.parse(value); if (!Number.isFinite(time) || new Date(time).toISOString() !== value) throw new TypeError(`${label} is invalid`); return time; }
 function requireEvidenceStatus(value: unknown, label: string): asserts value is ReleaseEvidenceStatus { if (typeof value !== "string" || !["verified", "failed", "pending", "absent", "unchecked", "ambiguity"].includes(value)) throw new TypeError(`${label} evidence status is invalid`); }
 function requireExactSet(actual: readonly unknown[], expected: readonly string[], label: string): void { if (!Array.isArray(actual) || !equalStrings(actual, expected)) throw new TypeError(`${label} must be the exact sorted unique set`); }
