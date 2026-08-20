@@ -227,6 +227,51 @@ test("--envelope writes the transport form the verifier reads with --artifact-se
   } finally { rmSync(space.root, { force: true, recursive: true }); }
 });
 
+// R3 frozen-contract amendment (operator exception, 2026-08-20). The repository is signed bundle
+// data, so the ceremony can compose a rehearsal-scoped set. Everything the set proves about that
+// repository is "this is what was authorized" — the runner config, not this script, decides what a
+// provider will touch.
+test("--repository signs a rehearsal-scoped set both artifacts agree on, and the verifier accepts it", () => {
+  const space = workspace();
+  try {
+    const rehearsal = "seldonframe/reelier-release-rehearsal";
+    const signed = runSigner(space, ["--repository", rehearsal]);
+    assert.equal(signed.status, 0, `${signed.stdout}\n${signed.stderr}`);
+    const manifest = JSON.parse(readFileSync(path.join(space.outDir, "candidate-manifest.json"), "utf8"));
+    const plan = JSON.parse(readFileSync(path.join(space.outDir, "operation-plan.json"), "utf8"));
+    assert.equal(manifest.value.repository, rehearsal);
+    assert.equal(plan.value.repository, rehearsal);
+    // The rest of the release identity is NOT unpinned along with the repository.
+    assert.equal(manifest.value.branch, "reelier/release/0.32.1");
+    assert.equal(manifest.value.tag, "v0.32.1");
+    assert.equal(manifest.value.packageVersion, "0.32.1");
+    assert.equal(plan.value.candidateBranch, "reelier/release/0.32.1");
+    assert.match(signed.stdout, new RegExp(`repository ${rehearsal}`));
+    assert.match(signed.stdout, /NOT CHECKED: that seldonframe\/reelier-release-rehearsal is the repository your runner config names/);
+
+    // The set the production verifier reads is the set that was signed.
+    const verified = spawnSync(process.execPath, [
+      verifyScript, "--dir", space.outDir, "--trust-pin", space.trustPinFile, "--tag", "v0.32.1",
+    ], { encoding: "utf8", env: { ...process.env, REELIER_RELEASE_BARREL: barrelUrl } });
+    assert.equal(verified.status, 0, `${verified.stdout}\n${verified.stderr}`);
+  } finally { rmSync(space.root, { force: true, recursive: true }); }
+});
+
+test("--repository defaults to the production repository and refuses a malformed identity before any key is read", () => {
+  const space = workspace();
+  try {
+    assert.equal(runSigner(space).status, 0);
+    const manifest = JSON.parse(readFileSync(path.join(space.outDir, "candidate-manifest.json"), "utf8"));
+    assert.equal(manifest.value.repository, "seldonframe/reelier");
+
+    for (const repository of ["seldonframe", "seldonframe/", "/reelier", "seldonframe/reelier/extra", "../reelier", "seldonframe/../../etc/passwd", ".hidden/reelier", "https://github.com/seldonframe/reelier"]) {
+      const refused = runSigner(space, ["--repository", repository]);
+      assert.equal(refused.status, 1, `signer accepted a malformed repository: ${JSON.stringify(repository)}`);
+      assert.match(refused.stderr, /--repository .* must be an owner\/name repository identity/);
+    }
+  } finally { rmSync(space.root, { force: true, recursive: true }); }
+});
+
 test("--help and the parameters template answer before any key is read", () => {
   const help = spawnSync(process.execPath, [signScript, "--help"], { encoding: "utf8" });
   assert.equal(help.status, 0);
