@@ -4587,6 +4587,8 @@ const USAGE =
   "  init   - reelier init [--dry-run]: checkpointed local inspection of Path A observation, Path B replay/freeze\n" +
   "           candidates, and Path C connections/candidates. It does not deploy, gate, dispatch, upload, or rewrite configs.\n" +
   "           --dry-run performs the same local inspection without writing .reelier/init artifacts.\n" +
+  "  init --managed [--dry-run] — local preview of a redacted managed-session configuration diff; it does not authorize missions,\n" +
+  "           receive credentials, contact Cloud/providers, or write configuration files.\n" +
   "  init --signing — generate (or print the existing) Ed25519 signing key at ~/.reelier/signing/; idempotent.\n" +
   "  up     - reelier up <agent-name>: verify a completed named preparation against its exact package build, route snapshot, and consented local configuration; starts nothing.\n" +
   "  authority certify — private expert workflow: init --config <v2>, then require --scenario <id> or --all for preflight,\n" +
