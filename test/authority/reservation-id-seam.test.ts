@@ -127,3 +127,21 @@ test("crash after send-started recovers by adopting the durable terminal without
     assert.match(adopted?.resultDigest ?? "", /^sha256:[0-9a-f]{64}$/);
   } finally { restore(); await rm(ledgerRoot, { recursive: true, force: true }); await rm(receiptsDir, { recursive: true, force: true }); }
 });
+
+test("an internal saga restarts after send-started without inventing route authority or resending", async () => {
+  const restore = __testSetAuthorityCellHostPlatform("linux");
+  const ledgerRoot = await bindableTempRoot("reelier-internal-saga-crash-ledger-");
+  const receiptsDir = await mkdtemp(path.join(tmpdir(), "reelier-internal-saga-crash-receipts-"));
+  try {
+    const { ledger, reservation, candidate } = await mintRealReservation(ledgerRoot, false);
+    const crashing = { getReservation: (id: string) => ledger.getReservation(id), commitPreparedDispatch: (input: Parameters<NonNullable<AuthorityLedger["commitPreparedDispatch"]>>[0]) => ledger.commitPreparedDispatch!(input), recover: () => ledger.recover({ deferTerminal: true }), async transition(reservationId: string, expected: LedgerState, event: TransitionEvent) { if (expected === "dispatched") throw new Error("simulated crash after internal saga terminal publication"); return ledger.transition(reservationId, expected, event); } } as unknown as AuthorityLedger;
+    const coordinator = createDispatchCoordinator(crashing, preparedAdapter(reservation), undefined, createFileReceiptPublication({ rootDir: receiptsDir }));
+    await assert.rejects(() => coordinator.dispatch(createReservedDispatchHandle({ reservation, effect, effectCanonicalBase64: candidate.effectCanonicalBase64!, effectDigest: candidate.effectDigest })), /simulated crash after internal saga terminal publication/);
+    const restarted = new FsAuthorityLedger(ledgerRoot, { now: () => t0, monotonicNow: () => 0 });
+    let sends = 0;
+    const recovery = createDispatchCoordinator(restarted, { async dispatch() { sends++; throw new Error("internal saga recovery must not resend"); } }, undefined, createFileReceiptPublication({ rootDir: receiptsDir }));
+    assert.deepEqual(await recovery.recover(), []);
+    assert.equal(sends, 0);
+    assert.equal((await restarted.getReservation(reservation.reservationId))?.state, "acknowledged");
+  } finally { restore(); await rm(ledgerRoot, { recursive: true, force: true }); await rm(receiptsDir, { recursive: true, force: true }); }
+});
