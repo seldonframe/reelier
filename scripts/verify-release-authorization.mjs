@@ -8,7 +8,10 @@
 //   - Ed25519 signatures on the authorization bundle, staged candidate manifest,
 //     release operation plan, and release policy, against the COMMITTED trust pin.
 //   - That every artifact travelled as its exact RFC 8785/JCS canonical bytes.
-//   - The digest links bundle -> manifest / plan / policy, and manifest <-> plan.
+//   - The digest links bundle -> manifest / plan / policy, and manifest <-> plan
+//     (which since the R2 amendment of 2026-08-19 includes manifest.baseCommit ==
+//     plan.baseCommit: the base is carried by the signed bundle, not by a constant,
+//     so agreement across the two signed artifacts is what makes it one claim).
 //   - The 12-hour validity window, graded against new Date() at run time.
 //   - The three signed CI quality lanes (ci-coverage, ci-full-tests, ci-mutation)
 //     against the bundle's own evidence-verifier bindings.

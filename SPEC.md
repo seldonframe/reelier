@@ -2453,13 +2453,12 @@ callback.
 
 ### 12.2 Authorization and candidate closure
 
-**[Normative]** The v1 candidate fixes repository `seldonframe/reelier`, base
-`e600ad5c2dc5e1bde0714915e7a84980c8d5602b`, destination branch `main`,
-candidate branch `reelier/release/0.32.1`, tag `v0.32.1`, package
-`reelier@0.32.1`, and exactly these changed paths: `CHANGELOG.md`, `src/cli.ts`,
-and `test/cli-subcommand-help.test.ts`. The maximums are three files and 65,536
-changed bytes. The manifest MUST contain exactly these workflow paths in this
-order, each bound to its exact byte digest:
+**[Normative]** The v1 candidate fixes repository `seldonframe/reelier`,
+destination branch `main`, candidate branch `reelier/release/0.32.1`, tag
+`v0.32.1`, package `reelier@0.32.1`, and exactly these changed paths:
+`CHANGELOG.md`, `src/cli.ts`, and `test/cli-subcommand-help.test.ts`. The
+maximums are three files and 65,536 changed bytes. The manifest MUST contain
+exactly these workflow paths in this order, each bound to its exact byte digest:
 
 1. `.github/workflows/ci.yml`
 2. `.github/workflows/docker-publish.yml`
@@ -2469,6 +2468,26 @@ order, each bound to its exact byte digest:
 Equal workflow digests are permitted because two reviewed paths MAY contain
 identical bytes; omission, substitution, duplication, or reordering of paths
 MUST refuse.
+
+**[Normative]** The base commit is NOT a fixed constant of this contract
+(frozen-contract amendment under operator exception R2, 2026-08-19; previously
+it was pinned to `e600ad5c2dc5e1bde0714915e7a84980c8d5602b`). A constant cannot
+pin its own merge commit: the pull request that re-pins the base advances `main`
+past the value it writes, so a constant-equality parser check and the runner's
+`heads/main == plan.baseCommit` check can never both hold once that pull request
+merges. Instead: `baseCommit` MUST be a 40-character lowercase hexadecimal Git
+commit SHA; the staged candidate manifest's `baseCommit` and the operation
+plan's `baseCommit` MUST be identical; the operation plan's `commit.parentSha`
+MUST equal that same `baseCommit`; and the exact value is carried by the
+Ed25519-signed, operator-reviewed authorization bundle. The authority binding
+the base to reality is the runner at dispatch, not the parser: before candidate
+publication, before EVERY provider write, and again before the squash merge, the
+runner MUST re-read `heads/<destinationBranch>` and refuse unless it equals
+`plan.baseCommit`; and it MUST refuse unless the candidate commit's and the
+squash commit's read-back `parentSha` equal `plan.baseCommit`, which is what
+makes the merged commit a direct child of the observed `main` head. Branch, tag,
+package name and version, changed paths, and workflow paths remain
+constant-pinned.
 
 The authorization binds the mission, task, Job Card, pack, policy, Authority
 Cell, root grant, staged manifest, and the four distinct one-effect allocations
