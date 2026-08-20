@@ -14,7 +14,7 @@ import { createReservedDispatchHandle } from "../../src/authority/gate.js";
 import { __testSetAuthorityCellHostPlatform } from "../../src/authority/host/platform.js";
 import { materializedHttpRequestDigest } from "../../src/authority/host/http-response-semantics.js";
 import { createJsonHttpsDispatchAdapter } from "../../src/authority/host/json-https-connector.js";
-import { createGitHubReleaseHostedAuthorityBindingV1 } from "../../src/authority/host/github-release-hosted-authority.js";
+import { assertGitHubReleaseHostedAuthorityBindingV1, createGitHubReleaseHostedAuthorityBindingV1 } from "../../src/authority/host/github-release-hosted-authority.js";
 import { createSignedReleaseAuthorizationBundleV1, createSignedReleaseOperationPlanV1, createSignedReleasePolicyV1, createSignedReleaseVerifierEvidenceV1, createSignedStagedCandidateManifestV1, verifyReleaseAuthorizationBundleV1, type ReleaseEvidenceLaneV1 } from "../../src/authority/release-contracts.js";
 
 const digest = (seed: string) => `sha256:${seed.repeat(64).slice(0, 64)}`;
@@ -123,6 +123,12 @@ test("release runner refuses an unrecognized hosted authority binding before pro
     await assert.rejects(() => governedRun(runner, { alias: "github_release_candidate_publish_v1", allocationId: "release-candidate-branch-01", authorizationHandle: "release_auth_1", requestId: "unrecognized_hosted_authority", semanticsDigest: authorityDigest({ hosted: "unrecognized" }) }), /hosted.*authority/i);
     assert.equal(providerCalls, 0);
   } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("hosted release authority rejects non-canonical validity timestamps", () => {
+  const fixture = releaseAuthorityFixture();
+  const binding = createGitHubReleaseHostedAuthorityBindingV1({ domain: {}, proof: { issuedAt: "not-a-date", expiresAt: "2026-08-18T12:00:00.000Z" }, standing: {}, hosted: {}, mission: { connector: { connectorId: "github", accountId: "seldonframe/reelier" }, authorityDigest: digest("a"), hostedAuthorityDigest: digest("b"), standingAuthorityDigest: digest("c"), trustDomainDigest: digest("d"), validFrom: "2026-08-18T01:00:00.000Z", validUntil: "2026-08-18T12:00:00.000Z" } } as any);
+  assert.throws(() => assertGitHubReleaseHostedAuthorityBindingV1(binding, fixture.context.authorization, new Date("2026-08-18T06:00:00.000Z")), /customer approval/i);
 });
 
 test("signed journal detects tamper and atomic-head rollback", async () => {
