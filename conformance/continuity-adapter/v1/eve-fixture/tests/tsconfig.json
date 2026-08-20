@@ -8,7 +8,9 @@
   "include": [
     "../agent/lib/runtime.ts",
     "../agent/lib/binding.ts",
+    "../agent/lib/cell.ts",
     "../agent/lib/faults.ts",
+    "./cell.test.ts",
     "./runtime.test.ts"
   ]
 }
