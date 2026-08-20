@@ -157,7 +157,7 @@ test("the Cell's HTTP ingress invokes a loaded opaque reference and refuses ever
       const response = await fetch(`${base}/v1/jobs/${jobRef}/invoke`, {
         method: "POST",
         headers: { "content-type": "application/json", ...(bearer ? { authorization: `Bearer ${bearer}` } : {}) },
-        body: JSON.stringify({ requestId, sourceRefs: { repository: "seldonframe/reelier" }, choices: {} }),
+        body: JSON.stringify({ requestId, sourceRefs: { release: "release_candidate_1" }, choices: {} }),
       });
       return { status: response.status, body: await response.json() as { requestId: string; verdict: string; reasonCode: string; lifecycleState: string } };
     };
@@ -168,11 +168,11 @@ test("the Cell's HTTP ingress invokes a loaded opaque reference and refuses ever
 
     const authenticated = await invoke(refs[0]!, "smoke_invoke", token);
     assert.equal(authenticated.status, 202, JSON.stringify(authenticated.body));
-    // The Cell's OWN governed answer, not the ingress failing to find a route.
-    assert.notEqual(authenticated.body.reasonCode, "not-found");
-    assert.equal(typeof authenticated.body.reasonCode, "string");
-    assert.notEqual(authenticated.body.reasonCode, "");
-    assert.equal(["accepted", "refused"].includes(authenticated.body.verdict), true, JSON.stringify(authenticated.body));
+    // The Cell's OWN governed answer, in the same closed result contract the MCP tool returns. An
+    // ingress with no invoke route answers `404 not-found`; this refusal comes from the GATE, after
+    // job resolution and the authenticated binding both passed and source resolution did not — the
+    // hermetic bundle stages no source for this reference, and the smoke never dispatches.
+    assert.deepEqual(authenticated.body, { requestId: "smoke_invoke", verdict: "refused", reasonCode: "source-projection-invalid", lifecycleState: "refused" });
 
     // An opaque reference this Cell never issued is a governed refusal too, never a 404.
     const foreign = await invoke(`jobref_${"0".repeat(64)}`, "smoke_foreign", token);

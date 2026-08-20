@@ -1,5 +1,6 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import { normalizeOutcomeRequestV1 } from "./request.js";
 import type { AuthorityExecutionContextV1 } from "../types.js";
 
 export interface AuthorityIngressOutcome { readonly requestId: string; readonly verdict: "accepted" | "refused"; readonly reasonCode: string; readonly lifecycleState: string; readonly receiptRef?: string; }
@@ -22,7 +23,7 @@ export function buildAuthorityMcpServer(definitions: readonly AuthorityMcpDefini
     ...(artifactStage ? [{ name: "reelier_artifact_stage", description: "Stage text for a reviewed outcome; returns an opaque commitment only.", inputSchema: { type: "object", additionalProperties: false, required: ["requestId", "text", "mediaType"], properties: { requestId: { type: "string" }, text: { type: "string", maxLength: 262144 }, mediaType: { type: "string", const: "text/plain" }, sourceBinding: { type: "string" } } } }] : []),
   ] }));
   server.setRequestHandler(CallToolRequestSchema, async request => {
-    const name = request.params.name; const supplied = (request.params.arguments ?? {}) as Record<string, unknown>; const args = supplied.v === undefined ? { v: "reelier.outcome-request/v1", ...supplied } : supplied;
+    const name = request.params.name; const args = normalizeOutcomeRequestV1((request.params.arguments ?? {}) as Record<string, unknown>);
     try {
       const value = name === "reelier_jobs_search" && handler.jobsSearch ? await handler.jobsSearch(args, context)
         : name === "reelier_job_load" && handler.jobLoad ? await handler.jobLoad(args, context)
