@@ -34,6 +34,19 @@ export interface DispatchPublication {
   loadDurableHead?(query:DurableDispatchPublicationQueryV1,expect?:"terminal"|"root-or-terminal"):Promise<DurableDispatchPublicationHeadV1|null>;
 }
 export interface DispatchCoordinator { dispatch(handle: ReservedDispatchHandle): Promise<DispatchOutcome>; cancel(handle: ReservedDispatchHandle, reason?: string): Promise<DispatchOutcome>; reconcile(reservationId: string): Promise<DispatchOutcome>; recover(): Promise<readonly string[]>; }
+export class DispatchBoundaryFailure extends Error {
+  readonly classification: string;
+  readonly phase: string;
+  readonly providerEffectPossible: boolean;
+  constructor(input: Readonly<{ classification: string; phase: string; providerEffectPossible: boolean; cause?: unknown }>) {
+    super(input.classification, input.cause === undefined ? undefined : { cause: input.cause });
+    this.name = "DispatchBoundaryFailure";
+    this.classification = input.classification;
+    this.phase = input.phase;
+    this.providerEffectPossible = input.providerEffectPossible;
+    Object.freeze(this);
+  }
+}
 export interface DispatchBudget { consumeOnce(input: Readonly<{ allocationId: string; reservationId: string; effects: number }>): Promise<unknown>; returnOnce(input: Readonly<{ allocationId: string; reservationId: string; effects: number }>): Promise<unknown>; releaseConsumedOnce?(input: Readonly<{ allocationId: string; reservationId: string; effects: number }>): Promise<unknown>; }
 export interface CurrentDispatchAuthorityV1 { readonly authorityGeneration: string; readonly authorityExpiresAt: string; readonly authorityStateDigest?: string; readonly sourceBundleDigest?: string; readonly grantDigest?: string; readonly runtimeSessionId?: string; readonly routeAuthorityDigest: string; readonly providerId?: string; readonly connectorId?: string; readonly accountId?: string; readonly endpointId?: string; }
 export interface DispatchAuthorityRevalidator { revalidate(state: DispatchRequestState): Promise<CurrentDispatchAuthorityV1>; routeReread(state: DispatchRequestState): Promise<import("../ledger.js").RouteAuthoritySnapshotV1>; }
@@ -145,7 +158,8 @@ export function createDispatchCoordinator(ledger: AuthorityLedger, adapter: Disp
           // durable identity must come from the reservation reread after the prepared CAS.
           const rootState=Object.freeze({...state,reservation:persisted}) as DispatchRequestState;
           const rootOutcome=Object.freeze({kind:"ambiguous" as const,resultDigest:authorityDigest({reservationId,phase:"reservation"})});
-          reservationRoot=await publication.publishReservation(coordinatorPublicationCall({phase:"reservation",identity,state:rootState,outcome:rootOutcome,dispatchedRequestDigest:null,priorReceiptDigest:null}));
+          try { reservationRoot=await publication.publishReservation(coordinatorPublicationCall({phase:"reservation",identity,state:rootState,outcome:rootOutcome,dispatchedRequestDigest:null,priorReceiptDigest:null})); }
+          catch (error) { throw new DispatchBoundaryFailure({ classification: "reservation-publication-unavailable", phase: "reservation-publication", providerEffectPossible: false, cause: error }); }
         }
         authorizeCoordinatorCommittedLease(lease);
         let outcome: DispatchOutcome;

@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { generateKeyPairSync } from "node:crypto";
-import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -224,6 +224,29 @@ test("opaque invoke converges exact retries and refuses request-id semantic conf
     assert.equal(secondDefinition.verdict, "accepted", JSON.stringify(secondDefinition));
     assert.equal(dispatches, 2);
     assert.deepEqual(dispatchedEndpoints, [gmailReplyWriteEndpointId, slackChannelTopicWriteEndpointId]);
+  } finally { await rm(fixture.root, { recursive: true, force: true }); }
+});
+
+test("local runtime durably records a redacted dispatch failure without widening the public refusal", async () => {
+  const fixture = await multiDefinitionFixture();
+  const adapter: DispatchAdapter = {
+    async prepare() { throw new TypeError("secret-bearing prepare failure"); },
+    async dispatch() { throw new Error("legacy path must not run"); },
+  };
+  try {
+    const runtime = await createLocalAuthorityRuntime(fixture.config, { jobCardTrustPin: fixture.trustPin, delegation: fixture.delegation, dispatchAdapter: adapter });
+    const ref = (await runtime.jobsSearch!({}, fixture.context) as { jobs: Array<{ jobRef: string }> }).jobs[0]!.jobRef;
+    const result = await runtime.invoke!({ v: "reelier.outcome-request/v1", jobRef: ref, requestId: "dispatch_failure_1", sourceRefs: { thread: "thread_1" }, choices: {} }, fixture.context);
+    assert.deepEqual(result, { requestId: "dispatch_failure_1", verdict: "refused", reasonCode: "dispatch-unavailable", lifecycleState: "unavailable" });
+    const diagnosticDir = path.join(fixture.config.receiptDir, "runtime-failures");
+    const names = await readdir(diagnosticDir).catch(() => []);
+    assert.equal(names.length, 1);
+    const bytes = await readFile(path.join(diagnosticDir, names[0]!), "utf8");
+    assert.equal(bytes.includes("secret-bearing"), false);
+    const diagnostic = JSON.parse(bytes) as Record<string, unknown>;
+    assert.equal(diagnostic.classification, "dispatch-internal-unavailable");
+    assert.equal(diagnostic.providerEffectPossible, true);
+    assert.match(String(diagnostic.errorDigest), /^sha256:[0-9a-f]{64}$/);
   } finally { await rm(fixture.root, { recursive: true, force: true }); }
 });
 

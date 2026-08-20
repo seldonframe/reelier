@@ -6,6 +6,7 @@ import type { AuthorityGate, GateResult } from "../src/authority/gate.js";
 import type { DispatchCoordinator } from "../src/authority/host/dispatch.js";
 import type { AuthorityLedger, ReservationLinkage } from "../src/authority/ledger.js";
 import type { GateDecisionSink } from "../src/authority/decision.js";
+import { __testSetAuthorityCellHostPlatform } from "../src/authority/host/platform.js";
 
 const request = { v: "reelier.outcome-request/v1", requestId: "req-runtime-1", sourceRefs: { source: "opaque-source" }, choices: {} } as const;
 
@@ -45,4 +46,31 @@ test("shadow runtime returns a report-only lifecycle and never an accepted recei
   const result = await runtime.outcome("gmail_reply_send_v1", request, { tenant: "tenant-a", requester: "human-a" });
   assert.equal(result.verdict, "refused");
   assert.equal(result.lifecycleState, "shadow");
+});
+
+test("dispatch failures keep the public refusal closed while recording a safe internal classification", async () => {
+  const restore = __testSetAuthorityCellHostPlatform("linux");
+  const recorded: unknown[] = [];
+  const gateResult = { kind: "accepted", signedDecision: { reservationId: "res-runtime-failure-1", gateEvent: { verdict: "accepted", reasonCode: "accepted", at: "2026-08-09T00:00:00.000Z" }, decisionContext: { requestId: request.requestId } }, handle: Object.freeze({}) } as unknown as GateResult;
+  const runtime = createAuthorityHostRuntime({
+    gate: { decide: async () => gateResult },
+    dispatch: { dispatch: async () => { throw new TypeError("secret-bearing implementation detail"); } } as unknown as DispatchCoordinator,
+    ledger: {} as AuthorityLedger,
+    decisions: {} as GateDecisionSink,
+    failureRecorder: { record: async (value: unknown) => { recorded.push(value); } },
+  } as never);
+  try {
+    const result = await runtime.outcome("gmail_reply_send_v1", request, { tenant: "tenant-a", requester: "human-a" });
+    assert.deepEqual(result, { requestId: request.requestId, verdict: "refused", reasonCode: "dispatch-unavailable", lifecycleState: "unavailable" });
+    assert.equal(recorded.length, 1);
+    const diagnostic = recorded[0] as Record<string, unknown>;
+    assert.equal(diagnostic.v, "reelier.dispatch-failure-diagnostic/internal-v1");
+    assert.equal(diagnostic.requestId, request.requestId);
+    assert.equal(diagnostic.reservationId, "res-runtime-failure-1");
+    assert.equal(diagnostic.classification, "dispatch-internal-unavailable");
+    assert.equal(diagnostic.phase, "unknown");
+    assert.equal(diagnostic.providerEffectPossible, true);
+    assert.match(String(diagnostic.errorDigest), /^sha256:[0-9a-f]{64}$/);
+    assert.equal(JSON.stringify(diagnostic).includes("secret-bearing"), false);
+  } finally { restore(); }
 });

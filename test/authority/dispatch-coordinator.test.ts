@@ -201,6 +201,36 @@ test("prepared dispatch carries accepted gate provenance into the durable reserv
   assert.deepEqual(order.slice(0, 2), ["reservation", "provider"]);
 });
 
+test("reservation publication failure is classified before the provider boundary", async () => {
+  const projection = { v: "reelier.materialized-http-request/v1" as const, method: "POST" as const, origin: "https://provider.example", normalizedPath: "/write", normalizedQuery: "", reviewedHeaders: {}, bodyDigest: sha("0") };
+  const materializedRequestDigest = materializedHttpRequestDigest(projection);
+  let persisted: any = { reservationId: "r1", state: "reserved", intent: { tenant: "tenant_1", requestDigest: sha("1"), capabilityDigest: sha("2"), effectDigest: sha("3"), effectCanonicalBase64: "e30=", executionContext: { allocationId: "allocation_1" }, routeAuthority: { routeDigest: sha("f"), expectedMaterializedRequestDigest: materializedRequestDigest } } };
+  let providerCalls = 0;
+  const coordinator = createDispatchCoordinator({
+    async getReservation() { return persisted; },
+    async commitPreparedDispatch(input: any) {
+      persisted = { ...persisted, state: "dispatched", sendStarted: true };
+      return createDispatchCommitLease({ reservationId: input.reservationId, allocationId: input.allocationId, preparedDigest: input.preparedDescription.materializedRequestDigest, authorityGeneration: input.expectedAuthorityGeneration, authorityExpiresAt: input.preparedDescription.authorityExpiresAt, absoluteDeadlineMs: input.absoluteDeadlineMs, commitGeneration: "commit_1" });
+    },
+  } as any, {
+    async prepare() { return createPreparedDispatch({ description: { v: "reelier.prepared-dispatch-description/v1", routeDigest: sha("f"), materializedRequestDigest, projection, authorityGeneration: "generation_1", authorityExpiresAt: new Date(Date.now() + 60_000).toISOString(), absoluteDeadlineMs: performance.now() + 60_000, reservationId: "r1", allocationId: "allocation_1" }, send: async () => { providerCalls++; return { kind: "acknowledged", resultDigest: sha("c") }; } }); },
+    async dispatch() { throw new Error("legacy path must not run"); },
+  }, undefined, {
+    async publishReservation() { throw new Error("secret-bearing receipt backend failure"); },
+    async loadDurableHead() { return null; },
+    async publish() { throw new Error("terminal publication must not run"); },
+  });
+  const handle = createReservedDispatchHandle({ reservation: persisted, effect: {}, effectCanonicalBase64: "e30=", effectDigest: sha("3") });
+  await assert.rejects(() => coordinator.dispatch(handle), (error: any) => {
+    assert.equal(error.classification, "reservation-publication-unavailable");
+    assert.equal(error.phase, "reservation-publication");
+    assert.equal(error.providerEffectPossible, false);
+    assert.equal(String(error.message).includes("secret-bearing"), false);
+    return true;
+  });
+  assert.equal(providerCalls, 0);
+});
+
 test("a stale colluding revalidator cannot cross credential, prepare, store, or provider boundaries", async () => {
   const generation = sha("1"), staleGeneration = sha("2");
   const expiresAt = new Date(Date.now() + 60_000).toISOString();
