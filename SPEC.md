@@ -2453,8 +2453,8 @@ callback.
 
 ### 12.2 Authorization and candidate closure
 
-**[Normative]** The v1 candidate fixes repository `seldonframe/reelier`,
-destination branch `main`, candidate branch `reelier/release/0.32.1`, tag
+**[Normative]** The v1 candidate fixes destination branch `main`, candidate
+branch `reelier/release/0.32.1`, tag
 `v0.32.1`, package `reelier@0.32.1`, and exactly these changed paths:
 `CHANGELOG.md`, `src/cli.ts`, and `test/cli-subcommand-help.test.ts`. The
 maximums are three files and 65,536 changed bytes. The manifest MUST contain
@@ -2488,6 +2488,26 @@ squash commit's read-back `parentSha` equal `plan.baseCommit`, which is what
 makes the merged commit a direct child of the observed `main` head. Branch, tag,
 package name and version, changed paths, and workflow paths remain
 constant-pinned.
+
+**[Normative]** The repository is NOT a fixed constant of this contract either
+(frozen-contract amendment under operator exception R3, 2026-08-20; previously
+it was pinned to `seldonframe/reelier`). Under the constant, a rehearsal-scoped
+artifact set naming a scratch repository refused at parse — before any
+signature, key, or provider was consulted — so the governed release path could
+not be rehearsed end to end. Instead: `repository` MUST match `owner/name`
+format, one `/`, each side alphanumeric-led and at most 100 characters, which is
+the same pattern the GitHub release HTTPS provider applies to its own
+configuration; and the staged candidate manifest's `repository` and the
+operation plan's `repository` MUST be identical. The exact value is carried by
+the Ed25519-signed, operator-reviewed authorization bundle. The authority
+binding the repository to reality is the operator's runner configuration, not
+the parser and not the bundle: the provider MUST refuse any repository other
+than its configured one as a definitive refusal before any credential, DNS, or
+socket work, and the configured repository MUST be part of the provider's closed
+allowed-path prefix. A signed repository the operator has not independently
+configured therefore MUST NOT produce a provider effect. A signed repository is
+proof of what was authorized, never proof that the authorized repository was the
+right one; that remains an operator review claim.
 
 The authorization binds the mission, task, Job Card, pack, policy, Authority
 Cell, root grant, staged manifest, and the four distinct one-effect allocations
