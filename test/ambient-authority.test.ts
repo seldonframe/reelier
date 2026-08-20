@@ -53,6 +53,7 @@ test("customer-rooted authority accepts the WebAuthn EdDSA profile", () => {
 
 test("authority rejects tenant aliasing, expiry, and any child widening", () => {
   const value = fixture();
+  assert.throws(() => verifyCustomerRootedAuthorityV1({ domain, ...value, standing: { ...value.standing, tenant: "tenant-b" }, now, replay: createApprovalReplayProtectorV1() }), /cross-tenant/);
   assert.throws(() => parseTrustDomainDescriptorV1({ ...domain, origin: "http://operator.example" }), /origin/);
   assert.throws(() => verifyCustomerRootedAuthorityV1({ domain, ...value, mission: { ...value.mission, limits: { ...limits, maxEffectsPerWindow: 5 } }, now, replay: createApprovalReplayProtectorV1() }), /widening/);
   assert.throws(() => verifyCustomerRootedAuthorityV1({ domain, ...value, proof: { ...value.proof, expiresAt: "2026-08-20T11:59:00.000Z" }, now, replay: createApprovalReplayProtectorV1() }), /binding|expired|validity/);
