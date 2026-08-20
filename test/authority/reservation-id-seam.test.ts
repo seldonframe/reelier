@@ -31,20 +31,20 @@ const projection: MaterializedHttpRequestProjectionV1 = { v: "reelier.materializ
 const materializedRequestDigest = materializedHttpRequestDigest(projection);
 const routeAuthority = { v: "reelier.route-authority-snapshot/v1" as const, connectorRegistrationDigest: sha("2"), operatorConfigurationDigest: sha("3"), routeDigest: sha("4"), providerId: "github", connectorId: "github", accountId: "account_1", providerAccountIdentity: "github:owner", endpointId: "write", credentialSlotId: "slot_1", slotInstanceId: "instance_1", slotVersion: "1", authenticatedProviderIdentityDigest: sha("5"), sourceReadRouteDigest: sha("6"), projectionSchemaDigest: sha("7"), expectedMaterializedRequestDigest: materializedRequestDigest, authorityGeneration: sha("d"), authorityExpiresAt: new Date(t0 + 60_000).toISOString() };
 
-function releaseIntent(): ReservationIntent {
+function releaseIntent(includeRouteAuthority = true): ReservationIntent {
   const limits = { maxEffectsPerWindow: 2, windowSeconds: 3600, maxEffectsPerSourceTrigger: 1, maxBodyBytes: 4096 };
   const requestWire = { v: "reelier.outcome-request/v1", requestId: "request_1", sourceRefs: { source: "ref_1" }, choices: {} };
   const canonicalRequestBytes = authorityCanonicalBytes(requestWire);
   const requestDigest = `sha256:${createHash("sha256").update(canonicalRequestBytes).digest("hex")}`;
-  const scalar = { tenant: "tenant_1", requester: "requester_1", definitionAlias: "definition_1", requestId: "request_1", requestKey: authenticatedOutcomeRequestState(authenticateOutcomeRequest({ tenant: "tenant_1", requester: "requester_1", definitionAlias: "definition_1", request: requestWire })).requestKey, ingressClaimDigest: sha("9"), decisionContextDigest: sha("7"), contractDigest: sha("a"), sourceBundleDigest: sha("b"), sourceSnapshotDigest: sha("c"), authorityStateDigest: sha("d"), limits, limitsDigest: "", capabilityId: "capability_1", outcomeKey: sha("3"), effectDigest: authorityDigest(effect), issuedAt: new Date(t0).toISOString(), expiresAt: new Date(t0 + CAPABILITY_LIFETIME_MS).toISOString(), limitSlots: [{ kind: "contract-window" as const, key: sha("5"), maximum: 2 }, { kind: "source-trigger" as const, key: sha("6"), maximum: 1 }], effectCanonicalBase64: authorityCanonicalBytes(effect).toString("base64"), routeAuthority };
+  const scalar = { tenant: "tenant_1", requester: "requester_1", definitionAlias: "definition_1", requestId: "request_1", requestKey: authenticatedOutcomeRequestState(authenticateOutcomeRequest({ tenant: "tenant_1", requester: "requester_1", definitionAlias: "definition_1", request: requestWire })).requestKey, ingressClaimDigest: sha("9"), decisionContextDigest: sha("7"), contractDigest: sha("a"), sourceBundleDigest: sha("b"), sourceSnapshotDigest: sha("c"), authorityStateDigest: sha("d"), limits, limitsDigest: "", capabilityId: "capability_1", outcomeKey: sha("3"), effectDigest: authorityDigest(effect), issuedAt: new Date(t0).toISOString(), expiresAt: new Date(t0 + CAPABILITY_LIFETIME_MS).toISOString(), limitSlots: [{ kind: "contract-window" as const, key: sha("5"), maximum: 2 }, { kind: "source-trigger" as const, key: sha("6"), maximum: 1 }], effectCanonicalBase64: authorityCanonicalBytes(effect).toString("base64"), ...(includeRouteAuthority ? { routeAuthority } : {}) };
   scalar.limitsDigest = authorityDigest({ v: "reelier.capability-limits/internal-v1", contractDigest: scalar.contractDigest, limits });
   const capabilityBytes = authorityCanonicalBytes({ v: "reelier.compiled-capability/v1", tenant: scalar.tenant, requester: scalar.requester, definitionAlias: scalar.definitionAlias, requestDigest, requestKey: scalar.requestKey, contractDigest: scalar.contractDigest, sourceBundleDigest: scalar.sourceBundleDigest, sourceSnapshotDigest: scalar.sourceSnapshotDigest, authorityStateDigest: scalar.authorityStateDigest, limits, limitsDigest: scalar.limitsDigest, capabilityId: scalar.capabilityId, outcomeKey: scalar.outcomeKey, effectDigest: scalar.effectDigest, issuedAt: scalar.issuedAt, expiresAt: scalar.expiresAt });
   return { ...scalar, canonicalRequestBytes, capabilityBytes, requestDigest, canonicalRequestDigest: requestDigest, capabilityDigest: `sha256:${createHash("sha256").update(capabilityBytes).digest("hex")}` } as unknown as ReservationIntent;
 }
 
-async function mintRealReservation(ledgerDir: string): Promise<Readonly<{ ledger: FsAuthorityLedger; reservation: ReservationSnapshot; candidate: ReservationIntent }>> {
+async function mintRealReservation(ledgerDir: string, includeRouteAuthority = true): Promise<Readonly<{ ledger: FsAuthorityLedger; reservation: ReservationSnapshot; candidate: ReservationIntent }>> {
   const ledger = new FsAuthorityLedger(ledgerDir, { now: () => t0, monotonicNow: () => 0 });
-  const candidate = releaseIntent();
+  const candidate = releaseIntent(includeRouteAuthority);
   const binding = await ledger.bindIngress(authenticateOutcomeRequest({ tenant: candidate.tenant, requester: candidate.requester, definitionAlias: candidate.definitionAlias!, request: JSON.parse(Buffer.from(candidate.canonicalRequestBytes).toString("utf8")) }));
   assert.equal(binding.ok, true);
   const created = await ledger.reserve({ ...candidate, ingressClaimDigest: (binding as { ingressClaimDigest: string }).ingressClaimDigest });
@@ -87,6 +87,22 @@ test("a raw ledger-minted reservation publishes its durable root and reaches a t
     assert.match(outcome.receiptRef!, /^sha256:[0-9a-f]{64}$/);
     assert.equal((await ledger.getReservation(reservation.reservationId))?.state, "acknowledged");
     assert.ok((await readdir(receiptsRoot)).every(name => name.startsWith("durable-")), "the terminal publish must reach the durable chain, not silently fall back to a sibling legacyPublish receipt file");
+  } finally { restore(); await rm(ledgerRoot, { recursive: true, force: true }); await rm(receiptsRoot, { recursive: true, force: true }); }
+});
+
+test("a prepared internal saga without external route authority publishes its durable root", async () => {
+  const restore = __testSetAuthorityCellHostPlatform("linux");
+  const ledgerRoot = await bindableTempRoot("reelier-internal-saga-ledger-");
+  const receiptsRoot = await mkdtemp(path.join(tmpdir(), "reelier-internal-saga-receipts-"));
+  try {
+    const { ledger, reservation, candidate } = await mintRealReservation(ledgerRoot, false);
+    assert.equal(reservation.intent.routeAuthority, undefined, "the regression must exercise the real internal-saga shape");
+    const publication = createFileReceiptPublication({ rootDir: receiptsRoot });
+    const coordinator = createDispatchCoordinator(ledger, preparedAdapter(reservation), undefined, publication);
+    const outcome = await coordinator.dispatch(createReservedDispatchHandle({ reservation, effect, effectCanonicalBase64: candidate.effectCanonicalBase64!, effectDigest: candidate.effectDigest }));
+    assert.equal(outcome.kind, "acknowledged");
+    assert.equal((await ledger.getReservation(reservation.reservationId))?.state, "acknowledged");
+    assert.ok((await readdir(receiptsRoot)).every(name => name.startsWith("durable-")));
   } finally { restore(); await rm(ledgerRoot, { recursive: true, force: true }); await rm(receiptsRoot, { recursive: true, force: true }); }
 });
 

@@ -333,11 +333,14 @@ function recoveredState(reservation: DispatchRequestState["reservation"]): Dispa
 function durableIdentity(reservation:import("../ledger.js").ReservationSnapshot):DurableDispatchPublicationIdentityV1{
   const intent=reservation.intent;
   const route=intent.routeAuthority;
-  if(!route)throw new TypeError("durable publication requires route authority");
-  const required=[intent.requestDigest,intent.capabilityDigest,intent.effectDigest,route.expectedMaterializedRequestDigest];
+  const prepared=reservation.preparedDispatchBinding;
+  const expectedDispatchedRequestDigest=prepared?.materializedRequestDigest??route?.expectedMaterializedRequestDigest;
+  if(!expectedDispatchedRequestDigest)throw new TypeError("durable publication requires a prepared dispatch binding");
+  const required=[intent.requestDigest,intent.capabilityDigest,intent.effectDigest,expectedDispatchedRequestDigest];
   if(typeof intent.tenant!=="string"||intent.tenant.length===0||required.some(value=>typeof value!=="string"||!/^sha256:(?!0{64}$)[0-9a-f]{64}$/.test(value)))throw new TypeError("durable publication identity is invalid");
   const reservationId=normalizeReservationPublicationId(reservation.reservationId);
-  return Object.freeze({v:"reelier.durable-dispatch-publication-identity/v1",reservationId,tenant:intent.tenant,requestDigest:intent.requestDigest,capabilityDigest:intent.capabilityDigest,effectDigest:intent.effectDigest,routeAuthorityDigest:authorityDigest(route),expectedDispatchedRequestDigest:route.expectedMaterializedRequestDigest,reservationIntentDigest:authorityDigest({v:"reelier.dispatch-reservation-intent/v1",intent})});
+  const routeAuthorityDigest=route?authorityDigest(route):authorityDigest({v:"reelier.internal-prepared-route-authority/v1",routeDigest:prepared!.routeDigest,behaviorDigest:prepared!.behaviorDigest,authorityGeneration:prepared!.authorityGeneration,authorityExpiresAt:prepared!.authorityExpiresAt});
+  return Object.freeze({v:"reelier.durable-dispatch-publication-identity/v1",reservationId,tenant:intent.tenant,requestDigest:intent.requestDigest,capabilityDigest:intent.capabilityDigest,effectDigest:intent.effectDigest,routeAuthorityDigest,expectedDispatchedRequestDigest,reservationIntentDigest:authorityDigest({v:"reelier.dispatch-reservation-intent/v1",intent})});
 }
 
 function durableQuery(identity:DurableDispatchPublicationIdentityV1,ledgerState:"dispatched"|"ambiguous"):DurableDispatchPublicationQueryV1{return Object.freeze({v:"reelier.durable-dispatch-publication-query/v1",identity,ledgerState,sendStarted:true});}
