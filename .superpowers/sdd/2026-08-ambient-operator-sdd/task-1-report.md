@@ -73,3 +73,56 @@ Open risks
 - The in-memory replay protector is suitable for OSS callers and tests, but production Cloud must provide atomic durable nonce consumption before accepting an approval.
 - The task does not define attestation/counter semantics, backup credential lifecycle, or Cloud enrollment ceremony persistence; those remain Cloud implementation responsibilities.
 - The full repository suite is not green on this Windows worktree because three Authority Cell host-runtime tests require Linux. No unrelated runtime/platform files were changed to alter that behavior.
+
+## Fix round 1
+
+Files changed
+
+- `src/authority/ambient-authority.ts`
+- `src/authority/index.ts`
+- `test/ambient-authority.test.ts`
+- `.superpowers/sdd/2026-08-ambient-operator-sdd/task-1-report.md`
+
+What changed
+
+- Added a required tenant/trust-domain-qualified trusted customer credential resolver. Verification now compares both the credential ID and exact JCS public-key JWK material from the resolver before accepting the WebAuthn signature; a caller-provided key cannot establish authority.
+- Added closed `CustomerAuthorityPayloadV1` with the sole accepted purpose `ambient-operator`. The proof carries that payload and its digest; parsing and verification recompute the JCS digest, bind the payload tenant/connector to the proof, and reject purpose substitution or unknown/KMS-only purposes.
+- Made every envelope/grant attenuation boundary strict: each child has a strictly shorter window and strictly interior validity range. Equal limits, equal windows, and equality at a validity endpoint now refuse.
+- Standing and hosted envelopes are deliberately customer-rooted envelopes, not mission child grants. Their validity is closed by strict containment in both the customer proof and trust-domain window; the 12-hour cap applies to the mission child grant as required by the global constraint. Focused tests exercise an allowed bounded standing/hosted chain and a mission duration over 12 hours.
+- Reworked expiry coverage to build a fully digest-linked expired proof/envelope/mission chain, so the refusal reaches the expiry gate rather than failing earlier on a stale digest.
+
+Test results (verbatim tail)
+
+Command: `npx tsc -p tsconfig.json --noEmit`
+
+Result: exit 0 (no output).
+
+Command: `npm run check:authority-contract`
+
+```text
+> reelier@0.32.1 check:authority-contract
+> node scripts/build-authority-contract.mjs --check
+```
+
+Result: exit 0.
+
+Command: `npx tsc -p tsconfig.test.json --noEmit; node --test --test-concurrency=1 dist-test/test/ambient-authority.test.js`
+
+```text
+✔ customer-rooted authority verifies trusted WebAuthn ES256 and EdDSA exactly once (7.9545ms)
+✔ customer approval rejects attacker credentials and purpose substitution (1.2209ms)
+✔ authority rejects cross-tenant aliasing, strict equality, and correctly bound expiry (3.0345ms)
+✔ standing and hosted roots are bounded by proof/domain; only mission grants have a twelve-hour cap (1.8571ms)
+ℹ tests 4
+ℹ suites 0
+ℹ pass 4
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 165.5329
+```
+
+Open risks
+
+- The credential resolver contract is deliberately OSS-local. Cloud must implement it with atomic tenant/trust-domain credential lifecycle and revocation handling before using hosted issuance.
