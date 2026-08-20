@@ -107,11 +107,12 @@ function workspace(patch: (parameters: Record<string, any>) => void = () => {}, 
   return { root, keysDir, outDir, parametersFile, trustPinFile, tarballFile, authorizationKeys };
 }
 
+/** Every ordinary test call uses the test barrel explicitly and measures the packed artifact. */
 function runSigner(space: Workspace, extra: string[] = [], options: { readonly measureTarball?: boolean } = {}): SpawnSyncReturns<string> {
   const tarballArgs = options.measureTarball === false || extra.includes("--tarball") ? [] : ["--tarball", space.tarballFile];
   return spawnSync(process.execPath, [
     signScript, "--candidate", space.parametersFile, "--keys", space.keysDir,
-    "--out", space.outDir, "--repo", repoRoot, ...tarballArgs, ...extra,
+    "--out", space.outDir, "--repo", repoRoot, ...tarballArgs, "--unsafe-test-barrel", ...extra,
   ], { encoding: "utf8", env: { ...process.env, REELIER_RELEASE_BARREL: barrelUrl } });
 }
 
@@ -311,6 +312,117 @@ test("--repository defaults to the production repository and refuses a malformed
       assert.match(refused.stderr, /--repository .* must be an owner\/name repository identity/);
     }
   } finally { rmSync(space.root, { force: true, recursive: true }); }
+});
+
+test("REELIER_RELEASE_BARREL without --unsafe-test-barrel refuses before anything is written", () => {
+  const space = workspace();
+  try {
+    const signed = spawnSync(process.execPath, [
+      signScript, "--candidate", space.parametersFile, "--keys", space.keysDir,
+      "--out", space.outDir, "--repo", repoRoot,
+    ], { encoding: "utf8", env: { ...process.env, REELIER_RELEASE_BARREL: barrelUrl } });
+    assert.equal(signed.status, 1);
+    assert.match(signed.stderr, /REELIER_RELEASE_BARREL is set .* but --unsafe-test-barrel was not passed/);
+    assert.throws(() => readdirSync(space.outDir));
+    assert.equal(signed.stdout.includes("PRIVATE KEY"), false);
+    assert.equal(signed.stderr.includes("PRIVATE KEY"), false);
+  } finally { rmSync(space.root, { force: true, recursive: true }); }
+});
+
+test("REELIER_RELEASE_BARREL with --unsafe-test-barrel signs, and the summary names the barrel in use", () => {
+  const space = workspace();
+  try {
+    const signed = runSigner(space);
+    assert.equal(signed.status, 0, `${signed.stdout}\n${signed.stderr}`);
+    assert.equal(signed.stdout.includes(`barrel: ${barrelUrl}`), true);
+  } finally { rmSync(space.root, { force: true, recursive: true }); }
+});
+
+test("the default barrel is named in the summary when REELIER_RELEASE_BARREL is not set", () => {
+  const space = workspace();
+  try {
+    const { REELIER_RELEASE_BARREL: _unused, ...envWithoutBarrel } = process.env;
+    const signed = spawnSync(process.execPath, [
+      signScript, "--candidate", space.parametersFile, "--keys", space.keysDir,
+      "--out", space.outDir, "--repo", repoRoot,
+    ], { encoding: "utf8", env: envWithoutBarrel });
+    const defaultBarrelUrl = pathToFileURL(path.resolve("dist/authority/index.js")).href;
+    assert.equal(signed.status, 0, `${signed.stdout}\n${signed.stderr}`);
+    assert.equal(signed.stdout.includes(`barrel: ${defaultBarrelUrl}`), true);
+  } finally { rmSync(space.root, { force: true, recursive: true }); }
+});
+
+// "VERIFIED" elsewhere in this script's output is self-referential — the pin it self-checks is
+// derived from the same key it just signed with. --trust-pin checks the signing key against an
+// independent claim (the same file format verify-release-authorization.mjs reads).
+test("--trust-pin passes when the signing key matches, and the summary says VERIFIED", () => {
+  const space = workspace();
+  try {
+    const signed = runSigner(space, ["--trust-pin", space.trustPinFile]);
+    assert.equal(signed.status, 0, `${signed.stdout}\n${signed.stderr}`);
+    assert.equal(signed.stdout.includes(`VERIFIED: signing key matches the production trust pin ${space.trustPinFile}`), true);
+  } finally { rmSync(space.root, { force: true, recursive: true }); }
+});
+
+test("--trust-pin refuses before any write when the signing key does not match, and names both digests", () => {
+  const space = workspace();
+  try {
+    const mismatchedKeys = generateKeyPairSync("ed25519");
+    const badPin = path.join(space.root, "bad-trust-pin.json");
+    writeFileSync(badPin, `${JSON.stringify({
+      publicKeySpkiBase64: spki(mismatchedKeys.publicKey),
+      signerId: "release-authority-2026",
+      v: "reelier.release-authorization-trust-pin/v1",
+    })}\n`, "utf8");
+    const signed = runSigner(space, ["--trust-pin", badPin]);
+    assert.equal(signed.status, 1);
+    assert.match(signed.stderr, /does not match the production trust pin/);
+    const digestMatches = signed.stderr.match(/sha256:[0-9a-f]{64}/g) ?? [];
+    assert.equal(digestMatches.length >= 2, true, `expected both digests named in: ${signed.stderr}`);
+    assert.throws(() => readdirSync(space.outDir));
+    assert.equal(signed.stdout.includes("PRIVATE KEY"), false);
+    assert.equal(signed.stderr.includes("PRIVATE KEY"), false);
+  } finally { rmSync(space.root, { force: true, recursive: true }); }
+});
+
+test("an absent --trust-pin prints the honesty line instead of silently skipping the check", () => {
+  const space = workspace();
+  try {
+    const signed = runSigner(space);
+    assert.equal(signed.status, 0, `${signed.stdout}\n${signed.stderr}`);
+    assert.equal(signed.stdout.includes("NOT CHECKED: signing key against the production trust pin (--trust-pin not given)"), true);
+  } finally { rmSync(space.root, { force: true, recursive: true }); }
+});
+
+test("a rehearsal --repository prints the carrier-ref collision warning; the default repository does not", () => {
+  const space = workspace();
+  try {
+    const rehearsal = "seldonframe/reelier-release-rehearsal";
+    const rehearsalRun = runSigner(space, ["--repository", rehearsal]);
+    assert.equal(rehearsalRun.status, 0, `${rehearsalRun.stdout}\n${rehearsalRun.stderr}`);
+    assert.match(rehearsalRun.stdout, /WARNING: --repository seldonframe\/reelier-release-rehearsal differs from the production repository seldonframe\/reelier/);
+    assert.match(rehearsalRun.stdout, /refs\/reelier\/release-authorizations\/v0\.32\.1/);
+
+    const defaultRun = runSigner(space);
+    assert.equal(defaultRun.status, 0, `${defaultRun.stdout}\n${defaultRun.stderr}`);
+    assert.equal(/WARNING:/.test(defaultRun.stdout), false);
+  } finally { rmSync(space.root, { force: true, recursive: true }); }
+});
+
+test("an unrelated workflowCommit prints a one-line notice; a workflowCommit matching base or candidate does not", () => {
+  const unrelated = workspace();
+  try {
+    const signed = runSigner(unrelated);
+    assert.equal(signed.status, 0, `${signed.stdout}\n${signed.stderr}`);
+    assert.match(signed.stdout, /NOTICE: workflowCommit [0-9a-f]{40} is neither baseCommit nor candidateCommit — workflow digests were measured at an unrelated commit and will only fail at provider readback if wrong\./);
+  } finally { rmSync(unrelated.root, { force: true, recursive: true }); }
+
+  const related = workspace(parameters => { parameters.candidateCommit = workflowCommit; });
+  try {
+    const signed = runSigner(related);
+    assert.equal(signed.status, 0, `${signed.stdout}\n${signed.stderr}`);
+    assert.equal(/NOTICE: workflowCommit/.test(signed.stdout), false);
+  } finally { rmSync(related.root, { force: true, recursive: true }); }
 });
 
 test("--help and the parameters template answer before any key is read", () => {

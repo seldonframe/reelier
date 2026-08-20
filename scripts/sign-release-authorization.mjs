@@ -53,7 +53,10 @@
 // itself, because creating the carrier ref is an operator action with a review step.
 //
 // BUILD PREREQUISITE: imports the built authority barrel (dist/authority/index.js).
-// REELIER_RELEASE_BARREL overrides the barrel module URL (test seam; same as the verifier).
+// REELIER_RELEASE_BARREL overrides the barrel module URL (test seam; same as the verifier). The
+// override is refused unless --unsafe-test-barrel is also passed: the module it names receives BOTH
+// private signing keys (see KEYS below), so silently honoring an inherited env var would let a
+// misconfigured shell redirect the entire ceremony's private-key handling without anyone noticing.
 
 import { execFileSync } from "node:child_process";
 import { createHash, createPrivateKey, createPublicKey } from "node:crypto";
@@ -135,6 +138,14 @@ Options:
   --now <iso8601>      issuedAt instant; expiresAt is exactly +12h (default: now)
   --envelope <file>    also write the single-file reelier.release-authorization-transport/v1
                        form that verify-release-authorization.mjs --artifact-set reads
+  --trust-pin <file>   the verifier's committed trust-pin file (the same
+                       release/trust/release-authorization-signer.json shape); when given, refuses
+                       before any artifact is composed unless the signing key's SPKI digest and
+                       signer id both match it. When omitted, the summary says so plainly instead
+                       of silently skipping the check.
+  --unsafe-test-barrel required alongside REELIER_RELEASE_BARREL to honor that env var (see
+                       ENVIRONMENT below); refused loudly, before any key is read, if the env is
+                       set without it
   --print-parameters-template   write a commented parameters skeleton to stdout and exit 0
   --help, -h           print this text and exit 0 without reading keys or writing anything
 
@@ -147,7 +158,9 @@ proves only that a complete artifact set was signed by the keys in --keys and th
 production verifier accepts it.
 
 Requires: npm ci && npm run build (imports the built barrel dist/authority/index.js).
-Environment: REELIER_RELEASE_BARREL overrides the barrel module URL (test seam).
+Environment: REELIER_RELEASE_BARREL overrides the barrel module URL (test seam). Honoring it also
+requires --unsafe-test-barrel; the env alone refuses with nothing read or written. The barrel module
+URL actually in use (default or overridden) is always named in the success summary.
 `;
 
 const PARAMETERS_TEMPLATE = `{
@@ -228,7 +241,7 @@ if (argv[0] === "--print-parameters-template") {
 }
 
 function parseArgs(args) {
-  const parsed = { candidate: null, envelope: null, keys: null, now: null, out: null, repo: ".", repository: DEFAULT_REPOSITORY, tarball: null };
+  const parsed = { candidate: null, envelope: null, keys: null, now: null, out: null, repo: ".", repository: DEFAULT_REPOSITORY, tarball: null, trustPin: null, unsafeTestBarrel: false };
   for (let index = 0; index < args.length; index += 1) {
     const flag = args[index];
     const take = () => {
@@ -245,6 +258,8 @@ function parseArgs(args) {
     else if (flag === "--now") parsed.now = take();
     else if (flag === "--tarball") parsed.tarball = take();
     else if (flag === "--envelope") parsed.envelope = take();
+    else if (flag === "--trust-pin") parsed.trustPin = take();
+    else if (flag === "--unsafe-test-barrel") parsed.unsafeTestBarrel = true;
     else fail(`unknown argument: ${flag} (run --help for the usage)`);
   }
   for (const [flag, value] of [["--candidate", parsed.candidate], ["--keys", parsed.keys], ["--out", parsed.out]]) {
@@ -260,6 +275,13 @@ function parseArgs(args) {
       fail("the transport envelope must be outside the artifact-set output directory; the set is closed at seven files");
     }
     if (existsSync(envelopePath)) fail(`transport envelope output ${envelopePath} already exists; refusing to overwrite signed release evidence`);
+  }
+  // REELIER_RELEASE_BARREL redirects the module that receives both private signing keys (release
+  // authority and evidence checker). An inherited env var honored silently would let a stale shell
+  // export redirect where private keys go without the operator noticing. Refused here, before any
+  // key file is opened or any byte written, unless the operator explicitly opts in.
+  if (typeof process.env.REELIER_RELEASE_BARREL === "string" && process.env.REELIER_RELEASE_BARREL !== "" && !parsed.unsafeTestBarrel) {
+    fail(`REELIER_RELEASE_BARREL is set (to ${process.env.REELIER_RELEASE_BARREL}) but --unsafe-test-barrel was not passed; this env var redirects the module that receives both private signing keys, so honoring it requires the explicit flag. Refusing before any key is read or file written.`);
   }
   return parsed;
 }
@@ -347,6 +369,38 @@ function readPublicKey(file, label) {
 
 const spkiBytes = key => key.export({ format: "der", type: "spki" });
 const spkiDigest = key => `sha256:${createHash("sha256").update(spkiBytes(key)).digest("hex")}`;
+
+/** Same closed shape verify-release-authorization.mjs reads (release/trust/release-authorization-
+ * signer.json). "VERIFIED" against this pin is the only thing that makes the signer trustworthy
+ * rather than merely self-consistent — the signature alone proves the artifact set matches the key
+ * in --keys, never that the key in --keys is the production one. */
+function loadTrustPin(file) {
+  let text;
+  try {
+    text = readFileSync(file, "utf8");
+  } catch {
+    return fail(`cannot read the trust pin at ${file}`);
+  }
+  let value;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    return fail(`trust pin ${file} is not valid JSON`);
+  }
+  closedObject(value, ["publicKeySpkiBase64", "signerId", "v"], `trust pin ${file}`);
+  if (value.v !== "reelier.release-authorization-trust-pin/v1") fail(`trust pin ${file} is not reelier.release-authorization-trust-pin/v1`);
+  if (typeof value.signerId !== "string" || value.signerId === "") fail(`trust pin ${file} signerId is invalid`);
+  if (typeof value.publicKeySpkiBase64 !== "string" || value.publicKeySpkiBase64 === "") fail(`trust pin ${file} publicKeySpkiBase64 is invalid`);
+  let spki;
+  try {
+    spki = Buffer.from(value.publicKeySpkiBase64, "base64");
+    const key = createPublicKey({ format: "der", key: spki, type: "spki" });
+    if (key.asymmetricKeyType !== "ed25519") throw new TypeError(`key type is ${String(key.asymmetricKeyType)}`);
+  } catch (error) {
+    return fail(`trust pin ${file} publicKeySpkiBase64 is not an Ed25519 SPKI public key: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  return { signerId: value.signerId, spkiDigest: `sha256:${createHash("sha256").update(spki).digest("hex")}` };
+}
 
 function parseParameters(file) {
   let text;
@@ -525,6 +579,19 @@ for (const [left, right, leftFile, rightFile] of [
   [evidenceSpki, graphMakerSpki, KEY_FILE_NAMES.evidence, KEY_FILE_NAMES.graphMaker],
 ]) {
   if (left === right) fail(`${leftFile} and ${rightFile} are the same key by SPKI digest; the authorization signer, evidence checker, and receipt-graph maker must be three distinct keys`);
+}
+
+// "VERIFIED" elsewhere in this script's output is self-referential: the verify pin it self-checks
+// against is derived from the same signing key it just used. --trust-pin is the one thing that
+// checks the signing key against a claim this script did not generate, before any artifact is
+// composed or written.
+let trustPinMatch = null;
+if (args.trustPin) {
+  const pin = loadTrustPin(args.trustPin);
+  if (pin.spkiDigest !== authorizationSpki || pin.signerId !== parameters.signerIds.authorization) {
+    fail(`the signing key in --keys does not match the production trust pin ${args.trustPin}: pin names signer ${pin.signerId} at ${pin.spkiDigest}; signing key is signer ${parameters.signerIds.authorization} at ${authorizationSpki}. Refusing before any artifact is composed or written.`);
+  }
+  trustPinMatch = pin;
 }
 
 if (args.tarball) {
@@ -745,17 +812,28 @@ const ref = `refs/reelier/release-authorizations/${tag}`;
 const lines = [
   `release authorization signed: ${artifacts.authorization.digest}`,
   `  release: reelier@${artifacts.candidateManifest.value.packageVersion}, tag ${tag}, repository ${artifacts.candidateManifest.value.repository}`,
+  // Printed unconditionally, default or overridden, so a redirected ceremony is visible in any transcript.
+  `  barrel: ${barrelUrl}`,
   `  candidate commit: ${parameters.candidateCommit} on base ${parameters.baseCommit}`,
   `  window: ${issuedAt} -> ${expiresAt} (exactly 12h)`,
   `  signers: authorization ${parameters.signerIds.authorization} (${authorizationSpki}); evidence ${parameters.signerIds.evidence} (${evidenceSpki}); graph maker ${parameters.signerIds.graphMaker} (${graphMakerSpki})`,
   `  workflow commitments computed from ${args.repo} at ${parameters.workflowCommit}:`,
   ...workflows.map(workflow => `    ${workflow.path} ${workflow.digest}`),
+  ...(parameters.workflowCommit !== parameters.baseCommit && parameters.workflowCommit !== parameters.candidateCommit
+    ? [`  NOTICE: workflowCommit ${parameters.workflowCommit} is neither baseCommit nor candidateCommit — workflow digests were measured at an unrelated commit and will only fail at provider readback if wrong.`]
+    : []),
   `  artifact set: ${args.out} (${Object.keys(outputs).length} files)`,
   ...(args.envelope ? [`  transport envelope: ${args.envelope}`] : []),
   "  VERIFIED: verifyReleaseAuthorizationBundleV1 accepts this set at its issue instant, with the three signed CI quality lanes",
   `  VERIFIED: packedTarballDigest equals the measured digest of ${args.tarball}`,
+  args.trustPin
+    ? `  VERIFIED: signing key matches the production trust pin ${args.trustPin} (signer ${trustPinMatch.signerId}, ${trustPinMatch.spkiDigest})`
+    : "  NOT CHECKED: signing key against the production trust pin (--trust-pin not given)",
   "  NOT CHECKED: that the parameters describe the candidate you intended. Every commit, tree, blob, and quality digest was taken on trust from the parameters file.",
   `  NOT CHECKED: that ${args.repository} is the repository your runner config names. A signed repository is what was authorized, not proof it was the right one; the provider refuses any other repository at dispatch (definitive-refusal, before any credential or socket).`,
+  ...(args.repository !== DEFAULT_REPOSITORY
+    ? [`  WARNING: --repository ${args.repository} differs from the production repository ${DEFAULT_REPOSITORY}, but the carrier-ref push instructions below target the SAME ref the production workflows read: ${ref}. A rehearsal set pushed there occupies the production carrier ref for its 12h window. This fails closed at the provider (requireConfiguredRepository refuses any repository but the operator's configured one, before any credential or socket) — but it is a confusion/denial hazard regardless: a real release ceremony reading that ref during the window finds this rehearsal set instead.`]
+    : []),
   "  NOT CHECKED: that CI actually ran. The quality lanes attest results you supplied; they are not evidence of a workflow run.",
   "  NOT CHECKED: the receipt graph. That is post-publish and is never this script's claim.",
   "",
