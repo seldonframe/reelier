@@ -128,6 +128,7 @@ import {
   renderInitializationReport,
   type InitializationDependencies,
 } from "./initialization.js";
+import { createManagedInitDescriptor, renderManagedInitDescriptor } from "./managed-init.js";
 import { initializeAgentProject, type InitializeAgentProjectOptions } from "./bootstrap/initialize.js";
 import { BootstrapNativeSessionError } from "./bootstrap/native-helper.js";
 
@@ -4260,6 +4261,30 @@ export interface CmdInitOverrides {
 export async function cmdInit(args: ParsedArgs, overrides: CmdInitOverrides = {}): Promise<number> {
   const cwd = overrides.cwd ?? process.cwd();
   const homedir = overrides.homedir ?? os.homedir();
+
+  if (args.flags.has("managed")) {
+    if (args.flags.has("signing")) {
+      console.error("Initialization refused: --managed cannot be combined with --signing.");
+      return 1;
+    }
+    if (args.positional.length !== 0) {
+      console.error("Initialization refused: --managed does not accept an agent name.");
+      return 1;
+    }
+    if (
+      [...args.flags].some(flag => flag !== "managed" && flag !== "dry-run") ||
+      Object.keys(args.opts).length !== 0 ||
+      Object.keys(args.vars).length !== 0 ||
+      args.wraps.length !== 0 ||
+      args.fails.length !== 0
+    ) {
+      console.error("Usage: reelier init --managed [--dry-run]");
+      return 1;
+    }
+    console.log(renderManagedInitDescriptor(createManagedInitDescriptor()));
+    console.log(args.flags.has("dry-run") ? "Dry run: no files written." : "Managed init is a local preview; no files written.");
+    return 0;
+  }
 
   if (args.flags.has("signing")) {
     return cmdInitSigning(homedir);
