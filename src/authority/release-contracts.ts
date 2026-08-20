@@ -6,7 +6,26 @@ import { authorityCanonicalBytes, authorityDigest } from "./wire.js";
 
 const DIGEST = /^sha256:[0-9a-f]{64}$/;
 const COMMIT = /^[0-9a-f]{40}$/;
-const RELEASE_BASE = "e600ad5c2dc5e1bde0714915e7a84980c8d5602b";
+// R2 frozen-contract amendment — operator exception recorded 2026-08-19.
+//
+// There is no RELEASE_BASE constant. There cannot be one: the PR that re-pins the base advances
+// `main` past the value it writes, so `baseCommit === RELEASE_BASE` and the runner's
+// `heads/main === plan.baseCommit` can never both hold once that PR merges. A constant cannot pin
+// its own merge commit.
+//
+// What replaces it: `baseCommit` is validated as 40-hex commit-SHA FORMAT, must be identical across
+// the staged candidate manifest and the operation plan, and must equal the plan's own commit parent.
+// The exact value is carried by the Ed25519-signed, operator-reviewed authorization bundle.
+//
+// What still binds the base to reality — and this is the whole safety case, so do not weaken it:
+// `src/authority/host/github-release-runner.ts` re-reads the provider at dispatch and refuses on
+//   - `candidate()` (:278)        heads/<destinationBranch> must equal plan.baseCommit
+//                                 ("candidate publication base branch drifted")
+//   - `assertBaseRef()` (:435)    the same equality, re-read immediately before EVERY provider write
+//   - `merge()` (:360)            the same equality again before the squash merge
+//   - `candidate()` (:307) / `merge()` (:377)  the candidate and squash commits' parentSha readback
+//                                 must equal plan.baseCommit — direct-child ancestry on main
+// Branch, tag, package name/version, changed paths, and workflow paths below stay constant-pinned.
 const RELEASE_BRANCH = "reelier/release/0.32.1";
 const RELEASE_PATHS = ["CHANGELOG.md", "src/cli.ts", "test/cli-subcommand-help.test.ts"] as const;
 const RELEASE_DESTINATIONS = ["ghcr", "mcp-registry", "npm"] as const;
@@ -270,6 +289,9 @@ export function verifyReleaseAuthorizationBundleV1(
   if (authorization.value.stagedCandidateManifestDigest !== candidateManifest.digest) throw new TypeError("release authorization candidate manifest digest mismatch");
   if (authorization.value.operationPlanDigest !== operationPlan.digest) throw new TypeError("release authorization operation plan digest mismatch");
   if (candidateManifest.value.candidateTreeDigest !== operationPlan.value.candidateTreeDigest || candidateManifest.value.candidateCommit !== operationPlan.value.expectedCommitSha || !equalStrings(candidateManifest.value.workflowCommitments.map(item => `${item.path}:${item.digest}`), operationPlan.value.workflowCommitments.map(item => `${item.path}:${item.digest}`))) throw new TypeError("release operation plan does not match the staged candidate manifest");
+  // R2 amendment (2026-08-19): with no constant to compare against, one base commit agreed across
+  // both signed artifacts is what makes the runner's heads/main equality a claim about this release.
+  if (candidateManifest.value.baseCommit !== operationPlan.value.baseCommit) throw new TypeError("release authorization base commit is inconsistent between the staged candidate manifest and the operation plan");
   if (authorization.value.policyDigest !== policy.digest) throw new TypeError("release authorization policy digest mismatch");
   if (verificationTime < Date.parse(authorization.value.issuedAt)) throw new TypeError("release authorization is not yet valid before issuedAt");
   if (verificationTime >= Date.parse(authorization.value.expiresAt)) throw new TypeError("release authorization is expired");
@@ -304,7 +326,8 @@ export function verifyReleaseReceiptGraphV1(value: unknown, verifier: ReleaseCon
 
 function parseStagedCandidateManifestV1(value: unknown): StagedCandidateManifestV1 {
   const item = exact(value, ["baseCommit", "branch", "candidateCommit", "candidateTreeDigest", "changedBytes", "changedPaths", "destinationBranch", "packageName", "packageVersion", "packedTarballDigest", "qualityEvidence", "repository", "tag", "v", "workflowCommitments"], "staged candidate manifest") as unknown as StagedCandidateManifestV1;
-  if (item.v !== "reelier.staged-candidate-manifest/v1" || item.repository !== "seldonframe/reelier" || item.baseCommit !== RELEASE_BASE || item.destinationBranch !== "main" || item.branch !== RELEASE_BRANCH || item.tag !== "v0.32.1" || item.packageName !== "reelier" || item.packageVersion !== "0.32.1") throw new TypeError("staged candidate manifest release identity or ref is invalid");
+  if (item.v !== "reelier.staged-candidate-manifest/v1" || item.repository !== "seldonframe/reelier" || item.destinationBranch !== "main" || item.branch !== RELEASE_BRANCH || item.tag !== "v0.32.1" || item.packageName !== "reelier" || item.packageVersion !== "0.32.1") throw new TypeError("staged candidate manifest release identity or ref is invalid");
+  requireCommit(item.baseCommit, "staged candidate manifest base commit");
   requireCommit(item.candidateCommit, "candidate commit");
   requireDigest(item.candidateTreeDigest, "candidate tree");
   requireDigest(item.packedTarballDigest, "packed tarball");
@@ -327,7 +350,8 @@ function parseStagedCandidateManifestV1(value: unknown): StagedCandidateManifest
 
 function parseReleaseOperationPlanV1(value: unknown): ReleaseOperationPlanV1 {
   const item = exact(value, ["baseCommit", "baseTreeSha", "candidateBranch", "candidateTreeDigest", "commit", "destinationBranch", "expectedCommitSha", "expectedTreeSha", "files", "npmPreflight", "pullRequest", "repository", "requiredChecks", "squash", "tag", "v", "workflowCommitments"], "release operation plan") as unknown as ReleaseOperationPlanV1;
-  if (item.v !== "reelier.release-operation-plan/v1" || item.repository !== "seldonframe/reelier" || item.baseCommit !== RELEASE_BASE || item.candidateBranch !== RELEASE_BRANCH || item.destinationBranch !== "main" || item.tag !== "v0.32.1") throw new TypeError("release operation plan identity or ref is invalid");
+  if (item.v !== "reelier.release-operation-plan/v1" || item.repository !== "seldonframe/reelier" || item.candidateBranch !== RELEASE_BRANCH || item.destinationBranch !== "main" || item.tag !== "v0.32.1") throw new TypeError("release operation plan identity or ref is invalid");
+  requireCommit(item.baseCommit, "release operation plan base commit");
   requireCommit(item.expectedCommitSha, "release expected commit");
   requireCommit(item.expectedTreeSha, "release expected tree");
   requireCommit(item.baseTreeSha, "release base tree");
@@ -343,7 +367,7 @@ function parseReleaseOperationPlanV1(value: unknown): ReleaseOperationPlanV1 {
   const computedTreeDigest = authorityDigest({ v: "reelier.release-candidate-tree/v1", files });
   if (computedTreeDigest !== item.candidateTreeDigest) throw new TypeError("release candidate tree digest does not match exact file paths, modes, blob SHAs, and content digests");
   const commit = exact(item.commit, ["author", "committer", "message", "parentSha"], "release operation commit");
-  if (commit.parentSha !== RELEASE_BASE || !boundedText(commit.message, 1, 512)) throw new TypeError("release operation commit parent or message is invalid");
+  if (commit.parentSha !== item.baseCommit || !boundedText(commit.message, 1, 512)) throw new TypeError("release operation commit parent or message is invalid");
   parseGitIdentity(commit.author, "release commit author");
   parseGitIdentity(commit.committer, "release commit committer");
   const pullRequest = exact(item.pullRequest, ["base", "body", "draft", "head", "readyForReview", "title"], "release pull request");

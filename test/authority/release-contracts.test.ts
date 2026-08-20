@@ -50,7 +50,18 @@ const spkiDigest = (lane: ReleaseEvidenceLaneV1): string => {
   return keySpkiDigest(trustedEvidenceKeys.get(lane)!.pair.publicKey);
 };
 
-function releaseInputs() {
+// R2 frozen-contract amendment (operator exception, 2026-08-19). `baseCommit` is NOT a compiled-in
+// pin any more: the Ed25519-signed, operator-reviewed authorization bundle carries the exact base,
+// the parsers check 40-hex format plus mutual consistency, and the runner still enforces
+// heads/main == plan.baseCommit and the exact parent SHA at publication and merge. These two values
+// are therefore fixture data, never contract constants.
+const REVIEWED_BASE = "e600ad5c2dc5e1bde0714915e7a84980c8d5602b";
+/** A different but format-valid base — the case the old constant-equality check refused outright. */
+const AMENDED_BASE = "80c8084c1f2d3a4b5c6d7e8f9012345678abcdef";
+
+function releaseInputs(bases: Readonly<{ manifest?: string; plan?: string }> = {}) {
+  const planBase = bases.plan ?? REVIEWED_BASE;
+  const manifestBase = bases.manifest ?? planBase;
   const operationFiles = [
     { blobSha: sha("b"), contentDigest: digest("b"), mode: "100644" as const, path: "CHANGELOG.md" },
     { blobSha: sha("c"), contentDigest: digest("c"), mode: "100644" as const, path: "src/cli.ts" },
@@ -59,7 +70,7 @@ function releaseInputs() {
   const candidateTreeDigest = authorityDigest({ v: "reelier.release-candidate-tree/v1", files: operationFiles });
   const operationPlan = createSignedReleaseOperationPlanV1({
     v: "reelier.release-operation-plan/v1",
-    baseCommit: "e600ad5c2dc5e1bde0714915e7a84980c8d5602b",
+    baseCommit: planBase,
     baseTreeSha: sha("b"),
     candidateBranch: "reelier/release/0.32.1",
     candidateTreeDigest,
@@ -67,7 +78,7 @@ function releaseInputs() {
       author: { date: "2026-08-18T05:00:00.000Z", email: "release@seldonframe.com", name: "SeldonFrame Release" },
       committer: { date: "2026-08-18T05:00:00.000Z", email: "release@seldonframe.com", name: "SeldonFrame Release" },
       message: "release: v0.32.1",
-      parentSha: "e600ad5c2dc5e1bde0714915e7a84980c8d5602b",
+      parentSha: planBase,
     },
     destinationBranch: "main",
     expectedCommitSha: sha("a"),
@@ -88,7 +99,7 @@ function releaseInputs() {
   } as any, signer);
   const candidateManifest = createSignedStagedCandidateManifestV1({
     v: "reelier.staged-candidate-manifest/v1",
-    baseCommit: "e600ad5c2dc5e1bde0714915e7a84980c8d5602b",
+    baseCommit: manifestBase,
     branch: "reelier/release/0.32.1",
     candidateCommit: sha("a"),
     candidateTreeDigest,
@@ -296,13 +307,72 @@ test("release authorization binds the exact reviewed release and is deterministi
   assert.equal(verified.authorization.value.policyDigest, verified.policy.digest);
   assert.equal(verified.authorization.value.stagedCandidateManifestDigest, verified.candidateManifest.digest);
   assert.equal(verified.candidateManifest.value.repository, "seldonframe/reelier");
-  assert.equal(verified.candidateManifest.value.baseCommit, "e600ad5c2dc5e1bde0714915e7a84980c8d5602b");
+  assert.equal(verified.candidateManifest.value.baseCommit, REVIEWED_BASE);
   assert.equal(verified.candidateManifest.value.qualityEvidence.headCommit, verified.candidateManifest.value.candidateCommit);
   assert.ok(verified.candidateManifest.value.qualityEvidence.mutationScoreBasisPoints >= 9_000);
   assert.deepEqual(verified.authorization.value.effectAllocations.map(item => item.maxEffects), [1, 1, 1, 1]);
   assert.deepEqual(verified.policy.value.allowedPaths, ["CHANGELOG.md", "src/cli.ts", "test/cli-subcommand-help.test.ts"]);
   assert.ok(Object.isFrozen(verified.authorization.value));
   assert.ok(Object.isFrozen(verified.policy.value.allowedPaths));
+});
+
+// R2 frozen-contract amendment, operator exception recorded 2026-08-19. A constant cannot pin its
+// own merge commit: the PR that re-pins RELEASE_BASE advances main past the value it writes, so a
+// baseCommit === RELEASE_BASE parser check makes the mission unrunnable by construction. The base
+// now travels inside the signed, operator-reviewed bundle and is checked for format and mutual
+// consistency only. Everything else the contract froze stays frozen, and the RUNTIME base equality
+// (github-release-runner.ts: "candidate publication base branch drifted" / "release base branch
+// drifted immediately before provider write") is what actually binds the base to main.
+test("R2 amendment: a signed, internally consistent base commit other than the reviewed one verifies, and the other release pins stay frozen", () => {
+  const amended = releaseInputs({ manifest: AMENDED_BASE, plan: AMENDED_BASE });
+  const verified = verifyAuthorization(amended);
+  assert.equal(verified.candidateManifest.value.baseCommit, AMENDED_BASE);
+  assert.equal(verified.operationPlan.value.baseCommit, AMENDED_BASE);
+  assert.equal(verified.operationPlan.value.commit.parentSha, AMENDED_BASE);
+  assert.notEqual(AMENDED_BASE, REVIEWED_BASE);
+
+  assert.equal(verified.candidateManifest.value.branch, "reelier/release/0.32.1");
+  assert.equal(verified.operationPlan.value.candidateBranch, "reelier/release/0.32.1");
+  assert.equal(verified.candidateManifest.value.tag, "v0.32.1");
+  assert.equal(verified.operationPlan.value.tag, "v0.32.1");
+  assert.equal(verified.candidateManifest.value.packageName, "reelier");
+  assert.equal(verified.candidateManifest.value.packageVersion, "0.32.1");
+  assert.deepEqual(verified.operationPlan.value.npmPreflight, { packageName: "reelier", version: "0.32.1", versionMustBeAbsent: true });
+  assert.deepEqual(verified.candidateManifest.value.changedPaths, ["CHANGELOG.md", "src/cli.ts", "test/cli-subcommand-help.test.ts"]);
+  assert.deepEqual(verified.operationPlan.value.workflowCommitments.map(item => item.path), [".github/workflows/ci.yml", ".github/workflows/docker-publish.yml", ".github/workflows/mcp-publish.yml", ".github/workflows/npm-publish.yml"]);
+
+  const branchDrift = structuredClone(amended.candidateManifest);
+  (branchDrift.value as any).branch = "reelier/release/0.32.2";
+  assert.throws(() => parseSignedStagedCandidateManifestV1(branchDrift), /identity or ref/i);
+  const tagDrift = structuredClone(amended.operationPlan);
+  (tagDrift.value as any).tag = "v0.32.2";
+  assert.throws(() => parseSignedReleaseOperationPlanV1(tagDrift), /identity or ref/i);
+});
+
+test("R2 amendment: a base commit that is malformed, inconsistent across artifacts, or not the plan's own commit parent still refuses", () => {
+  const split = releaseInputs({ manifest: AMENDED_BASE, plan: REVIEWED_BASE });
+  assert.equal(split.authorization.value.stagedCandidateManifestDigest, split.candidateManifest.digest);
+  assert.equal(split.authorization.value.operationPlanDigest, split.operationPlan.digest);
+  assert.throws(
+    () => verifyReleaseAuthorizationBundleV1(authorizationInput(split), verifier, new Date("2026-08-18T06:00:00.000Z"), split.qualityEvidence),
+    /base commit/i,
+  );
+
+  const release = releaseInputs();
+  assert.throws(
+    () => createSignedReleaseOperationPlanV1({ ...release.operationPlan.value, commit: { ...release.operationPlan.value.commit, parentSha: AMENDED_BASE } } as any, signer),
+    /parent/i,
+  );
+
+  const malformed = ["", REVIEWED_BASE.slice(0, 39), `${REVIEWED_BASE}a`, REVIEWED_BASE.toUpperCase(), "refs/heads/main", `sha256:${"e".repeat(64)}`, "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"];
+  for (const base of malformed) {
+    assert.throws(() => createSignedStagedCandidateManifestV1({ ...release.candidateManifest.value, baseCommit: base } as any, signer), /base commit/i, `manifest accepted a malformed base: ${JSON.stringify(base)}`);
+    assert.throws(
+      () => createSignedReleaseOperationPlanV1({ ...release.operationPlan.value, baseCommit: base, commit: { ...release.operationPlan.value.commit, parentSha: base } } as any, signer),
+      /base commit/i,
+      `operation plan accepted a malformed base: ${JSON.stringify(base)}`,
+    );
+  }
 });
 
 test("release authorization rejects tampering, wrong links, and a non-12-hour or expired grant", () => {
