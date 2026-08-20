@@ -319,7 +319,7 @@ test("REELIER_RELEASE_BARREL without --unsafe-test-barrel refuses before anythin
   try {
     const signed = spawnSync(process.execPath, [
       signScript, "--candidate", space.parametersFile, "--keys", space.keysDir,
-      "--out", space.outDir, "--repo", repoRoot,
+      "--out", space.outDir, "--repo", repoRoot, "--tarball", space.tarballFile,
     ], { encoding: "utf8", env: { ...process.env, REELIER_RELEASE_BARREL: barrelUrl } });
     assert.equal(signed.status, 1);
     assert.match(signed.stderr, /REELIER_RELEASE_BARREL is set .* but --unsafe-test-barrel was not passed/);
@@ -344,7 +344,7 @@ test("the default barrel is named in the summary when REELIER_RELEASE_BARREL is 
     const { REELIER_RELEASE_BARREL: _unused, ...envWithoutBarrel } = process.env;
     const signed = spawnSync(process.execPath, [
       signScript, "--candidate", space.parametersFile, "--keys", space.keysDir,
-      "--out", space.outDir, "--repo", repoRoot,
+      "--out", space.outDir, "--repo", repoRoot, "--tarball", space.tarballFile,
     ], { encoding: "utf8", env: envWithoutBarrel });
     const defaultBarrelUrl = pathToFileURL(path.resolve("dist/authority/index.js")).href;
     assert.equal(signed.status, 0, `${signed.stdout}\n${signed.stderr}`);
@@ -416,18 +416,21 @@ test("an absent --trust-pin prints the honesty line instead of silently skipping
 });
 
 test("a rehearsal --repository prints the carrier-ref collision warning; the default repository does not", () => {
-  const space = workspace();
+  const rehearsalSpace = workspace();
   try {
     const rehearsal = "seldonframe/reelier-release-rehearsal";
-    const rehearsalRun = runSigner(space, ["--repository", rehearsal]);
+    const rehearsalRun = runSigner(rehearsalSpace, ["--repository", rehearsal]);
     assert.equal(rehearsalRun.status, 0, `${rehearsalRun.stdout}\n${rehearsalRun.stderr}`);
     assert.match(rehearsalRun.stdout, /WARNING: --repository seldonframe\/reelier-release-rehearsal differs from the production repository seldonframe\/reelier/);
     assert.match(rehearsalRun.stdout, /refs\/reelier\/release-authorizations\/v0\.32\.1/);
+  } finally { rmSync(rehearsalSpace.root, { force: true, recursive: true }); }
 
-    const defaultRun = runSigner(space);
+  const productionSpace = workspace();
+  try {
+    const defaultRun = runSigner(productionSpace);
     assert.equal(defaultRun.status, 0, `${defaultRun.stdout}\n${defaultRun.stderr}`);
     assert.equal(/WARNING:/.test(defaultRun.stdout), false);
-  } finally { rmSync(space.root, { force: true, recursive: true }); }
+  } finally { rmSync(productionSpace.root, { force: true, recursive: true }); }
 });
 
 test("an unrelated workflowCommit prints a one-line notice; a workflowCommit matching base or candidate does not", () => {
