@@ -59,9 +59,24 @@ const REVIEWED_BASE = "e600ad5c2dc5e1bde0714915e7a84980c8d5602b";
 /** A different but format-valid base — the case the old constant-equality check refused outright. */
 const AMENDED_BASE = "80c8084c1f2d3a4b5c6d7e8f9012345678abcdef";
 
-function releaseInputs(bases: Readonly<{ manifest?: string; plan?: string }> = {}) {
+// R3 frozen-contract amendment (operator exception, 2026-08-20). `repository` is not a compiled-in
+// pin any more either: the signed bundle carries it, the parsers check owner/name FORMAT plus mutual
+// consistency, and the provider still refuses any repository other than the operator's own runner
+// config (`github-release-https-provider.ts` requireConfiguredRepository) before a credential or a
+// socket. Both values below are therefore fixture data, never contract constants.
+const REVIEWED_REPOSITORY = "seldonframe/reelier";
+/** The rehearsal repository. Under the constant this artifact set refused at PARSE — before any
+ * signature, key, or provider was consulted — which is what made a rehearsal impossible to sign. */
+const REHEARSAL_REPOSITORY = "seldonframe/reelier-release-rehearsal";
+
+function releaseInputs(
+  bases: Readonly<{ manifest?: string; plan?: string }> = {},
+  repositories: Readonly<{ manifest?: string; plan?: string }> = {},
+) {
   const planBase = bases.plan ?? REVIEWED_BASE;
   const manifestBase = bases.manifest ?? planBase;
+  const planRepository = repositories.plan ?? REVIEWED_REPOSITORY;
+  const manifestRepository = repositories.manifest ?? planRepository;
   const operationFiles = [
     { blobSha: sha("b"), contentDigest: digest("b"), mode: "100644" as const, path: "CHANGELOG.md" },
     { blobSha: sha("c"), contentDigest: digest("c"), mode: "100644" as const, path: "src/cli.ts" },
@@ -86,7 +101,7 @@ function releaseInputs(bases: Readonly<{ manifest?: string; plan?: string }> = {
     files: operationFiles,
     npmPreflight: { packageName: "reelier", version: "0.32.1", versionMustBeAbsent: true },
     pullRequest: { base: "main", body: "Governed release v0.32.1", draft: true, head: "reelier/release/0.32.1", readyForReview: true, title: "Release v0.32.1" },
-    repository: "seldonframe/reelier",
+    repository: planRepository,
     requiredChecks: ["coverage", "full-tests", "mutation"],
     squash: { commitMessage: "release: v0.32.1", commitTitle: "Release v0.32.1" },
     tag: "v0.32.1",
@@ -118,7 +133,7 @@ function releaseInputs(bases: Readonly<{ manifest?: string; plan?: string }> = {
     packageName: "reelier",
     packageVersion: "0.32.1",
     packedTarballDigest: digest("2"),
-    repository: "seldonframe/reelier",
+    repository: manifestRepository,
     tag: "v0.32.1",
     workflowCommitments: [
       { digest: digest("3"), path: ".github/workflows/ci.yml" },
@@ -372,6 +387,93 @@ test("R2 amendment: a base commit that is malformed, inconsistent across artifac
       /base commit/i,
       `operation plan accepted a malformed base: ${JSON.stringify(base)}`,
     );
+  }
+});
+
+// R3 frozen-contract amendment, operator exception recorded 2026-08-20. Measured before the change:
+// createSignedStagedCandidateManifestV1 and createSignedReleaseOperationPlanV1 both threw
+// "... release identity or ref is invalid" for seldonframe/reelier-release-rehearsal, so a rehearsal
+// artifact set could not be SIGNED, let alone dispatched. The runtime control that survives is the
+// provider's, not the parser's: requireConfiguredRepository (github-release-https-provider.ts:161-165)
+// refuses any repository but the operator's configured one as a definitive-refusal, before any
+// credential, DNS, or socket work, and the configured value is baked into the closed path prefix.
+test("R3 amendment: a signed, internally consistent rehearsal repository verifies, and the other release pins stay frozen", () => {
+  const rehearsal = releaseInputs({}, { manifest: REHEARSAL_REPOSITORY, plan: REHEARSAL_REPOSITORY });
+  const verified = verifyAuthorization(rehearsal);
+  assert.equal(verified.candidateManifest.value.repository, REHEARSAL_REPOSITORY);
+  assert.equal(verified.operationPlan.value.repository, REHEARSAL_REPOSITORY);
+  assert.notEqual(REHEARSAL_REPOSITORY, REVIEWED_REPOSITORY);
+
+  // Everything else the contract freezes is unmoved by this amendment.
+  assert.equal(verified.candidateManifest.value.branch, "reelier/release/0.32.1");
+  assert.equal(verified.operationPlan.value.candidateBranch, "reelier/release/0.32.1");
+  assert.equal(verified.operationPlan.value.pullRequest.head, "reelier/release/0.32.1");
+  assert.equal(verified.candidateManifest.value.tag, "v0.32.1");
+  assert.equal(verified.operationPlan.value.tag, "v0.32.1");
+  assert.equal(verified.candidateManifest.value.destinationBranch, "main");
+  assert.equal(verified.operationPlan.value.destinationBranch, "main");
+  assert.equal(verified.candidateManifest.value.packageName, "reelier");
+  assert.equal(verified.candidateManifest.value.packageVersion, "0.32.1");
+  assert.deepEqual(verified.operationPlan.value.npmPreflight, { packageName: "reelier", version: "0.32.1", versionMustBeAbsent: true });
+  assert.deepEqual(verified.candidateManifest.value.changedPaths, ["CHANGELOG.md", "src/cli.ts", "test/cli-subcommand-help.test.ts"]);
+  assert.deepEqual(verified.operationPlan.value.workflowCommitments.map(item => item.path), [".github/workflows/ci.yml", ".github/workflows/docker-publish.yml", ".github/workflows/mcp-publish.yml", ".github/workflows/npm-publish.yml"]);
+
+  // A rehearsal repository does not unpin the branch or the tag along with it.
+  const branchDrift = structuredClone(rehearsal.candidateManifest);
+  (branchDrift.value as any).branch = "reelier/release/0.32.2";
+  assert.throws(() => parseSignedStagedCandidateManifestV1(branchDrift), /identity or ref/i);
+  const tagDrift = structuredClone(rehearsal.operationPlan);
+  (tagDrift.value as any).tag = "v0.32.2";
+  assert.throws(() => parseSignedReleaseOperationPlanV1(tagDrift), /identity or ref/i);
+
+  // And the production repository still verifies on exactly the same terms.
+  assert.equal(verifyAuthorization(releaseInputs()).candidateManifest.value.repository, REVIEWED_REPOSITORY);
+});
+
+test("R3 amendment: a repository that differs across the two signed artifacts refuses", () => {
+  const split = releaseInputs({}, { manifest: REHEARSAL_REPOSITORY, plan: REVIEWED_REPOSITORY });
+  // Both halves are individually well-formed and correctly signed, and the bundle links both
+  // digests — mutual equality is the only thing standing between them.
+  assert.equal(split.authorization.value.stagedCandidateManifestDigest, split.candidateManifest.digest);
+  assert.equal(split.authorization.value.operationPlanDigest, split.operationPlan.digest);
+  assert.deepEqual(parseSignedStagedCandidateManifestV1(split.candidateManifest), split.candidateManifest);
+  assert.deepEqual(parseSignedReleaseOperationPlanV1(split.operationPlan), split.operationPlan);
+  assert.throws(
+    () => verifyReleaseAuthorizationBundleV1(authorizationInput(split), verifier, new Date("2026-08-18T06:00:00.000Z"), split.qualityEvidence),
+    /repository is inconsistent/i,
+  );
+  // The mirror direction refuses identically; neither artifact is privileged.
+  const mirrored = releaseInputs({}, { manifest: REVIEWED_REPOSITORY, plan: REHEARSAL_REPOSITORY });
+  assert.throws(
+    () => verifyReleaseAuthorizationBundleV1(authorizationInput(mirrored), verifier, new Date("2026-08-18T06:00:00.000Z"), mirrored.qualityEvidence),
+    /repository is inconsistent/i,
+  );
+});
+
+test("R3 amendment: a malformed repository refuses at signing, in both artifacts", () => {
+  const release = releaseInputs();
+  const malformed = [
+    "", "seldonframe", "seldonframe/", "/reelier", "seldonframe//reelier",
+    "seldonframe/reelier/extra", "../reelier", "seldonframe/../../etc/passwd", ".hidden/reelier",
+    "seldon frame/reelier", "seldonframe/reelier\0", "https://github.com/seldonframe/reelier",
+    "git@github.com:seldonframe/reelier.git", `${"a".repeat(101)}/reelier`, `seldonframe/${"b".repeat(101)}`,
+  ];
+  for (const repository of malformed) {
+    assert.throws(
+      () => createSignedStagedCandidateManifestV1({ ...release.candidateManifest.value, repository } as any, signer),
+      /repository/i,
+      `manifest accepted a malformed repository: ${JSON.stringify(repository)}`,
+    );
+    assert.throws(
+      () => createSignedReleaseOperationPlanV1({ ...release.operationPlan.value, repository } as any, signer),
+      /repository/i,
+      `operation plan accepted a malformed repository: ${JSON.stringify(repository)}`,
+    );
+  }
+  // A non-string repository refuses on the same line rather than coercing.
+  for (const repository of [null, 42, ["seldonframe/reelier"], { owner: "seldonframe", name: "reelier" }]) {
+    assert.throws(() => createSignedStagedCandidateManifestV1({ ...release.candidateManifest.value, repository } as any, signer), /repository|canonical|scalar/i);
+    assert.throws(() => createSignedReleaseOperationPlanV1({ ...release.operationPlan.value, repository } as any, signer), /repository|canonical|scalar/i);
   }
 });
 
