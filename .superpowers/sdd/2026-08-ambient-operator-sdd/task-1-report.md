@@ -172,3 +172,51 @@ Command: `npx tsc -p tsconfig.test.json --noEmit; node --test --test-concurrency
 ℹ todo 0
 ℹ duration_ms 167.2934
 ```
+
+## Fix round 3
+
+Files changed
+
+- `test/ambient-authority.test.ts`
+- `.superpowers/sdd/2026-08-ambient-operator-sdd/task-1-report.md`
+
+What changed
+
+- Added a deterministic rebind helper that rebuilds proof-to-standing, standing-to-hosted, and hosted-to-mission digest edges after each isolated test candidate change.
+- Added digest-valid equality refusals for every constrained numeric field (`maxEffectsPerWindow`, `maxEffectsPerSourceTrigger`, `maxBodyBytes`, and `windowSeconds`) at all three child boundaries.
+- Added digest-valid `validFrom` and `validUntil` equality refusals at all three child boundaries. Each candidate remains within all outer validity windows and non-expired, so the tests reach the strict attenuation gate rather than a clock or stale-digest gate.
+
+Test results (verbatim tail)
+
+Command: `npx tsc -p tsconfig.json --noEmit`
+
+Result: exit 0 (no output).
+
+Command: `npm run check:authority-contract`
+
+```text
+> reelier@0.32.1 check:authority-contract
+> node scripts/build-authority-contract.mjs --check
+```
+
+Result: exit 0.
+
+Command: `npx tsc -p tsconfig.test.json --noEmit; npx tsc -p tsconfig.test.json; node --test --test-concurrency=1 dist-test/test/ambient-authority.test.js`
+
+```text
+✔ customer-rooted authority verifies trusted WebAuthn ES256 and EdDSA exactly once (8.389ms)
+✔ customer approval rejects attacker credentials and purpose substitution (1.5148ms)
+✔ authority rejects cross-tenant aliasing, strict equality, and correctly bound expiry (2.1027ms)
+✔ every constrained limit must strictly reduce at every child boundary (2.3187ms)
+✔ every limit equality is refused at every independently rebound child boundary (5.2455ms)
+✔ every validFrom and validUntil equality is refused at every independently rebound child boundary (2.947ms)
+✔ standing and hosted roots are bounded by proof/domain; only mission grants have a twelve-hour cap (2.1586ms)
+ℹ tests 7
+ℹ suites 0
+ℹ pass 7
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 175.9941
+```
