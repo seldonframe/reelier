@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync, type SpawnSyncReturns } from "node:child_process";
 import { createHash, generateKeyPairSync, type KeyObject } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -11,6 +11,8 @@ const signScript = path.resolve("scripts/sign-release-authorization.mjs");
 const verifyScript = path.resolve("scripts/verify-release-authorization.mjs");
 const barrelUrl = pathToFileURL(path.resolve("dist-test/src/authority/index.js")).href;
 const repoRoot = path.resolve(".");
+const TARBALL_BYTES = Buffer.from("reviewed reelier 0.32.1 tarball fixture\n", "utf8");
+const TARBALL_DIGEST = `sha256:${createHash("sha256").update(TARBALL_BYTES).digest("hex")}`;
 
 const digest = (character: string): string => `sha256:${character.repeat(64)}`;
 const sha = (character: string): string => character.repeat(40);
@@ -32,6 +34,7 @@ interface Workspace {
   readonly outDir: string;
   readonly parametersFile: string;
   readonly trustPinFile: string;
+  readonly tarballFile: string;
   readonly authorizationKeys: ReturnType<typeof generateKeyPairSync>;
 }
 
@@ -44,7 +47,7 @@ function baseParameters(): Record<string, unknown> {
     expectedTreeSha: sha("f"),
     changedBytes: 4_096,
     workflowCommit,
-    packedTarballDigest: digest("2"),
+    packedTarballDigest: TARBALL_DIGEST,
     files: [
       { blobSha: sha("b"), contentDigest: digest("b"), mode: "100644", path: "CHANGELOG.md" },
       { blobSha: sha("c"), contentDigest: digest("c"), mode: "100644", path: "src/cli.ts" },
@@ -93,19 +96,22 @@ function workspace(patch: (parameters: Record<string, any>) => void = () => {}, 
   patch(parameters);
   const parametersFile = path.join(root, "parameters.json");
   writeFileSync(parametersFile, `${JSON.stringify(parameters, null, 2)}\n`, "utf8");
+  const tarballFile = path.join(root, "reelier-0.32.1.tgz");
+  writeFileSync(tarballFile, TARBALL_BYTES);
   const trustPinFile = path.join(root, "trust-pin.json");
   writeFileSync(trustPinFile, `${JSON.stringify({
     publicKeySpkiBase64: spki(authorizationKeys.publicKey),
     signerId: (parameters as any).signerIds.authorization,
     v: "reelier.release-authorization-trust-pin/v1",
   })}\n`, "utf8");
-  return { root, keysDir, outDir, parametersFile, trustPinFile, authorizationKeys };
+  return { root, keysDir, outDir, parametersFile, trustPinFile, tarballFile, authorizationKeys };
 }
 
-function runSigner(space: Workspace, extra: string[] = []): SpawnSyncReturns<string> {
+function runSigner(space: Workspace, extra: string[] = [], options: { readonly measureTarball?: boolean } = {}): SpawnSyncReturns<string> {
+  const tarballArgs = options.measureTarball === false || extra.includes("--tarball") ? [] : ["--tarball", space.tarballFile];
   return spawnSync(process.execPath, [
     signScript, "--candidate", space.parametersFile, "--keys", space.keysDir,
-    "--out", space.outDir, "--repo", repoRoot, ...extra,
+    "--out", space.outDir, "--repo", repoRoot, ...tarballArgs, ...extra,
   ], { encoding: "utf8", env: { ...process.env, REELIER_RELEASE_BARREL: barrelUrl } });
 }
 
@@ -130,6 +136,41 @@ test("the signing ceremony writes a seven-file set the production verifier accep
     ], { encoding: "utf8", env: { ...process.env, REELIER_RELEASE_BARREL: barrelUrl } });
     assert.equal(verified.status, 0, `${verified.stdout}\n${verified.stderr}`);
     assert.match(verified.stdout, /release authorization verified: sha256:[0-9a-f]{64}/);
+  } finally { rmSync(space.root, { force: true, recursive: true }); }
+});
+
+test("the signing ceremony refuses to overwrite an existing artifact set", () => {
+  const space = workspace();
+  try {
+    const first = runSigner(space);
+    assert.equal(first.status, 0, `${first.stdout}\n${first.stderr}`);
+    const before = new Map(readdirSync(space.outDir).map(name => [name, readFileSync(path.join(space.outDir, name))]));
+
+    const second = runSigner(space, ["--repository", "seldonframe/reelier-release-rehearsal"]);
+    assert.equal(second.status, 1, "a signed artifact set is immutable once published to its output path");
+    assert.match(second.stderr, /output.*already exists|refusing to overwrite/i);
+    assert.deepEqual(readdirSync(space.outDir).sort(), [...before.keys()].sort());
+    for (const [name, bytes] of before) assert.deepEqual(readFileSync(path.join(space.outDir, name)), bytes, `${name} changed on refused overwrite`);
+  } finally { rmSync(space.root, { force: true, recursive: true }); }
+});
+
+test("the signing ceremony requires a measured tarball before it signs", () => {
+  const space = workspace();
+  try {
+    const unsigned = runSigner(space, [], { measureTarball: false });
+    assert.equal(unsigned.status, 1);
+    assert.match(unsigned.stderr, /--tarball is required|measure.*tarball/i);
+    assert.equal(existsSync(space.outDir), false, "a missing measurement must leave no artifact set");
+  } finally { rmSync(space.root, { force: true, recursive: true }); }
+});
+
+test("the transport envelope cannot collide with or add an eighth file to the artifact set", () => {
+  const space = workspace();
+  try {
+    const collision = runSigner(space, ["--envelope", path.join(space.outDir, "authorization.json")]);
+    assert.equal(collision.status, 1);
+    assert.match(collision.stderr, /envelope.*artifact[- ]set|outside.*output/i);
+    assert.equal(existsSync(space.outDir), false, "a colliding transport path must refuse before the first output write");
   } finally { rmSync(space.root, { force: true, recursive: true }); }
 });
 
@@ -279,4 +320,8 @@ test("--help and the parameters template answer before any key is read", () => {
   const template = spawnSync(process.execPath, [signScript, "--print-parameters-template"], { encoding: "utf8" });
   assert.equal(template.status, 0);
   assert.equal(JSON.parse(template.stdout).v, "reelier.release-signing-parameters/v1");
+
+  const misplacedHelp = spawnSync(process.execPath, [signScript, "--candidate", "--help"], { encoding: "utf8" });
+  assert.equal(misplacedHelp.status, 1, "--help is a command only in argv[0], never a value-position bypass");
+  assert.match(misplacedHelp.stderr, /--candidate requires a value/);
 });
