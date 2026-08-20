@@ -5,6 +5,7 @@ export { AUTHORITY_ADAPTER_CONTRACT_V1, AUTHORITY_ADAPTER_CONTRACT_V1_DIGEST, ve
 export { signAuthorityDigest, verifyAuthoritySignature } from "./crypto.js";
 export {
   createApprovalReplayProtectorV1,
+  parseCustomerAuthorityPayloadV1,
   parseTrustDomainDescriptorV1,
   parseCustomerApprovalProofV1,
   parseStandingAuthorityEnvelopeV1,
@@ -12,12 +13,16 @@ export {
   parseMissionChildGrantV1,
   verifyCustomerRootedAuthorityV1,
   type AuthorityLimitsV1,
+  type CustomerAuthorityPurposeV1,
+  type CustomerAuthorityPayloadV1,
   type TrustDomainDescriptorV1,
   type CustomerApprovalProofV1,
   type StandingAuthorityEnvelopeV1,
   type HostedAuthorityEnvelopeV1,
   type MissionChildGrantV1,
   type ApprovalReplayProtectorV1,
+  type TrustedCustomerCredentialV1,
+  type TrustedCustomerCredentialResolverV1,
   type VerifiedCustomerRootedAuthorityV1,
 } from "./ambient-authority.js";
 export {

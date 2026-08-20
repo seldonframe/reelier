@@ -1,60 +1,21 @@
 import assert from "node:assert/strict";
 import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import test from "node:test";
-import {
-  authorityDigest,
-  createApprovalReplayProtectorV1,
-  parseTrustDomainDescriptorV1,
-  verifyCustomerRootedAuthorityV1,
-  type CustomerApprovalProofV1,
-  type HostedAuthorityEnvelopeV1,
-  type MissionChildGrantV1,
-  type StandingAuthorityEnvelopeV1,
-  type TrustDomainDescriptorV1,
-} from "../src/authority/index.js";
+import { authorityDigest, createApprovalReplayProtectorV1, parseCustomerAuthorityPayloadV1, parseTrustDomainDescriptorV1, verifyCustomerRootedAuthorityV1, type CustomerApprovalProofV1, type HostedAuthorityEnvelopeV1, type MissionChildGrantV1, type StandingAuthorityEnvelopeV1, type TrustDomainDescriptorV1 } from "../src/authority/index.js";
 
-const now = new Date("2026-08-20T12:00:00.000Z");
-const b64url = (value: Buffer) => value.toString("base64url");
-const digest = (value: unknown) => authorityDigest(value);
-const domain: TrustDomainDescriptorV1 = {
-  v: "reelier.trust-domain-descriptor/v1", tenant: "tenant-a", trustDomainId: "td_a", origin: "https://operator.example", rpId: "operator.example", revocationGeneration: 7,
-  connectors: [{ connectorId: "github", accountId: "acme/reelier" }], validFrom: "2026-08-20T00:00:00.000Z", validUntil: "2026-08-21T00:00:00.000Z",
-};
-const limits = { maxEffectsPerWindow: 4, windowSeconds: 3600, maxEffectsPerSourceTrigger: 1, maxBodyBytes: 4096 };
-
-function fixture(algorithm: "ES256" | "EdDSA" = "ES256") {
-  const { privateKey, publicKey } = algorithm === "ES256" ? generateKeyPairSync("ec", { namedCurve: "prime256v1" }) : generateKeyPairSync("ed25519");
-  const authority = { v: "reelier.customer-authority/internal-v1", tenant: "tenant-a", connector: { connectorId: "github", accountId: "acme/reelier" }, limits };
-  const authorityDigest = digest(authority), trustDomainDigest = digest(domain), nonce = b64url(Buffer.alloc(32, 9));
-  const clientData = Buffer.from(JSON.stringify({ type: "webauthn.get", challenge: b64url(Buffer.from(authorityDigest, "utf8")), origin: domain.origin, crossOrigin: false }));
-  const authData = Buffer.concat([createHash("sha256").update(domain.rpId).digest(), Buffer.from([0x05]), Buffer.alloc(4)]);
-  const proof: CustomerApprovalProofV1 = {
-    v: "reelier.customer-approval-proof/v1", tenant: domain.tenant, trustDomainDigest, authorityDigest, nonce, origin: domain.origin, rpId: domain.rpId,
-    issuedAt: "2026-08-20T11:00:00.000Z", expiresAt: "2026-08-20T13:00:00.000Z", revocationGeneration: domain.revocationGeneration,
-    connector: authority.connector, limits, credentialId: b64url(Buffer.alloc(32, 8)), algorithm, publicKeyJwk: publicKey.export({ format: "jwk" }), authenticatorData: b64url(authData), clientDataJSON: b64url(clientData), signature: b64url(sign(algorithm === "ES256" ? "sha256" : null, Buffer.concat([authData, createHash("sha256").update(clientData).digest()]), privateKey)),
-  };
-  const standing: StandingAuthorityEnvelopeV1 = { v: "reelier.standing-authority-envelope/v1", tenant: domain.tenant, trustDomainDigest, authorityDigest, approvalProofDigest: digest(proof), nonce, origin: domain.origin, rpId: domain.rpId, validFrom: proof.issuedAt, validUntil: proof.expiresAt, revocationGeneration: domain.revocationGeneration, connector: authority.connector, limits };
-  const hosted: HostedAuthorityEnvelopeV1 = { v: "reelier.hosted-authority-envelope/v1", tenant: domain.tenant, trustDomainDigest, authorityDigest, standingAuthorityDigest: digest(standing), approvalProofDigest: digest(proof), nonce, origin: domain.origin, rpId: domain.rpId, validFrom: standing.validFrom, validUntil: standing.validUntil, revocationGeneration: domain.revocationGeneration, connector: authority.connector, limits, issuer: "reelier-hosted" };
-  const mission: MissionChildGrantV1 = { v: "reelier.mission-child-grant/v1", tenant: domain.tenant, trustDomainDigest, authorityDigest, hostedAuthorityDigest: digest(hosted), standingAuthorityDigest: digest(standing), grantId: "mission-1", nonce: b64url(Buffer.alloc(32, 3)), validFrom: "2026-08-20T11:30:00.000Z", validUntil: "2026-08-20T12:30:00.000Z", revocationGeneration: domain.revocationGeneration, connector: authority.connector, limits: { ...limits, maxEffectsPerWindow: 1 } };
-  return { proof, standing, hosted, mission };
+const now = new Date("2026-08-20T12:00:00.000Z"), b64url = (value: Buffer) => value.toString("base64url"), digest = (value: unknown) => authorityDigest(value);
+const domain: TrustDomainDescriptorV1 = { v: "reelier.trust-domain-descriptor/v1", tenant: "tenant-a", trustDomainId: "td_a", origin: "https://operator.example", rpId: "operator.example", revocationGeneration: 7, connectors: [{ connectorId: "github", accountId: "acme/reelier" }], validFrom: "2026-08-20T00:00:00.000Z", validUntil: "2026-08-21T00:00:00.000Z" };
+const rootLimits = { maxEffectsPerWindow: 8, windowSeconds: 7200, maxEffectsPerSourceTrigger: 4, maxBodyBytes: 8192 };
+function fixture(algorithm: "ES256" | "EdDSA" = "ES256", times = { proof: ["2026-08-20T01:00:00.000Z", "2026-08-20T23:00:00.000Z"], standing: ["2026-08-20T02:00:00.000Z", "2026-08-20T22:00:00.000Z"], hosted: ["2026-08-20T03:00:00.000Z", "2026-08-20T21:00:00.000Z"], mission: ["2026-08-20T11:00:00.000Z", "2026-08-20T13:00:00.000Z"] }) {
+  const { privateKey, publicKey } = algorithm === "ES256" ? generateKeyPairSync("ec", { namedCurve: "prime256v1" }) : generateKeyPairSync("ed25519"); const authority = parseCustomerAuthorityPayloadV1({ v: "reelier.customer-authority/v1", purpose: "ambient-operator", tenant: domain.tenant, connector: { connectorId: "github", accountId: "acme/reelier" }, limits: rootLimits }); const authorityDigest = digest(authority), trustDomainDigest = digest(domain), nonce = b64url(Buffer.alloc(32, 9)); const clientData = Buffer.from(JSON.stringify({ type: "webauthn.get", challenge: b64url(Buffer.from(authorityDigest, "utf8")), origin: domain.origin, crossOrigin: false })), authData = Buffer.concat([createHash("sha256").update(domain.rpId).digest(), Buffer.from([0x05]), Buffer.alloc(4)]); const proof: CustomerApprovalProofV1 = { v: "reelier.customer-approval-proof/v1", tenant: domain.tenant, trustDomainDigest, authority, authorityDigest, nonce, origin: domain.origin, rpId: domain.rpId, issuedAt: times.proof[0], expiresAt: times.proof[1], revocationGeneration: domain.revocationGeneration, connector: authority.connector, limits: rootLimits, credentialId: b64url(Buffer.alloc(32, 8)), algorithm, publicKeyJwk: publicKey.export({ format: "jwk" }), authenticatorData: b64url(authData), clientDataJSON: b64url(clientData), signature: b64url(sign(algorithm === "ES256" ? "sha256" : null, Buffer.concat([authData, createHash("sha256").update(clientData).digest()]), privateKey)) };
+  const standingLimits = { maxEffectsPerWindow: 6, windowSeconds: 3600, maxEffectsPerSourceTrigger: 3, maxBodyBytes: 4096 }, hostedLimits = { maxEffectsPerWindow: 4, windowSeconds: 1800, maxEffectsPerSourceTrigger: 2, maxBodyBytes: 2048 }, missionLimits = { maxEffectsPerWindow: 1, windowSeconds: 900, maxEffectsPerSourceTrigger: 1, maxBodyBytes: 1024 };
+  const standing: StandingAuthorityEnvelopeV1 = { v: "reelier.standing-authority-envelope/v1", tenant: domain.tenant, trustDomainDigest, authorityDigest, approvalProofDigest: digest(proof), nonce, origin: domain.origin, rpId: domain.rpId, validFrom: times.standing[0], validUntil: times.standing[1], revocationGeneration: domain.revocationGeneration, connector: authority.connector, limits: standingLimits }; const hosted: HostedAuthorityEnvelopeV1 = { v: "reelier.hosted-authority-envelope/v1", tenant: domain.tenant, trustDomainDigest, authorityDigest, standingAuthorityDigest: digest(standing), approvalProofDigest: digest(proof), nonce, origin: domain.origin, rpId: domain.rpId, validFrom: times.hosted[0], validUntil: times.hosted[1], revocationGeneration: domain.revocationGeneration, connector: authority.connector, limits: hostedLimits, issuer: "reelier-hosted" }; const mission: MissionChildGrantV1 = { v: "reelier.mission-child-grant/v1", tenant: domain.tenant, trustDomainDigest, authorityDigest, hostedAuthorityDigest: digest(hosted), standingAuthorityDigest: digest(standing), grantId: "mission-1", nonce: b64url(Buffer.alloc(32, 3)), validFrom: times.mission[0], validUntil: times.mission[1], revocationGeneration: domain.revocationGeneration, connector: authority.connector, limits: missionLimits };
+  const credentials = { resolve: ({ credentialId }: { credentialId: string }) => credentialId === proof.credentialId ? { credentialId, algorithm, publicKeyJwk: proof.publicKeyJwk } : undefined }; return { proof, standing, hosted, mission, credentials };
 }
-
-test("customer-rooted authority verifies a WebAuthn approval once and binds all envelopes", () => {
-  const value = fixture(); const replay = createApprovalReplayProtectorV1();
-  const verified = verifyCustomerRootedAuthorityV1({ domain, ...value, now, replay });
-  assert.equal(verified.mission.grantId, "mission-1");
-  assert.throws(() => verifyCustomerRootedAuthorityV1({ domain, ...value, now, replay }), /replay/);
-});
-
-test("customer-rooted authority accepts the WebAuthn EdDSA profile", () => {
-  const value = fixture("EdDSA");
-  assert.equal(verifyCustomerRootedAuthorityV1({ domain, ...value, now, replay: createApprovalReplayProtectorV1() }).proof.algorithm, "EdDSA");
-});
-
-test("authority rejects tenant aliasing, expiry, and any child widening", () => {
-  const value = fixture();
-  assert.throws(() => verifyCustomerRootedAuthorityV1({ domain, ...value, standing: { ...value.standing, tenant: "tenant-b" }, now, replay: createApprovalReplayProtectorV1() }), /cross-tenant/);
-  assert.throws(() => parseTrustDomainDescriptorV1({ ...domain, origin: "http://operator.example" }), /origin/);
-  assert.throws(() => verifyCustomerRootedAuthorityV1({ domain, ...value, mission: { ...value.mission, limits: { ...limits, maxEffectsPerWindow: 5 } }, now, replay: createApprovalReplayProtectorV1() }), /widening/);
-  assert.throws(() => verifyCustomerRootedAuthorityV1({ domain, ...value, proof: { ...value.proof, expiresAt: "2026-08-20T11:59:00.000Z" }, now, replay: createApprovalReplayProtectorV1() }), /binding|expired|validity/);
-});
+const verifyFixture = (value: ReturnType<typeof fixture>) => verifyCustomerRootedAuthorityV1({ domain, ...value, now, replay: createApprovalReplayProtectorV1() });
+function withProof(value: ReturnType<typeof fixture>, proof: CustomerApprovalProofV1) { const standing = { ...value.standing, approvalProofDigest: digest(proof) }; const hosted = { ...value.hosted, standingAuthorityDigest: digest(standing), approvalProofDigest: digest(proof) }; return { ...value, proof, standing, hosted, mission: { ...value.mission, standingAuthorityDigest: digest(standing), hostedAuthorityDigest: digest(hosted) } }; }
+function withStanding(value: ReturnType<typeof fixture>, standing: StandingAuthorityEnvelopeV1) { const hosted = { ...value.hosted, standingAuthorityDigest: digest(standing) }; return { ...value, standing, hosted, mission: { ...value.mission, standingAuthorityDigest: digest(standing), hostedAuthorityDigest: digest(hosted) } }; }
+test("customer-rooted authority verifies trusted WebAuthn ES256 and EdDSA exactly once", () => { const value = fixture(); assert.equal(verifyFixture(value).mission.grantId, "mission-1"); const replay = createApprovalReplayProtectorV1(); verifyCustomerRootedAuthorityV1({ domain, ...value, now, replay }); assert.throws(() => verifyCustomerRootedAuthorityV1({ domain, ...value, now, replay }), /replay/); assert.equal(verifyFixture(fixture("EdDSA")).proof.algorithm, "EdDSA"); });
+test("customer approval rejects attacker credentials and purpose substitution", () => { const value = fixture(); const attacker = generateKeyPairSync("ec", { namedCurve: "prime256v1" }); assert.throws(() => verifyFixture(withProof(value, { ...value.proof, publicKeyJwk: attacker.publicKey.export({ format: "jwk" }) })), /credential/); assert.throws(() => parseCustomerAuthorityPayloadV1({ ...value.proof.authority, purpose: "kms-only" }), /purpose/); assert.throws(() => verifyFixture(withProof(value, { ...value.proof, authorityDigest: digest({ ...value.proof.authority, purpose: "other" }) })), /authority/); });
+test("authority rejects cross-tenant aliasing, strict equality, and correctly bound expiry", () => { const value = fixture(); assert.throws(() => verifyCustomerRootedAuthorityV1({ domain, ...value, standing: { ...value.standing, tenant: "tenant-b" }, now, replay: createApprovalReplayProtectorV1() }), /cross-tenant/); assert.throws(() => parseTrustDomainDescriptorV1({ ...domain, origin: "http://operator.example" }), /origin/); assert.throws(() => verifyFixture(withStanding(value, { ...value.standing, limits: value.proof.limits })), /equality/); assert.throws(() => verifyFixture(withStanding(value, { ...value.standing, limits: { ...value.standing.limits, windowSeconds: value.proof.limits.windowSeconds } })), /window equality/); const expired = fixture("ES256", { proof: ["2026-08-20T01:00:00.000Z", "2026-08-20T11:00:00.000Z"], standing: ["2026-08-20T02:00:00.000Z", "2026-08-20T10:30:00.000Z"], hosted: ["2026-08-20T03:00:00.000Z", "2026-08-20T10:00:00.000Z"], mission: ["2026-08-20T04:00:00.000Z", "2026-08-20T09:00:00.000Z"] }); assert.throws(() => verifyFixture(expired), /expired/); });
+test("standing and hosted roots are bounded by proof/domain; only mission grants have a twelve-hour cap", () => { const value = fixture(); assert.equal(verifyFixture(value).hosted.issuer, "reelier-hosted"); const tooLong = fixture("ES256", { proof: ["2026-08-20T01:00:00.000Z", "2026-08-20T23:00:00.000Z"], standing: ["2026-08-20T02:00:00.000Z", "2026-08-20T22:00:00.000Z"], hosted: ["2026-08-20T03:00:00.000Z", "2026-08-20T21:00:00.000Z"], mission: ["2026-08-20T04:00:00.000Z", "2026-08-20T17:00:01.000Z"] }); assert.throws(() => verifyFixture(tooLong), /twelve hours/); });
