@@ -2,12 +2,28 @@ import { authenticateOutcomeRequest, deriveAuthorityRequestKey } from "../keys.j
 import type { AuthorityGate, GateResult, RedactedGateStatus } from "../gate.js";
 import type { GateDecisionRecord, GateDecisionSink } from "../decision.js";
 import type { AuthorityLedger, ReservationLinkage } from "../ledger.js";
-import type { DispatchCoordinator } from "./dispatch.js";
+import { DispatchBoundaryFailure, type DispatchCoordinator } from "./dispatch.js";
 import type { AuthorityIngressOutcome } from "../ingress/mcp.js";
 import type { DelegationAuthority } from "./delegation-service.js";
 import type { StoredSignedGrant } from "../delegation.js";
 import type { AuthorityExecutionContextV1 } from "../types.js";
 import { assertLinuxAuthorityCellHost } from "./platform.js";
+import { authorityDigest } from "../wire.js";
+
+export interface DispatchFailureDiagnosticV1 {
+  readonly v: "reelier.dispatch-failure-diagnostic/internal-v1";
+  readonly requestId: string;
+  readonly reservationId: string;
+  readonly classification: string;
+  readonly phase: string;
+  readonly providerEffectPossible: boolean;
+  readonly errorDigest: string;
+  readonly observedAt: string;
+}
+
+export interface DispatchFailureRecorder {
+  record(value: DispatchFailureDiagnosticV1): Promise<void>;
+}
 
 export interface AuthorityHostRuntimeDependencies {
   readonly gate: AuthorityGate;
@@ -17,6 +33,7 @@ export interface AuthorityHostRuntimeDependencies {
   readonly shadow?: (input: Readonly<{ alias: string; request: unknown; tenant: string; requester: string }>) => Promise<Readonly<{ requestId: string; verdict: "accepted" | "refused"; reasonCode: string; lifecycleState: string }>>;
   readonly delegation?: DelegationAuthority;
   readonly verifyRootGrant?: (grant: StoredSignedGrant, tenant: string) => void;
+  readonly failureRecorder?: DispatchFailureRecorder;
 }
 
 export function createAuthorityHostRuntime(deps: AuthorityHostRuntimeDependencies) {
@@ -45,7 +62,24 @@ export function createAuthorityHostRuntime(deps: AuthorityHostRuntimeDependencie
       const linkage = result.signedDecision.reservationId ? await deps.ledger.lookupReservationLinkage(result.signedDecision.reservationId) : undefined;
       const state = linkage?.state ?? dispatchLifecycle(dispatchResult.kind);
       return accepted(requestId, state, linkage?.receiptRef ?? dispatchResult.receiptRef);
-    } catch { return refusal(requestId, "dispatch-unavailable", "unavailable"); }
+    } catch (error) {
+      const classification = error instanceof DispatchBoundaryFailure ? error.classification : "dispatch-internal-unavailable";
+      const phase = error instanceof DispatchBoundaryFailure ? error.phase : "unknown";
+      const providerEffectPossible = error instanceof DispatchBoundaryFailure ? error.providerEffectPossible : true;
+      const errorKind = error instanceof TypeError ? "type-error" : error instanceof Error ? "error" : "unknown";
+      const diagnostic = Object.freeze({
+        v: "reelier.dispatch-failure-diagnostic/internal-v1" as const,
+        requestId,
+        reservationId: result.signedDecision.reservationId ?? "",
+        classification,
+        phase,
+        providerEffectPossible,
+        errorDigest: authorityDigest({ v: "reelier.dispatch-failure-error-preimage/internal-v1", classification, phase, providerEffectPossible, errorKind }),
+        observedAt: new Date().toISOString(),
+      });
+      try { await deps.failureRecorder?.record(diagnostic); } catch {}
+      return refusal(requestId, "dispatch-unavailable", "unavailable");
+    }
   }
 
   async function status(input: unknown, context: { readonly tenant: string; readonly requester: string }): Promise<AuthorityIngressOutcome> {

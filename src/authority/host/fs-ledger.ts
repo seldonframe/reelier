@@ -1,5 +1,5 @@
 import canonicalize from "canonicalize";
-import { createDispatchCommitLease, type PreparedDispatchDescriptionV1, type DispatchCommitLease } from "./prepared-dispatch.js";
+import { createDispatchCommitLease, preparedDispatchBinding, validatePreparedDispatchBinding, type PreparedDispatchBindingV1, type PreparedDispatchDescriptionV1, type DispatchCommitLease } from "./prepared-dispatch.js";
 import { createHash, randomBytes } from "node:crypto";
 import {
   lstatSync,
@@ -323,6 +323,7 @@ interface SendStartedJournalEvent {
   readonly reservationId: string;
   readonly preparedDigest: string;
   readonly authorityGeneration: string;
+  readonly preparedBinding?: PreparedDispatchBindingV1;
   readonly at: string;
 }
 
@@ -605,7 +606,7 @@ export class FsAuthorityLedger implements AuthorityLedger {
       // concurrent reader can therefore never observe dispatched without its
       // send-started marker and cannot race a second send decision.
       const afterTransition = await this.loadView();
-      await this.appendEvent(afterTransition, { type: "send-started", reservationId: input.reservationId, preparedDigest: input.preparedDescription.materializedRequestDigest, authorityGeneration: input.expectedAuthorityGeneration, at }, "dispatch");
+      await this.appendEvent(afterTransition, { type: "send-started", reservationId: input.reservationId, preparedDigest: input.preparedDescription.materializedRequestDigest, authorityGeneration: input.expectedAuthorityGeneration, preparedBinding: preparedDispatchBinding(input.preparedDescription), at }, "dispatch");
       return createDispatchCommitLease({ reservationId: input.reservationId, allocationId: input.allocationId, preparedDigest: input.preparedDescription.materializedRequestDigest, authorityGeneration: input.expectedAuthorityGeneration, authorityExpiresAt: input.preparedDescription.authorityExpiresAt, absoluteDeadlineMs: input.absoluteDeadlineMs, commitGeneration: `commit:${input.reservationId}`,
       });
     });
@@ -3347,7 +3348,9 @@ export class FsAuthorityLedger implements AuthorityLedger {
       } else if (event.type === "send-started") {
         const current = reservations.get(event.reservationId);
         if (!current || current.state !== "dispatched" || current.sendStarted === true || !SHA.test(event.preparedDigest) || !SHA.test(event.authorityGeneration) || !isIso(event.at) || highWaterMark === null || event.at !== highWaterMark || parseIso(event.at) < parseIso(current.updatedAt)) throw new LedgerCorruption("invalid send-started journal event");
-        reservations.set(event.reservationId, frozen({ ...current, sendStarted: true, sequence: event.sequence, updatedAt: event.at }));
+        const preparedBinding = event.preparedBinding === undefined ? undefined : validatePreparedDispatchBinding(event.preparedBinding);
+        if (preparedBinding && (preparedBinding.materializedRequestDigest !== event.preparedDigest || preparedBinding.authorityGeneration !== event.authorityGeneration)) throw new LedgerCorruption("send-started prepared binding conflicts");
+        reservations.set(event.reservationId, frozen({ ...current, sendStarted: true, ...(preparedBinding ? { preparedDispatchBinding: preparedBinding } : {}), sequence: event.sequence, updatedAt: event.at }));
       } else throw new LedgerCorruption("unexpected journal record");
       events.push(event);
       eventDigests.push(named.digest);
@@ -3553,8 +3556,9 @@ function assertJournalEvent(event: JournalEvent): void {
       : ["at", "from", "previousDigest", "reservationId", "resultDigest", "sequence", "to", "type", "v"]);
     if (!SHA.test(event.reservationId) || !isIso(event.at) || !hasValidResultDigest(event.to, event.resultDigest)) throw new LedgerCorruption("invalid transition event identity");
   } else if (event.type === "send-started") {
-    assertExactKeys(event, ["at", "authorityGeneration", "preparedDigest", "previousDigest", "reservationId", "sequence", "type", "v"]);
+    assertExactKeys(event, ["at", "authorityGeneration", "preparedDigest", ...(event.preparedBinding === undefined ? [] : ["preparedBinding"]), "previousDigest", "reservationId", "sequence", "type", "v"]);
     if (!SHA.test(event.reservationId) || !SHA.test(event.preparedDigest) || !SHA.test(event.authorityGeneration) || !isIso(event.at)) throw new LedgerCorruption("invalid send-started event identity");
+    if (event.preparedBinding !== undefined) try { validatePreparedDispatchBinding(event.preparedBinding); } catch { throw new LedgerCorruption("invalid send-started prepared binding"); }
   }
   else throw new LedgerCorruption("unexpected journal event type");
 }

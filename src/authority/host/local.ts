@@ -15,6 +15,7 @@ import { FsAuthorityLedger } from "./fs-ledger.js";
 import { createDispatchCoordinator, type DispatchAdapter, type DispatchPublication } from "./dispatch.js";
 import { createJsonHttpsDispatchAdapter } from "./json-https-connector.js";
 import { createFileReceiptPublication } from "./receipts.js";
+import { createFileDispatchFailureRecorder } from "./runtime-failures.js";
 import { createPortableAuthorityReceiptPublication } from "./portable-receipts.js";
 import { createAuthorityHostRuntime } from "./runtime.js";
 import type { AuthorityHostConfig } from "./config.js";
@@ -184,7 +185,7 @@ async function createLocalAuthorityRuntimeCore(config:AuthorityHostConfig,option
   const releaseHost = createGitHubReleaseHostComposition({ runner: options.githubReleaseRunner ?? null, fallback: fallbackAdapter, publication: basePublication });
   const { adapter, publication } = releaseHost;
   const dispatch = createDispatchCoordinator(ledger, adapter, undefined, publication, options.delegation?.budget, certifiedDispatch);
-  const runtime = createAuthorityHostRuntime({ gate, dispatch, ledger, decisions, delegation: options.delegation, ...(options.delegation ? { verifyRootGrant: (grant, tenant) => { verifyTrustedAuthority(trustRoots, { tenant, signerId: grant.signerId, purpose: "delegation-grant", advertisedDigest: grant.digest, value: grant.grant, signature: grant.signature }); } } : {}) });
+  const runtime = createAuthorityHostRuntime({ gate, dispatch, ledger, decisions, failureRecorder: createFileDispatchFailureRecorder(path.join(config.receiptDir, "runtime-failures")), delegation: options.delegation, ...(options.delegation ? { verifyRootGrant: (grant, tenant) => { verifyTrustedAuthority(trustRoots, { tenant, signerId: grant.signerId, purpose: "delegation-grant", advertisedDigest: grant.digest, value: grant.grant, signature: grant.signature }); } } : {}) });
   const jobs = deployment?.jobCard
     ? Object.freeze(deployment.jobCard.definitionAliases.map(alias => Object.freeze({ jobId: deployment.jobCard!.jobId, alias })))
     : Object.freeze(config.definitions.map(alias => Object.freeze({ jobId: alias, alias })));

@@ -21,6 +21,17 @@ export interface PreparedDispatchDescriptionV1 {
   readonly behaviorDigest?: string;
 }
 
+/** Closed, restart-safe subset of a prepared dispatch. It binds both external routes and
+ * host-owned internal sagas without pretending that every dispatch has provider route authority. */
+export interface PreparedDispatchBindingV1 {
+  readonly v: "reelier.prepared-dispatch-binding/v1";
+  readonly routeDigest: string;
+  readonly materializedRequestDigest: string;
+  readonly authorityGeneration: string;
+  readonly authorityExpiresAt: string;
+  readonly behaviorDigest: string | null;
+}
+
 export interface PreparedDispatch { readonly [preparedBrand]: true; readonly description: PreparedDispatchDescriptionV1 }
 export interface DispatchCommitLease { readonly [commitBrand]: true }
 
@@ -56,6 +67,28 @@ export function describePreparedDispatch(capability: PreparedDispatch): Prepared
   const state = preparedStates.get(capability as object);
   if (!state) throw new TypeError("invalid or consumed prepared dispatch");
   return state.description;
+}
+
+export function preparedDispatchBinding(description: PreparedDispatchDescriptionV1): PreparedDispatchBindingV1 {
+  const value = validateDescription(description);
+  return Object.freeze({
+    v: "reelier.prepared-dispatch-binding/v1",
+    routeDigest: value.routeDigest,
+    materializedRequestDigest: value.materializedRequestDigest,
+    authorityGeneration: value.authorityGeneration,
+    authorityExpiresAt: value.authorityExpiresAt,
+    behaviorDigest: value.behaviorDigest ?? null,
+  });
+}
+
+export function validatePreparedDispatchBinding(value: unknown): PreparedDispatchBindingV1 {
+  if (!value || typeof value !== "object" || Array.isArray(value) || Object.getPrototypeOf(value) !== Object.prototype) throw new TypeError("prepared dispatch binding is invalid");
+  const keys = ["v", "routeDigest", "materializedRequestDigest", "authorityGeneration", "authorityExpiresAt", "behaviorDigest"] as const;
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  if (Reflect.ownKeys(value).length !== keys.length || keys.some(key => !(key in descriptors)) || Reflect.ownKeys(value).some(key => typeof key !== "string" || !keys.includes(key as typeof keys[number])) || Object.values(descriptors).some(descriptor => !("value" in descriptor) || !descriptor.enumerable)) throw new TypeError("prepared dispatch binding is not closed");
+  const raw = value as Record<typeof keys[number], unknown>;
+  if (raw.v !== "reelier.prepared-dispatch-binding/v1" || !DIGEST.test(String(raw.routeDigest)) || !DIGEST.test(String(raw.materializedRequestDigest)) || typeof raw.authorityGeneration !== "string" || raw.authorityGeneration.length === 0 || typeof raw.authorityExpiresAt !== "string" || !Number.isFinite(Date.parse(raw.authorityExpiresAt)) || raw.behaviorDigest !== null && !DIGEST.test(String(raw.behaviorDigest))) throw new TypeError("prepared dispatch binding is invalid");
+  return Object.freeze({ v: raw.v, routeDigest: String(raw.routeDigest), materializedRequestDigest: String(raw.materializedRequestDigest), authorityGeneration: raw.authorityGeneration, authorityExpiresAt: raw.authorityExpiresAt, behaviorDigest: raw.behaviorDigest === null ? null : String(raw.behaviorDigest) });
 }
 
 /** @internal Minted only by DispatchCoordinator after budget consumption and durable commit CAS. */

@@ -86,6 +86,7 @@ export interface ReservationSnapshot {
   readonly updatedAt: string;
   readonly resultDigest?: string;
   readonly sendStarted?: boolean;
+  readonly preparedDispatchBinding?: import("./host/prepared-dispatch.js").PreparedDispatchBindingV1;
 }
 
 export type TransitionEvent =

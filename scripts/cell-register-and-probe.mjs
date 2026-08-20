@@ -218,11 +218,15 @@ async function main() {
     disposition = "reused";
   } else {
     try {
+      const requestedSessionExpiry = Date.now() + args.hours * 3600 * 1000;
+      const rootGrantExpiry = Date.parse(binding.expiresAt);
+      if (!Number.isFinite(rootGrantExpiry)) throw new TypeError("the resolved root grant expiry is invalid");
       const credential = await principals.issue({
         principalId: binding.grantee, taskId: binding.taskId, grantId: binding.grantId, grantDigest: binding.grantDigest,
         allocationId: binding.allocationId, runtimeSessionId, jobId: deployment.jobCard.jobId,
         authorityCellId: config.authorityCellId,
-        expiresAt: new Date(Date.now() + args.hours * 3600 * 1000).toISOString(),
+        // A bearer is a child capability of this binding. It may be shorter-lived, never longer.
+        expiresAt: new Date(Math.min(requestedSessionExpiry, rootGrantExpiry)).toISOString(),
       });
       token = credential.token;
       liveToken = token;
