@@ -70,6 +70,32 @@ test("sign-root-grant emits a key-free payload the deployment's own trust roots 
   } finally { rmSync(harness.root, { recursive: true, force: true }); }
 });
 
+test("sign-root-grant can bind a distinct rehearsal allocation without changing the listing default", () => {
+  const harness = stage();
+  try {
+    const rehearsalFile = path.join(harness.root, "rehearsal-root-grant.json");
+    const result = sign(harness, ["--allocation-id", "release-rehearsal-root-01"], rehearsalFile);
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    const payload = JSON.parse(readFileSync(rehearsalFile, "utf8")) as { allocationId: string };
+    assert.equal(payload.allocationId, "release-rehearsal-root-01");
+    assert.match(result.stdout, /allocation: release-rehearsal-root-01/);
+  } finally { rmSync(harness.root, { recursive: true, force: true }); }
+});
+
+test("sign-root-grant can bind the rehearsal to an exact twelve-hour window", () => {
+  const harness = stage();
+  try {
+    const rehearsalFile = path.join(harness.root, "twelve-hour-root-grant.json");
+    const result = sign(harness, ["--expires-in-hours", "12"], rehearsalFile);
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    const payload = JSON.parse(readFileSync(rehearsalFile, "utf8")) as { rootGrant: { grant: { issuedAt: string; expiresAt: string } } };
+    assert.equal(
+      Date.parse(payload.rootGrant.grant.expiresAt) - Date.parse(payload.rootGrant.grant.issuedAt),
+      12 * 60 * 60 * 1_000,
+    );
+  } finally { rmSync(harness.root, { recursive: true, force: true }); }
+});
+
 test("sign-root-grant refuses a missing key, a key that is not the deployed trust root, and an existing output", () => {
   const harness = stage();
   try {
@@ -130,6 +156,24 @@ test("cell-register-and-probe completes the first authenticated conversation wit
     assert.ok(result.stdout.includes(`token file: ${harness.tokenFile} (mode 0600)`), result.stdout);
     // Windows reports synthesized permission bits, so the real mode is asserted where it is real.
     if (process.platform !== "win32") assert.equal(statSync(harness.tokenFile).mode & 0o777, 0o600);
+  } finally {
+    await running?.server.close();
+    rmSync(harness.root, { recursive: true, force: true });
+  }
+});
+
+test("the principal session can never outlive its signed root grant", async () => {
+  const harness = stage();
+  let running: Readonly<{ server: AuthorityHostServer; port: number }> | undefined;
+  try {
+    assert.equal(sign(harness, ["--expires-in-hours", "1"]).status, 0);
+    running = await serve(harness);
+    const result = await probe(harness, running.port, ["--expires-in-hours", "12", "--new-session"]);
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    const grantExpiry = /binding: .* expires=([^\s]+)/.exec(result.stdout)?.[1];
+    const sessionExpiry = /session: .* expires=([^\s]+)/.exec(result.stdout)?.[1];
+    assert.ok(grantExpiry && sessionExpiry, result.stdout);
+    assert.equal(sessionExpiry, grantExpiry);
   } finally {
     await running?.server.close();
     rmSync(harness.root, { recursive: true, force: true });

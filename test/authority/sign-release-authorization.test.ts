@@ -9,6 +9,8 @@ import { pathToFileURL } from "node:url";
 
 const signScript = path.resolve("scripts/sign-release-authorization.mjs");
 const verifyScript = path.resolve("scripts/verify-release-authorization.mjs");
+const materializeScript = path.resolve("scripts/materialize-release-runner-authorization.mjs");
+const rehearsalKeyScript = path.resolve("scripts/generate-release-rehearsal-keys.mjs");
 const barrelUrl = pathToFileURL(path.resolve("dist-test/src/authority/index.js")).href;
 const repoRoot = path.resolve(".");
 const TARBALL_BYTES = Buffer.from("reviewed reelier 0.32.1 tarball fixture\n", "utf8");
@@ -266,6 +268,95 @@ test("--envelope writes the transport form the verifier reads with --artifact-se
       verifyScript, "--artifact-set", envelope, "--trust-pin", space.trustPinFile, "--tag", "v0.32.1",
     ], { encoding: "utf8", env: { ...process.env, REELIER_RELEASE_BARREL: barrelUrl } });
     assert.equal(verified.status, 0, `${verified.stdout}\n${verified.stderr}`);
+  } finally { rmSync(space.root, { force: true, recursive: true }); }
+});
+
+test("the rehearsal key ceremony creates three distinct identities without printing private material", () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "reelier-rehearsal-keys-"));
+  const out = path.join(root, "keys");
+  try {
+    const generated = spawnSync(process.execPath, [rehearsalKeyScript, "--out", out], { encoding: "utf8" });
+    assert.equal(generated.status, 0, `${generated.stdout}\n${generated.stderr}`);
+    assert.deepEqual(readdirSync(out).sort(), [
+      "authorization.key.pem", "evidence.key.pem", "graph-maker.key.pem",
+      "graph-maker.pub.pem", "manifest.json", "release-authority.pub.pem", "trust-pin.json",
+    ]);
+    const privateBytes = ["authorization.key.pem", "evidence.key.pem", "graph-maker.key.pem"]
+      .map(name => readFileSync(path.join(out, name), "utf8"));
+    for (const bytes of privateBytes) {
+      assert.match(bytes, /BEGIN PRIVATE KEY/);
+      assert.equal(generated.stdout.includes(bytes.trim()), false);
+      assert.equal(generated.stderr.includes(bytes.trim()), false);
+    }
+    const manifest = JSON.parse(readFileSync(path.join(out, "manifest.json"), "utf8")) as { identities: Array<{ publicKeySpkiDigest: string }> };
+    assert.equal(new Set(manifest.identities.map(identity => identity.publicKeySpkiDigest)).size, 3);
+    const pin = JSON.parse(readFileSync(path.join(out, "trust-pin.json"), "utf8")) as { signerId: string };
+    assert.equal(pin.signerId, "reelier.rehearsal-authority.2026");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("the verified transport envelope materializes into the Cell's closed runner bundle from signed candidate bytes", () => {
+  const space = workspace(parameters => {
+    parameters.candidateCommit = workflowCommit;
+    parameters.files = parameters.files.map((file: Record<string, unknown>) => {
+      const filePath = String(file.path);
+      const bytes = execFileSync("git", ["-C", repoRoot, "cat-file", "blob", `${workflowCommit}:${filePath}`]);
+      return {
+        ...file,
+        blobSha: execFileSync("git", ["-C", repoRoot, "rev-parse", `${workflowCommit}:${filePath}`], { encoding: "utf8" }).trim(),
+        contentDigest: `sha256:${createHash("sha256").update(bytes).digest("hex")}`,
+      };
+    });
+  });
+  try {
+    const envelope = path.join(space.root, "artifact-set.json");
+    const bundle = path.join(space.root, "runner-authorization.json");
+    assert.equal(runSigner(space, ["--envelope", envelope]).status, 0);
+    const materialized = spawnSync(process.execPath, [
+      materializeScript,
+      "--artifact-set", envelope,
+      "--repo", repoRoot,
+      "--trust-pin", space.trustPinFile,
+      "--tag", "v0.32.1",
+      "--out", bundle,
+    ], { encoding: "utf8", env: { ...process.env, REELIER_RELEASE_BARREL: barrelUrl } });
+    assert.equal(materialized.status, 0, `${materialized.stdout}\n${materialized.stderr}`);
+    const value = JSON.parse(readFileSync(bundle, "utf8")) as Record<string, any>;
+    assert.deepEqual(Object.keys(value).sort(), ["authorization", "candidateManifest", "evidence", "fileContents", "operationPlan", "policy"]);
+    assert.deepEqual(value.fileContents.map((file: Record<string, string>) => file.path), [
+      "CHANGELOG.md", "src/cli.ts", "test/cli-subcommand-help.test.ts",
+    ]);
+    for (const file of value.fileContents) {
+      const expected = execFileSync("git", ["-C", repoRoot, "cat-file", "blob", `${workflowCommit}:${file.path}`]);
+      assert.deepEqual(Buffer.from(file.bytesBase64, "base64"), expected);
+    }
+    assert.match(materialized.stdout, /verified runner authorization materialized/);
+  } finally { rmSync(space.root, { force: true, recursive: true }); }
+});
+
+test("runner-bundle materialization refuses signed file claims that do not match the candidate commit", () => {
+  const space = workspace(parameters => {
+    parameters.candidateCommit = workflowCommit;
+    // The signing ceremony deliberately treats measured candidate facts as operator input. The
+    // materializer is the later boundary that has the Git object database and must catch this lie.
+    parameters.files[0].blobSha = sha("b");
+    parameters.files[0].contentDigest = digest("b");
+  });
+  try {
+    const envelope = path.join(space.root, "artifact-set.json");
+    const bundle = path.join(space.root, "runner-authorization.json");
+    assert.equal(runSigner(space, ["--envelope", envelope]).status, 0);
+    const materialized = spawnSync(process.execPath, [
+      materializeScript,
+      "--artifact-set", envelope,
+      "--repo", repoRoot,
+      "--trust-pin", space.trustPinFile,
+      "--tag", "v0.32.1",
+      "--out", bundle,
+    ], { encoding: "utf8", env: { ...process.env, REELIER_RELEASE_BARREL: barrelUrl } });
+    assert.equal(materialized.status, 1);
+    assert.match(materialized.stderr, /does not match its signed blob and content digests/);
+    assert.equal(existsSync(bundle), false, "a mismatched candidate must leave no Cell authorization file");
   } finally { rmSync(space.root, { force: true, recursive: true }); }
 });
 

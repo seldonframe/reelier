@@ -4,7 +4,8 @@
 //
 //   node scripts/sign-root-grant.mjs --keys <dir> --out <file> \
 //     [--task-id task_release_smoke_<yyyymmdd>] [--grantee agent_release] [--tenant tenant_release] \
-//     [--scope listing|release] [--expires-in-days 7] [--effects 1] \
+//     [--allocation-id root] [--scope listing|release] \
+//     [--expires-in-days 7 | --expires-in-hours 12] [--effects 1] \
 //     [--trust-key <staged>/authority/deployment/trust/keys/operator.pem] [--authority-cell-id cell_…]
 //
 // WHY THIS KEY. `authority serve` verifies a root grant through
@@ -56,7 +57,7 @@ const OPERATOR_SIGNER_ID = "operator";
 const OPERATOR_KEY_FILE = "deployment-operator.key.pem";
 const TENANT = "tenant_release";
 const DEFAULT_GRANTEE = "agent_release";
-const ROOT_ALLOCATION_ID = "root";
+const DEFAULT_ROOT_ALLOCATION_ID = "root";
 /** `contract/authority/v1/delegation-grant.schema.json` `$defs/id`: no colon, no slash. */
 const GRANT_ID = /^[A-Za-z0-9._~-]{1,128}$/;
 /** `runtime.ts` taskCreate AND `principal-registry.ts` `ID`, intersected. */
@@ -82,7 +83,7 @@ function parseArgs(argv) {
     if (opts.has(name)) fail(`--${name} was supplied more than once`);
     opts.set(name, value);
   }
-  const known = new Set(["keys", "out", "task-id", "grantee", "tenant", "scope", "expires-in-days", "effects", "trust-key", "authority-cell-id"]);
+  const known = new Set(["keys", "out", "task-id", "allocation-id", "grantee", "tenant", "scope", "expires-in-days", "expires-in-hours", "effects", "trust-key", "authority-cell-id"]);
   for (const name of opts.keys()) if (!known.has(name)) fail(`unknown option --${name}`);
   for (const name of ["keys", "out"]) if (!opts.has(name)) fail(`--${name} is required`);
 
@@ -90,14 +91,19 @@ function parseArgs(argv) {
   const stamp = `${now.getUTCFullYear()}${String(now.getUTCMonth() + 1).padStart(2, "0")}${String(now.getUTCDate()).padStart(2, "0")}`;
   const taskId = opts.get("task-id") ?? `task_release_smoke_${stamp}`;
   if (!TASK_ID.test(taskId)) fail("--task-id must match /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/");
+  const allocationId = opts.get("allocation-id") ?? DEFAULT_ROOT_ALLOCATION_ID;
+  if (!GRANT_ID.test(allocationId)) fail("--allocation-id must be a delegation-grant identity");
   const grantee = opts.get("grantee") ?? DEFAULT_GRANTEE;
   if (!GRANT_ID.test(grantee)) fail("--grantee must be a delegation-grant identity");
   const tenant = opts.get("tenant") ?? TENANT;
   if (!GRANT_ID.test(tenant)) fail("--tenant must be a delegation-grant identity");
   const scope = opts.get("scope") ?? "listing";
   if (!SCOPES.has(scope)) fail("--scope must be listing or release");
-  const days = Number(opts.get("expires-in-days") ?? "7");
-  if (!Number.isInteger(days) || days < 1 || days > 365) fail("--expires-in-days must be an integer between 1 and 365");
+  if (opts.has("expires-in-days") && opts.has("expires-in-hours")) fail("--expires-in-days and --expires-in-hours are mutually exclusive");
+  const hours = opts.has("expires-in-hours")
+    ? Number(opts.get("expires-in-hours"))
+    : Number(opts.get("expires-in-days") ?? "7") * 24;
+  if (!Number.isInteger(hours) || hours < 1 || hours > 365 * 24) fail("the grant validity must be an integer from 1 hour through 365 days");
   const effects = Number(opts.get("effects") ?? "1");
   // `FsDelegationBudgetLedger.createRoot` -> `assertEffects`: a positive integer, never zero.
   if (!Number.isInteger(effects) || effects < 1 || effects > 1_000_000) fail("--effects must be a positive integer budget");
@@ -110,7 +116,7 @@ function parseArgs(argv) {
     keysDir: path.resolve(opts.get("keys")),
     outFile: path.resolve(opts.get("out")),
     trustKeyFile: opts.has("trust-key") ? path.resolve(opts.get("trust-key")) : undefined,
-    taskId, grantId, grantee, tenant, scope, days, effects, authorityCellId,
+    taskId, allocationId, grantId, grantee, tenant, scope, validityMs: hours * 3600 * 1000, effects, authorityCellId,
   });
 }
 
@@ -212,7 +218,7 @@ async function main() {
     grantor: OPERATOR_SIGNER_ID,
     grantee: args.grantee,
     issuedAt: issuedAt.toISOString(),
-    expiresAt: new Date(issuedAt.getTime() + args.days * 24 * 3600 * 1000).toISOString(),
+    expiresAt: new Date(issuedAt.getTime() + args.validityMs).toISOString(),
     constraints: constraintsFor(args.scope, args.grantee),
   };
   // The SAME closed parser `verifyTrustedAuthority` runs before it checks the signature. A grant
@@ -224,7 +230,7 @@ async function main() {
   const payload = {
     v: "reelier.cell-smoke-root-grant-registration/v1",
     taskId: args.taskId,
-    allocationId: ROOT_ALLOCATION_ID,
+    allocationId: args.allocationId,
     effects: args.effects,
     scope: args.scope,
     ...(args.authorityCellId ? { authorityCellId: args.authorityCellId } : {}),
@@ -239,7 +245,7 @@ async function main() {
 
   const lines = [];
   lines.push(`signed root-grant registration: ${args.outFile}`);
-  lines.push(`task: ${args.taskId}   allocation: ${ROOT_ALLOCATION_ID}   effects: ${args.effects}   scope: ${args.scope}`);
+  lines.push(`task: ${args.taskId}   allocation: ${args.allocationId}   effects: ${args.effects}   scope: ${args.scope}`);
   lines.push(`grant: ${args.grantId}   tenant: ${args.tenant}   grantee: ${args.grantee}`);
   lines.push(`grant digest: ${digest}`);
   lines.push(`signer: ${OPERATOR_SIGNER_ID}   public SPKI sha256: sha256:${createHash("sha256").update(Buffer.from(spkiBase64(operator.publicKey), "base64")).digest("hex")}`);
