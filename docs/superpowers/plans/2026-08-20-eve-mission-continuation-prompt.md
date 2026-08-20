@@ -233,3 +233,9 @@ branches' state (`git -C .worktrees/rehearsal-harness log --oneline -3`, same fo
 http-invoke) and run their adversarial reviews if unreviewed; (3) ask the operator whether
 the live Eve smoke ran; (4) proceed down §5 in order. Do not start rehearsals before the
 Cell redeploy. Honor every gate; when in doubt, refuse loudly and ask the operator.
+
+## Amendment 2026-08-20 (post-incident)
+
+- **Single-writer rule, sharpened:** a task-notification saying an agent "completed" is END-OF-WRITER only if the agent has no pending background children — resumed agents can write again. Before dispatching a second writer into a worktree, send the incumbent an explicit stand-down (SendMessage) or verify its transcript shows no backgrounded work. This rule exists because it was violated once on codex/rehearsal-harness (2026-08-20, no damage, ledgered).
+- **Fresh-worktree trap:** full `npm test` in a new worktree fails the continuity leg as a bare `1 !== 0` unless the eve-fixture deps are installed first (`npm --prefix conformance/continuity-adapter/v1/eve-fixture ci --ignore-scripts`); the real cause is a child MODULE_NOT_FOUND several frames away.
+- **HTTP invoke route landed** on codex/http-invoke (POST /v1/jobs/<jobRef>/invoke, shared derivation, under review) — the §5 remainder stands otherwise.
