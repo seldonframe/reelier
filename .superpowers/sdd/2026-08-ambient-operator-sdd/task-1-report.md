@@ -53,7 +53,23 @@ Command: `npx tsc -p tsconfig.test.json --noEmit; node --test --test-concurrency
 ℹ duration_ms 161.4441
 ```
 
+Command: `npm test`
+
+```text
+ℹ tests 4
+ℹ suites 0
+ℹ pass 1
+ℹ fail 3
+✖ authority runtime authenticates host identity, dispatches once, and returns durable status
+✖ authority runtime does not trust identity fields from the request body
+✖ shadow runtime returns a report-only lifecycle and never an accepted receipt
+Error [AuthorityCellLinuxRequiredError]: Authority Cell hosting requires Linux. Windows is supported as a client; run the Cell through WSL, a Linux container, or a remote Linux Authority Cell.
+```
+
+Result: exit 1. The failures are existing Windows host-runtime tests outside this task; the new focused authority contract tests pass.
+
 Open risks
 
 - The in-memory replay protector is suitable for OSS callers and tests, but production Cloud must provide atomic durable nonce consumption before accepting an approval.
 - The task does not define attestation/counter semantics, backup credential lifecycle, or Cloud enrollment ceremony persistence; those remain Cloud implementation responsibilities.
+- The full repository suite is not green on this Windows worktree because three Authority Cell host-runtime tests require Linux. No unrelated runtime/platform files were changed to alter that behavior.
