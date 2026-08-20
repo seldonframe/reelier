@@ -57,7 +57,7 @@
 
 import { execFileSync } from "node:child_process";
 import { createHash, createPrivateKey, createPublicKey } from "node:crypto";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import process from "node:process";
 
@@ -113,13 +113,15 @@ const DEFAULT_REPOSITORY = "seldonframe/reelier";
 const USAGE = `sign-release-authorization.mjs — operator release-authorization signing ceremony (fail closed)
 
 Usage:
-  node scripts/sign-release-authorization.mjs --candidate <params.json> --keys <dir> --out <dir> [options]
+  node scripts/sign-release-authorization.mjs --candidate <params.json> --keys <dir> --out <dir> --tarball <path> [options]
 
 Required:
   --candidate <file>   closed reelier.release-signing-parameters/v1 parameters file
   --keys <dir>         directory holding ${KEY_FILE_NAMES.authorization} (private),
                        ${KEY_FILE_NAMES.evidence} (private), and ${KEY_FILE_NAMES.graphMaker} (public)
   --out <dir>          directory to write the closed seven-file artifact set into
+  --tarball <path>     recompute packedTarballDigest from this file and require the
+                       parameters file to already agree — a measured value, not a supplied one
 
 Options:
   --repo <dir>         local DIRECTORY to read workflow bytes from (default: the current directory)
@@ -131,8 +133,6 @@ Options:
                        proof the repository is the right one — the runner's own config decides
                        what the provider will touch, and refuses anything else at dispatch.
   --now <iso8601>      issuedAt instant; expiresAt is exactly +12h (default: now)
-  --tarball <path>     recompute packedTarballDigest from this file and require the
-                       parameters file to already agree — a measured value, not a supplied one
   --envelope <file>    also write the single-file reelier.release-authorization-transport/v1
                        form that verify-release-authorization.mjs --artifact-set reads
   --print-parameters-template   write a commented parameters skeleton to stdout and exit 0
@@ -218,11 +218,11 @@ function fail(message) {
 
 // --help and the template must be answerable before any key is read or any file written.
 const argv = process.argv.slice(2);
-if (argv.includes("--help") || argv.includes("-h")) {
+if (argv[0] === "--help" || argv[0] === "-h") {
   process.stdout.write(USAGE);
   process.exit(0);
 }
-if (argv.includes("--print-parameters-template")) {
+if (argv[0] === "--print-parameters-template") {
   process.stdout.write(PARAMETERS_TEMPLATE);
   process.exit(0);
 }
@@ -250,7 +250,17 @@ function parseArgs(args) {
   for (const [flag, value] of [["--candidate", parsed.candidate], ["--keys", parsed.keys], ["--out", parsed.out]]) {
     if (!value) fail(`${flag} is required (run --help for the usage)`);
   }
+  if (!parsed.tarball) fail("--tarball is required; a release authorization must measure the packed artifact instead of trusting a digest from the parameters file");
   if (!REPOSITORY.test(parsed.repository)) fail(`--repository ${parsed.repository} must be an owner/name repository identity`);
+  const outputPath = path.resolve(parsed.out);
+  if (existsSync(outputPath)) fail(`artifact-set output ${outputPath} already exists; refusing to overwrite signed release evidence`);
+  if (parsed.envelope) {
+    const envelopePath = path.resolve(parsed.envelope);
+    if (envelopePath === outputPath || envelopePath.startsWith(`${outputPath}${path.sep}`)) {
+      fail("the transport envelope must be outside the artifact-set output directory; the set is closed at seven files");
+    }
+    if (existsSync(envelopePath)) fail(`transport envelope output ${envelopePath} already exists; refusing to overwrite signed release evidence`);
+  }
   return parsed;
 }
 
@@ -685,12 +695,27 @@ QUALITY_LANES.forEach((lane, index) => {
   outputs[ARTIFACT_FILE_NAMES[lane]] = canonical({ evidence: canonical(artifacts.qualityEvidence[index].evidence), verifier: artifacts.qualityEvidence[index].verifier });
 });
 
+// Publish the seven-file set as one directory rename. A crash can leave only the hidden staging
+// directory, never a partially populated path that a reviewer or workflow could mistake for the
+// complete set. Renaming a directory onto an existing non-empty directory refuses on every
+// supported platform, while the second existence check gives an actionable concurrent-writer error.
+const outputPath = path.resolve(args.out);
+const outputParent = path.dirname(outputPath);
+let outputStage;
+let outputError;
 try {
-  mkdirSync(args.out, { recursive: true });
-  for (const [name, text] of Object.entries(outputs)) writeFileSync(path.join(args.out, name), `${text}\n`, { encoding: "utf8", mode: 0o600 });
+  mkdirSync(outputParent, { recursive: true });
+  if (existsSync(outputPath)) fail(`artifact-set output ${outputPath} already exists; refusing to overwrite signed release evidence`);
+  outputStage = mkdtempSync(path.join(outputParent, `.${path.basename(outputPath)}.stage-`));
+  for (const [name, text] of Object.entries(outputs)) writeFileSync(path.join(outputStage, name), `${text}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
+  renameSync(outputStage, outputPath);
+  outputStage = undefined;
 } catch (error) {
-  fail(`cannot write the artifact set to ${args.out}: ${error instanceof Error ? error.message : String(error)}`);
+  outputError = error;
+} finally {
+  if (outputStage) rmSync(outputStage, { force: true, recursive: true });
 }
+if (outputError) fail(`cannot atomically publish the artifact set to ${outputPath}: ${outputError instanceof Error ? outputError.message : String(outputError)}`);
 
 if (args.envelope) {
   const envelope = {
@@ -707,7 +732,9 @@ if (args.envelope) {
     v: "reelier.release-authorization-transport/v1",
   };
   try {
-    writeFileSync(args.envelope, `${canonical(envelope)}\n`, { encoding: "utf8", mode: 0o600 });
+    const envelopePath = path.resolve(args.envelope);
+    mkdirSync(path.dirname(envelopePath), { recursive: true });
+    writeFileSync(envelopePath, `${canonical(envelope)}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
   } catch (error) {
     fail(`cannot write the transport envelope to ${args.envelope}: ${error instanceof Error ? error.message : String(error)}`);
   }
@@ -726,9 +753,7 @@ const lines = [
   `  artifact set: ${args.out} (${Object.keys(outputs).length} files)`,
   ...(args.envelope ? [`  transport envelope: ${args.envelope}`] : []),
   "  VERIFIED: verifyReleaseAuthorizationBundleV1 accepts this set at its issue instant, with the three signed CI quality lanes",
-  args.tarball
-    ? `  VERIFIED: packedTarballDigest equals the measured digest of ${args.tarball}`
-    : "  NOT CHECKED: packedTarballDigest against a real tarball — pass --tarball <path> to measure it instead of trusting the parameters file",
+  `  VERIFIED: packedTarballDigest equals the measured digest of ${args.tarball}`,
   "  NOT CHECKED: that the parameters describe the candidate you intended. Every commit, tree, blob, and quality digest was taken on trust from the parameters file.",
   `  NOT CHECKED: that ${args.repository} is the repository your runner config names. A signed repository is what was authorized, not proof it was the right one; the provider refuses any other repository at dispatch (definitive-refusal, before any credential or socket).`,
   "  NOT CHECKED: that CI actually ran. The quality lanes attest results you supplied; they are not evidence of a workflow run.",
