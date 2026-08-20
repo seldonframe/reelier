@@ -42,7 +42,7 @@ Error [AuthorityCellLinuxRequiredError]: Authority Cell hosting requires Linux. 
     code: 'AUTHORITY_CELL_LINUX_REQUIRED'
 ```
 
-Final focused regression tail (verbatim): `tests 13`, `pass 13`, `fail 0`, `cancelled 0`, `skipped 0`.
+Final focused regression tail (verbatim): `tests 4`, `pass 4`, `fail 0`, `cancelled 0`, `skipped 0`; this includes the signed provider-evidence binding assertion.
 
 Commands run
 

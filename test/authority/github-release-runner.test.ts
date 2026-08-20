@@ -131,6 +131,26 @@ test("hosted release authority rejects non-canonical validity timestamps", () =>
   assert.throws(() => assertGitHubReleaseHostedAuthorityBindingV1(binding, fixture.context.authorization, new Date("2026-08-18T06:00:00.000Z")), /customer approval/i);
 });
 
+test("hosted authority binding digest is carried by signed provider evidence", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "reelier-release-hosted-evidence-"));
+  const fixture = releaseAuthorityFixture(), journalKeys = generateKeyPairSync("ed25519");
+  const hostedAuthority = createGitHubReleaseHostedAuthorityBindingV1({ domain: {}, proof: { issuedAt: "2026-08-18T00:00:00.000Z", expiresAt: "2026-08-18T12:00:00.000Z" }, standing: { validFrom: "2026-08-18T00:30:00.000Z", validUntil: "2026-08-18T11:30:00.000Z" }, hosted: { validFrom: "2026-08-18T01:00:00.000Z", validUntil: "2026-08-18T11:00:00.000Z" }, mission: { connector: { connectorId: "github", accountId: "seldonframe/reelier" }, authorityDigest: digest("a"), hostedAuthorityDigest: digest("b"), standingAuthorityDigest: digest("c"), trustDomainDigest: digest("d"), validFrom: "2026-08-18T01:30:00.000Z", validUntil: "2026-08-18T10:00:00.000Z" } } as any);
+  const request = { alias: "github_release_candidate_publish_v1" as const, allocationId: "release-candidate-branch-01", authorizationHandle: "release_auth_1", requestId: "hosted_evidence_binding", semanticsDigest: authorityDigest({ hosted: "evidence" }) };
+  try {
+    const runner = await createGitHubReleaseRunner({ rootDir: root, journalSigner: { signerId: "release-journal-2026", privateKey: journalKeys.privateKey, publicKey: journalKeys.publicKey }, evidenceSigner: fixture.evidenceSigner, authorizationResolver: async () => ({ ...fixture.context, hostedAuthority }), provider: candidateProvider(), now: () => new Date("2026-08-18T06:00:00.000Z") });
+    const result = await governedRun(runner, request);
+    assert.equal(result.status, "verified");
+    const bindingDigest = assertGitHubReleaseHostedAuthorityBindingV1(hostedAuthority, fixture.context.authorization, new Date("2026-08-18T06:00:00.000Z"));
+    const providerReadbackDigest = authorityDigest({ ref: { sha: gitSha("a") }, commit: { sha: gitSha("a"), parentSha: "e600ad5c2dc5e1bde0714915e7a84980c8d5602b", treeSha: gitSha("e") } });
+    const expectedSubjectDigest = authorityDigest({ v: "reelier.github-release-provider-readback/v1", hostedAuthorityBindingDigest: bindingDigest, providerReadbackDigest });
+    const journal = await createSignedJournal({ rootDir: path.join(root, "journal"), journalId: "github-release", signerId: "release-journal-2026", privateKey: journalKeys.privateKey, publicKey: journalKeys.publicKey });
+    const terminal = (await journal.load(request.requestId)).find(event => event.phase === "candidate-verified");
+    assert.equal(terminal?.data.hostedAuthorityBindingDigest, bindingDigest);
+    assert.equal(terminal?.data.subjectDigest, expectedSubjectDigest);
+    assert.equal((terminal?.data.evidence as any)?.value?.subjectDigest, expectedSubjectDigest);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 test("signed journal detects tamper and atomic-head rollback", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "reelier-release-journal-"));
   const keys = generateKeyPairSync("ed25519");
