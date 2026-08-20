@@ -136,6 +136,41 @@ test("reelier init --dry-run prints an answer-first A/B/C inspection and writes 
   });
 });
 
+test("reelier init --managed --dry-run prints a redacted descriptor without filesystem or network writes", async () => {
+  await withTempDir(async root => {
+    const originalFetch = globalThis.fetch;
+    const originalCredential = process.env.REELIER_MANAGED_CREDENTIAL;
+    globalThis.fetch = (() => { throw new Error("managed init attempted network access"); }) as typeof fetch;
+    process.env.REELIER_MANAGED_CREDENTIAL = "ambient-provider-credential";
+    try {
+      const { result: code, output } = await capture(() => cmdInit(parsed(["managed", "dry-run"]), { cwd: root, homedir: root, dependencies: localDependencies() }));
+      assert.equal(code, 0);
+      assert.match(output, /"v": "reelier\.managed-init\/v1"/);
+      assert.match(output, /"endpoint": "<remote-mcp-endpoint>"/);
+      assert.match(output, /"authority": "absent"/);
+      assert.match(output, /"completeness": "unchecked"/);
+      assert.match(output, /"credentials": "absent"/);
+      assert.match(output, /"missionAuthorization": "absent"/);
+      assert.doesNotMatch(output, /ambient-provider-credential/);
+      await assert.rejects(readFile(path.join(root, ".reelier", "init", "state.json"), "utf8"), { code: "ENOENT" });
+    } finally {
+      globalThis.fetch = originalFetch;
+      if (originalCredential === undefined) delete process.env.REELIER_MANAGED_CREDENTIAL;
+      else process.env.REELIER_MANAGED_CREDENTIAL = originalCredential;
+    }
+  });
+});
+
+test("reelier init --managed refuses names and incompatible initialization modes", async () => {
+  const namedManaged = await capture(() => cmdInit(named("my-agent", ["managed"])));
+  assert.equal(namedManaged.result, 1);
+  assert.match(namedManaged.output, /managed.*agent name/i);
+
+  const signingManaged = await capture(() => cmdInit(parsed(["managed", "signing"])));
+  assert.equal(signingManaged.result, 1);
+  assert.match(signingManaged.output, /managed.*signing/i);
+});
+
 test("reelier init persists only its inspection directory and reports the stable artifact identifier", async () => {
   await withTempDir(async root => {
     const { result: code, output } = await capture(() => cmdInit(parsed(), { cwd: root, homedir: root, dependencies: localDependencies() }));
