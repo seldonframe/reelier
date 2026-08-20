@@ -6,7 +6,8 @@ import { isProxy } from "node:util/types";
 import { authorityDigest } from "../wire.js";
 import { assertVerifiedReleaseAuthorizationV1, type ReleaseContractSignerV1, type ReleaseProviderEffectV1, type VerifiedReleaseAuthorizationV1 } from "../release-contracts.js";
 import { consumeCoordinatorPublicationCall, type DispatchAdapter, type DispatchOutcome, type DispatchPublication, type DispatchRequestState, type DurableDispatchPublicationHeadV1, type DurableDispatchPublicationQueryV1 } from "./dispatch.js";
-import { consumeCoordinatorReconciliation, createPreparedDispatch, describePreparedDispatch } from "./prepared-dispatch.js";
+import { consumeCoordinatorReconciliation, createPreparedDispatch } from "./prepared-dispatch.js";
+import { materializedHttpRequestDigest } from "./http-response-semantics.js";
 import { normalizeReservationPublicationId } from "./reservation-identity.js";
 import { createSignedJournal, type SignedJournal, type SignedJournalEventV1 } from "./signed-journal.js";
 import { createGitHubReleaseProviderEvidence } from "./github-release-evidence.js";
@@ -210,10 +211,24 @@ function createGitHubReleaseDispatchAdapter(input: Readonly<{ runner: GitHubRele
     }
   };
   return Object.freeze({
-    ...(input.fallback.prepare ? { async prepare(state: DispatchRequestState) {
-      const fallbackPrepared = await input.fallback.prepare!(state);
-      if (!ENDPOINTS[inertEndpointId(state.effect) ?? ""]) return fallbackPrepared;
-      const description = describePreparedDispatch(fallbackPrepared);
+    ...(input.runner || input.fallback.prepare ? { async prepare(state: DispatchRequestState) {
+      const endpointId = inertEndpointId(state.effect) ?? "";
+      const alias = ENDPOINTS[endpointId];
+      if (!alias) {
+        if (!input.fallback.prepare) throw new TypeError("fallback prepared dispatch is unavailable");
+        return input.fallback.prepare(state);
+      }
+      const intent = state.reservation.intent as unknown as Record<string, unknown>;
+      const execution = intent.executionContext as Readonly<{ allocationId?: unknown }> | undefined;
+      const authorityGeneration = intent.authorityStateDigest;
+      const authorityExpiresAt = intent.expiresAt;
+      if (!execution || typeof execution.allocationId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._~:-]{0,127}$/.test(execution.allocationId) || typeof authorityGeneration !== "string" || !DIGEST.test(authorityGeneration) || typeof authorityExpiresAt !== "string" || !Number.isFinite(Date.parse(authorityExpiresAt))) throw new TypeError("release prepared dispatch authority binding is invalid");
+      const effect = exactRecord(state.effect, ["bodyBase64", "endpointId", "headers", "idempotency", "method", "path", "preconditions", "query", "reconciliation", "riskClass", "v"], "release transport effect");
+      const bodyBase64 = String(effect.bodyBase64), body = Buffer.from(bodyBase64, "base64");
+      if (body.length === 0 || body.toString("base64") !== bodyBase64) throw new TypeError("release prepared dispatch body is not canonical base64");
+      const projection = Object.freeze({ v: "reelier.materialized-http-request/v1" as const, method: "POST" as const, origin: "https://reelier.authority-cell.internal", normalizedPath: "/internal/github-release", normalizedQuery: "", reviewedHeaders: Object.freeze({ "content-type": "application/json" }), bodyDigest: `sha256:${createHash("sha256").update(body).digest("hex")}` });
+      const routeDigest = authorityDigest({ v: "reelier.github-release-internal-route/v1", alias, endpointId });
+      const description = Object.freeze({ v: "reelier.prepared-dispatch-description/v1" as const, routeDigest, materializedRequestDigest: materializedHttpRequestDigest(projection), projection, authorityGeneration, authorityExpiresAt, absoluteDeadlineMs: performance.now() + 30_000, reservationId: state.reservation.reservationId, allocationId: execution.allocationId, behaviorDigest: authorityDigest({ v: "reelier.github-release-internal-behavior/v1", alias, routeDigest }) });
       return createPreparedDispatch({ description, send: async () => await invoke(state) ?? failure("dedicated-release-runner-absent"), requireCoordinatorCommit: true });
     } } : {}),
     async dispatch(state: DispatchRequestState) { if (ENDPOINTS[inertEndpointId(state.effect) ?? ""]) return failure("release-provider-execution-requires-prepared-dispatch"); return input.fallback.dispatch(state); },
