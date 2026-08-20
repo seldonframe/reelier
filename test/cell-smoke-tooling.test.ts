@@ -136,6 +136,60 @@ test("cell-register-and-probe completes the first authenticated conversation wit
   }
 });
 
+/** The invoke leg of the same authenticated conversation. `cell-register-and-probe.mjs` proves the
+ * Cell answers `GET /v1/jobs`; this proves the Cell can also be ASKED to run one of them over HTTP,
+ * through the real four-definition serve composition and the session that probe issued. The provider
+ * is the loopback fixture, so what the Cell answers is its own governed decision either way — what
+ * must never come back is `not-found`, which would mean the route does not exist. */
+test("the Cell's HTTP ingress invokes a loaded opaque reference and refuses everything outside it", async () => {
+  const harness = stage();
+  let running: Readonly<{ server: AuthorityHostServer; port: number }> | undefined;
+  try {
+    assert.equal(sign(harness, ["--trust-key", harness.operatorTrustKey, "--authority-cell-id", harness.authorityCellId]).status, 0);
+    running = await serve(harness);
+    const registered = await probe(harness, running.port);
+    assert.equal(registered.status, 0, `${registered.stdout}\n${registered.stderr}`);
+    const refs = jobRefsFrom(registered.stdout);
+    assert.equal(refs.length, githubReleaseAliases.length);
+    const token = readFileSync(harness.tokenFile, "utf8").trim();
+    const base = `http://127.0.0.1:${running.port}`;
+    const invoke = async (jobRef: string, requestId: string, bearer?: string) => {
+      const response = await fetch(`${base}/v1/jobs/${jobRef}/invoke`, {
+        method: "POST",
+        headers: { "content-type": "application/json", ...(bearer ? { authorization: `Bearer ${bearer}` } : {}) },
+        body: JSON.stringify({ requestId, sourceRefs: { repository: "seldonframe/reelier" }, choices: {} }),
+      });
+      return { status: response.status, body: await response.json() as { requestId: string; verdict: string; reasonCode: string; lifecycleState: string } };
+    };
+
+    const anonymous = await invoke(refs[0]!, "smoke_anonymous");
+    assert.equal(anonymous.status, 401);
+    assert.equal(anonymous.body.reasonCode, "authentication-required");
+
+    const authenticated = await invoke(refs[0]!, "smoke_invoke", token);
+    assert.equal(authenticated.status, 202, JSON.stringify(authenticated.body));
+    // The Cell's OWN governed answer, not the ingress failing to find a route.
+    assert.notEqual(authenticated.body.reasonCode, "not-found");
+    assert.equal(typeof authenticated.body.reasonCode, "string");
+    assert.notEqual(authenticated.body.reasonCode, "");
+    assert.equal(["accepted", "refused"].includes(authenticated.body.verdict), true, JSON.stringify(authenticated.body));
+
+    // An opaque reference this Cell never issued is a governed refusal too, never a 404.
+    const foreign = await invoke(`jobref_${"0".repeat(64)}`, "smoke_foreign", token);
+    assert.equal(foreign.status, 202);
+    assert.equal(foreign.body.reasonCode, "job-not-found");
+
+    // A bearer the Cell will not resolve never reaches the runner at all.
+    const forged = await invoke(refs[0]!, "smoke_forged", "rat_not_a_registered_session");
+    assert.equal(forged.status, 401);
+    assert.equal(forged.body.reasonCode, "authentication-required");
+    assert.equal(registered.stdout.includes(token), false);
+  } finally {
+    await running?.server.close();
+    rmSync(harness.root, { recursive: true, force: true });
+  }
+});
+
 test("a re-run reuses the one session, and a divergent task refuses instead of forking authority", async () => {
   const harness = stage();
   let running: Readonly<{ server: AuthorityHostServer; port: number }> | undefined;

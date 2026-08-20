@@ -281,9 +281,57 @@ test("production MCP and HTTP keep signed multi-definition aliases behind authen
     const address = server.http.address();
     assert.ok(address && typeof address !== "string");
     const rawHttp = await fetch(`http://127.0.0.1:${address.port}/v1/outcomes/${GMAIL}`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${credential.token}` }, body: JSON.stringify({ requestId: "raw_http", sourceRefs: { thread: "thread_1" }, choices: {} }) });
-    const rawHttpBody = await rawHttp.json() as { verdict: string };
+    const rawHttpBody = await rawHttp.json() as { verdict: string; reasonCode: string };
     assert.equal(rawHttpBody.verdict, "refused");
+    assert.equal(rawHttpBody.reasonCode, "job-authority-refused");
     assert.equal(dispatches, 1);
+
+    // The HTTP invoke route is the same authority as the MCP tool: same handler, same authenticated
+    // context, same opaque-reference scope. Nothing below re-derives an authorization of its own.
+    const base = `http://127.0.0.1:${address.port}`;
+    const httpInvoke = async (jobRef: string, body: unknown, token?: string) => {
+      const response = await fetch(`${base}/v1/jobs/${jobRef}/invoke`, { method: "POST", headers: { "content-type": "application/json", ...(token ? { authorization: `Bearer ${token}` } : {}) }, body: JSON.stringify(body) });
+      return { status: response.status, body: await response.json() as { requestId: string; verdict: string; reasonCode: string; lifecycleState: string } };
+    };
+    const slackRef = catalog.jobs[1]!.jobRef;
+    const slackRequest = { requestId: "http_invoke", sourceRefs: { channel: "channel_1" }, choices: {} };
+
+    const anonymous = await httpInvoke(slackRef, slackRequest);
+    assert.equal(anonymous.status, 401);
+    assert.equal(anonymous.body.reasonCode, "authentication-required");
+    assert.equal(dispatches, 1);
+
+    const httpInvoked = await httpInvoke(slackRef, slackRequest, credential.token);
+    assert.equal(httpInvoked.status, 202);
+    assert.equal(httpInvoked.body.verdict, "accepted", JSON.stringify(httpInvoked.body));
+    assert.equal(httpInvoked.body.requestId, "http_invoke");
+    assert.equal(dispatches, 2);
+
+    // Idempotence is the coordinator's, and the ingress must not break it: the identical request
+    // converges on the same outcome without a second provider effect, and the same request id with
+    // different semantics refuses instead of dispatching a second, different write.
+    const repeated = await httpInvoke(slackRef, slackRequest, credential.token);
+    assert.equal(repeated.body.verdict, "accepted");
+    assert.equal(dispatches, 2);
+    const conflicting = await httpInvoke(slackRef, { ...slackRequest, sourceRefs: { channel: "channel_other" } }, credential.token);
+    assert.equal(conflicting.body.verdict, "refused");
+    assert.equal(conflicting.body.reasonCode, "request-id-conflict");
+    assert.equal(dispatches, 2);
+
+    // A raw alias in the reference position is not a reference. The signed multi-definition
+    // deployment publishes opaque references only, over HTTP exactly as over MCP.
+    const aliasAsRef = await httpInvoke(GMAIL, { ...slackRequest, requestId: "http_alias_ref", sourceRefs: { thread: "thread_1" } }, credential.token);
+    assert.equal(aliasAsRef.body.verdict, "refused");
+    assert.equal(aliasAsRef.body.reasonCode, "job-not-found");
+    assert.equal(dispatches, 2);
+
+    // A session outside this task carries a resolvable bearer and still refuses with the MCP
+    // ingress's own reason code, not a transport-level error.
+    const isolatedCredential = await principals.issue({ ...fixture.context.executionContext, taskId: "task_other", runtimeSessionId: "session_other", expiresAt: "2027-01-01T00:00:00.000Z" });
+    const isolated = await httpInvoke(slackRef, { ...slackRequest, requestId: "http_isolated" }, isolatedCredential.token);
+    assert.equal(isolated.body.verdict, "refused");
+    assert.equal(isolated.body.reasonCode, "job-authority-refused");
+    assert.equal(dispatches, 2);
   } finally {
     await client.close();
     await server.close();
