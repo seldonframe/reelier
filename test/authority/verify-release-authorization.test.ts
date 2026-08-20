@@ -46,7 +46,13 @@ const ARTIFACT_FILE_NAMES = {
   policy: "policy.json",
 } as const;
 
+// R2 frozen-contract amendment (operator exception, 2026-08-19): the base commit travels in the
+// signed bundle rather than a compiled-in constant, so it is a fixture knob here, not a pin.
+const REVIEWED_BASE = "e600ad5c2dc5e1bde0714915e7a84980c8d5602b";
+const AMENDED_BASE = "80c8084c1f2d3a4b5c6d7e8f9012345678abcdef";
+
 interface FixtureOptions {
+  readonly baseCommit?: string;
   readonly issuedAtMs?: number;
   readonly packedTarballDigest?: string;
   readonly signingKey?: KeyObject;
@@ -55,6 +61,7 @@ interface FixtureOptions {
 /** Builds a real, live-valid signed artifact set with the same helpers release-contracts.test.ts uses. */
 function buildArtifactSet(options: FixtureOptions = {}): Record<string, string> {
   const issuedAtMs = options.issuedAtMs ?? Date.now() - 60_000;
+  const baseCommit = options.baseCommit ?? REVIEWED_BASE;
   const signer = { privateKey: options.signingKey ?? authorityKeys.privateKey, signerId: "release-authority-2026" };
   const issuedAt = new Date(issuedAtMs).toISOString();
   const expiresAt = new Date(issuedAtMs + 43_200_000).toISOString();
@@ -72,7 +79,7 @@ function buildArtifactSet(options: FixtureOptions = {}): Record<string, string> 
     { digest: digest("6"), path: ".github/workflows/npm-publish.yml" },
   ];
   const operationPlan = createSignedReleaseOperationPlanV1({
-    baseCommit: "e600ad5c2dc5e1bde0714915e7a84980c8d5602b",
+    baseCommit,
     baseTreeSha: sha("b"),
     candidateBranch: "reelier/release/0.32.1",
     candidateTreeDigest,
@@ -80,7 +87,7 @@ function buildArtifactSet(options: FixtureOptions = {}): Record<string, string> 
       author: { date: issuedAt, email: "release@seldonframe.com", name: "SeldonFrame Release" },
       committer: { date: issuedAt, email: "release@seldonframe.com", name: "SeldonFrame Release" },
       message: "release: v0.32.1",
-      parentSha: "e600ad5c2dc5e1bde0714915e7a84980c8d5602b",
+      parentSha: baseCommit,
     },
     destinationBranch: "main",
     expectedCommitSha: sha("a"),
@@ -96,7 +103,7 @@ function buildArtifactSet(options: FixtureOptions = {}): Record<string, string> 
     workflowCommitments: workflows,
   }, signer);
   const candidateManifest = createSignedStagedCandidateManifestV1({
-    baseCommit: "e600ad5c2dc5e1bde0714915e7a84980c8d5602b",
+    baseCommit,
     branch: "reelier/release/0.32.1",
     candidateCommit: sha("a"),
     candidateTreeDigest,
@@ -292,6 +299,25 @@ test("verifier accepts a live artifact directory, checks the tarball, and emits 
     assert.equal(summary.checks.packedTarball, "verified");
     assert.equal(summary.checks.headCommit, "unchecked");
     assert.equal(summary.checks.receiptGraph, "unchecked");
+  } finally { rmSync(root, { force: true, recursive: true }); }
+});
+
+// R2 frozen-contract amendment (operator exception, 2026-08-19). The offline verifier is data-driven
+// on the base: it grades HEAD's parent against plan.baseCommit, never against a compiled-in value.
+// A base other than the originally reviewed one must verify on exactly the same terms.
+test("R2 amendment: the offline verifier accepts a signed artifact set carrying a base commit other than the originally reviewed one", () => {
+  const root = scratch();
+  try {
+    const dir = writeArtifactDir(root, buildArtifactSet({ baseCommit: AMENDED_BASE }));
+    const pinPath = path.join(root, "pin.json");
+    writeFileSync(pinPath, trustPin(authorityKeys.publicKey), "utf8");
+    const emitPath = path.join(root, "summary.json");
+    const run = runVerifier(["--dir", dir, "--trust-pin", pinPath, "--tag", "v0.32.1", "--emit", emitPath]);
+    assert.equal(run.status, 0, run.stderr);
+    const plan = JSON.parse(readFileSync(path.join(dir, ARTIFACT_FILE_NAMES.operationPlan), "utf8"));
+    assert.equal(plan.value.baseCommit, AMENDED_BASE);
+    assert.notEqual(AMENDED_BASE, REVIEWED_BASE);
+    assert.equal(JSON.parse(readFileSync(emitPath, "utf8")).checks.headCommit, "unchecked");
   } finally { rmSync(root, { force: true, recursive: true }); }
 });
 
