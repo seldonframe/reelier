@@ -126,3 +126,49 @@ Command: `npx tsc -p tsconfig.test.json --noEmit; node --test --test-concurrency
 Open risks
 
 - The credential resolver contract is deliberately OSS-local. Cloud must implement it with atomic tenant/trust-domain credential lifecycle and revocation handling before using hosted issuance.
+
+## Fix round 2
+
+Files changed
+
+- `src/authority/ambient-authority.ts`
+- `test/ambient-authority.test.ts`
+- `.superpowers/sdd/2026-08-ambient-operator-sdd/task-1-report.md`
+
+What changed
+
+- `strictLimits` now rejects equality as well as widening for `maxEffectsPerWindow`, `maxEffectsPerSourceTrigger`, and `maxBodyBytes`; `windowSeconds` was already strict. A child must reduce every constrained numeric field at each authority boundary.
+- Added independent regression coverage for equality of each numeric limit and for mixed partial attenuation where multiple fields remain equal while others reduce.
+
+Test results (verbatim tail)
+
+Command: `npx tsc -p tsconfig.json --noEmit`
+
+Result: exit 0 (no output).
+
+Command: `npm run check:authority-contract`
+
+```text
+> reelier@0.32.1 check:authority-contract
+> node scripts/build-authority-contract.mjs --check
+```
+
+Result: exit 0.
+
+Command: `npx tsc -p tsconfig.test.json --noEmit; node --test --test-concurrency=1 dist-test/test/ambient-authority.test.js`
+
+```text
+✔ customer-rooted authority verifies trusted WebAuthn ES256 and EdDSA exactly once (8.2831ms)
+✔ customer approval rejects attacker credentials and purpose substitution (1.1525ms)
+✔ authority rejects cross-tenant aliasing, strict equality, and correctly bound expiry (2.4653ms)
+✔ every constrained limit must strictly reduce at every child boundary (1.9242ms)
+✔ standing and hosted roots are bounded by proof/domain; only mission grants have a twelve-hour cap (1.9227ms)
+ℹ tests 5
+ℹ suites 0
+ℹ pass 5
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 167.2934
+```
