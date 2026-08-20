@@ -30,6 +30,18 @@ test("Eve fixture is isolated and its model-facing schemas exclude authority", a
   assert.deepEqual(exportedSchemaKeys(outcome), ["choices", "requestId", "sourceRefs"]);
   const status = await readFile(join(fixtureRoot, "agent/tools/reelier_outcome_status.ts"), "utf8");
   assert.deepEqual(exportedSchemaKeys(status), ["requestId"]);
+
+  // The remote Authority Cell tools are model-facing too: the model may name a filter and an opaque
+  // reference, never authority. The bearer is environment-held and never appears in a schema.
+  const jobsSearch = await readFile(join(fixtureRoot, "agent/tools/reelier_jobs_search.ts"), "utf8");
+  assert.deepEqual(exportedSchemaKeys(jobsSearch), ["query"]);
+  const jobLoad = await readFile(join(fixtureRoot, "agent/tools/reelier_job_load.ts"), "utf8");
+  assert.deepEqual(exportedSchemaKeys(jobLoad), ["jobRef"]);
+  for (const source of [jobsSearch, jobLoad]) {
+    for (const forbidden of ["REELIER_CELL_TOKEN", "authorization", "Bearer"]) {
+      assert.equal(source.includes(forbidden), false, `a model-facing tool must not name ${forbidden}`);
+    }
+  }
 });
 
 test("active Eve process conformance documentation matches the pinned fixture version", async () => {
