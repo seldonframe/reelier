@@ -288,28 +288,29 @@ test("release provider execution stays behind the prepared commit boundary", asy
   assert.deepEqual([releaseWrites, fallbackWrites], [0, 0], "an unminted fake runner cannot cross the prepared boundary");
 });
 
-test("actual dispatch coordinator consumes the release budget before the prepared provider send", async () => {
+test("actual dispatch coordinator consumes the root budget while the runner derives its signed one-effect allocation", async () => {
   const restore = __testSetAuthorityCellHostPlatform("linux"), root = await mkdtemp(path.join(os.tmpdir(), "reelier-release-budget-coordinator-"));
   const fixture = releaseAuthorityFixture(), keys = generateKeyPairSync("ed25519");
   let providerWrites = 0, budgetAttempts = 0, failBudget = true;
+  const consumedAllocationIds: string[] = [];
   try {
     const provider = candidateProvider({ createBlob: async ({ contentBase64 }: any) => { providerWrites += 1; return { sha: blobSha(Buffer.from(contentBase64, "base64")) }; } });
     const runner = await createGitHubReleaseRunner({ rootDir: root, journalSigner: { signerId: "release-journal-2026", privateKey: keys.privateKey, publicKey: keys.publicKey }, evidenceSigner: fixture.evidenceSigner, authorizationResolver: async () => fixture.context, provider, now: () => new Date("2026-08-18T06:00:00.000Z") });
-    const requestId = "coordinator_budget", allocationId = "release-candidate-branch-01";
+    const requestId = "coordinator_budget", rootAllocationId = "release-rehearsal-root-01";
     const effect = { v: "reelier.transport-effect/v1", endpointId: "github.release.candidate-branch", method: "POST", path: "/internal/github-release", query: "", headers: {}, bodyBase64: Buffer.from('{"authorizationHandle":"release_auth_1"}').toString("base64"), riskClass: "github_release", idempotency: "reconcile-only", preconditions: [], reconciliation: { recipeId: "github_release_authoritative_readback_v1" } };
     const effectDigest = authorityDigest(effect), projection = { v: "reelier.materialized-http-request/v1" as const, method: "POST" as const, origin: "https://api.github.test", normalizedPath: "/internal/github-release", normalizedQuery: "", reviewedHeaders: {}, bodyDigest: digest("a") }, materializedRequestDigest = materializedHttpRequestDigest(projection);
-    const fallback = { async prepare() { return createPreparedDispatch({ description: { v: "reelier.prepared-dispatch-description/v1", routeDigest: digest("b"), materializedRequestDigest, projection, authorityGeneration: "generation_1", authorityExpiresAt: "2099-08-18T17:00:00.000Z", absoluteDeadlineMs: performance.now() + 60_000, reservationId: requestId, allocationId }, send: async () => ({ kind: "definitive-failure", resultDigest: digest("f") }) }); }, async dispatch() { return { kind: "definitive-failure" as const, resultDigest: digest("f") }; } };
+    const fallback = { async prepare() { return createPreparedDispatch({ description: { v: "reelier.prepared-dispatch-description/v1", routeDigest: digest("b"), materializedRequestDigest, projection, authorityGeneration: "generation_1", authorityExpiresAt: "2099-08-18T17:00:00.000Z", absoluteDeadlineMs: performance.now() + 60_000, reservationId: requestId, allocationId: rootAllocationId }, send: async () => ({ kind: "definitive-failure", resultDigest: digest("f") }) }); }, async dispatch() { return { kind: "definitive-failure" as const, resultDigest: digest("f") }; } };
     const adapter = createGitHubReleaseDispatchAdapter({ runner, fallback });
-    const forgedState = { reservation: { reservationId: requestId, state: "reserved", intent: { effectDigest, executionContext: { allocationId } } }, effect, effectCanonicalBase64: "", effectDigest } as any;
+    const forgedState = { reservation: { reservationId: requestId, state: "reserved", intent: { effectDigest, executionContext: { allocationId: rootAllocationId } } }, effect, effectCanonicalBase64: "", effectDigest } as any;
     const forgedPrepared = await adapter.prepare!(forgedState);
-    const forgedLease = createDispatchCommitLease({ reservationId: requestId, allocationId, preparedDigest: materializedRequestDigest, authorityGeneration: "generation_1", authorityExpiresAt: "2099-08-18T17:00:00.000Z", absoluteDeadlineMs: forgedPrepared.description.absoluteDeadlineMs, commitGeneration: "forged" });
+    const forgedLease = createDispatchCommitLease({ reservationId: requestId, allocationId: rootAllocationId, preparedDigest: materializedRequestDigest, authorityGeneration: "generation_1", authorityExpiresAt: "2099-08-18T17:00:00.000Z", absoluteDeadlineMs: forgedPrepared.description.absoluteDeadlineMs, commitGeneration: "forged" });
     await assert.rejects(() => consumePreparedDispatch(forgedPrepared, forgedLease), /coordinator|commit capability/i);
     assert.equal(providerWrites, 0, "public prepared/lease helpers cannot invoke the release provider");
     const makeLedger = () => {
-      let reservation: any = { reservationId: requestId, state: "reserved", intent: { effectDigest, effectCanonicalBase64: "", executionContext: { allocationId } } };
+      let reservation: any = { reservationId: requestId, state: "reserved", intent: { effectDigest, effectCanonicalBase64: "", executionContext: { allocationId: rootAllocationId } } };
       return { state: () => reservation, ledger: { async getReservation() { return reservation; }, async commitPreparedDispatch(input: any) { reservation = { ...reservation, state: "dispatched", sendStarted: true }; return createDispatchCommitLease({ reservationId: input.reservationId, allocationId: input.allocationId, preparedDigest: input.preparedDescription.materializedRequestDigest, authorityGeneration: input.expectedAuthorityGeneration, authorityExpiresAt: input.preparedDescription.authorityExpiresAt, absoluteDeadlineMs: input.absoluteDeadlineMs, commitGeneration: "commit_1" }); }, async transition(_id: string, expected: string, event: any) { if (reservation.state !== expected) return { ok: false, reason: "state-conflict" }; reservation = { ...reservation, state: event.to, resultDigest: event.resultDigest }; return { ok: true, status: "transitioned", reservation }; } } as any };
     };
-    const budget = { async consumeOnce() { budgetAttempts += 1; if (failBudget) throw new TypeError("budget exhausted"); }, async returnOnce() {}, async releaseConsumedOnce() {} };
+    const budget = { async consumeOnce(input: { allocationId: string }) { budgetAttempts += 1; consumedAllocationIds.push(input.allocationId); if (failBudget) throw new TypeError("budget exhausted"); }, async returnOnce() {}, async releaseConsumedOnce() {} };
     const first = makeLedger(), firstState = { reservation: first.state(), effect, effectCanonicalBase64: "", effectDigest };
     await assert.rejects(() => createDispatchCoordinator(first.ledger, adapter, undefined, undefined, budget).dispatch(createReservedDispatchHandle(firstState)), /budget exhausted/i);
     assert.equal(providerWrites, 0);
@@ -319,6 +320,7 @@ test("actual dispatch coordinator consumes the release budget before the prepare
     assert.equal(outcome.kind, "acknowledged");
     assert.equal(providerWrites, 3);
     assert.equal(budgetAttempts, 2);
+    assert.deepEqual(consumedAllocationIds, [rootAllocationId, rootAllocationId]);
   } finally { restore(); await rm(root, { recursive: true, force: true }); }
 });
 

@@ -51,13 +51,14 @@ export interface GitHubReleaseProviderV1 {
 }
 export interface GitHubReleaseProviderFaultV1 { readonly v: "reelier.github-release-provider-fault/v1"; readonly kind: "transport-uncertain" | "definitive-refusal"; readonly reason: string }
 export interface GitHubReleaseRunRequestV1 { readonly alias: GitHubReleaseAliasV1; readonly allocationId: string; readonly authorizationHandle: string; readonly requestId: string; readonly semanticsDigest: string }
+interface GitHubReleaseInvocationV1 { readonly alias: GitHubReleaseAliasV1; readonly authorizationHandle: string; readonly requestId: string; readonly semanticsDigest: string }
 export interface GitHubReleaseRunResultV1 { readonly status: "verified" | "pending-reconciliation" | "refused"; readonly phase: string; readonly evidenceDigest: string | null }
 export interface GitHubReleasePublicationConfirmationV1 { readonly requestId: string; readonly providerEvidenceDigest: string; readonly receiptRef: string; readonly receiptEvidenceDigest: string }
 export interface GitHubReleaseRunnerV1 { run(input: GitHubReleaseRunRequestV1): Promise<GitHubReleaseRunResultV1>; recover(): Promise<readonly string[]> }
 
 const publicationConfirmers = new WeakMap<GitHubReleaseRunnerV1, (input: GitHubReleasePublicationConfirmationV1) => Promise<void>>();
 const authoritativeHeadConfirmers = new WeakMap<GitHubReleaseRunnerV1, (query: DurableDispatchPublicationQueryV1, head: DurableDispatchPublicationHeadV1) => Promise<boolean>>();
-const runnerControllers = new WeakMap<GitHubReleaseRunnerV1, Readonly<{ execute(input: GitHubReleaseRunRequestV1): Promise<GitHubReleaseRunResultV1>; reconcile(input: GitHubReleaseRunRequestV1): Promise<GitHubReleaseRunResultV1>; recover(): Promise<readonly string[]> }>>();
+const runnerControllers = new WeakMap<GitHubReleaseRunnerV1, Readonly<{ execute(input: GitHubReleaseInvocationV1): Promise<GitHubReleaseRunResultV1>; reconcile(input: GitHubReleaseInvocationV1): Promise<GitHubReleaseRunResultV1>; recover(): Promise<readonly string[]> }>>();
 
 /** @internal Host composition brand check. Deliberately absent from the public package barrel. */
 export function assertGitHubReleaseRunnerCapability(value: GitHubReleaseRunnerV1): void {
@@ -69,15 +70,17 @@ export async function createGitHubReleaseRunner(input: Readonly<{ rootDir: strin
   await mkdir(input.rootDir, { recursive: true });
   const journal = await createSignedJournal({ rootDir: path.join(input.rootDir, "journal"), journalId: "github-release", ...input.journalSigner });
   const provider = normalizeProvider(input.provider);
-  const runOnce = async (request: GitHubReleaseRunRequestV1, reconcileOnly = false): Promise<GitHubReleaseRunResultV1> => {
-    validateRequest(request);
-    const resolved = await input.authorizationResolver(request.authorizationHandle);
+  const runOnce = async (invocation: GitHubReleaseInvocationV1, reconcileOnly = false): Promise<GitHubReleaseRunResultV1> => {
+    validateInvocation(invocation);
+    const resolved = await input.authorizationResolver(invocation.authorizationHandle);
     const context = normalizeContext(resolved);
     const authorization = context.authorization;
     assertVerifiedReleaseAuthorizationV1(authorization);
-    const effect = ALIASES[request.alias];
+    const effect = ALIASES[invocation.alias];
     const allocation = authorization.authorization.value.effectAllocations.find(candidate => candidate.effect === effect);
-    if (!allocation || allocation.maxEffects !== 1 || allocation.allocationId !== request.allocationId || !DIGEST.test(allocation.allocationDigest)) throw new TypeError("release alias does not have the authenticated exact one-effect allocation");
+    if (!allocation || allocation.maxEffects !== 1 || !DIGEST.test(allocation.allocationDigest)) throw new TypeError("release alias does not have the authenticated exact one-effect allocation");
+    const request: GitHubReleaseRunRequestV1 = Object.freeze({ ...invocation, allocationId: allocation.allocationId });
+    validateRequest(request);
     return journal.withLease(`authorization-${authorization.authorization.digest.slice(7)}`, async () => {
       let events = await journal.load(request.requestId);
       if (reconcileOnly && events.length === 0) throw new TypeError("release reconciliation requires a coordinator-dispatched journal intent");
@@ -118,8 +121,8 @@ export async function createGitHubReleaseRunner(input: Readonly<{ rootDir: strin
     });
   };
   const active = new Map<string, Promise<GitHubReleaseRunResultV1>>();
-  const run = (request: GitHubReleaseRunRequestV1): Promise<GitHubReleaseRunResultV1> => {
-    const key = `${request.allocationId}\0${request.requestId}`;
+  const run = (request: GitHubReleaseInvocationV1): Promise<GitHubReleaseRunResultV1> => {
+    const key = `${request.alias}\0${request.authorizationHandle}\0${request.requestId}`;
     const prior = active.get(key) ?? Promise.resolve(undefined);
     const current = prior.catch(() => undefined).then(() => runOnce(request));
     active.set(key, current);
@@ -131,7 +134,7 @@ export async function createGitHubReleaseRunner(input: Readonly<{ rootDir: strin
       const events = await journal.load(requestId), first = events[0];
       if (!first || events.some(event => TERMINAL.has(event.phase))) continue;
       if (!events.some(event => event.phase.endsWith("-dispatching"))) continue;
-      const result = await runOnce({ alias: first.data.alias as GitHubReleaseAliasV1, allocationId: String(first.data.allocationId), authorizationHandle: String(first.data.authorizationHandle), requestId, semanticsDigest: first.semanticsDigest }, true);
+      const result = await runOnce({ alias: first.data.alias as GitHubReleaseAliasV1, authorizationHandle: String(first.data.authorizationHandle), requestId, semanticsDigest: first.semanticsDigest }, true);
       if (result.status === "verified") recovered.push(requestId);
     }
     return Object.freeze(recovered);
@@ -193,9 +196,9 @@ function createGitHubReleaseDispatchAdapter(input: Readonly<{ runner: GitHubRele
     try { body = exactRecord(JSON.parse(Buffer.from(String(effect.bodyBase64), "base64").toString("utf8")), ["authorizationHandle"], "release dispatch body"); }
     catch { return failure("release-dispatch-body-invalid"); }
     try {
-      const request = { alias, allocationId: execution.allocationId, authorizationHandle: String(body.authorizationHandle), requestId: normalizeReservationPublicationId(state.reservation.reservationId), semanticsDigest: state.effectDigest };
+      const request = { alias, authorizationHandle: String(body.authorizationHandle), requestId: normalizeReservationPublicationId(state.reservation.reservationId), semanticsDigest: state.effectDigest };
       // The coordinator minted the reconciliation stamp with the RAW ledger id, so it is checked raw.
-      if (reconcileOnly) consumeCoordinatorReconciliation(state, { reservationId: state.reservation.reservationId, allocationId: request.allocationId, effectDigest: request.semanticsDigest });
+      if (reconcileOnly) consumeCoordinatorReconciliation(state, { reservationId: state.reservation.reservationId, allocationId: execution.allocationId, effectDigest: request.semanticsDigest });
       const result = reconcileOnly ? await controller.reconcile(request) : await controller.execute(request);
       if (result.status === "verified") return Object.freeze({ kind: "acknowledged", resultDigest: result.evidenceDigest!, reconciliationStatus: "matched", normalizedProjectionDigest: result.evidenceDigest });
       if (result.status === "pending-reconciliation") return Object.freeze({ kind: "ambiguous", resultDigest: authorityDigest(result), reconciliationStatus: "unavailable", normalizedProjectionDigest: null });
@@ -440,6 +443,7 @@ function pending(phase: string): GitHubReleaseRunResultV1 { return Object.freeze
 function failure(reason: string, reconciliationStatus: "not-applied" | "conflict" = "not-applied"): DispatchOutcome { return Object.freeze({ kind: "definitive-failure", resultDigest: authorityDigest({ reason }), reconciliationStatus, normalizedProjectionDigest: null, reason } as DispatchOutcome); }
 function sha256(bytes: Uint8Array): string { return `sha256:${createHash("sha256").update(bytes).digest("hex")}`; }
 function gitBlobSha(bytes: Uint8Array): string { return createHash("sha1").update(`blob ${bytes.byteLength}\0`).update(bytes).digest("hex"); }
+function validateInvocation(request: unknown): asserts request is GitHubReleaseInvocationV1 { const value = exactRecord(request, ["alias", "authorizationHandle", "requestId", "semanticsDigest"], "GitHub release invocation"); if (!(String(value.alias) in ALIASES) || !/^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$/.test(String(value.authorizationHandle)) || !/^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$/.test(String(value.requestId)) || !DIGEST.test(String(value.semanticsDigest))) throw new TypeError("GitHub release invocation is invalid"); }
 function validateRequest(request: unknown): asserts request is GitHubReleaseRunRequestV1 { const value = exactRecord(request, ["alias", "allocationId", "authorizationHandle", "requestId", "semanticsDigest"], "GitHub release request"); if (!(String(value.alias) in ALIASES) || !/^[a-z0-9][a-z0-9-]{7,127}$/.test(String(value.allocationId)) || !/^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$/.test(String(value.authorizationHandle)) || !/^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$/.test(String(value.requestId)) || !DIGEST.test(String(value.semanticsDigest))) throw new TypeError("GitHub release request is invalid"); }
 function isPlain(value: unknown): value is Record<string, unknown> { if (!value || typeof value !== "object" || isProxy(value) || Array.isArray(value) || Object.getPrototypeOf(value) !== Object.prototype || Reflect.ownKeys(value).some(key => typeof key !== "string")) return false; return Object.values(Object.getOwnPropertyDescriptors(value)).every(descriptor => "value" in descriptor && descriptor.enumerable); }
 function inertEndpointId(value: unknown): string | null { if (!isPlain(value)) return null; const descriptor = Object.getOwnPropertyDescriptor(value, "endpointId"); return descriptor && "value" in descriptor && typeof descriptor.value === "string" ? descriptor.value : null; }
