@@ -347,6 +347,27 @@ test("--trust-pin refuses before any write when the signing key does not match, 
   } finally { rmSync(space.root, { force: true, recursive: true }); }
 });
 
+test("--trust-pin refuses before any write when the SPKI matches but the signerId differs, naming both signer ids", () => {
+  const space = workspace();
+  try {
+    const badPin = path.join(space.root, "signer-id-mismatch-trust-pin.json");
+    writeFileSync(badPin, `${JSON.stringify({
+      publicKeySpkiBase64: spki(space.authorizationKeys.publicKey),
+      signerId: "a-different-release-authority",
+      v: "reelier.release-authorization-trust-pin/v1",
+    })}\n`, "utf8");
+    const signed = runSigner(space, ["--trust-pin", badPin]);
+    assert.equal(signed.status, 1);
+    assert.match(signed.stderr, /does not match the production trust pin/);
+    // The SPKI digest matches, so only the signerId comparison can be what refused this run.
+    assert.match(signed.stderr, /pin names signer a-different-release-authority/);
+    assert.match(signed.stderr, /signing key is signer release-authority-2026/);
+    assert.throws(() => readdirSync(space.outDir));
+    assert.equal(signed.stdout.includes("PRIVATE KEY"), false);
+    assert.equal(signed.stderr.includes("PRIVATE KEY"), false);
+  } finally { rmSync(space.root, { force: true, recursive: true }); }
+});
+
 test("an absent --trust-pin prints the honesty line instead of silently skipping the check", () => {
   const space = workspace();
   try {
@@ -385,6 +406,18 @@ test("an unrelated workflowCommit prints a one-line notice; a workflowCommit mat
     assert.equal(signed.status, 0, `${signed.stdout}\n${signed.stderr}`);
     assert.equal(/NOTICE: workflowCommit/.test(signed.stdout), false);
   } finally { rmSync(related.root, { force: true, recursive: true }); }
+});
+
+// Pins the other half of the `&&` at :795-797 independently of the candidateCommit case above —
+// workflowCommit equal to baseCommit (candidateCommit stays the unrelated default sha("a")) must
+// also suppress the notice, not just workflowCommit equal to candidateCommit.
+test("a workflowCommit matching baseCommit (candidateCommit different) does not print the divergence notice", () => {
+  const matchesBase = workspace(parameters => { parameters.baseCommit = workflowCommit; });
+  try {
+    const signed = runSigner(matchesBase);
+    assert.equal(signed.status, 0, `${signed.stdout}\n${signed.stderr}`);
+    assert.equal(/NOTICE: workflowCommit/.test(signed.stdout), false);
+  } finally { rmSync(matchesBase.root, { force: true, recursive: true }); }
 });
 
 test("--help and the parameters template answer before any key is read", () => {
