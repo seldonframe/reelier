@@ -14,6 +14,7 @@ import { createReservedDispatchHandle } from "../../src/authority/gate.js";
 import { __testSetAuthorityCellHostPlatform } from "../../src/authority/host/platform.js";
 import { materializedHttpRequestDigest } from "../../src/authority/host/http-response-semantics.js";
 import { createJsonHttpsDispatchAdapter } from "../../src/authority/host/json-https-connector.js";
+import { createGitHubReleaseHostedAuthorityBindingV1 } from "../../src/authority/host/github-release-hosted-authority.js";
 import { createSignedReleaseAuthorizationBundleV1, createSignedReleaseOperationPlanV1, createSignedReleasePolicyV1, createSignedReleaseVerifierEvidenceV1, createSignedStagedCandidateManifestV1, verifyReleaseAuthorizationBundleV1, type ReleaseEvidenceLaneV1 } from "../../src/authority/release-contracts.js";
 
 const digest = (seed: string) => `sha256:${seed.repeat(64).slice(0, 64)}`;
@@ -112,6 +113,17 @@ async function governedRun(runner: Awaited<ReturnType<typeof createGitHubRelease
   if (outcome.kind === "definitive-failure") throw new TypeError(`${outcome.reason ?? "release operation refused"} [${outcome.reconciliationStatus ?? "unknown"}]`);
   return outcome.kind === "acknowledged" ? { status: "verified", phase: "verified", evidenceDigest: outcome.resultDigest } : { status: "pending-reconciliation", phase: "pending", evidenceDigest: null };
 }
+
+test("release runner refuses an unrecognized hosted authority binding before provider dispatch", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "reelier-release-hosted-authority-"));
+  const fixture = releaseAuthorityFixture();
+  let providerCalls = 0;
+  try {
+    const runner = await createGitHubReleaseRunner({ rootDir: root, journalSigner: { signerId: "release-journal-2026", ...generateKeyPairSync("ed25519") }, evidenceSigner: fixture.evidenceSigner, authorizationResolver: async () => ({ ...fixture.context, hostedAuthority: {} as ReturnType<typeof createGitHubReleaseHostedAuthorityBindingV1> }), provider: candidateProvider({ getRef: async () => { providerCalls += 1; return null; } }), now: () => new Date("2026-08-18T06:00:00.000Z") });
+    await assert.rejects(() => governedRun(runner, { alias: "github_release_candidate_publish_v1", allocationId: "release-candidate-branch-01", authorizationHandle: "release_auth_1", requestId: "unrecognized_hosted_authority", semanticsDigest: authorityDigest({ hosted: "unrecognized" }) }), /hosted.*authority/i);
+    assert.equal(providerCalls, 0);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
 
 test("signed journal detects tamper and atomic-head rollback", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "reelier-release-journal-"));
