@@ -7,13 +7,13 @@ import { createAuthorityAgentTools, type AuthorityAgentToolsV1 } from "../host/a
 
 export interface AuthorityIngressOutcome { readonly requestId: string; readonly verdict: "accepted" | "refused"; readonly reasonCode: string; readonly lifecycleState: string; readonly receiptRef?: string; }
 type AuthorityContext = { readonly tenant: string; readonly requester: string; readonly executionContext?: AuthorityExecutionContextV1 };
-export interface AuthorityMcpHandler { outcome(alias: string, input: unknown, context: AuthorityContext): Promise<AuthorityIngressOutcome>; status(input: unknown, context: AuthorityContext): Promise<AuthorityIngressOutcome>; agentTools?: AuthorityAgentToolsV1; jobsSearch?: (input: unknown, context: AuthorityContext) => Promise<unknown>; jobLoad?: (input: unknown, context: AuthorityContext) => Promise<unknown>; invoke?: (input: unknown, context: AuthorityContext) => Promise<AuthorityIngressOutcome>; delegationRequest?: (input: unknown, context: AuthorityContext) => Promise<unknown>; delegationStatus?: (input: unknown, context: AuthorityContext) => Promise<unknown>; taskCreate?: (input: unknown, context: AuthorityContext) => Promise<unknown>; taskStatus?: (input: unknown, context: AuthorityContext) => Promise<unknown>; }
+export interface AuthorityMcpHandler { outcome(alias: string, input: unknown, context: AuthorityContext): Promise<AuthorityIngressOutcome>; status(input: unknown, context: AuthorityContext): Promise<AuthorityIngressOutcome>; agentTools?: AuthorityAgentToolsV1; resolveAgentTools?: () => AuthorityAgentToolsV1; jobsSearch?: (input: unknown, context: AuthorityContext) => Promise<unknown>; jobLoad?: (input: unknown, context: AuthorityContext) => Promise<unknown>; invoke?: (input: unknown, context: AuthorityContext) => Promise<AuthorityIngressOutcome>; delegationRequest?: (input: unknown, context: AuthorityContext) => Promise<unknown>; delegationStatus?: (input: unknown, context: AuthorityContext) => Promise<unknown>; taskCreate?: (input: unknown, context: AuthorityContext) => Promise<unknown>; taskStatus?: (input: unknown, context: AuthorityContext) => Promise<unknown>; }
 export interface AuthorityMcpDefinition { readonly alias: string; readonly description?: string; }
 
 export function buildAuthorityMcpServer(definitions: readonly AuthorityMcpDefinition[], handler: AuthorityMcpHandler, context: AuthorityContext, artifactStage?: (input: unknown, context: AuthorityContext) => Promise<unknown>): Server {
   const server = new Server({ name: "reelier-authority", version: "1.0.0" }, { capabilities: { tools: {} } });
   const directOutcomeAliases = new Set(definitions.map(definition => definition.alias));
-  const agentTools = handler.agentTools ?? createAuthorityAgentTools({
+  const defaultAgentTools = handler.agentTools ?? createAuthorityAgentTools({
     jobsSearch: async (input, requestContext) => {
       if (!handler.jobsSearch) throw new TypeError("agent status is unavailable");
       return handler.jobsSearch(input, requestContext);
@@ -28,6 +28,7 @@ export function buildAuthorityMcpServer(definitions: readonly AuthorityMcpDefini
     },
     status: handler.status,
   });
+  const currentAgentTools = () => handler.resolveAgentTools ? handler.resolveAgentTools() : defaultAgentTools;
   server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [
     ...agentToolMcpDefinitionsV1(),
     { name: "reelier_jobs_search", description: "Find deployed jobs without loading every Outcome schema.", inputSchema: { type: "object", additionalProperties: false, properties: { query: { type: "string", maxLength: 256 } } } },
@@ -44,6 +45,7 @@ export function buildAuthorityMcpServer(definitions: readonly AuthorityMcpDefini
     const rawArgs = (request.params.arguments ?? {}) as Record<string, unknown>;
     const args = normalizeOutcomeRequestV1(rawArgs);
     try {
+      const agentTools = currentAgentTools();
       const value = name === "reelier_agent_status" ? await agentTools.agentStatus(rawArgs, context)
         : name === "reelier_outcome_proposal" ? await agentTools.outcomeProposal(rawArgs, context)
         : name === "reelier_outcome_request" ? await agentTools.outcomeRequest(rawArgs, context)

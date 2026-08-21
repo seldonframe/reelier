@@ -11,7 +11,7 @@ export async function handleAuthorityHttp(request: IncomingMessage, response: Se
   if (!resolved) { write(response, 401, { verdict: "refused", reasonCode: "authentication-required", lifecycleState: "refused", requestId: "" }); return; }
   try {
     const requestContext = resolved;
-    const agentTools = handler.agentTools ?? createAuthorityAgentTools({
+    const defaultAgentTools = handler.agentTools ?? createAuthorityAgentTools({
       jobsSearch: async (input, toolContext) => {
         if (!handler.jobsSearch) throw new TypeError("agent status is unavailable");
         return handler.jobsSearch(input, toolContext);
@@ -26,6 +26,7 @@ export async function handleAuthorityHttp(request: IncomingMessage, response: Se
       },
       status: handler.status,
     });
+    const agentTools = handler.resolveAgentTools ? handler.resolveAgentTools() : defaultAgentTools;
     if (request.method !== "POST" && request.method !== "GET") return write(response, 405, { verdict: "refused", reasonCode: "method-not-allowed" });
     const url = new URL(request.url ?? "/", "http://authority.invalid");
     if (url.pathname === "/v1/agent/status" && request.method === "GET") return write(response, 200, await agentTools.agentStatus({}, publicContext(requestContext)));

@@ -162,6 +162,56 @@ test("capability descriptors are detached protocol claims and cannot be promoted
   assert.equal(status.capability.harnessId, null);
 });
 
+test("host agent tools reject hostile and oversized backend graphs without observable reads", async () => {
+  let traps = 0;
+  const hostileJobs = new Proxy([{ jobRef: `outcomeref_${"9".repeat(64)}` }], {
+    get() { traps += 1; throw new Error("backend proxy executed"); },
+    getOwnPropertyDescriptor() { traps += 1; throw new Error("backend proxy executed"); },
+  });
+  const hostile = createAuthorityAgentTools({
+    async jobsSearch() { return { requestId: "", verdict: "accepted", reasonCode: "ready", lifecycleState: "ready", jobs: hostileJobs }; },
+    async jobLoad() { throw new Error("not reached"); }, async invoke() { throw new Error("not reached"); }, async status() { throw new Error("not reached"); },
+  });
+  assert.deepEqual((await hostile.agentStatus({}, context)).outcomeRefs, []);
+  assert.equal(traps, 0);
+
+  let lateReads = 0;
+  const oversized = Array.from({ length: 257 }, (_, index) => index < 256 ? { jobRef: `outcomeref_${index.toString(16).padStart(64, "0")}` } : Object.create(Object.prototype, { jobRef: { enumerable: true, get() { lateReads += 1; return `outcomeref_${"8".repeat(64)}`; } } }));
+  const bounded = createAuthorityAgentTools({
+    async jobsSearch() { return { requestId: "", verdict: "accepted", reasonCode: "ready", lifecycleState: "ready", jobs: oversized }; },
+    async jobLoad() { throw new Error("not reached"); }, async invoke() { throw new Error("not reached"); }, async status() { throw new Error("not reached"); },
+  });
+  assert.deepEqual((await bounded.agentStatus({}, context)).outcomeRefs, []);
+  assert.equal(lateReads, 0);
+
+  const backendProxy = new Proxy({}, { get() { traps += 1; throw new Error("backend proxy executed"); } });
+  assert.throws(() => createAuthorityAgentTools(backendProxy as never), /backend|proxy|inert/i);
+  assert.equal(traps, 0);
+});
+
+test("HTTP and MCP resolve the current agent runtime for every call", async () => {
+  const refA = `outcomeref_${"a".repeat(64)}`, refB = `outcomeref_${"b".repeat(64)}`;
+  const runtime = (ref: string) => createAuthorityAgentTools({
+    async jobsSearch() { return { requestId: "", verdict: "accepted", reasonCode: "ready", lifecycleState: "ready", jobs: [{ jobRef: ref }] }; },
+    async jobLoad() { return { requestId: "", verdict: "accepted", reasonCode: "proposed", lifecycleState: "proposed", jobRef: ref }; },
+    async invoke(input) { return { requestId: (input as any).requestId, verdict: "accepted", reasonCode: "pending", lifecycleState: "pending" }; },
+    async status(input) { return { requestId: (input as any).requestId, verdict: "accepted", reasonCode: "reconciled", lifecycleState: "reconciled", receiptRef: `sha256:${ref.slice(-64)}` }; },
+  });
+  let active = runtime(refA), resolutions = 0;
+  const handler: AuthorityMcpHandler = { async outcome(){ throw new Error("legacy disabled"); }, async status(){ throw new Error("legacy disabled"); }, resolveAgentTools(){ resolutions += 1; return active; } } as never;
+  const http = createServer((request, response) => void handleAuthorityHttp(request, response, handler, { tenant: context.tenant, requester: context.requester, resolvePrincipal: async () => context }));
+  await new Promise<void>((resolve, reject) => { http.once("error", reject); http.listen(0, "127.0.0.1", resolve); });
+  try {
+    const port = (http.address() as AddressInfo).port, call = async () => (await fetch(`http://127.0.0.1:${port}/v1/agent/status`, { headers: { authorization: "Bearer test" } })).json() as Promise<any>;
+    assert.deepEqual((await call()).outcomeRefs, [refA]); active = runtime(refB); assert.deepEqual((await call()).outcomeRefs, [refB]); assert.equal(resolutions, 2);
+  } finally { await new Promise<void>(resolve => http.close(() => resolve())); }
+
+  active = runtime(refA); resolutions = 0;
+  const server = buildAuthorityMcpServer([], handler, context), [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair(), client = new Client({ name: "runtime-swap", version: "1" }, { capabilities: {} });
+  try { await server.connect(serverTransport); await client.connect(clientTransport); assert.deepEqual(((await client.callTool({ name: "reelier_agent_status", arguments: {} })).structuredContent as any).outcomeRefs, [refA]); active = runtime(refB); assert.deepEqual(((await client.callTool({ name: "reelier_agent_status", arguments: {} })).structuredContent as any).outcomeRefs, [refB]); assert.equal(resolutions, 2); }
+  finally { await client.close(); await server.close(); }
+});
+
 test("production MCP adds the quartet from the canonical projection without removing legacy tools", async () => {
   const ref = `jobref_${"3".repeat(64)}`;
   const invoked: unknown[] = [];
