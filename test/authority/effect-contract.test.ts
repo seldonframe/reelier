@@ -200,7 +200,7 @@ test("governed outcome transition refuses unverifiable chronology and verified m
     { ...outcome.attempts[0], attemptId: "attempt_2", dispatchedAt: "2026-08-20T12:00:02.000Z" },
   ], observation: null, status: "pending" as const, completedAt: "2026-08-20T12:00:03.000Z" };
   assert.throws(() => verifyGovernedOutcomeTransitionV1(ambiguous, context));
-  assert.equal(verifyGovernedOutcomeTransitionV1({ ...ambiguous, attempts: [{ ...ambiguous.attempts[0], crossedProviderBoundary: false }, ambiguous.attempts[1]] }, context).status, "pending");
+  assert.equal(verifyGovernedOutcomeTransitionV1({ ...ambiguous, attempts: [{ ...ambiguous.attempts[0], crossedProviderBoundary: false, result: "definitive-failure" }, ambiguous.attempts[1]] }, context).status, "pending");
 
   let getterReads = 0;
   const hostileContext = Object.create(null, {
