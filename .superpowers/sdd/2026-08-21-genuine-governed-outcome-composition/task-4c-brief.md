@@ -7,3 +7,5 @@ The canonical ledger `TransportEffect` must durably commit the Task-4 contract/b
 Use the exact files, phases, falsifiers, compatibility gates, and no-external-write rule in the tracked plan. Read FOUNDATION and BUILDING-COMPASS before edits. Use strict RED/GREEN TDD and `apply_patch`; commit logical units; stop for any required out-of-scope file rather than editing it. Do not spawn subagents. Write the required report and leave the worktree clean.
 
 Scope amendment: `src/packs/conformance.ts` is authorized only to extend its exact reviewed alias/source inventory for the two signed Linear definitions. The plan already required the matching conformance assertion but initially omitted this implementation file.
+
+Scope amendment: `src/authority/host/github-release-runner.ts` and `test/authority/github-release-runner.test.ts` are authorized only to forward and pin the exact optional coordinator call capability through the existing prepared fallback adapter. The wrapper must not otherwise change GitHub release behavior.

@@ -107,6 +107,7 @@ Modify:
 - `src/authority/host/effect-transports.ts`
 - `src/authority/host/outcome-kernel-fs-storage.ts`
 - `src/authority/host/github-linear-mission-runtime.ts`
+- `src/authority/host/github-release-runner.ts` only to preserve and forward the exact optional `CoordinatorDispatchCallV1` through its prepared fallback adapter
 - `src/authority/host/index.ts`
 - `src/authority/host/receipts.ts` only if the existing publication-head resolver cannot express the exact governed query without change
 - `src/packs/github-release/manifest.ts`
@@ -121,6 +122,7 @@ Modify:
 - `test/authority/effect-transports.test.ts`
 - `test/authority/outcome-kernel-fs-storage.test.ts`
 - `test/authority/github-linear-mission-runtime.test.ts`
+- `test/authority/github-release-runner.test.ts` only to pin prepared fallback call-capability forwarding and existing GitHub behavior
 - `test/authority/local-multi-definition-jobs.test.ts`
 - `test/authority/receipts.test.ts` only if `receipts.ts` changes
 - `test/authority/package.test.ts`
