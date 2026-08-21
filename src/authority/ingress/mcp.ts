@@ -57,7 +57,7 @@ export function buildAuthorityMcpServer(definitions: readonly AuthorityMcpDefini
         : name === "reelier_artifact_stage" && artifactStage ? await artifactStage(args, context)
         : name.startsWith("reelier_outcome_") && directOutcomeAliases.has(name.slice("reelier_outcome_".length)) ? await handler.outcome(name.slice("reelier_outcome_".length), args, context) : undefined;
       if (!value) throw new Error("unknown authority tool");
-      return { content: [{ type: "text", text: JSON.stringify(value) }] };
+      return { structuredContent: value as Record<string, unknown>, content: [{ type: "text", text: JSON.stringify(value) }] };
     } catch { return { isError: true, content: [{ type: "text", text: JSON.stringify({ verdict: "refused", reasonCode: "host-unavailable", lifecycleState: "unavailable", requestId: "" }) }] }; }
   });
   return server;

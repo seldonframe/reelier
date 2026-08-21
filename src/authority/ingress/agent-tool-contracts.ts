@@ -1,4 +1,5 @@
 import { authorityDigest } from "../wire.js";
+import { types as utilTypes } from "node:util";
 
 export const AGENT_TOOL_NAMES_V1 = Object.freeze([
   "reelier_agent_status",
@@ -27,13 +28,14 @@ export interface AgentToolContractV1 {
   readonly description: string;
   readonly inputSchema: JsonSchema;
   readonly outputSchema: JsonSchema;
-  readonly http: Readonly<{ method: HttpMethod; path: string }>;
+  readonly http: Readonly<{ method: HttpMethod; path: string; successStatus: 200 | 202; pathParameters?: readonly string[] }>;
 }
 
 const identifier = Object.freeze({ type: "string", minLength: 1, maxLength: 256 });
+const responseRequestId = Object.freeze({ type: "string", maxLength: 256 });
 const opaqueOutcomeRef = Object.freeze({ type: "string", pattern: "^(?:jobref|outcomeref)_[0-9a-f]{64}$" });
 const publicOutcomeFields = Object.freeze({
-  requestId: identifier,
+  requestId: responseRequestId,
   verdict: Object.freeze({ type: "string", enum: Object.freeze(["accepted", "refused"]) }),
   reasonCode: identifier,
   lifecycleState: identifier,
@@ -89,10 +91,10 @@ const agentStatusOutput = Object.freeze({
 });
 
 export const AGENT_TOOL_CONTRACTS_V1: readonly AgentToolContractV1[] = Object.freeze([
-  Object.freeze({ v: "reelier.agent-tool-contract/v1", name: "reelier_agent_status", semantic: "agent-status", description: "Read the authenticated agent's governed Outcome capability and opaque available references.", inputSchema: emptyInput, outputSchema: agentStatusOutput, http: Object.freeze({ method: "GET", path: "/v1/agent/status" }) }),
-  Object.freeze({ v: "reelier.agent-tool-contract/v1", name: "reelier_outcome_proposal", semantic: "outcome-proposal", description: "Resolve one authenticated opaque Outcome reference without dispatching it.", inputSchema: proposalInput, outputSchema: proposalOutput, http: Object.freeze({ method: "POST", path: "/v1/outcome-proposals" }) }),
-  Object.freeze({ v: "reelier.agent-tool-contract/v1", name: "reelier_outcome_request", semantic: "outcome-request", description: "Request one already-authorized Outcome through its authenticated opaque reference.", inputSchema: requestInput, outputSchema: outcomeOutput, http: Object.freeze({ method: "POST", path: "/v1/outcome-requests" }) }),
-  Object.freeze({ v: "reelier.agent-tool-contract/v1", name: "reelier_outcome_status", semantic: "outcome-status", description: "Inspect the redacted lifecycle of one Outcome request.", inputSchema: statusInput, outputSchema: outcomeOutput, http: Object.freeze({ method: "GET", path: "/v1/outcome-status/{requestId}" }) }),
+  Object.freeze({ v: "reelier.agent-tool-contract/v1", name: "reelier_agent_status", semantic: "agent-status", description: "Read the authenticated agent's governed Outcome capability and opaque available references.", inputSchema: emptyInput, outputSchema: agentStatusOutput, http: Object.freeze({ method: "GET", path: "/v1/agent/status", successStatus: 200 }) }),
+  Object.freeze({ v: "reelier.agent-tool-contract/v1", name: "reelier_outcome_proposal", semantic: "outcome-proposal", description: "Resolve one authenticated opaque Outcome reference without dispatching it.", inputSchema: proposalInput, outputSchema: proposalOutput, http: Object.freeze({ method: "POST", path: "/v1/outcome-proposals", successStatus: 200 }) }),
+  Object.freeze({ v: "reelier.agent-tool-contract/v1", name: "reelier_outcome_request", semantic: "outcome-request", description: "Request one already-authorized Outcome through its authenticated opaque reference.", inputSchema: requestInput, outputSchema: outcomeOutput, http: Object.freeze({ method: "POST", path: "/v1/outcome-requests", successStatus: 202 }) }),
+  Object.freeze({ v: "reelier.agent-tool-contract/v1", name: "reelier_outcome_status", semantic: "outcome-status", description: "Inspect the redacted lifecycle of one Outcome request.", inputSchema: statusInput, outputSchema: outcomeOutput, http: Object.freeze({ method: "GET", path: "/v1/outcome-status/{requestId}", successStatus: 200, pathParameters: Object.freeze(["requestId"]) }) }),
 ]);
 
 export const AGENT_TOOL_ABI_DIGEST_V1 = authorityDigest({
@@ -116,19 +118,19 @@ export function createHarnessCapabilityDescriptorV1(input: Readonly<{ harnessId:
   if (!CERTIFIABLE_HARNESSES_V1.includes(input.harnessId) || typeof input.harnessVersion !== "string" || input.harnessVersion.length < 1 || input.harnessVersion.length > 64 || typeof input.fixturePassed !== "boolean") throw new TypeError("harness capability descriptor is invalid");
   return Object.freeze({
     v: "reelier.harness-capability/v1",
-    harnessId: input.harnessId,
-    harnessVersion: input.harnessVersion,
+    harnessId: null,
+    harnessVersion: null,
     abiDigest: AGENT_TOOL_ABI_DIGEST_V1,
     protocolCompatibility: "compatible",
     transports: Object.freeze(["mcp", "http", "openapi"] as const),
-    fixtureStatus: input.fixturePassed ? "passed" : "not-passed",
-    liveTested: input.fixturePassed,
+    fixtureStatus: "not-passed",
+    liveTested: false,
     providerCertification: "not-claimed",
   });
 }
 
-export function agentToolMcpDefinitionsV1(): readonly Readonly<{ name: AgentToolNameV1; description: string; inputSchema: JsonSchema }>[] {
-  return Object.freeze(AGENT_TOOL_CONTRACTS_V1.map(contract => Object.freeze({ name: contract.name, description: contract.description, inputSchema: contract.inputSchema })));
+export function agentToolMcpDefinitionsV1(): readonly Readonly<{ name: AgentToolNameV1; description: string; inputSchema: JsonSchema; outputSchema: JsonSchema }>[] {
+  return Object.freeze(AGENT_TOOL_CONTRACTS_V1.map(contract => Object.freeze({ name: contract.name, description: contract.description, inputSchema: contract.inputSchema, outputSchema: contract.outputSchema })));
 }
 
 export function agentToolHttpRoutesV1(): readonly Readonly<{ operationId: AgentToolNameV1; method: HttpMethod; path: string; inputSchema: JsonSchema; outputSchema: JsonSchema }>[] {
@@ -143,7 +145,8 @@ export function buildAgentToolOpenApiV1(): Readonly<{ openapi: "3.1.0"; info: Re
         operationId: contract.name,
         description: contract.description,
         ...(contract.http.method === "POST" ? { requestBody: Object.freeze({ required: true, content: Object.freeze({ "application/json": Object.freeze({ schema: contract.inputSchema }) }) }) } : {}),
-        responses: Object.freeze({ "200": Object.freeze({ description: "Closed Reelier agent-tool response", content: Object.freeze({ "application/json": Object.freeze({ schema: contract.outputSchema }) }) }) }),
+        ...(contract.http.pathParameters ? { parameters: Object.freeze(contract.http.pathParameters.map(name => Object.freeze({ name, in: "path", required: true, schema: identifier }))) } : {}),
+        responses: Object.freeze({ [String(contract.http.successStatus)]: Object.freeze({ description: "Closed Reelier agent-tool response", content: Object.freeze({ "application/json": Object.freeze({ schema: contract.outputSchema }) }) }) }),
       }),
     });
   }
@@ -164,8 +167,29 @@ export function parseAgentToolInputV1(name: AgentToolNameV1, value: unknown): Re
   throw new TypeError("agent tool name is invalid");
 }
 
+export function parseAgentToolOutputV1(name: AgentToolNameV1, value: unknown): Readonly<Record<string, unknown>> {
+  const raw = inertRecord(value, "agent tool output");
+  const extra = name === "reelier_agent_status" ? ["outcomeRefs", "capability"] : name === "reelier_outcome_proposal" ? ["outcomeRef"] : [];
+  const allowed = ["requestId", "verdict", "reasonCode", "lifecycleState", "receiptRef", ...extra];
+  if (Reflect.ownKeys(raw).some(key => typeof key !== "string" || !allowed.includes(key))) throw new TypeError("agent tool output contains a field outside the closed contract");
+  const result: Record<string, unknown> = {
+    requestId: boundedString(raw.requestId, "requestId", 256, true),
+    verdict: raw.verdict === "accepted" || raw.verdict === "refused" ? raw.verdict : invalid("verdict"),
+    reasonCode: boundedString(raw.reasonCode, "reasonCode", 256),
+    lifecycleState: boundedString(raw.lifecycleState, "lifecycleState", 256),
+  };
+  if (raw.receiptRef !== undefined) result.receiptRef = boundedString(raw.receiptRef, "receiptRef", 512);
+  if (name === "reelier_outcome_proposal" && raw.outcomeRef !== undefined) result.outcomeRef = opaqueRef(raw.outcomeRef);
+  if (name === "reelier_agent_status") {
+    if (!Array.isArray(raw.outcomeRefs) || utilTypes.isProxy(raw.outcomeRefs) || raw.outcomeRefs.length > 256) throw new TypeError("outcomeRefs is invalid");
+    result.outcomeRefs = Object.freeze(raw.outcomeRefs.map(opaqueRef));
+    result.capability = parseCapability(raw.capability);
+  }
+  return Object.freeze(result);
+}
+
 function inertRecord(value: unknown, what: string): Record<string, unknown> {
-  if (!value || typeof value !== "object" || Array.isArray(value) || Object.getPrototypeOf(value) !== Object.prototype) throw new TypeError(`${what} must be an inert plain record`);
+  if (!value || typeof value !== "object" || utilTypes.isProxy(value) || Array.isArray(value) || Object.getPrototypeOf(value) !== Object.prototype) throw new TypeError(`${what} must be an inert plain record and not a proxy`);
   const descriptors = Object.getOwnPropertyDescriptors(value);
   for (const key of Reflect.ownKeys(value)) {
     const descriptor = descriptors[key as keyof typeof descriptors];
@@ -179,9 +203,20 @@ function closedRecord(raw: Record<string, unknown>, allowed: readonly string[], 
   return Object.freeze(projected);
 }
 
-function boundedString(value: unknown, what: string, max: number): string {
-  if (typeof value !== "string" || value.length < 1 || value.length > max) throw new TypeError(`${what} is invalid or exceeds its bounded length`);
+function boundedString(value: unknown, what: string, max: number, empty = false): string {
+  if (typeof value !== "string" || (!empty && value.length < 1) || value.length > max) throw new TypeError(`${what} is invalid or exceeds its bounded length`);
   return value;
+}
+
+function invalid(what: string): never { throw new TypeError(`${what} is invalid`); }
+
+function parseCapability(value: unknown): HarnessCapabilityDescriptorV1 {
+  const raw = inertRecord(value, "harness capability");
+  const keys = ["v", "harnessId", "harnessVersion", "abiDigest", "protocolCompatibility", "transports", "fixtureStatus", "liveTested", "providerCertification"];
+  if (Reflect.ownKeys(raw).length !== keys.length || Reflect.ownKeys(raw).some(key => typeof key !== "string" || !keys.includes(key))) throw new TypeError("harness capability is not closed");
+  if (raw.v !== "reelier.harness-capability/v1" || raw.harnessId !== null || raw.harnessVersion !== null || raw.abiDigest !== AGENT_TOOL_ABI_DIGEST_V1 || raw.protocolCompatibility !== "compatible" || raw.fixtureStatus !== "not-passed" || raw.liveTested !== false || raw.providerCertification !== "not-claimed") throw new TypeError("harness capability overclaims evidence");
+  if (!Array.isArray(raw.transports) || utilTypes.isProxy(raw.transports) || raw.transports.length !== 3 || raw.transports[0] !== "mcp" || raw.transports[1] !== "http" || raw.transports[2] !== "openapi") throw new TypeError("harness capability transports are invalid");
+  return Object.freeze({ v: "reelier.harness-capability/v1", harnessId: null, harnessVersion: null, abiDigest: AGENT_TOOL_ABI_DIGEST_V1, protocolCompatibility: "compatible", transports: Object.freeze(["mcp", "http", "openapi"] as const), fixtureStatus: "not-passed", liveTested: false, providerCertification: "not-claimed" });
 }
 
 function opaqueRef(value: unknown): string {

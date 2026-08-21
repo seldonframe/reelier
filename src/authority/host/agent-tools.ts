@@ -1,5 +1,5 @@
 import type { AuthorityExecutionContextV1 } from "../types.js";
-import { AGENT_TOOL_ABI_DIGEST_V1, parseAgentToolInputV1, type HarnessCapabilityDescriptorV1 } from "../ingress/agent-tool-contracts.js";
+import { AGENT_TOOL_ABI_DIGEST_V1, parseAgentToolInputV1, parseAgentToolOutputV1, type HarnessCapabilityDescriptorV1 } from "../ingress/agent-tool-contracts.js";
 
 export type AuthorityAgentToolContextV1 = Readonly<{ tenant: string; requester: string; executionContext?: AuthorityExecutionContextV1 }>;
 export type AuthorityAgentToolOutcomeV1 = Readonly<{ requestId: string; verdict: "accepted" | "refused"; reasonCode: string; lifecycleState: string; receiptRef?: string }>;
@@ -32,7 +32,7 @@ const neutralCapability: HarnessCapabilityDescriptorV1 = Object.freeze({
   providerCertification: "not-claimed",
 });
 
-export function createAuthorityAgentTools(backend: AuthorityAgentToolBackendV1, capability: HarnessCapabilityDescriptorV1 = neutralCapability): AuthorityAgentToolsV1 {
+export function createAuthorityAgentTools(backend: AuthorityAgentToolBackendV1, _capability: HarnessCapabilityDescriptorV1 = neutralCapability): AuthorityAgentToolsV1 {
   if (!backend || typeof backend !== "object" || typeof backend.jobsSearch !== "function" || typeof backend.jobLoad !== "function" || typeof backend.invoke !== "function" || typeof backend.status !== "function") throw new TypeError("agent tool backend is invalid");
   const tools: AuthorityAgentToolsV1 = {
     async agentStatus(input, context) {
@@ -47,8 +47,8 @@ export function createAuthorityAgentTools(backend: AuthorityAgentToolBackendV1, 
             return typeof entry.jobRef === "string" && /^(?:jobref|outcomeref)_[0-9a-f]{64}$/.test(entry.jobRef) ? [entry.jobRef] : [];
           } catch { return []; }
         }).slice(0, 256));
-        return Object.freeze({ ...base, outcomeRefs, capability });
-      } catch { return Object.freeze({ requestId: "", verdict: "refused", reasonCode: "agent-status-unavailable", lifecycleState: "unavailable", outcomeRefs: Object.freeze([]), capability }); }
+        return parseAgentToolOutputV1("reelier_agent_status", { ...base, outcomeRefs, capability: neutralCapability }) as AuthorityAgentStatusV1;
+      } catch { return parseAgentToolOutputV1("reelier_agent_status", { requestId: "", verdict: "refused", reasonCode: "agent-status-unavailable", lifecycleState: "unavailable", outcomeRefs: Object.freeze([]), capability: neutralCapability }) as AuthorityAgentStatusV1; }
     },
     async outcomeProposal(input, context) {
       const parsed = parseAgentToolInputV1("reelier_outcome_proposal", input);
@@ -56,18 +56,18 @@ export function createAuthorityAgentTools(backend: AuthorityAgentToolBackendV1, 
         const result = record(await backend.jobLoad({ jobId: parsed.outcomeRef }, context));
         const base = outcome(result);
         const outcomeRef = typeof result.jobRef === "string" && result.jobRef === parsed.outcomeRef ? result.jobRef : undefined;
-        return Object.freeze({ ...base, ...(outcomeRef ? { outcomeRef } : {}) });
-      } catch { return Object.freeze({ requestId: "", verdict: "refused", reasonCode: "outcome-proposal-unavailable", lifecycleState: "unavailable" }); }
+        return parseAgentToolOutputV1("reelier_outcome_proposal", { ...base, ...(outcomeRef ? { outcomeRef } : {}) }) as AuthorityOutcomeProposalV1;
+      } catch { return parseAgentToolOutputV1("reelier_outcome_proposal", { requestId: "", verdict: "refused", reasonCode: "outcome-proposal-unavailable", lifecycleState: "unavailable" }) as AuthorityOutcomeProposalV1; }
     },
     async outcomeRequest(input, context) {
       const parsed = parseAgentToolInputV1("reelier_outcome_request", input);
       try {
-        return outcome(record(await backend.invoke({ v: "reelier.outcome-request/v1", jobRef: parsed.outcomeRef, requestId: parsed.requestId, sourceRefs: parsed.sourceRefs, choices: parsed.choices }, context)));
+        return parseAgentToolOutputV1("reelier_outcome_request", outcome(record(await backend.invoke({ v: "reelier.outcome-request/v1", jobRef: parsed.outcomeRef, requestId: parsed.requestId, sourceRefs: parsed.sourceRefs, choices: parsed.choices }, context)))) as AuthorityAgentToolOutcomeV1;
       } catch { return Object.freeze({ requestId: String(parsed.requestId), verdict: "refused", reasonCode: "outcome-request-unavailable", lifecycleState: "unavailable" }); }
     },
     async outcomeStatus(input, context) {
       const parsed = parseAgentToolInputV1("reelier_outcome_status", input);
-      try { return outcome(record(await backend.status({ requestId: parsed.requestId }, context))); }
+      try { return parseAgentToolOutputV1("reelier_outcome_status", outcome(record(await backend.status({ requestId: parsed.requestId }, context)))) as AuthorityAgentToolOutcomeV1; }
       catch { return Object.freeze({ requestId: String(parsed.requestId), verdict: "refused", reasonCode: "outcome-status-unavailable", lifecycleState: "unavailable" }); }
     },
   };

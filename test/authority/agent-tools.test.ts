@@ -12,8 +12,8 @@ import {
   agentToolHttpRoutesV1,
   agentToolMcpDefinitionsV1,
   buildAgentToolOpenApiV1,
-  createHarnessCapabilityDescriptorV1,
   parseAgentToolInputV1,
+  parseAgentToolOutputV1,
 } from "../../src/authority/ingress/agent-tool-contracts.js";
 import { authorityAgentToolOpenApiV1 } from "../../src/authority/ingress/openapi.js";
 import { createAuthorityAgentTools } from "../../src/authority/host/agent-tools.js";
@@ -56,12 +56,14 @@ test("one closed quartet projects byte-equivalent request semantics to MCP, HTTP
     const httpProjection = http.find(item => item.operationId === contract.name)!;
     const openApiOperation = (openapi.paths[contract.http.path] as Record<string, unknown>)[contract.http.method.toLowerCase()] as Record<string, unknown>;
     assert.deepEqual(mcpProjection.inputSchema, contract.inputSchema);
+    assert.deepEqual(mcpProjection.outputSchema, contract.outputSchema);
     assert.deepEqual(httpProjection.inputSchema, contract.inputSchema);
     assert.deepEqual(httpProjection.outputSchema, contract.outputSchema);
     assert.equal(openApiOperation.operationId, contract.name);
     const openApiRequest = openApiOperation.requestBody as { content: { "application/json": { schema: unknown } } } | undefined;
     if (contract.http.method === "POST") assert.deepEqual(openApiRequest?.content["application/json"].schema, contract.inputSchema);
-    assert.deepEqual((openApiOperation.responses as Record<string, { content: { "application/json": { schema: unknown } } }>)["200"]!.content["application/json"].schema, contract.outputSchema);
+    assert.deepEqual((openApiOperation.responses as Record<string, { content: { "application/json": { schema: unknown } } }>)[String(contract.http.successStatus)]!.content["application/json"].schema, contract.outputSchema);
+    assert.equal((openApiOperation.parameters as unknown[] | undefined)?.length ?? 0, contract.http.pathParameters?.length ?? 0);
   }
   assert.match(AGENT_TOOL_ABI_DIGEST_V1, /^sha256:[0-9a-f]{64}$/);
 });
@@ -89,6 +91,15 @@ test("canonical input parsing is closed, inert, bounded, detached, and excludes 
   });
   assert.throws(() => parseAgentToolInputV1("reelier_outcome_request", accessor), /inert|plain|data/i);
   assert.throws(() => parseAgentToolInputV1("reelier_outcome_status", { requestId: "x".repeat(257) }), /bounded|length|invalid/i);
+  let traps = 0;
+  const proxy = new Proxy(request, { getPrototypeOf() { traps += 1; return Object.prototype; }, ownKeys() { traps += 1; return []; } });
+  assert.throws(() => parseAgentToolInputV1("reelier_outcome_request", proxy), /proxy|inert/i);
+  assert.equal(traps, 0);
+  const response = { requestId: "request_1", verdict: "accepted", reasonCode: "accepted", lifecycleState: "pending" };
+  const parsedResponse = parseAgentToolOutputV1("reelier_outcome_request", response);
+  response.lifecycleState = "mutated";
+  assert.equal(parsedResponse.lifecycleState, "pending");
+  assert.throws(() => parseAgentToolOutputV1("reelier_outcome_request", { ...response, credential: "secret" }), /closed|field/i);
 });
 
 test("host agent tools translate only authenticated opaque references and never expose aliases", async () => {
@@ -140,20 +151,15 @@ test("host agent tools translate only authenticated opaque references and never 
   assert.equal(JSON.stringify(refused).includes("github_merge"), false);
 });
 
-test("capability descriptors share one ABI and distinguish compatibility from a passed harness fixture", () => {
+test("capability descriptors are detached protocol claims and cannot be promoted by callers", async () => {
   assert.deepEqual(CERTIFIABLE_HARNESSES_V1, ["eve", "codex", "claude-code", "cursor", "grok", "hermes"]);
-  for (const harnessId of CERTIFIABLE_HARNESSES_V1) {
-    const descriptor = createHarnessCapabilityDescriptorV1({ harnessId, harnessVersion: "test-version", fixturePassed: false });
-    assert.equal(descriptor.abiDigest, AGENT_TOOL_ABI_DIGEST_V1);
-    assert.equal(descriptor.protocolCompatibility, "compatible");
-    assert.equal(descriptor.fixtureStatus, "not-passed");
-    assert.equal(descriptor.liveTested, false);
-  }
-  const eve = createHarnessCapabilityDescriptorV1({ harnessId: "eve", harnessVersion: "0.39.0", fixturePassed: true });
-  assert.equal(eve.protocolCompatibility, "compatible");
-  assert.equal(eve.fixtureStatus, "passed");
-  assert.equal(eve.liveTested, true);
-  assert.equal(eve.providerCertification, "not-claimed");
+  const mutable = { v: "reelier.harness-capability/v1", harnessId: "eve", harnessVersion: "0.39.0", abiDigest: AGENT_TOOL_ABI_DIGEST_V1, protocolCompatibility: "compatible", transports: ["mcp", "http", "openapi"], fixtureStatus: "passed", liveTested: true, providerCertification: "not-claimed" };
+  const tools = createAuthorityAgentTools({ async jobsSearch(){ return { verdict:"accepted", reasonCode:"ready", lifecycleState:"ready", jobs:[] }; }, async jobLoad(){ throw new Error(); }, async invoke(){ throw new Error(); }, async status(){ throw new Error(); } }, mutable as never);
+  mutable.liveTested = false;
+  const status = await tools.agentStatus({}, context);
+  assert.equal(status.capability.liveTested, false);
+  assert.equal(status.capability.fixtureStatus, "not-passed");
+  assert.equal(status.capability.harnessId, null);
 });
 
 test("production MCP adds the quartet from the canonical projection without removing legacy tools", async () => {
@@ -177,6 +183,7 @@ test("production MCP adds the quartet from the canonical projection without remo
     for (const legacy of ["reelier_jobs_search", "reelier_job_load", "reelier_outcome_invoke", "reelier_outcome_legacy_alias"]) assert.equal(names.includes(legacy), true, legacy);
     const result = await client.callTool({ name: "reelier_outcome_request", arguments: { outcomeRef: ref, requestId: "request_mcp", sourceRefs: { issue: "issue_1" }, choices: {} } });
     assert.equal(result.isError, undefined);
+    assert.deepEqual(result.structuredContent, { requestId: "request_mcp", verdict: "accepted", reasonCode: "accepted", lifecycleState: "pending" });
     assert.deepEqual(invoked, [{ v: "reelier.outcome-request/v1", jobRef: ref, requestId: "request_mcp", sourceRefs: { issue: "issue_1" }, choices: {} }]);
   } finally {
     await client.close();
