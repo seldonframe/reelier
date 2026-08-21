@@ -306,6 +306,33 @@ test("a stale colluding revalidator cannot cross credential, prepare, store, or 
   assert.deepEqual(effects, { credential: 0, prepare: 0, store: 0, provider: 0, commit: 0 });
 });
 
+test("prepared dispatch revalidates the same gate authority after host resolution immediately before CAS", async () => {
+  const generation = sha("1"), revokedGeneration = sha("2"), expiresAt = new Date(Date.now() + 60_000).toISOString();
+  const projection = { v: "reelier.materialized-http-request/v1" as const, method: "POST" as const, origin: "https://provider.example", normalizedPath: "/write", normalizedQuery: "", reviewedHeaders: {}, bodyDigest: sha("3") }, materializedRequestDigest = materializedHttpRequestDigest(projection);
+  const keys = generateKeyPairSync("ed25519"), identityBody = { v: "reelier.authenticated-provider-identity/v1" as const, providerId: "github" as const, credentialSlotId: "slot_1", slotInstanceId: "instance_1", slotVersion: "version_1", slotExpiresAt: expiresAt, providerAccountId: "account_1", providerLogin: "account_1", routeDigest: sha("4"), observedAt: new Date().toISOString() };
+  const identity = Object.freeze({ ...identityBody, signerId: "identity_1", signature: signAuthorityDigest(keys.privateKey, "authority-evidence", authorityDigest(identityBody)) });
+  const routeAuthority = Object.freeze({ v: "reelier.route-authority-snapshot/v1" as const, connectorRegistrationDigest: sha("5"), operatorConfigurationDigest: sha("6"), routeDigest: identityBody.routeDigest, providerId: "github", connectorId: "github", accountId: "account_1", providerAccountIdentity: "github:account_1", endpointId: "write", credentialSlotId: identityBody.credentialSlotId, slotInstanceId: identityBody.slotInstanceId, slotVersion: identityBody.slotVersion, authenticatedProviderIdentityDigest: authorityDigest(identityBody), sourceReadRouteDigest: sha("7"), projectionSchemaDigest: sha("8"), expectedMaterializedRequestDigest: materializedRequestDigest, authorityGeneration: generation, authorityExpiresAt: expiresAt });
+  let persisted: any = { reservationId: "reservation_revoked_after_prepare", state: "reserved", intent: { tenant: "tenant_1", requestDigest: sha("9"), requestKey: sha("a"), outcomeKey: sha("b"), capabilityId: "capability_1", capabilityDigest: sha("c"), effectDigest: sha("d"), effectCanonicalBase64: "e30=", executionContext: { allocationId: "allocation_1" }, routeAuthority } };
+  let revoked = false, revalidations = 0, commits = 0, providerCalls = 0;
+  const current = () => ({ authorityGeneration: revoked ? revokedGeneration : generation, authorityExpiresAt: expiresAt, routeAuthorityDigest: authorityDigest(routeAuthority), providerId: "github", connectorId: "github", accountId: "account_1", endpointId: "write" });
+  const coordinator = createDispatchCoordinator({
+    async getReservation() { return persisted; },
+    async commitPreparedDispatch(input: any) { commits += 1; persisted = { ...persisted, state: "dispatched", sendStarted: true }; return createDispatchCommitLease({ reservationId: input.reservationId, allocationId: input.allocationId, preparedDigest: input.preparedDescription.materializedRequestDigest, authorityGeneration: input.expectedAuthorityGeneration, authorityExpiresAt: input.preparedDescription.authorityExpiresAt, absoluteDeadlineMs: input.absoluteDeadlineMs, commitGeneration: "commit_1" }); },
+    async transition(_id: string, expected: string, event: any) { if (persisted.state !== expected) return { ok: false, reason: "state-conflict" }; persisted = { ...persisted, state: event.to, resultDigest: event.resultDigest }; return { ok: true, reservation: persisted }; },
+    async recover() { return { ok: true, reservations: [] }; },
+  } as any, {
+    async prepare() { return createPreparedDispatch({ description: { v: "reelier.prepared-dispatch-description/v1", routeDigest: routeAuthority.routeDigest, materializedRequestDigest, projection, authorityGeneration: generation, authorityExpiresAt: expiresAt, absoluteDeadlineMs: performance.now() + 60_000, reservationId: persisted.reservationId, allocationId: "allocation_1" }, send: async () => { providerCalls += 1; return { kind: "acknowledged", resultDigest: sha("e") }; } }); },
+    async dispatch() { throw new Error("legacy provider path reached"); },
+  }, undefined, undefined, { async consumeOnce() { revoked = true; }, async returnOnce() {}, async releaseConsumedOnce() {} }, {
+    identityProbe: async () => identity,
+    verifyIdentity: { purpose: "authority-evidence", signerId: identity.signerId, publicKey: keys.publicKey },
+    revalidator: { async revalidate() { revalidations += 1; return current(); }, async routeReread() { return routeAuthority; } },
+  });
+  const state = { reservation: persisted, effect: {}, effectCanonicalBase64: "e30=", effectDigest: persisted.intent.effectDigest };
+  await assert.rejects(() => coordinator.dispatch(createReservedDispatchHandle(state)), /changed|generation|authority/i);
+  assert.deepEqual({ revalidations, commits, providerCalls }, { revalidations: 3, commits: 0, providerCalls: 0 });
+});
+
 test("closed deterministic refusal preserves its inert diagnostic reason", () => {
   const outcome = parseDispatchOutcomeV1({ kind: "definitive-failure", resultDigest: sha("1"), reconciliationStatus: "conflict", normalizedProjectionDigest: null, reason: "base branch drift" });
   assert.deepEqual(outcome, { kind: "definitive-failure", resultDigest: sha("1"), reconciliationStatus: "conflict", normalizedProjectionDigest: null, reason: "base branch drift" });
