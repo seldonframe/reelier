@@ -3,6 +3,7 @@ import { isProxy } from "node:util/types";
 import { digestToolEffectContractV1, parseToolEffectContractV1, type ToolEffectContractV1 } from "../tool-effect-contract.js";
 import { authorityCanonicalBytes, authorityDigest } from "../wire.js";
 import { bindCoordinatorDispatchCallDelegateV1, type CoordinatorDispatchCallV1, type DispatchAdapter, type DispatchOutcome, type DispatchRequestState } from "./dispatch.js";
+import { createPreparedDispatch, preparedDispatchProjectionDigest, type PreparedDispatch } from "./prepared-dispatch.js";
 import { createTrustedObservationVerifier, type TrustedObservationVerifierV1 } from "./outcome-kernel.js";
 
 const SHA = /^sha256:[0-9a-f]{64}$/;
@@ -40,6 +41,7 @@ export interface CompiledEffectTransportV1 {
   readonly evidence: Readonly<{ v: "reelier.effect-transport-evidence/v1"; contractDigest: string; bindingDigest: string; model: Readonly<Record<string, unknown>> }>;
   readonly adapter: DispatchAdapter;
   readonly verifier: TrustedObservationVerifierV1;
+  readonly prepareGoverned: (state: DispatchRequestState, call: CoordinatorDispatchCallV1) => Promise<PreparedDispatch>;
 }
 
 export function parseEffectTransportBindingV1(value: unknown): EffectTransportBindingV1 {
@@ -129,6 +131,16 @@ export function compileEffectTransportV1(input: Readonly<{ contract: ToolEffectC
       return unavailableOutcome(bindingDigest, prior);
     },
   });
+  const prepareGoverned = async (state: DispatchRequestState, call: CoordinatorDispatchCallV1): Promise<PreparedDispatch> => {
+    if (!state?.reservation || state.reservation.state !== "reserved") throw new TypeError("governed effect transport requires the exact reserved coordinator state");
+    const authority = executorAuthority(state, contractDigest, bindingDigest);
+    if (!bindCoordinatorDispatchCallDelegateV1(call, authority, state)) throw new TypeError("governed effect transport coordinator authority refused before host binding");
+    const host = await hostBindings(), route = state.reservation.intent.routeAuthority, allocationId = state.reservation.intent.executionContext?.allocationId;
+    if (!route || !allocationId) throw new TypeError("governed effect transport requires signed route and allocation authority");
+    const projection = deepFreeze({ v: "reelier.prepared-effect-projection/v1" as const, transport: binding.kind, operationDigest: bindingDigest, requestDigest: authorityDigest({ v: "reelier.governed-effect-transport-request/v1", contractDigest, bindingDigest, model, account: host.account, destination: host.destination, limit: host.limit }) });
+    const materializedRequestDigest = preparedDispatchProjectionDigest(projection);
+    return createPreparedDispatch({ description: { v: "reelier.prepared-dispatch-description/v1", routeDigest: route.routeDigest, materializedRequestDigest, projection, authorityGeneration: route.authorityGeneration, authorityExpiresAt: route.authorityExpiresAt, absoluteDeadlineMs: performance.now() + Math.max(1, Date.parse(route.authorityExpiresAt) - Date.now()), reservationId: state.reservation.reservationId, allocationId, behaviorDigest: authorityDigest({ v: "reelier.governed-effect-transport-behavior/v1", contractDigest, bindingDigest }) }, send: async () => { const response = await dispatch(binding, model, host, executor, authority); return dispatchOutcome(contract, bindingDigest, response); }, requireCoordinatorCommit: true });
+  };
   const verifier = createTrustedObservationVerifier({ contractDigest, verify: observation => {
     if (observation.projectionDigest === null || !observation.authoritative || observation.verdict !== "matched" || observation.semanticIdentity !== contract.semanticIdentity || observation.observationId !== `observation_${authorityDigest({ reservationId: observation.reservationId, verdict: "matched", projectionDigest: observation.projectionDigest }).slice(7, 31)}`) return false;
     const packed = observation.projectionDigest.slice(7), projectionCommitment = packed.slice(0, 32), actualAuthenticator = packed.slice(32);
@@ -136,7 +148,7 @@ export function compileEffectTransportV1(input: Readonly<{ contract: ToolEffectC
     const expectedAuthenticator = provenanceAuthenticator(observationAuthKey, provenance(observation.reservationId, projectionCommitment));
     return timingSafeEqual(Buffer.from(actualAuthenticator, "hex"), Buffer.from(expectedAuthenticator, "hex"));
   } });
-  return Object.freeze({ effect, evidence, adapter, verifier });
+  return Object.freeze({ effect, evidence, adapter, verifier, prepareGoverned });
 }
 
 function parseMcpBinding(value: unknown): McpEffectTransportBindingV1 {

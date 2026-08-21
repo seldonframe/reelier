@@ -57,7 +57,8 @@ const packAuthorities = new WeakMap<object, GitHubLinearReviewedAuthorityV1>();
 declare const governedOutcomeCompositionProfileBrand: unique symbol;
 export interface GovernedOutcomeCompositionProfileV1 { readonly [governedOutcomeCompositionProfileBrand]: true }
 type GovernedOutcomeCompositionScopeV1 = Readonly<{ aliases: typeof governedOutcomeCompositionAliasesV1; repository: string; workspace: string; project: string; issue: string; contractDigests: readonly string[] }>;
-const governedOutcomeProfiles = new WeakMap<object, GovernedOutcomeCompositionScopeV1>();
+type GovernedOutcomeCompositionProfileStateV1 = Readonly<{ scope: GovernedOutcomeCompositionScopeV1; pack: GitHubLinearOutcomePackV1; authority: GitHubLinearReviewedAuthorityV1 }>;
+const governedOutcomeProfiles = new WeakMap<object, GovernedOutcomeCompositionProfileStateV1>();
 
 /** Reviewed five-operation profile. It is an admission proof, never dispatch authority. */
 export function createGovernedOutcomeCompositionProfileV1(input: Readonly<{ aliases: readonly string[]; pack: GitHubLinearOutcomePackV1; operations: readonly ReviewedOutcomeOperationV1[] }>): GovernedOutcomeCompositionProfileV1 {
@@ -71,15 +72,18 @@ export function createGovernedOutcomeCompositionProfileV1(input: Readonly<{ alia
   if (operations.length !== expected.length || operations.some((operation, index) => operation !== expected[index])) throw new TypeError("governed Outcome profile operations do not share one exact reviewed scope");
   const scope = Object.freeze({ aliases: governedOutcomeCompositionAliasesV1, repository: authority.github.repository, workspace: authority.linear.workspace, project: authority.linear.project, issue: authority.linear.issue, contractDigests: Object.freeze(expected.map(operation => digestToolEffectContractV1(operation.contract))) });
   const profile = Object.freeze(Object.create(null)) as GovernedOutcomeCompositionProfileV1;
-  governedOutcomeProfiles.set(profile as object, scope);
+  governedOutcomeProfiles.set(profile as object, Object.freeze({ scope, pack, authority }));
   return profile;
 }
 
 export function describeGovernedOutcomeCompositionProfileV1(profile: GovernedOutcomeCompositionProfileV1): GovernedOutcomeCompositionScopeV1 {
-  const scope = governedOutcomeProfiles.get(profile as object);
-  if (!scope) throw new TypeError("governed Outcome composition profile capability is invalid");
-  return scope;
+  const state = governedOutcomeProfiles.get(profile as object);
+  if (!state) throw new TypeError("governed Outcome composition profile capability is invalid");
+  return state.scope;
 }
+
+/** @internal Host composition access; the profile remains non-serializable and non-authoritative for dispatch. */
+export function governedOutcomeCompositionProfileStateV1(profile: GovernedOutcomeCompositionProfileV1): GovernedOutcomeCompositionProfileStateV1 { const state = governedOutcomeProfiles.get(profile as object); if (!state) throw new TypeError("governed Outcome composition profile capability is invalid"); return state; }
 
 export function createGitHubLinearOutcomePackV1(value: GitHubLinearReviewedAuthorityV1): GitHubLinearOutcomePackV1 {
   const authority = parseAuthority(value);

@@ -431,6 +431,8 @@ function durableIdentity(reservation:import("../ledger.js").ReservationSnapshot)
 }
 
 function durableQuery(identity:DurableDispatchPublicationIdentityV1,ledgerState:"dispatched"|"ambiguous"):DurableDispatchPublicationQueryV1{return Object.freeze({v:"reelier.durable-dispatch-publication-query/v1",identity,ledgerState,sendStarted:true});}
+/** @internal Exact predicted query for a genuine reserved effect; verified against the post-commit head. */
+export function governedDurableDispatchPublicationQueryV1(reservation:import("../ledger.js").ReservationSnapshot):DurableDispatchPublicationQueryV1{return durableQuery(durableIdentity(reservation),"dispatched");}
 function assertDurableHead(value:DurableDispatchPublicationHeadV1|null,identity:DurableDispatchPublicationIdentityV1):DurableDispatchPublicationHeadV1|null{
   if(value===null)return null;
   if(!value||typeof value!=="object"||Object.getPrototypeOf(value)!==Object.prototype||authorityDigest(value.identity)!==authorityDigest(identity))throw new TypeError("durable governed receipt head identity mismatch");
