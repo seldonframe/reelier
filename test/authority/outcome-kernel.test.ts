@@ -6,6 +6,7 @@ import {
   type OutcomeKernelStorage,
   type StoredEffectLifecycleV1,
 } from "reelier/authority/host";
+import { createTrustedOutcomePredecessorPolicyV1 } from "../../src/authority/host/outcome-kernel.js";
 // @ts-ignore compiled tests share the opaque handle brand with the built public host package.
 import { createReservedDispatchHandle } from "../../../dist/authority/gate.js";
 import { digestGovernedReceiptV1, digestMissionClaimV1, digestToolEffectContractV1, type GovernedReceiptV1, type MissionClaimV1, type ToolEffectContractV1 } from "reelier/authority";
@@ -77,7 +78,7 @@ function coordinator(states: Map<string, any>, counters: { send: number; readbac
 }
 
 const handleIds = new WeakMap<object, string>();
-function handle(id: string) { const effectDigest = digestToolEffectContractV1(contract("identity_1")); const opaque = createReservedDispatchHandle({ reservation: reservation(id, "reserved", effectDigest), effect: {}, effectCanonicalBase64: "e30=", effectDigest }); handleIds.set(opaque as object, id); return opaque; }
+function handle(id: string, reviewed = contract("identity_1")) { const effectDigest = digestToolEffectContractV1(reviewed); const opaque = createReservedDispatchHandle({ reservation: reservation(id, "reserved", effectDigest), effect: {}, effectCanonicalBase64: "e30=", effectDigest }); handleIds.set(opaque as object, id); return opaque; }
 
 function verifierFor(value: ToolEffectContractV1, verify = true) { return createTrustedObservationVerifier({ contractDigest: digestToolEffectContractV1(value), verify: () => verify }); }
 
@@ -424,4 +425,63 @@ test("pre-existing receipt heads require the exact receipt ID and digest before 
     await assert.rejects(() => kernel.execute({ missionId: "mission_1", effects: [{ contract: reviewed, reservationId: "r1", verifier: verifierFor(reviewed) }] }), /receipt|head|identity|digest|closed/i);
     assert.equal(counters.send, 1);
   }
+});
+
+test("host-authenticated predecessor policy requires an earlier verified Outcome and exact durable receipt head", async () => {
+  const predecessor = contract("linear_comment"), successor = contract("linear_status");
+  const predecessorDigest = digestToolEffectContractV1(predecessor), successorDigest = digestToolEffectContractV1(successor);
+  const policy = createTrustedOutcomePredecessorPolicyV1({ predecessorContractDigest: predecessorDigest, successorContractDigest: successorDigest });
+  const store = durableFixture(), states = new Map([
+    ["comment", reservation("comment", "reserved", predecessorDigest)],
+    ["status", reservation("status", "reserved", successorDigest)],
+  ]), counters = { send: 0, readback: 0 };
+  const options = { storage: store, coordinator: coordinator(states, counters), ledger: { getReservation: async (id: string) => states.get(id) } as any, now: () => 2_000, authorization: async () => "active" as const, predecessorPolicy: policy };
+  const first = createOutcomeKernel(options); await first.claimMission(mission("linear_mission", [predecessor, successor]));
+
+  await assert.rejects(() => first.execute({ missionId: "linear_mission", effects: [{ contract: successor, handle: handle("status", successor), verifier: verifierFor(successor) }] }), /predecessor|receipt/i);
+  assert.equal(counters.send, 0);
+
+  const comment = await first.execute({ missionId: "linear_mission", effects: [{ contract: predecessor, handle: handle("comment", predecessor), verifier: verifierFor(predecessor) }] });
+  assert.equal(comment.effects[0]!.status, "verified");
+  assert.equal(counters.send, 1);
+
+  const restarted = createOutcomeKernel(options);
+  const completed = await restarted.execute({ missionId: "linear_mission", effects: [
+    { contract: predecessor, reservationId: "comment", verifier: verifierFor(predecessor) },
+    { contract: successor, handle: handle("status", successor), verifier: verifierFor(successor) },
+  ] });
+  assert.deepEqual(completed.effects.map(effect => effect.status), ["verified", "verified"]);
+  assert.equal(counters.send, 2);
+
+  for (const status of ["pending", "partial", "failed"] as const) {
+    const stored = store.effects.get("comment")!;
+    store.effects.set("comment", Object.freeze({ ...stored, outcome: Object.freeze({ ...stored.outcome!, status }) }));
+    states.set("status-2", reservation("status-2", "reserved", successorDigest));
+    await assert.rejects(() => restarted.execute({ missionId: "linear_mission", effects: [
+      { contract: predecessor, reservationId: "comment", verifier: verifierFor(predecessor) },
+      { contract: successor, handle: handle("status-2", successor), verifier: verifierFor(successor) },
+    ] }), /predecessor|verified/i);
+    assert.equal(counters.send, 2);
+  }
+
+  const verified = store.effects.get("comment")!;
+  store.effects.set("comment", Object.freeze({ ...verified, outcome: Object.freeze({ ...verified.outcome!, status: "verified" }) }));
+  const originalLoadReceipt = store.loadReceipt.bind(store);
+  store.loadReceipt = async receiptId => { const head = await originalLoadReceipt(receiptId); return head && { ...head, receiptDigest: sha("e") }; };
+  states.set("status-3", reservation("status-3", "reserved", successorDigest));
+  await assert.rejects(() => restarted.execute({ missionId: "linear_mission", effects: [
+    { contract: predecessor, reservationId: "comment", verifier: verifierFor(predecessor) },
+    { contract: successor, handle: handle("status-3", successor), verifier: verifierFor(successor) },
+  ] }), /receipt|digest|predecessor/i);
+  assert.equal(counters.send, 2);
+
+  const wrongPolicy = createTrustedOutcomePredecessorPolicyV1({ predecessorContractDigest: digestToolEffectContractV1(contract("wrong_comment")), successorContractDigest: successorDigest });
+  const wrongKernel = createOutcomeKernel({ ...options, predecessorPolicy: wrongPolicy });
+  store.loadReceipt = originalLoadReceipt;
+  states.set("status-4", reservation("status-4", "reserved", successorDigest));
+  await assert.rejects(() => wrongKernel.execute({ missionId: "linear_mission", effects: [
+    { contract: predecessor, reservationId: "comment", verifier: verifierFor(predecessor) },
+    { contract: successor, handle: handle("status-4", successor), verifier: verifierFor(successor) },
+  ] }), /predecessor/i);
+  assert.equal(counters.send, 2);
 });
