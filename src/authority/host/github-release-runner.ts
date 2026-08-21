@@ -61,14 +61,23 @@ export interface GitHubReleasePublicationConfirmationV1 { readonly requestId: st
 export interface GitHubReleaseRunnerV1 { run(input: GitHubReleaseRunRequestV1): Promise<GitHubReleaseRunResultV1>; recover(): Promise<readonly string[]> }
 
 const publicationConfirmers = new WeakMap<GitHubReleaseRunnerV1, (input: GitHubReleasePublicationConfirmationV1) => Promise<void>>();
+const publicationEvidenceResolvers = new WeakMap<GitHubReleaseRunnerV1, (requestId: string) => Promise<string>>();
 const authoritativeHeadConfirmers = new WeakMap<GitHubReleaseRunnerV1, (query: DurableDispatchPublicationQueryV1, head: DurableDispatchPublicationHeadV1) => Promise<boolean>>();
 const runnerControllers = new WeakMap<GitHubReleaseRunnerV1, Readonly<{ execute(input: GitHubReleaseInvocationV1): Promise<GitHubReleaseRunResultV1>; reconcile(input: GitHubReleaseInvocationV1): Promise<GitHubReleaseRunResultV1>; recover(): Promise<readonly string[]> }>>();
 const outcomeExecutors = new WeakMap<GitHubReleaseRunnerV1, TrustedEffectTransportExecutorV1>();
 const outcomeExecutorFactories = new WeakMap<GitHubReleaseRunnerV1, (pack: GitHubLinearOutcomePackV1) => TrustedEffectTransportExecutorV1>();
+const brandedPreparedFallbacks = new WeakSet<object>();
+
+/** @internal Marks the genuine outcome runtime's prepared adapter as the GitHub execution owner. */
+export function bindGitHubReleasePreparedFallbackV1(adapter: DispatchAdapter): DispatchAdapter {
+  if (!adapter || typeof adapter !== "object" || typeof adapter.prepare !== "function") throw new TypeError("GitHub release prepared fallback is invalid");
+  brandedPreparedFallbacks.add(adapter as object);
+  return adapter;
+}
 
 /** @internal Host composition brand check. Deliberately absent from the public package barrel. */
 export function assertGitHubReleaseRunnerCapability(value: GitHubReleaseRunnerV1): void {
-  if (!value || !runnerControllers.has(value) || !publicationConfirmers.has(value) || !authoritativeHeadConfirmers.has(value)) throw new TypeError("GitHub release runner capability is absent or unrecognized");
+  if (!value || !runnerControllers.has(value) || !publicationConfirmers.has(value) || !publicationEvidenceResolvers.has(value) || !authoritativeHeadConfirmers.has(value)) throw new TypeError("GitHub release runner capability is absent or unrecognized");
 }
 
 /** Adapts the reviewed candidate/PR/merge pack tools to the existing branded release saga.
@@ -202,6 +211,12 @@ export async function createGitHubReleaseRunner(input: Readonly<{ rootDir: strin
     async recover(): Promise<readonly string[]> { throw new TypeError("release recovery requires the coordinator reconciliation capability"); },
   });
   publicationConfirmers.set(runner, confirmPublication);
+  publicationEvidenceResolvers.set(runner, async requestId => {
+    const terminal = [...await journal.load(requestId)].reverse().find(event => TERMINAL.has(event.phase));
+    const evidenceDigest = terminal?.data.evidenceDigest;
+    if (typeof evidenceDigest !== "string" || !DIGEST.test(evidenceDigest)) throw new TypeError("release provider evidence is absent from the signed runner journal");
+    return evidenceDigest;
+  });
   authoritativeHeadConfirmers.set(runner, confirmAuthoritativeHead);
   runnerControllers.set(runner, Object.freeze({ execute: run, reconcile: request => runOnce(request, true), recover }));
   const tools = Object.freeze({
@@ -264,6 +279,7 @@ export async function createGitHubReleaseRunner(input: Readonly<{ rootDir: strin
 /** Routes only the four reviewed release endpoints through the dedicated saga. The ordinary
  * coordinator still performs the actual allocation consumption and receipt publication. */
 function createGitHubReleaseDispatchAdapter(input: Readonly<{ runner: GitHubReleaseRunnerV1 | null; fallback: DispatchAdapter }>): DispatchAdapter {
+  const useBrandedPreparedFallback = brandedPreparedFallbacks.has(input.fallback as object);
   const invoke = async (state: DispatchRequestState, reconcileOnly = false): Promise<DispatchOutcome | null> => {
     const endpointId = inertEndpointId(state.effect);
     const alias = endpointId ? ENDPOINTS[endpointId] : undefined;
@@ -295,7 +311,7 @@ function createGitHubReleaseDispatchAdapter(input: Readonly<{ runner: GitHubRele
     ...(input.runner || input.fallback.prepare ? { async prepare(state: DispatchRequestState, call?: import("./dispatch.js").CoordinatorDispatchCallV1) {
       const endpointId = inertEndpointId(state.effect) ?? "";
       const alias = ENDPOINTS[endpointId];
-      if (!alias) {
+      if (!alias || useBrandedPreparedFallback) {
         if (!input.fallback.prepare) throw new TypeError("fallback prepared dispatch is unavailable");
         return input.fallback.prepare(state, call);
       }
@@ -312,8 +328,8 @@ function createGitHubReleaseDispatchAdapter(input: Readonly<{ runner: GitHubRele
       const description = Object.freeze({ v: "reelier.prepared-dispatch-description/v1" as const, routeDigest, materializedRequestDigest: materializedHttpRequestDigest(projection), projection, authorityGeneration, authorityExpiresAt, absoluteDeadlineMs: performance.now() + 30_000, reservationId: state.reservation.reservationId, allocationId: execution.allocationId, behaviorDigest: authorityDigest({ v: "reelier.github-release-internal-behavior/v1", alias, routeDigest }) });
       return createPreparedDispatch({ description, send: async () => await invoke(state) ?? failure("dedicated-release-runner-absent"), requireCoordinatorCommit: true });
     } } : {}),
-    async dispatch(state: DispatchRequestState) { if (ENDPOINTS[inertEndpointId(state.effect) ?? ""]) return failure("release-provider-execution-requires-prepared-dispatch"); return input.fallback.dispatch(state); },
-    async reconcile(state: DispatchRequestState, outcome: DispatchOutcome) { return await invoke(state, true) ?? (input.fallback.reconcile ? input.fallback.reconcile(state, outcome) : outcome); },
+    async dispatch(state: DispatchRequestState) { if (useBrandedPreparedFallback) return input.fallback.dispatch(state); if (ENDPOINTS[inertEndpointId(state.effect) ?? ""]) return failure("release-provider-execution-requires-prepared-dispatch"); return input.fallback.dispatch(state); },
+    async reconcile(state: DispatchRequestState, outcome: DispatchOutcome) { if (useBrandedPreparedFallback && input.fallback.reconcile) return input.fallback.reconcile(state, outcome); return await invoke(state, true) ?? (input.fallback.reconcile ? input.fallback.reconcile(state, outcome) : outcome); },
   });
 }
 
@@ -321,8 +337,9 @@ function createGitHubReleaseDispatchAdapter(input: Readonly<{ runner: GitHubRele
  * succeeds. Later release effects require this confirmation, not provider evidence alone. */
 function createGitHubReleaseReceiptPublication(input: Readonly<{ runner: GitHubReleaseRunnerV1; publication: DispatchPublication }>): DispatchPublication {
   const confirmPublication = publicationConfirmers.get(input.runner);
+  const resolveProviderEvidence = publicationEvidenceResolvers.get(input.runner);
   const confirmAuthoritativeHead = authoritativeHeadConfirmers.get(input.runner);
-  if (!confirmPublication || !confirmAuthoritativeHead) throw new TypeError("release runner publication capability is unavailable");
+  if (!confirmPublication || !resolveProviderEvidence || !confirmAuthoritativeHead) throw new TypeError("release runner publication capability is unavailable");
   if (!input.publication.publishReservation || !input.publication.loadDurableHead) throw new TypeError("release receipt confirmation requires an authoritative durable publication head");
   const identities = new Map<string, Readonly<{ identity: any; reservationReceiptRef: string }>>();
   return Object.freeze({
@@ -355,7 +372,9 @@ function createGitHubReleaseReceiptPublication(input: Readonly<{ runner: GitHubR
         const head = await input.publication.loadDurableHead!({ v: "reelier.durable-dispatch-publication-query/v1", identity: durable.identity, ledgerState: value.phase === "dispatch" ? "dispatched" : "ambiguous", sendStarted: true }, "terminal");
         const terminalKind = value.phase === "dispatch" ? "acknowledged" : "reconciled";
         if (!head || head.phase !== value.phase || head.terminalKind !== terminalKind || head.receiptRef !== published.receiptRef || head.evidenceDigest !== published.evidenceDigest || head.reservationReceiptRef !== durable.reservationReceiptRef || head.priorReceiptRef !== (value.priorReceiptDigest ?? null) || authorityDigest(head.identity) !== authorityDigest(durable.identity)) throw new TypeError("release receipt publication is not the authoritative durable head");
-        await confirmPublication({ requestId: normalizeReservationPublicationId(value.state.reservation.reservationId), providerEvidenceDigest: value.outcome.resultDigest, receiptRef: published.receiptRef, receiptEvidenceDigest: published.evidenceDigest });
+        const authenticatedRequestId = value.state.reservation.intent.requestId;
+        const requestId = typeof authenticatedRequestId === "string" && authenticatedRequestId.length > 0 ? authenticatedRequestId : normalizeReservationPublicationId(value.state.reservation.reservationId);
+        await confirmPublication({ requestId, providerEvidenceDigest: await resolveProviderEvidence(requestId), receiptRef: published.receiptRef, receiptEvidenceDigest: published.evidenceDigest });
       }
       return published;
     },

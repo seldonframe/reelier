@@ -1,6 +1,6 @@
 import { isProxy } from "node:util/types";
 import type { OutcomeKernelStorage } from "./outcome-kernel.js";
-import { createOutcomeKernel, createTrustedObservationVerifier, createTrustedOutcomePredecessorPolicyV1 } from "./outcome-kernel.js";
+import { createOutcomeKernel, createTrustedOutcomePredecessorPolicyV1 } from "./outcome-kernel.js";
 import { createSignedJournalOutcomeKernelStorage } from "./outcome-kernel-fs-storage.js";
 import type { SignedJournal } from "./signed-journal.js";
 import { authenticateOutcomeRequest } from "../keys.js";
@@ -14,7 +14,7 @@ import { governedDurableDispatchPublicationQueryV1 } from "./dispatch.js";
 import { compileEffectTransportV1, type CompiledEffectTransportV1, type EffectTransportHostBindingsV1 } from "./effect-transports.js";
 import { createGovernedOutcomeKernelAuthorityV1 } from "./governed-outcome-composition.js";
 import { governedOutcomeCompositionAliasesV1, governedOutcomeCompositionProfileStateV1, type GovernedOutcomeCompositionProfileV1, type GitHubLinearOutcomePackV1, type ReviewedOutcomeOperationV1 } from "../packs/github-linear-outcomes.js";
-import type { GitHubReleaseRunnerV1 } from "./github-release-runner.js";
+import { bindGitHubReleasePreparedFallbackV1, createGitHubReleaseOutcomeExecutorV1, type GitHubReleaseRunnerV1 } from "./github-release-runner.js";
 import { createLinearOutcomeExecutorV1, type LinearOutcomeProviderV1 } from "./linear-outcome-runner.js";
 import type { AuthorityExecutionContextV1 } from "../types.js";
 
@@ -56,17 +56,28 @@ export async function createGitHubLinearMissionRuntimeV1(input: GenuineGitHubLin
   const pack = profileState.pack, operations = operationMap(pack);
   const predecessorPolicy = createTrustedOutcomePredecessorPolicyV1({ predecessorContractDigest: authorityDigest(pack.operations.linearEvidenceComment.contract), successorContractDigest: authorityDigest(pack.operations.linearStatusTransition.contract) });
   const linearExecutor = createLinearOutcomeExecutorV1({ pack, provider: raw.linearProvider, predecessorPolicy });
+  const githubExecutor = createGitHubReleaseOutcomeExecutorV1(raw.githubReleaseRunner, pack);
   const compiled = new Map<string, CompiledEffectTransportV1>();
-  for (const alias of ["linear_evidence_comment_v1", "linear_status_transition_v1"] as const) {
-    const operation = operations.get(alias)!;
-    const modelInput = alias === "linear_evidence_comment_v1" ? { evidenceUrl: profileState.authority.linear.evidenceUrl } : { requestId: "host-bound-status" };
-    compiled.set(alias, compileEffectTransportV1({ contract: operation.contract, binding: operation.binding, modelInput, observationAuthKey: raw.observationAuthKey, resolveHostBindings: raw.resolveHostBindings, executor: linearExecutor }));
-  }
-  const fallback: DispatchAdapter = Object.freeze({
+  const compileFor = (alias: string, reservationId: string, requestId: string, sourceRefs: Readonly<Record<string, string>>): CompiledEffectTransportV1 => {
+    const key = `${alias}:${reservationId}`, existing = compiled.get(key);
+    if (existing) return existing;
+    const operation = operations.get(alias);
+    if (!operation) throw new TypeError("governed mission operation is absent");
+    const github = alias.startsWith("github_release_");
+    const authorizationHandle = sourceRefs.authorization;
+    if (github && (typeof authorizationHandle !== "string" || authorizationHandle.length === 0)) throw new TypeError("governed GitHub release authorization handle is absent");
+    const modelInput = github ? { authorizationHandle, requestId }
+      : alias === "linear_evidence_comment_v1" ? { evidenceUrl: profileState.authority.linear.evidenceUrl }
+        : { requestId: "host-bound-status" };
+    const item = compileEffectTransportV1({ contract: operation.contract, binding: operation.binding, modelInput, observationAuthKey: raw.observationAuthKey, resolveHostBindings: raw.resolveHostBindings, executor: github ? githubExecutor : linearExecutor });
+    compiled.set(key, item);
+    return item;
+  };
+  const fallback: DispatchAdapter = bindGitHubReleasePreparedFallbackV1(Object.freeze({
     async dispatch(state: DispatchRequestState) { return refused(state, "prepared-dispatch-required"); },
-    async prepare(state: DispatchRequestState, call?: CoordinatorDispatchCallV1) { const item = compiled.get((state.reservation.intent as any).definitionAlias); if (!item || !call) throw new TypeError("governed Linear prepared authority is absent"); return item.prepareGoverned(state, call); },
-    async reconcile(state: DispatchRequestState, prior: DispatchOutcome) { const item = compiled.get((state.reservation.intent as any).definitionAlias); return item ? item.adapter.reconcile!(translated(state, item), prior) : refused(state, "readback-unavailable"); },
-  });
+    async prepare(state: DispatchRequestState, call?: CoordinatorDispatchCallV1) { const item = compiled.get(`${(state.reservation.intent as any).definitionAlias}:${state.reservation.reservationId}`); if (!item || !call) throw new TypeError("governed prepared authority is absent"); return item.prepareGoverned(state, call); },
+    async reconcile(state: DispatchRequestState, prior: DispatchOutcome) { const item = compiled.get(`${(state.reservation.intent as any).definitionAlias}:${state.reservation.reservationId}`); return item ? item.adapter.reconcile!(translated(state, item), prior) : refused(state, "readback-unavailable"); },
+  }));
   const components = await createGenuineGovernedOutcomeLocalComponentsV1(raw.config, Object.freeze({ ...raw.localOptions, dispatchAdapter: fallback, githubReleaseRunner: raw.githubReleaseRunner }));
   const storage = await createSignedJournalOutcomeKernelStorage({ journal: raw.journal, receiptPublication: raw.outcomeReceiptPublication });
   const kernel = createOutcomeKernel({ storage, ledger: components.ledger, coordinator: components.coordinator, now: raw.now, authorization: async () => { throw new TypeError("legacy kernel authorization is prohibited in genuine governed composition"); }, predecessorPolicy });
@@ -123,9 +134,11 @@ export async function createGitHubLinearMissionRuntimeV1(input: GenuineGitHubLin
         }
         const reservation = await components.ledger.getReservation(stored.reservationId);
         if (!reservation) return refusedIngress(requestId, "reservation-absent");
+        const authenticatedRequestId = reservation.intent.requestId;
+        if (typeof authenticatedRequestId !== "string" || authenticatedRequestId !== `effect_${authorityDigest({ semanticsDigest, alias }).slice(7, 39)}`) return refusedIngress(requestId, "authenticated-effect-request-conflict");
+        const compiledEffect = compileFor(alias, reservation.reservationId, authenticatedRequestId, sourceRefs);
         const governedAuthority = createGovernedOutcomeKernelAuthorityV1({ join: { ...stored.join, reservation } as never, ...(gateAuthority ? { gateAuthority } : {}), publication: components.publication, publicationQuery: governedDurableDispatchPublicationQueryV1(reservation) });
-        const verifier = compiled.get(alias)?.verifier ?? createTrustedObservationVerifier({ contractDigest: authorityDigest(operation.contract), verify: observation => observation.authoritative && observation.verdict === "matched" && observation.projectionDigest !== null && observation.semanticIdentity === operation.contract.semanticIdentity });
-        effectRequests.push({ contract: operation.contract, verifier, governedAuthority });
+        effectRequests.push({ contract: operation.contract, verifier: compiledEffect.verifier, governedAuthority });
         const groupBoundary = mode === "linear-only" ? index === aliases.length - 1 : index === 2 || index === aliases.length - 1;
         if (groupBoundary) {
           const expectedGroupEffects = effectRequests.length;
