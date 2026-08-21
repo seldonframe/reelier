@@ -9,7 +9,7 @@ import test from "node:test";
 type Scenario = Readonly<Record<string, unknown>>;
 type Matrix = Readonly<{ scenarios: Readonly<Record<string, Scenario>> }>;
 
-test("real Eve 0.39.0 preserves Reelier continuity across process and session boundaries", async (t) => {
+test("real Eve 0.39.0 preserves Reelier continuity across process and session boundaries", { timeout: 300_000 }, async (t) => {
   const root = await mkdtemp(resolve(tmpdir(), "reelier-eve-kill-resume-"));
   const externalResult = process.env.REELIER_EVE_MATRIX_RESULT_PATH;
   const resultPath = externalResult ? resolve(externalResult) : resolve(root, "matrix.json");
@@ -21,6 +21,7 @@ test("real Eve 0.39.0 preserves Reelier continuity across process and session bo
       "--runtime-root",
       root,
     ], { stdio: ["ignore", "pipe", "pipe"] });
+    const bounded = setTimeout(() => run.kill("SIGKILL"), 240_000); bounded.unref();
     let diagnostics = "";
     run.stdout?.on("data", (chunk) => {
       const text = String(chunk);
@@ -40,6 +41,7 @@ test("real Eve 0.39.0 preserves Reelier continuity across process and session bo
         resolveExit(exitCode);
       });
     });
+    clearTimeout(bounded);
     assert.equal(code, 0, diagnostics.slice(-4_000));
     const matrix = JSON.parse(await readFile(resultPath, "utf8")) as Matrix;
 
@@ -55,22 +57,20 @@ test("real Eve 0.39.0 preserves Reelier continuity across process and session bo
       assert.deepEqual(value.recoverySessionPosts, []);
       assert.deepEqual(value.counters, { outcomeRequests: 0, statusReads: 0, providerDispatches: 0, reservations: 0 });
     });
-    await t.test("Path C apply survives process death without resend", () => {
+    await t.test("genuine governed composite survives Eve process death at exact-head ambiguity without resend", () => {
       const value = matrix.scenarios.outcomeCut;
-      assert.equal(Number(value.outcomeRequests) >= 2, true, JSON.stringify(value));
-      assert.equal(value.providerDispatches, 1);
-      assert.equal(value.reservations, 1);
-      assert.equal(value.providerWrites, 1);
-      assert.equal(value.verifierProducedConsequence, true);
       assert.equal(value.cutSubmissionStatus, 202);
-      assert.equal(value.cutStepStarted, true);
-      assert.equal(value.cutTerminalEventObserved, false);
-      assert.deepEqual(value.preImportConsequenceStates, []);
-      assert.equal(value.statusReads, 1);
-      assert.equal(value.nativeStatusLifecycle, "acknowledged");
-      assert.equal(Array.isArray(value.statusToolMessages) && value.statusToolMessages.some((message) => typeof message === "string" && message.includes("outcome-acknowledged") && message.includes("accepted")), true, JSON.stringify(value));
-      assert.equal(value.postImportVerifiedConsequenceCount, 1);
-      assert.deepEqual(value.retryEvidence, { sameCoordinates: true, distinctMetaIds: true, type: "step.started" });
+      assert.equal(value.cutLifecycle, "pending");
+      assert.equal(value.processRestarted, true);
+      assert.equal(value.runtimeReopens, 1);
+      assert.notEqual(value.cutSessionId, value.recoveredSessionId);
+      assert.equal(Number(value.cutToolEvents) > 0, true);
+      assert.equal(value.mergeWrites, 1);
+      assert.equal(value.linearWrites, 2);
+      assert.equal(value.linearReads, 2);
+      assert.equal(value.reservationCount, 5);
+      assert.equal(value.reconciledRequestCount, 1);
+      assert.equal(Array.isArray(value.statusToolMessages) && value.statusToolMessages.some((message) => typeof message === "string" && message.includes("reconciled") && message.includes("request_composite")), true, JSON.stringify(value));
     });
     await t.test("overlapping stream cursor deduplicates by event id", () => {
       const value = matrix.scenarios.streamOverlap;
