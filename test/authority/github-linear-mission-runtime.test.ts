@@ -41,7 +41,7 @@ test("legacy raw authority and generic provider runtime options refuse before fi
 const sha = (seed: string): string => `sha256:${seed.repeat(64).slice(0, 64)}`;
 const git = (seed: string): string => seed.repeat(40);
 
-test("mission success requires all five verified Outcomes and exact coordinator publication heads", () => {
+test("mission success requires all seven verified Outcomes and exact coordinator publication heads", () => {
   const exact = governedOutcomeCompositionAliasesV1.map((alias, index) => Object.freeze({
     alias,
     status: "verified" as const,
@@ -61,12 +61,12 @@ test("mission success requires all five verified Outcomes and exact coordinator 
 
 test("signed seven-definition runtime recovers the exact Linear-only pair without GitHub effects or resend", async () => {
   const restorePlatform = __testSetAuthorityCellHostPlatform("linux"), release = await releaseServeFixture();
-  const root = await mkdtemp(path.join(os.tmpdir(), "reelier-genuine-five-runtime-"));
+  const root = await mkdtemp(path.join(os.tmpdir(), "reelier-genuine-seven-runtime-"));
   let linearWrites = 0, linearReads = 0;
   try {
     const reviewed = reviewedAuthority(), pack = createGitHubLinearOutcomePackV1(reviewed);
     const profile = createGovernedOutcomeCompositionProfileV1({ aliases: governedOutcomeCompositionAliasesV1, pack, operations: allGovernedGitHubLinearOperationsV1(pack) });
-    const fixture = await fiveDefinitionDeployment(root, pack, release.authorizationHandle);
+    const fixture = await sevenDefinitionDeployment(root, pack, release.authorizationHandle);
     const operatorConfig = parseGitHubReleaseRunnerOperatorConfig(release.runnerConfigBody as never), runner = await createGitHubReleaseRunnerFromOperatorConfig(operatorConfig, () => release.authorizationNow);
     let linearStatus = reviewed.linear.preStatus;
     const linearProvider = {
@@ -76,7 +76,7 @@ test("signed seven-definition runtime recovers the exact Linear-only pair withou
       readStatus(_input: unknown, sink: any) { linearReads += 1; sink.success(JSON.stringify({ workspace: reviewed.linear.workspace, team: reviewed.linear.team, project: reviewed.linear.project, issue: reviewed.linear.issue, preStatus: reviewed.linear.preStatus, targetStatus: reviewed.linear.targetStatus, status: linearStatus })); },
     } as never;
     const journalKeys = generateKeyPairSync("ed25519"); let lastJournal: Awaited<ReturnType<typeof createSignedJournal>>;
-    const makeRuntime = async () => { const baseJournal = await createSignedJournal({ rootDir: path.join(root, "mission-journal"), journalId: "genuine-five", signerId: "mission-journal", privateKey: journalKeys.privateKey, publicKey: journalKeys.publicKey }); lastJournal=baseJournal; return createGitHubLinearMissionRuntimeV1({
+    const makeRuntime = async () => { const baseJournal = await createSignedJournal({ rootDir: path.join(root, "mission-journal"), journalId: "genuine-seven", signerId: "mission-journal", privateKey: journalKeys.privateKey, publicKey: journalKeys.publicKey }); lastJournal=baseJournal; return createGitHubLinearMissionRuntimeV1({
       config: fixture.config, profile, githubReleaseRunner: runner, linearProvider,
       resolveHostBindings: async bindings => ({ credential: "linear-test-secret", account: reviewed.linear.workspace, destination: reviewed.linear.issue, limit: pack.linearPolicyDigest }),
       journal: baseJournal,
@@ -106,7 +106,7 @@ test("signed seven-definition runtime recovers the exact Linear-only pair withou
     await lastJournal!.append("routine_approval_probe", sha("9"), "routine-approval", Object.freeze({ approval: Object.freeze({ kind: "operator-routine" }) }));
     assert.equal((await restarted.inspectEvidence()).routineApprovals, 1, "signed routine approval events are enumerated rather than hard-coded");
 
-    const crashFixture = await fiveDefinitionDeployment(path.join(root, "accepted-before-index"), pack, release.authorizationHandle), crashKeys = generateKeyPairSync("ed25519");
+    const crashFixture = await sevenDefinitionDeployment(path.join(root, "accepted-before-index"), pack, release.authorizationHandle), crashKeys = generateKeyPairSync("ed25519");
     const makeCrashRuntime = async (failPlanAppend: boolean) => {
       const base = await createSignedJournal({ rootDir: path.join(root, "accepted-before-index-journal"), journalId: "accepted-before-index", signerId: "accepted-before-index", privateKey: crashKeys.privateKey, publicKey: crashKeys.publicKey });
       let missionPlanAppends = 0;
@@ -149,7 +149,7 @@ test("signed seven-definition runtime recovers the exact Linear-only pair withou
   } finally { restorePlatform(); await Promise.all([rm(root, { recursive: true, force: true }), rm(release.root, { recursive: true, force: true })]); }
 });
 
-test("signed five-definition composite stops at ambiguous merge then recreates and reconciles without resend", async () => {
+test("signed seven-definition standing runtime runs the composite five-effect mission, then reconciles without resend", async () => {
   const restorePlatform = __testSetAuthorityCellHostPlatform("linux"), release = await releaseServeFixture("Governed executable composition", { executableCandidate: true }), root = await mkdtemp(path.join(os.tmpdir(), "reelier-genuine-composite-runtime-"));
   const runnerConfig = parseGitHubReleaseRunnerOperatorConfig(release.runnerConfigBody as never), plan = (release.authorizationBundleBody.operationPlan as any).value;
   const reviewed = { ...reviewedAuthority(), github: { ...reviewedAuthority().github, baseBranch: plan.destinationBranch, baseSha: plan.baseCommit, headBranch: plan.candidateBranch, headSha: plan.expectedCommitSha, candidateDigest: plan.candidateTreeDigest, workflowPath: plan.workflowCommitments[0].path, workflowDigest: plan.workflowCommitments[0].digest, requiredChecks: plan.requiredChecks, postMergeTreeSha: plan.expectedTreeSha } };
@@ -171,7 +171,7 @@ test("signed five-definition composite stops at ambiguous merge then recreates a
     async npmVersionExists() { return false; }, async readPackageManifest() { return { name: plan.packageName, version: plan.packageVersion }; },
   };
   try {
-    const pack = createGitHubLinearOutcomePackV1(reviewed), profile = createGovernedOutcomeCompositionProfileV1({ aliases: governedOutcomeCompositionAliasesV1, pack, operations: allGovernedGitHubLinearOperationsV1(pack) }), fixture = await fiveDefinitionDeployment(root, pack, release.authorizationHandle, reviewed);
+    const pack = createGitHubLinearOutcomePackV1(reviewed), profile = createGovernedOutcomeCompositionProfileV1({ aliases: governedOutcomeCompositionAliasesV1, pack, operations: allGovernedGitHubLinearOperationsV1(pack) }), fixture = await sevenDefinitionDeployment(root, pack, release.authorizationHandle, reviewed);
     let linearWrites = 0, linearReads = 0, linearStatus = reviewed.linear.preStatus;
     const commentReadback = { workspace: reviewed.linear.workspace, team: reviewed.linear.team, project: reviewed.linear.project, issue: reviewed.linear.issue, commentMarker: reviewed.linear.commentMarker, evidenceUrl: reviewed.linear.evidenceUrl, evidenceContentDigest: reviewed.linear.evidenceContentDigest, commentId: "comment_composite" };
     const linearProvider: any = { comment(_input: unknown, sink: any) { linearWrites += 1; sink.success(JSON.stringify({ outcome: "applied", data: commentReadback })); }, readComment(_input: unknown, sink: any) { linearReads += 1; sink.success(JSON.stringify(commentReadback)); }, transitionStatus(_input: unknown, sink: any) { linearWrites += 1; linearStatus = reviewed.linear.targetStatus; sink.success(JSON.stringify({ outcome: "applied", data: { workspace: reviewed.linear.workspace, team: reviewed.linear.team, project: reviewed.linear.project, issue: reviewed.linear.issue, preStatus: reviewed.linear.preStatus, targetStatus: reviewed.linear.targetStatus, status: linearStatus } })); }, readStatus(_input: unknown, sink: any) { linearReads += 1; sink.success(JSON.stringify({ workspace: reviewed.linear.workspace, team: reviewed.linear.team, project: reviewed.linear.project, issue: reviewed.linear.issue, preStatus: reviewed.linear.preStatus, targetStatus: reviewed.linear.targetStatus, status: linearStatus })); } };
@@ -201,7 +201,7 @@ test("signed composed runtime stops honestly at deterministic candidate, PR, com
   const runnerPrivateKey = createPrivateKey(await readFile(runnerConfig.journalKeyFile)), evidencePrivateKey = createPrivateKey(await readFile(runnerConfig.evidenceKeyFile));
   try {
     for (const failure of ["candidate", "pr", "comment", "authority-drift"] as const) {
-      const scenarioRoot = path.join(root, failure), fixture = await fiveDefinitionDeployment(scenarioRoot, pack, release.authorizationHandle, reviewed), refs = new Map<string, string>([[`heads/${plan.destinationBranch}`, plan.baseCommit]]);
+      const scenarioRoot = path.join(root, failure), fixture = await sevenDefinitionDeployment(scenarioRoot, pack, release.authorizationHandle, reviewed), refs = new Map<string, string>([[`heads/${plan.destinationBranch}`, plan.baseCommit]]);
       const counts = { blobs: 0, trees: 0, commits: 0, refs: 0, prs: 0, ready: 0, merges: 0, comments: 0, statuses: 0 };
       let pullRequest: any = null;
       const provider: any = {
@@ -254,7 +254,7 @@ function reviewedAuthority() {
   return { v: "reelier.github-linear-reviewed-authority/v1" as const, github: { repository: "seldonframe/reelier", baseBranch: "main", baseSha: git("a"), headBranch: "reelier/release/0.33.0", headSha: git("b"), candidateDigest: sha("c"), workflowPath: ".github/workflows/ci.yml", workflowDigest: sha("d"), requiredChecks: ["coverage", "full-tests", "mutation"], mergeMethod: "squash" as const, postMergeTreeSha: git("e"), accountRef: "github_account_ref", destinationRef: "github_repository_ref", credentialRef: "github_credential_ref", limitRef: "github_release_policy_ref" }, linear: { workspace: "workspace_01", team: "team_01", project: "project_01", issue: "REEL-TEST-1", preStatus: "In Progress", targetStatus: "Done", commentMarker: "reelier:evidence:mission_01", evidenceUrl: "https://www.reelier.com/r/receipt_01", evidenceContentDigest: sha("f"), accountRef: "linear_account_ref", destinationRef: "linear_issue_ref", credentialRef: "linear_credential_ref", limitRef: "linear_transition_policy_ref" } };
 }
 
-async function fiveDefinitionDeployment(root: string, pack: ReturnType<typeof createGitHubLinearOutcomePackV1>, authorizationHandle: string, reviewed = reviewedAuthority()) {
+async function sevenDefinitionDeployment(root: string, pack: ReturnType<typeof createGitHubLinearOutcomePackV1>, authorizationHandle: string, reviewed = reviewedAuthority()) {
   const candidateRoot = path.join(root, "candidate"), authorityRoot = path.join(root, "authority"), sourceRoot = path.join(candidateRoot, "sources");
   await Promise.all([mkdir(path.join(candidateRoot, "keys"), { recursive: true }), mkdir(sourceRoot, { recursive: true })]);
   const operator = generateKeyPairSync("ed25519"), sponsor = generateKeyPairSync("ed25519"), contractSigner = generateKeyPairSync("ed25519");
