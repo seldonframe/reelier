@@ -52,6 +52,10 @@ function reviewedInput() {
   };
 }
 
+function predecessorPolicyFor(pack: ReturnType<typeof createGitHubLinearOutcomePackV1>) {
+  return createTrustedOutcomePredecessorPolicyV1({ predecessorContractDigest: authorityDigest(pack.operations.linearEvidenceComment.contract), successorContractDigest: authorityDigest(pack.operations.linearStatusTransition.contract) });
+}
+
 test("reviewed pack binds exact GitHub and Linear authority while model fields contain no provider identity", () => {
   const pack = createGitHubLinearOutcomePackV1(reviewedInput());
   assert.deepEqual(Object.keys(pack.operations), ["candidatePublish", "pullRequestEnsure", "exactHeadMerge", "linearEvidenceComment", "linearStatusTransition"]);
@@ -60,7 +64,7 @@ test("reviewed pack binds exact GitHub and Linear authority while model fields c
     assert.equal(operation.metadata.contractDigest, authorityDigest(operation.contract));
     assert.equal(JSON.stringify(operation.contract.model).match(/workspace|team|project|issue|repository|status|credential|token|oauth/gi), null);
   }
-  assert.deepEqual(pack.operations.exactHeadMerge.contract.model.fields, ["authorizationHandle", "requestId", "semanticsDigest"]);
+  assert.deepEqual(pack.operations.exactHeadMerge.contract.model.fields, ["authorizationHandle", "requestId"]);
   assert.deepEqual(pack.operations.linearEvidenceComment.contract.model.fields, ["evidenceUrl"]);
   assert.deepEqual(pack.operations.linearStatusTransition.contract.model.fields, ["requestId"]);
   assert.equal(pack.operations.exactHeadMerge.contract.policyDigest, pack.githubPolicyDigest);
@@ -94,11 +98,10 @@ test("GitHub merge readback closes exact base, head, merge commit, and post-merg
   for (const changed of [{ ...exact, baseSha: git("0") }, { ...exact, headSha: git("1") }, { ...exact, treeSha: git("2") }, { ...exact, repository: "other/repo" }]) assert.throws(() => assertGitHubLinearProviderReadbackV1(pack, "exactHeadMerge", changed), /conflict|exact/i);
 });
 
-test("real Linear executor validates exact duplicate, conflict, and ambiguous readback without resend", async () => {
+test("real Linear comment executor validates exact duplicate, conflict, and ambiguous readback without resend", async () => {
   const pack = createGitHubLinearOutcomePackV1(reviewedInput());
   for (const [name, model, exactReadback] of [
     ["linearEvidenceComment", { evidenceUrl: "https://www.reelier.com/r/receipt_01" }, { workspace: "workspace_01", team: "team_01", project: "project_01", issue: "REEL-TEST-1", commentMarker: "reelier:evidence:mission_01", evidenceUrl: "https://www.reelier.com/r/receipt_01", evidenceContentDigest: sha("f"), commentId: "comment_01" }],
-    ["linearStatusTransition", { requestId: "status_request_01" }, { workspace: "workspace_01", team: "team_01", project: "project_01", issue: "REEL-TEST-1", preStatus: "In Progress", targetStatus: "Done", status: "Done" }],
   ] as const) {
     const operation = pack.operations[name];
     let writes = 0, reads = 0;
@@ -108,7 +111,8 @@ test("real Linear executor validates exact duplicate, conflict, and ambiguous re
       transitionStatus(_input: unknown, sink: any): void { writes += 1; sink.success(JSON.stringify({ outcome: "uncertain", data: {} })); },
       readStatus(_input: unknown, sink: any): void { reads += 1; sink.success(JSON.stringify(exactReadback)); },
     };
-    const executor = createLinearOutcomeExecutorV1({ pack, provider });
+    const predecessorPolicy = predecessorPolicyFor(pack);
+    const executor = createLinearOutcomeExecutorV1({ pack, provider, predecessorPolicy });
     const compiled = compileEffectTransportV1({ contract: operation.contract, binding: operation.binding, modelInput: model, observationAuthKey: "b".repeat(64), resolveHostBindings: async () => ({ credential: "linear-secret", account: "workspace_01", destination: "REEL-TEST-1", limit: pack.linearPolicyDigest }), executor });
     const state = { reservation: { reservationId: `${name}_reservation`, state: "dispatched", intent: { effectDigest: authorityDigest(operation.contract) } }, effect: compiled.effect, effectDigest: authorityDigest(operation.contract), effectCanonicalBase64: Buffer.from(JSON.stringify(compiled.effect)).toString("base64") } as any;
     const ambiguous = await compiled.adapter.dispatch(state);
@@ -120,7 +124,7 @@ test("real Linear executor validates exact duplicate, conflict, and ambiguous re
     assert.equal(JSON.stringify({ evidence: compiled.evidence, reconciled }).includes("linear-secret"), false);
 
     const wrongProvider = { ...provider, [name === "linearEvidenceComment" ? "readComment" : "readStatus"](_input: unknown, sink: any): void { sink.success(JSON.stringify({ ...exactReadback, issue: "REEL-WRONG" })); } } as any;
-    const wrong = compileEffectTransportV1({ contract: operation.contract, binding: operation.binding, modelInput: model, observationAuthKey: "b".repeat(64), resolveHostBindings: async () => ({ credential: "linear-secret", account: "workspace_01", destination: "REEL-TEST-1", limit: pack.linearPolicyDigest }), executor: createLinearOutcomeExecutorV1({ pack, provider: wrongProvider }) });
+    const wrong = compileEffectTransportV1({ contract: operation.contract, binding: operation.binding, modelInput: model, observationAuthKey: "b".repeat(64), resolveHostBindings: async () => ({ credential: "linear-secret", account: "workspace_01", destination: "REEL-TEST-1", limit: pack.linearPolicyDigest }), executor: createLinearOutcomeExecutorV1({ pack, provider: wrongProvider, predecessorPolicy }) });
     const wrongState = { ...state, effect: wrong.effect } as any;
     const wrongPrior = await wrong.adapter.dispatch(wrongState);
     const wrongReadback = await wrong.adapter.reconcile!(wrongState, wrongPrior);
@@ -130,12 +134,26 @@ test("real Linear executor validates exact duplicate, conflict, and ambiguous re
   const comment = pack.operations.linearEvidenceComment, exact = { workspace: "workspace_01", team: "team_01", project: "project_01", issue: "REEL-TEST-1", commentMarker: "reelier:evidence:mission_01", evidenceUrl: "https://www.reelier.com/r/receipt_01", evidenceContentDigest: sha("f"), commentId: "comment_01" };
   for (const outcome of ["exact-existing", "conflict"] as const) {
     let writes = 0;
-    const executor = createLinearOutcomeExecutorV1({ pack, provider: { comment(_input: unknown, sink: any): void { writes += 1; sink.success(JSON.stringify({ outcome, data: exact })); }, readComment(): void {}, transitionStatus(): void {}, readStatus(): void {} } });
+    const executor = createLinearOutcomeExecutorV1({ pack, provider: { comment(_input: unknown, sink: any): void { writes += 1; sink.success(JSON.stringify({ outcome, data: exact })); }, readComment(): void {}, transitionStatus(): void {}, readStatus(): void {} }, predecessorPolicy: predecessorPolicyFor(pack) });
     const compiled = compileEffectTransportV1({ contract: comment.contract, binding: comment.binding, modelInput: { evidenceUrl: reviewedInput().linear.evidenceUrl }, observationAuthKey: "c".repeat(64), resolveHostBindings: async () => ({ credential: "secret", account: "workspace_01", destination: "REEL-TEST-1", limit: pack.linearPolicyDigest }), executor });
     const state = { reservation: { reservationId: `comment_${outcome}`, state: "dispatched", intent: { effectDigest: authorityDigest(comment.contract) } }, effect: compiled.effect, effectDigest: authorityDigest(comment.contract), effectCanonicalBase64: Buffer.from(JSON.stringify(compiled.effect)).toString("base64") } as any;
     assert.equal((await compiled.adapter.dispatch(state)).kind, outcome === "exact-existing" ? "acknowledged" : "definitive-failure");
     assert.equal(writes, 1);
   }
+});
+
+test("direct status adapter invocation is unarmed and reaches no Linear write", async () => {
+  const pack = createGitHubLinearOutcomePackV1(reviewedInput()), operation = pack.operations.linearStatusTransition;
+  let writes = 0;
+  const executor = createLinearOutcomeExecutorV1({ pack, predecessorPolicy: predecessorPolicyFor(pack), provider: {
+    comment(): void {}, readComment(): void {},
+    transitionStatus(_input, sink): void { writes += 1; sink.success(JSON.stringify({ outcome: "applied", data: {} })); },
+    readStatus(): void {},
+  } });
+  const compiled = compileEffectTransportV1({ contract: operation.contract, binding: operation.binding, modelInput: { requestId: "direct_status" }, observationAuthKey: "9".repeat(64), resolveHostBindings: async () => ({ credential: "secret", account: "workspace_01", destination: "REEL-TEST-1", limit: pack.linearPolicyDigest }), executor });
+  const state = { reservation: { reservationId: "direct_status", state: "dispatched", intent: { effectDigest: authorityDigest(operation.contract) } }, effect: compiled.effect, effectDigest: authorityDigest(operation.contract), effectCanonicalBase64: Buffer.from(JSON.stringify(compiled.effect)).toString("base64") } as any;
+  assert.equal((await compiled.adapter.dispatch(state)).kind, "definitive-failure");
+  assert.equal(writes, 0);
 });
 
 test("a verified merge plus unresolved Linear effect stays pending before Linear-only completion with zero GitHub calls", async () => {
@@ -152,7 +170,8 @@ test("a verified merge plus unresolved Linear effect stays pending before Linear
   let linearWrites = 0, linearReads = 0, gitProviderCalls = 0;
   const exactComment = { workspace: "workspace_01", team: "team_01", project: "project_01", issue: "REEL-TEST-1", commentMarker: "reelier:evidence:mission_01", evidenceUrl: reviewedInput().linear.evidenceUrl, evidenceContentDigest: sha("f"), commentId: "comment_01" };
   const exactStatus = { workspace: "workspace_01", team: "team_01", project: "project_01", issue: "REEL-TEST-1", preStatus: "In Progress", targetStatus: "Done", status: "Done" };
-  const executor = createLinearOutcomeExecutorV1({ pack, provider: { comment(_input, sink): void { linearWrites += 1; sink.success(JSON.stringify({ outcome: "uncertain", data: {} })); }, readComment(_input, sink): void { linearReads += 1; sink.success(JSON.stringify(exactComment)); }, transitionStatus(_input, sink): void { linearWrites += 1; sink.success(JSON.stringify({ outcome: "uncertain", data: {} })); }, readStatus(_input, sink): void { linearReads += 1; sink.success(JSON.stringify(exactStatus)); } } });
+  const predecessorPolicy = predecessorPolicyFor(pack);
+  const executor = createLinearOutcomeExecutorV1({ pack, predecessorPolicy, provider: { comment(_input, sink): void { linearWrites += 1; sink.success(JSON.stringify({ outcome: "uncertain", data: {} })); }, readComment(_input, sink): void { linearReads += 1; sink.success(JSON.stringify(exactComment)); }, transitionStatus(_input, sink): void { linearWrites += 1; sink.success(JSON.stringify({ outcome: "uncertain", data: {} })); }, readStatus(_input, sink): void { linearReads += 1; sink.success(JSON.stringify(exactStatus)); } } });
   const commentOperation = pack.operations.linearEvidenceComment;
   const compiled = compileEffectTransportV1({ contract: commentOperation.contract, binding: commentOperation.binding, modelInput: { evidenceUrl: reviewedInput().linear.evidenceUrl }, observationAuthKey: "d".repeat(64), resolveHostBindings: async () => ({ credential: "secret", account: "workspace_01", destination: "REEL-TEST-1", limit: pack.linearPolicyDigest }), executor });
   const statusOperation = pack.operations.linearStatusTransition;
@@ -168,7 +187,6 @@ test("a verified merge plus unresolved Linear effect stays pending before Linear
   const compiledById: any = { reservation_1: { compiled, state: transportState }, reservation_2: { compiled: compiledStatus, state: statusTransportState } }, priors = new Map<string, any>();
   const ledger: any = { async getReservation(reservationId: string) { return states.get(reservationId); } };
   const coordinator: any = { describe(handle: object) { const id = handleIds.get(handle)!; const state = states.get(id)!; return { reservationId: id, state: state.state, effectDigest: state.intent.effectDigest, allocationId: state.intent.executionContext.allocationId }; }, async dispatch(handle: object) { const id = handleIds.get(handle)!, item = compiledById[id], result = await item.compiled.adapter.dispatch(item.state); states.get(id)!.state = result.kind === "ambiguous" ? "ambiguous" : "acknowledged"; priors.set(id, result); return result; }, async reconcile(id: string) { const item = compiledById[id], result = await item.compiled.adapter.reconcile(item.state, priors.get(id)); states.get(id)!.state = "reconciled"; return result; }, async recover() {} };
-  const predecessorPolicy = createTrustedOutcomePredecessorPolicyV1({ predecessorContractDigest: authorityDigest(commentOperation.contract), successorContractDigest: authorityDigest(statusOperation.contract) });
   const kernel = createOutcomeKernel({ ledger, coordinator, storage, predecessorPolicy, now: () => Date.parse("2026-08-21T12:00:04.000Z"), authorization: async () => "active" });
   await kernel.claimMission(mission);
   const outcome = await kernel.execute({ missionId: mission.missionId, effects: [{ contract: mergeContract, reservationId: "reservation_0", verifier: createTrustedObservationVerifier({ contractDigest: mergeDigest, verify: () => true }) }, { contract: commentOperation.contract, handle: opaque, verifier: compiled.verifier }] });
