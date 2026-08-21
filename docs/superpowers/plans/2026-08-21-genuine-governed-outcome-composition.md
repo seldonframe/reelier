@@ -112,6 +112,7 @@ Modify:
 - `src/packs/github-release/manifest.ts`
 - `src/packs/github-release/compile.ts`
 - `src/packs/index.ts`
+- `src/packs/conformance.ts` only to extend the exact reviewed alias/source inventory for the two signed Linear definitions
 - `scripts/build-packs.mjs`
 - `test/authority/gate.test.ts`
 - `test/authority/governed-cell.test.ts`
