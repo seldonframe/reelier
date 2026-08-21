@@ -53,6 +53,18 @@ test("a valid durable chain copied to a different genuine publication root refus
   } finally { restore(); await rm(parent, { recursive: true, force: true }); }
 });
 
+test("legacy durable nodes without publisher-root binding fail closed without rewrite", async () => {
+  const restore = __testSetAuthorityCellHostPlatform("linux"), root = await mkdtemp(path.join(tmpdir(), "reelier-durable-legacy-root-"));
+  try {
+    const { identity, durableDir, terminalNode } = await publishedDurableChain(root), file = path.join(durableDir, terminalNode.name);
+    await writeFile(file, JSON.stringify({ ...terminalNode.node, v: "reelier.durable-file-publication-node/internal-v1", preimage: { ...terminalNode.node.preimage, v: "reelier.durable-file-publication-preimage/internal-v1", publisherRootDigest: undefined }, publisherRootDigest: undefined }));
+    const legacy = await readFile(file);
+    const query = { v: "reelier.durable-dispatch-publication-query/v1", identity, ledgerState: "dispatched", sendStarted: true } as const;
+    await assert.rejects(() => createFileReceiptPublication({ rootDir: root }).loadDurableHead!(query), /publisher root binding|version/i);
+    assert.deepEqual(await readFile(file), legacy, "refusal does not silently migrate or rewrite the legacy node");
+  } finally { restore(); await rm(root, { recursive: true, force: true }); }
+});
+
 async function publishedDurableChain(root: string) {
   const identity = { v: "reelier.durable-dispatch-publication-identity/v1", reservationId: "r1", tenant: "tenant_1", requestDigest: "sha256:" + "2".repeat(64), capabilityDigest: "sha256:" + "3".repeat(64), effectDigest: state.effectDigest, routeAuthorityDigest: "sha256:" + "4".repeat(64), expectedDispatchedRequestDigest: "sha256:" + "5".repeat(64), reservationIntentDigest: "sha256:" + "6".repeat(64) } as const;
   const publication = createFileReceiptPublication({ rootDir: root });

@@ -147,8 +147,9 @@ export function createFileReceiptPublication(options: FileReceiptPublicationOpti
       }
     }
     const reservationReceiptRef = input.phase === "reservation" ? null : current!.reservationReceiptRef;
-    const preimage = Object.freeze({ v: "reelier.durable-file-publication-preimage/internal-v1", identity, phase: input.phase, terminalKind, reservationReceiptRef, priorReceiptRef: input.priorReceiptDigest, lifecycle: input.outcome.kind, effectDigest: input.state.effectDigest, dispatchedRequestDigest: input.dispatchedRequestDigest, providerResultDigest: input.outcome.resultDigest, reconciliationStatus: input.outcome.reconciliationStatus ?? null, normalizedProjectionDigest: input.outcome.normalizedProjectionDigest ?? null });
-    const receiptRef = authorityDigest(preimage), evidenceDigest = authorityDigest({ v: "reelier.durable-file-publication-evidence/internal-v1", receiptRef, identity, phase: input.phase, terminalKind, providerResultDigest: input.outcome.resultDigest });
+    const publisherRootDigest = durablePublisherRootDigest(root);
+    const preimage = Object.freeze({ v: "reelier.durable-file-publication-preimage/internal-v2", publisherRootDigest, identity, phase: input.phase, terminalKind, reservationReceiptRef, priorReceiptRef: input.priorReceiptDigest, lifecycle: input.outcome.kind, effectDigest: input.state.effectDigest, dispatchedRequestDigest: input.dispatchedRequestDigest, providerResultDigest: input.outcome.resultDigest, reconciliationStatus: input.outcome.reconciliationStatus ?? null, normalizedProjectionDigest: input.outcome.normalizedProjectionDigest ?? null });
+    const receiptRef = authorityDigest(preimage), evidenceDigest = authorityDigest({ v: "reelier.durable-file-publication-evidence/internal-v2", publisherRootDigest, receiptRef, identity, phase: input.phase, terminalKind, providerResultDigest: input.outcome.resultDigest });
     const head = Object.freeze({ v: "reelier.durable-dispatch-publication-head/v1" as const, identity, receiptRef, evidenceDigest, reservationReceiptRef: input.phase === "reservation" ? receiptRef : current!.reservationReceiptRef, priorReceiptRef: input.priorReceiptDigest, phase: input.phase, terminalKind }) as DurableDispatchPublicationHeadV1;
     if (current) {
       if (current.receiptRef === receiptRef && authorityDigest(current) === authorityDigest(head)) return Object.freeze({ receiptRef, evidenceDigest });
@@ -158,7 +159,7 @@ export function createFileReceiptPublication(options: FileReceiptPublicationOpti
     await mkdir(directory, { recursive: true });
     noteDurableEntryCreated("durable-mkdir", directory);
     await syncDirectory(root, "durable-mkdir");
-    await writeImmutable(path.join(directory, `node-${receiptRef.slice(7)}.json`), Object.freeze({ v: "reelier.durable-file-publication-node/internal-v1", preimage, head }));
+    await writeImmutable(path.join(directory, `node-${receiptRef.slice(7)}.json`), Object.freeze({ v: "reelier.durable-file-publication-node/internal-v2", publisherRootDigest, preimage, head }));
     const reread = await loadDurableChain(root, identity, "root-or-terminal");
     if (!reread || reread.receiptRef !== receiptRef || authorityDigest(reread) !== authorityDigest(head)) throw new Error("durable publication authoritative readback mismatch");
     return Object.freeze({ receiptRef, evidenceDigest });
@@ -208,6 +209,7 @@ function assertDurableQuery(value: DurableDispatchPublicationQueryV1): void {
 }
 
 function durableDirectory(root: string, identity: DurableDispatchPublicationIdentityV1): string { return path.join(root, `durable-${authorityDigest(identity).slice(7)}`); }
+function durablePublisherRootDigest(root: string): string { return authorityDigest({ v: "reelier.durable-file-publication-root/internal-v1", resolvedRoot: path.resolve(root) }); }
 
 /**
  * Publishes a node through a temp file, so partial JSON can only ever exist under a dot-prefixed
@@ -241,12 +243,12 @@ async function loadDurableChain(root: string, identity: DurableDispatchPublicati
   try { names = (await readdir(directory)).filter(name => /^node-[0-9a-f]{64}\.json$/.test(name)).sort(); }
   catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return null; throw error; }
   if (names.length === 0) return null;
-  const nodes = await Promise.all(names.map(async name => JSON.parse(await readFile(path.join(directory, name), "utf8")) as any));
+  const nodes = await Promise.all(names.map(async name => JSON.parse(await readFile(path.join(directory, name), "utf8")) as any)), publisherRootDigest = durablePublisherRootDigest(root);
   for (const node of nodes) {
-    if (!node || node.v !== "reelier.durable-file-publication-node/internal-v1" || authorityDigest(node.head.identity) !== authorityDigest(identity) || authorityDigest(node.preimage) !== node.head.receiptRef || !DIGEST.test(node.head.evidenceDigest)) throw new TypeError("durable publication node is invalid or conflicting");
+    if (!node || node.v !== "reelier.durable-file-publication-node/internal-v2" || node.publisherRootDigest !== publisherRootDigest || node.preimage?.v !== "reelier.durable-file-publication-preimage/internal-v2" || node.preimage.publisherRootDigest !== publisherRootDigest || authorityDigest(node.head.identity) !== authorityDigest(identity) || authorityDigest(node.preimage) !== node.head.receiptRef || !DIGEST.test(node.head.evidenceDigest)) throw new TypeError("durable publication publisher root binding, version, or node is invalid or conflicting");
     // The receiptRef binds the preimage only. Recompute the evidence digest and cross-check every
     // head field the preimage already determines, so a tampered head cannot ride a valid receiptRef.
-    const expectedEvidenceDigest = authorityDigest({ v: "reelier.durable-file-publication-evidence/internal-v1", receiptRef: node.head.receiptRef, identity: node.head.identity, phase: node.preimage.phase, terminalKind: node.preimage.terminalKind, providerResultDigest: node.preimage.providerResultDigest });
+    const expectedEvidenceDigest = authorityDigest({ v: "reelier.durable-file-publication-evidence/internal-v2", publisherRootDigest, receiptRef: node.head.receiptRef, identity: node.head.identity, phase: node.preimage.phase, terminalKind: node.preimage.terminalKind, providerResultDigest: node.preimage.providerResultDigest });
     if (node.head.evidenceDigest !== expectedEvidenceDigest || node.head.v !== "reelier.durable-dispatch-publication-head/v1" || node.head.phase !== node.preimage.phase || node.head.terminalKind !== node.preimage.terminalKind || node.head.priorReceiptRef !== node.preimage.priorReceiptRef || node.head.reservationReceiptRef !== (node.preimage.phase === "reservation" ? node.head.receiptRef : node.preimage.reservationReceiptRef)) throw new TypeError("durable publication node is invalid or conflicting");
   }
   const roots = nodes.filter(node => node.head.phase === "reservation" && node.head.priorReceiptRef === null && node.head.reservationReceiptRef === node.head.receiptRef);
