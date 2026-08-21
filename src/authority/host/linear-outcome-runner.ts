@@ -7,7 +7,9 @@ import {
   orderedGitHubLinearOperationsV1,
   type GitHubLinearOutcomePackV1,
 } from "../packs/github-linear-outcomes.js";
+import { authorityDigest } from "../wire.js";
 import { mintTrustedEffectTransportExecutorV1, type TrustedEffectTransportExecutorV1 } from "./effect-transports.js";
+import { consumeTrustedOutcomePredecessorAuthorizationV1, type TrustedOutcomePredecessorPolicyV1 } from "./outcome-kernel.js";
 
 export interface LinearOutcomeProviderSinkV1 { success(serializedJson: string): void; failure(): void }
 export interface LinearOutcomeProviderV1 {
@@ -25,10 +27,11 @@ const TOOLS = Object.freeze({
 });
 
 /** Callback-only adapter over a host-provided Linear port. It owns no SDK, credential, storage, or retry state. */
-export function createLinearOutcomeExecutorV1(input: Readonly<{ pack: GitHubLinearOutcomePackV1; provider: LinearOutcomeProviderV1 }>): TrustedEffectTransportExecutorV1 {
-  const root = exactRecord(input, ["pack", "provider"], "Linear outcome executor input");
+export function createLinearOutcomeExecutorV1(input: Readonly<{ pack: GitHubLinearOutcomePackV1; provider: LinearOutcomeProviderV1; predecessorPolicy: TrustedOutcomePredecessorPolicyV1 }>): TrustedEffectTransportExecutorV1 {
+  const root = exactRecord(input, ["pack", "provider", "predecessorPolicy"], "Linear outcome executor input");
   const provider = providerPort(root.provider);
   const pack = root.pack as GitHubLinearOutcomePackV1;
+  const predecessorPolicy = root.predecessorPolicy as TrustedOutcomePredecessorPolicyV1;
   orderedGitHubLinearOperationsV1(pack, "linear-only");
   return mintTrustedEffectTransportExecutorV1({ mcp: {
     inspectSchemas(request, sink): void {
@@ -43,7 +46,10 @@ export function createLinearOutcomeExecutorV1(input: Readonly<{ pack: GitHubLine
         if (request.server !== "reelier.linear.outcomes" || request.serverSchemaDigest !== LINEAR_OUTCOME_SERVER_SCHEMA_DIGEST_V1 || request.toolSchemaDigest !== linearOutcomeToolSchemaDigestV1(request.tool)) throw new TypeError("Linear outcome transport binding is invalid");
         tool = TOOLS[request.tool as keyof typeof TOOLS];
         if (!tool) throw new TypeError("Linear outcome tool is not reviewed");
+        const reviewed = pack.operations[tool.operation];
+        if (request.authority.contractDigest !== reviewed.metadata.contractDigest || request.authority.bindingDigest !== authorityDigest(reviewed.binding)) throw new TypeError("Linear outcome compiler authority is invalid");
         providerInput = assertLinearOutcomeDispatchV1(pack, tool.operation, request.arguments.model, request.arguments.host);
+        if (!tool.readback && tool.operation === "linearStatusTransition" && !consumeTrustedOutcomePredecessorAuthorizationV1(predecessorPolicy, { reservationId: request.authority.reservationId, successorContractDigest: request.authority.contractDigest })) throw new TypeError("Linear status predecessor authorization is absent");
       } catch { sink.success(JSON.stringify({ outcome: "refused", data: {} })); return; }
       let settled = false;
       const providerSink = Object.freeze({

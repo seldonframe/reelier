@@ -13,7 +13,7 @@ import { createSignedJournal, type SignedJournal, type SignedJournalEventV1 } fr
 import { createGitHubReleaseProviderEvidence } from "./github-release-evidence.js";
 import { assertGitHubReleaseHostedAuthorityBindingV1, type GitHubReleaseHostedAuthorityBindingV1 } from "./github-release-hosted-authority.js";
 import { mintTrustedEffectTransportExecutorV1, type TrustedEffectTransportExecutorV1 } from "./effect-transports.js";
-import { GITHUB_RELEASE_OUTCOME_SERVER_SCHEMA_DIGEST_V1, githubReleaseOutcomeToolSchemaDigestV1, githubReviewedOutcomePolicyDigestV1 } from "../packs/github-linear-outcomes.js";
+import { GITHUB_RELEASE_OUTCOME_SERVER_SCHEMA_DIGEST_V1, githubReleaseOutcomeBindingDigestV1, githubReleaseOutcomeToolSchemaDigestV1, githubReviewedOutcomePolicyDigestV1 } from "../packs/github-linear-outcomes.js";
 
 const ALIASES = Object.freeze({ github_release_candidate_publish_v1: "candidate-branch", github_release_pr_ensure_v1: "draft-pr", github_release_pr_merge_v1: "exact-sha-merge", github_release_tag_create_v1: "non-force-tag" } satisfies Record<string, ReleaseProviderEffectV1>);
 const ENDPOINTS = Object.freeze(Object.fromEntries(Object.entries(ALIASES).map(([alias, effect]) => [`github.release.${effect}`, alias])) as Record<string, GitHubReleaseAliasV1>);
@@ -218,8 +218,10 @@ export async function createGitHubReleaseRunner(input: Readonly<{ rootDir: strin
         if (request.server !== "reelier.github.outcomes" || request.serverSchemaDigest !== GITHUB_RELEASE_OUTCOME_SERVER_SCHEMA_DIGEST_V1 || request.toolSchemaDigest !== githubReleaseOutcomeToolSchemaDigestV1(request.tool)) throw new TypeError("GitHub release pack transport binding is invalid");
         selected = tools[request.tool as keyof typeof tools];
         if (!selected) throw new TypeError("GitHub release pack tool is not reviewed");
-        const model = exactRecord(request.arguments.model, ["authorizationHandle", "requestId", "semanticsDigest"], "GitHub release pack model input");
-        invocation = Object.freeze({ alias: selected.alias, authorizationHandle: String(model.authorizationHandle), requestId: String(model.requestId), semanticsDigest: String(model.semanticsDigest), reviewedHost: request.arguments.host });
+        if (request.authority.bindingDigest !== githubReleaseOutcomeBindingDigestV1(request.tool)) throw new TypeError("GitHub release pack compiler binding is invalid");
+        const model = exactRecord(request.arguments.model, ["authorizationHandle", "requestId"], "GitHub release pack model input");
+        if (model.requestId !== request.authority.reservationId) throw new TypeError("GitHub release pack reservation binding is invalid");
+        invocation = Object.freeze({ alias: selected.alias, authorizationHandle: String(model.authorizationHandle), requestId: String(model.requestId), semanticsDigest: request.authority.contractDigest, reviewedHost: request.arguments.host });
         validateInvocation(invocation);
       } catch { sink.failure(); return; }
       const controller = runnerControllers.get(runner)!;
