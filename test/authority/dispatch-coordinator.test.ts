@@ -296,3 +296,18 @@ test("a stale colluding revalidator cannot cross credential, prepare, store, or 
   await assert.rejects(() => coordinator.dispatch(createReservedDispatchHandle(state)), /generation|route authority|binding|stale/i);
   assert.deepEqual(effects, { credential: 0, prepare: 0, store: 0, provider: 0, commit: 0 });
 });
+
+test("coordinator exposes a detached reservation projection without exposing the prepared send", async () => {
+  const l = ledger();
+  const coordinator = createDispatchCoordinator(l, { async dispatch() { throw new Error("must not dispatch"); } });
+  const handle = createReservedDispatchHandle({ reservation: l.get(), effect: { secret: "not projected" }, effectCanonicalBase64: "e30=", effectDigest: sha("1") });
+  const projection = coordinator.describe(handle);
+  assert.deepEqual(projection, {
+    reservationId: "r1",
+    state: "reserved",
+    effectDigest: sha("1"),
+    allocationId: null,
+  });
+  assert.equal(Object.isFrozen(projection), true);
+  assert.equal("effect" in projection, false);
+});
