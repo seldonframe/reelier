@@ -189,6 +189,46 @@ test("host agent tools reject hostile and oversized backend graphs without obser
   assert.equal(traps, 0);
 });
 
+test("host agent tools require exact bounded backend records and dense catalogue arrays", async () => {
+  const ref = `outcomeref_${"7".repeat(64)}`;
+  const statusFrom = async (value: unknown) => createAuthorityAgentTools({
+    async jobsSearch() { return value; }, async jobLoad() { throw new Error("not reached"); }, async invoke() { throw new Error("not reached"); }, async status() { throw new Error("not reached"); },
+  }).agentStatus({}, context);
+  const unavailable = async (value: unknown) => {
+    const tools = createAuthorityAgentTools({ async jobsSearch() { throw new Error("not reached"); }, async jobLoad() { return value; }, async invoke() { return value; }, async status() { return value; } });
+    const proposal = await tools.outcomeProposal({ outcomeRef: ref }, context);
+    const requested = await tools.outcomeRequest({ outcomeRef: ref, requestId: "request_exact", sourceRefs: {}, choices: {} }, context);
+    const status = await tools.outcomeStatus({ requestId: "request_exact" }, context);
+    assert.deepEqual({ proposal: proposal.lifecycleState, requested: requested.lifecycleState, status: status.lifecycleState }, { proposal: "unavailable", requested: "unavailable", status: "unavailable" });
+    assert.equal(requested.requestId, "request_exact");
+    assert.equal(status.requestId, "request_exact");
+  };
+
+  const base = { requestId: "", verdict: "accepted", reasonCode: "ready", lifecycleState: "ready", jobs: [{ jobRef: ref }] };
+  assert.equal((await statusFrom(base)).lifecycleState, "ready");
+  for (const changed of [{ ...base, extra: true }, { ...base, reasonCode: "x".repeat(257) }]) assert.equal((await statusFrom(changed)).lifecycleState, "unavailable");
+  const rootSymbol = { ...base }; Object.defineProperty(rootSymbol, Symbol("hidden"), { enumerable: true, value: true });
+  assert.equal((await statusFrom(rootSymbol)).lifecycleState, "unavailable");
+  let reads = 0;
+  const rootAccessor = { ...base }; Object.defineProperty(rootAccessor, "extra", { enumerable: true, get() { reads += 1; throw new Error("root accessor executed"); } });
+  assert.equal((await statusFrom(rootAccessor)).lifecycleState, "unavailable"); assert.equal(reads, 0);
+
+  for (const mutate of [
+    (jobs: unknown[]) => Object.defineProperty(jobs, Symbol("hidden"), { enumerable: true, value: true }),
+    (jobs: unknown[]) => Object.defineProperty(jobs, "extra", { enumerable: true, get() { reads += 1; throw new Error("array accessor executed"); } }),
+    (jobs: unknown[]) => Object.defineProperty(jobs, "hidden", { enumerable: false, value: true }),
+  ]) { const jobs = [{ jobRef: ref }]; mutate(jobs); assert.equal((await statusFrom({ ...base, jobs })).lifecycleState, "unavailable"); assert.equal(reads, 0); }
+  const entryExtra = [{ jobRef: ref, alias: "must-not-be-read" }];
+  assert.equal((await statusFrom({ ...base, jobs: entryExtra })).lifecycleState, "unavailable");
+  const sparse = new Array(1); assert.equal((await statusFrom({ ...base, jobs: sparse })).lifecycleState, "unavailable");
+  assert.equal((await statusFrom({ ...base, jobs: Array.from({ length: 257 }, () => ({ jobRef: ref })) })).lifecycleState, "unavailable");
+
+  const outcomeBase = { requestId: "request_exact", verdict: "accepted", reasonCode: "pending", lifecycleState: "pending" };
+  await unavailable({ ...outcomeBase, extra: true });
+  const outcomeSymbol = { ...outcomeBase }; Object.defineProperty(outcomeSymbol, Symbol("hidden"), { enumerable: true, value: true }); await unavailable(outcomeSymbol);
+  const outcomeAccessor = { ...outcomeBase }; Object.defineProperty(outcomeAccessor, "extra", { enumerable: true, get() { reads += 1; throw new Error("outcome accessor executed"); } }); await unavailable(outcomeAccessor); assert.equal(reads, 0);
+});
+
 test("HTTP and MCP resolve the current agent runtime for every call", async () => {
   const refA = `outcomeref_${"a".repeat(64)}`, refB = `outcomeref_${"b".repeat(64)}`;
   const runtime = (ref: string) => createAuthorityAgentTools({
