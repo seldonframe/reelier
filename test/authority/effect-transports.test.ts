@@ -74,6 +74,28 @@ test("minting creates a blank opaque capability and trusted callback execution s
   });
 });
 
+test("compiler passes exact internal contract binding and reservation authority to dispatch and readback", async () => {
+  const calls: unknown[] = [];
+  const compiled = compileEffectTransportV1({
+    contract: CALENDAR_LIKE_CONTRACT,
+    binding: CALENDAR_LIKE_BINDING,
+    modelInput: { eventId: "event-9", title: "Review" },
+    resolveHostBindings: async () => host,
+    ports: { http: { call: (request, sink) => { calls.push(request); succeed(sink, "ok", { eventId: "event-9", state: "accepted" }); } } },
+  });
+  const state = dispatchState(CALENDAR_LIKE_CONTRACT, compiled.effect);
+  const dispatched = await compiled.adapter.dispatch(state);
+  await compiled.adapter.reconcile!(state, dispatched);
+  const expectedAuthority = {
+    contractDigest: digestToolEffectContractV1(CALENDAR_LIKE_CONTRACT),
+    bindingDigest: digestEffectTransportBindingV1(CALENDAR_LIKE_BINDING),
+    reservationId: state.reservation.reservationId,
+  };
+  assert.deepEqual((calls[0] as { authority?: unknown }).authority, expectedAuthority);
+  assert.deepEqual((calls[1] as { authority?: unknown }).authority, expectedAuthority);
+  assert.equal(Object.isFrozen((calls[0] as { authority: object }).authority), true);
+});
+
 test("trusted executor minting rejects functions, accessors, and proxies without executing traps", () => {
   let traps = 0;
   const accessor = Object.defineProperty(Object.create(null), "http", { enumerable: true, get() { traps++; return { call() {} }; } });
