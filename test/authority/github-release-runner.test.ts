@@ -96,6 +96,31 @@ test("generic reviewed pack delegates candidate publication into the existing br
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
+test("generic reviewed executor refuses unsigned PR, merge, and unreviewed tag before provider calls", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "reelier-release-generic-refusal-"));
+  const fixture = releaseAuthorityFixture(), keys = generateKeyPairSync("ed25519"), plan = fixture.context.authorization.operationPlan.value;
+  let providerCalls = 0;
+  const refuseCall = async () => { providerCalls += 1; throw new Error("provider must remain unreachable"); };
+  try {
+    const runner = await createGitHubReleaseRunner({ rootDir: root, journalSigner: { signerId: "release-journal-2026", ...keys }, evidenceSigner: fixture.evidenceSigner, authorizationResolver: async () => fixture.context, provider: candidateProvider({ findPullRequests: refuseCall, createPullRequest: refuseCall, markPullRequestReady: refuseCall, getPullRequest: refuseCall, getChecks: refuseCall, mergePullRequest: refuseCall }), now: () => new Date("2026-08-18T06:00:00.000Z") });
+    const executor = createGitHubReleaseOutcomeExecutorV1(runner);
+    for (const [name, requestId] of [["pullRequestEnsure", "unsigned_pr"], ["exactHeadMerge", "unsigned_merge"]] as const) {
+      const operation = fixture.reviewedPack.operations[name];
+      const compiled = compileEffectTransportV1({ contract: operation.contract, binding: operation.binding, modelInput: { authorizationHandle: "release_auth_1", requestId, semanticsDigest: authorityDigest(operation.contract) }, observationAuthKey: "f".repeat(64), resolveHostBindings: async () => ({ credential: "secret", account: plan.repository, destination: plan.candidateBranch, limit: fixture.reviewedPack.githubPolicyDigest }), executor });
+      const state = { reservation: { reservationId: requestId, state: "dispatched", intent: { effectDigest: authorityDigest(operation.contract) } }, effect: compiled.effect, effectDigest: authorityDigest(operation.contract), effectCanonicalBase64: Buffer.from(JSON.stringify(compiled.effect)).toString("base64") } as any;
+      assert.equal((await compiled.adapter.dispatch(state)).kind, "definitive-failure");
+      assert.equal(providerCalls, 0);
+    }
+
+    const candidate = fixture.reviewedPack.operations.candidatePublish, tagBinding = { ...(candidate.binding as any), operation: "github.tag.v1", tool: "github_release_tag_create_v1", toolSchemaDigest: digest("e"), readback: null };
+    const tagContract = { ...candidate.contract, contractId: "reviewed.github.tag.v1", operation: "github.tag.v1", operationDigest: authorityDigest(tagBinding), schemaDigest: tagBinding.toolSchemaDigest, readback: null, maximumEvidenceGrade: "absent" as const };
+    const tag = compileEffectTransportV1({ contract: tagContract, binding: tagBinding, modelInput: { authorizationHandle: "release_auth_1", requestId: "unreviewed_tag", semanticsDigest: authorityDigest(tagContract) }, observationAuthKey: "f".repeat(64), resolveHostBindings: async () => ({ credential: "secret", account: plan.repository, destination: plan.candidateBranch, limit: fixture.reviewedPack.githubPolicyDigest }), executor });
+    const tagState = { reservation: { reservationId: "unreviewed_tag", state: "dispatched", intent: { effectDigest: authorityDigest(tagContract) } }, effect: tag.effect, effectDigest: authorityDigest(tagContract), effectCanonicalBase64: Buffer.from(JSON.stringify(tag.effect)).toString("base64") } as any;
+    await assert.rejects(() => tag.adapter.dispatch(tagState), /schema|transport|boundary|drift/i);
+    assert.equal(providerCalls, 0);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 async function confirmTestPublication(runner: Awaited<ReturnType<typeof createGitHubReleaseRunner>>, requestId: string, result: { status: string; evidenceDigest: string | null }, phase: "dispatch" | "reconcile" = "dispatch"): Promise<void> {
   if (result.status === "verified" && result.evidenceDigest) {
     void phase;
