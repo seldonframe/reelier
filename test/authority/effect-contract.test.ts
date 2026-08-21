@@ -31,6 +31,12 @@ test("neutral ToolEffectContract seals arbitrary providers and detaches parsed s
   assert.equal(parsed.model.fields[0], "summary");
 });
 
+test("readback projections use closed JSON pointer paths rather than identifier syntax", () => {
+  assert.deepEqual(parseToolEffectContractV1({ ...contract, readback: { operation: "events.get", projection: ["/body/id", "/body/status~1code"] } }).readback?.projection, ["/body/id", "/body/status~1code"]);
+  assert.throws(() => parseToolEffectContractV1({ ...contract, readback: { operation: "events.get", projection: ["body/id"] } }));
+  assert.throws(() => parseToolEffectContractV1({ ...contract, readback: { operation: "events.get", projection: ["/body/~2"] } }));
+});
+
 test("governed outcome transition refuses unverifiable chronology and verified masquerades", () => {
   const outcome = {
     v: "reelier.governed-outcome/v1", outcomeId: "outcome_1", contractDigest: digestToolEffectContractV1(contract), semanticIdentity: contract.semanticIdentity,
