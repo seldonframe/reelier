@@ -21,7 +21,7 @@ import { informationFlowDefinitionDigest, informationFlowProjectionSchemaId, inf
 
 test("all reviewed first-party packs pass the shared closed conformance corpus", () => {
   const report = runFirstPartyPackConformance();
-  assert.deepEqual(report.aliases, ["cloudflare_api_token_roll_v1", "cloudflare_dns_record_set_v1", "github_issue_labels_set_v1", "github_release_candidate_publish_v1", "github_release_pr_ensure_v1", "github_release_pr_merge_v1", "github_release_tag_create_v1", "gmail_reply_send_v1", "gmail_thread_labels_set_v1", "hubspot_slack_information_flow_commit_v1", "neon_database_migration_apply_v1", "slack_channel_topic_set_v1", "stripe_refund_issue_v1", "vercel_deployment_release_v1"]);
+  assert.deepEqual(report.aliases, ["cloudflare_api_token_roll_v1", "cloudflare_dns_record_set_v1", "github_issue_labels_set_v1", "github_release_candidate_publish_v1", "github_release_pr_ensure_v1", "github_release_pr_merge_v1", "github_release_tag_create_v1", "gmail_reply_send_v1", "gmail_thread_labels_set_v1", "hubspot_slack_information_flow_commit_v1", "linear_evidence_comment_v1", "linear_status_transition_v1", "neon_database_migration_apply_v1", "slack_channel_topic_set_v1", "stripe_refund_issue_v1", "vercel_deployment_release_v1"]);
   assert.equal(report.passed, report.checks);
   assert.ok(report.checks >= 12);
 });
