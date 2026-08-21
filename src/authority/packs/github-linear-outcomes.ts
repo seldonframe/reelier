@@ -13,7 +13,7 @@ const GIT_SHA = /^[0-9a-f]{40}$/;
 const REF = /^[A-Za-z0-9][A-Za-z0-9._:~/-]{0,255}$/;
 const REQUIRED_CHECKS = Object.freeze(["coverage", "full-tests", "mutation"]);
 export const GITHUB_RELEASE_OUTCOME_SERVER_SCHEMA_DIGEST_V1 = authorityDigest({ v: "reelier.github-release-pack-server-schema/v1", transport: "internal-mcp" });
-const LINEAR_SERVER_SCHEMA = authorityDigest({ v: "reelier.linear-outcomes-pack-server-schema/v1", transport: "credential-broker-port" });
+export const LINEAR_OUTCOME_SERVER_SCHEMA_DIGEST_V1 = authorityDigest({ v: "reelier.linear-outcomes-pack-server-schema/v1", transport: "credential-broker-port" });
 
 export type GitHubLinearOutcomeOperationNameV1 = "candidatePublish" | "pullRequestEnsure" | "exactHeadMerge" | "linearEvidenceComment" | "linearStatusTransition";
 export type GitHubLinearOutcomeModeV1 = "github-linear" | "linear-only";
@@ -66,8 +66,8 @@ export function createGitHubLinearOutcomePackV1(value: GitHubLinearReviewedAutho
     candidatePublish: operation({ key: "candidate-publish", provider: "github", policyDigest: githubPolicyDigest, bindings: githubBindings, modelFields: ["authorizationHandle", "requestId", "semanticsDigest"], serverSchemaDigest: GITHUB_RELEASE_OUTCOME_SERVER_SCHEMA_DIGEST_V1, tool: "github_release_candidate_publish_v1", readbackTool: "github_release_candidate_publish_readback_v1", projection: ["/repository", "/baseSha", "/headSha", "/candidateDigest"] }),
     pullRequestEnsure: operation({ key: "pull-request-ensure", provider: "github", policyDigest: githubPolicyDigest, bindings: githubBindings, modelFields: ["authorizationHandle", "requestId", "semanticsDigest"], serverSchemaDigest: GITHUB_RELEASE_OUTCOME_SERVER_SCHEMA_DIGEST_V1, tool: "github_release_pr_ensure_v1", readbackTool: "github_release_pr_ensure_readback_v1", projection: ["/repository", "/baseBranch", "/headSha", "/pullRequest", "/ready"] }),
     exactHeadMerge: operation({ key: "exact-head-squash-merge", provider: "github", policyDigest: githubPolicyDigest, bindings: githubBindings, modelFields: ["authorizationHandle", "requestId", "semanticsDigest"], serverSchemaDigest: GITHUB_RELEASE_OUTCOME_SERVER_SCHEMA_DIGEST_V1, tool: "github_release_pr_merge_v1", readbackTool: "github_release_pr_merge_readback_v1", projection: ["/repository", "/baseSha", "/headSha", "/mergeCommitSha", "/treeSha"] }),
-    linearEvidenceComment: operation({ key: "evidence-comment", provider: "linear", policyDigest: linearPolicyDigest, bindings: linearBindings, modelFields: ["evidenceUrl"], serverSchemaDigest: LINEAR_SERVER_SCHEMA, tool: "linear_evidence_comment_v1", readbackTool: "linear_evidence_comment_readback_v1", projection: ["/workspace", "/team", "/project", "/issue", "/commentMarker", "/evidenceUrl", "/evidenceContentDigest", "/commentId"] }),
-    linearStatusTransition: operation({ key: "status-transition", provider: "linear", policyDigest: linearPolicyDigest, bindings: linearBindings, modelFields: ["requestId"], serverSchemaDigest: LINEAR_SERVER_SCHEMA, tool: "linear_status_transition_v1", readbackTool: "linear_status_transition_readback_v1", projection: ["/workspace", "/team", "/project", "/issue", "/preStatus", "/targetStatus", "/status"] }),
+    linearEvidenceComment: operation({ key: "evidence-comment", provider: "linear", policyDigest: linearPolicyDigest, bindings: linearBindings, modelFields: ["evidenceUrl"], serverSchemaDigest: LINEAR_OUTCOME_SERVER_SCHEMA_DIGEST_V1, tool: "linear_evidence_comment_v1", readbackTool: "linear_evidence_comment_readback_v1", projection: ["/workspace", "/team", "/project", "/issue", "/commentMarker", "/evidenceUrl", "/evidenceContentDigest", "/commentId"] }),
+    linearStatusTransition: operation({ key: "status-transition", provider: "linear", policyDigest: linearPolicyDigest, bindings: linearBindings, modelFields: ["requestId"], serverSchemaDigest: LINEAR_OUTCOME_SERVER_SCHEMA_DIGEST_V1, tool: "linear_status_transition_v1", readbackTool: "linear_status_transition_readback_v1", projection: ["/workspace", "/team", "/project", "/issue", "/preStatus", "/targetStatus", "/status"] }),
   });
   const pack = Object.freeze({ v: "reelier.github-linear-outcome-pack/v1" as const, authorityDigest: authorityDigestValue, githubPolicyDigest, linearPolicyDigest, operations });
   packAuthorities.set(pack, authority);
@@ -131,6 +131,21 @@ export function assertGitHubLinearProviderReadbackV1(pack: GitHubLinearOutcomePa
   return Object.freeze(result);
 }
 
+/** @internal Host-side Linear dispatch binding; credentials never enter this projection. */
+export function assertLinearOutcomeDispatchV1(pack: GitHubLinearOutcomePackV1, operationName: "linearEvidenceComment" | "linearStatusTransition", modelValue: unknown, hostValue: unknown): Readonly<Record<string, string>> {
+  const parsed = requirePack(pack), authority = packAuthorities.get(parsed)!;
+  const host = inertRecord(hostValue, ["account", "destination", "limit"], "Linear outcome host binding");
+  if (host.account !== authority.linear.workspace || host.destination !== authority.linear.issue || host.limit !== parsed.linearPolicyDigest) throw new TypeError("Linear outcome host binding conflicts with reviewed authority");
+  if (operationName === "linearEvidenceComment") {
+    const model = inertRecord(modelValue, ["evidenceUrl"], "Linear evidence comment model");
+    if (model.evidenceUrl !== authority.linear.evidenceUrl) throw new TypeError("Linear evidence URL conflicts with reviewed authority");
+    return Object.freeze({ workspace: authority.linear.workspace, team: authority.linear.team, project: authority.linear.project, issue: authority.linear.issue, commentMarker: authority.linear.commentMarker, evidenceUrl: authority.linear.evidenceUrl, evidenceContentDigest: authority.linear.evidenceContentDigest });
+  }
+  const model = inertRecord(modelValue, ["requestId"], "Linear status model");
+  const requestId = text(model.requestId, "Linear status request ID");
+  return Object.freeze({ workspace: authority.linear.workspace, team: authority.linear.team, project: authority.linear.project, issue: authority.linear.issue, preStatus: authority.linear.preStatus, targetStatus: authority.linear.targetStatus, requestId });
+}
+
 function operation(input: Readonly<{ key: string; provider: string; policyDigest: string; bindings: ToolEffectContractV1["bindings"]; modelFields: readonly string[]; serverSchemaDigest: string; tool: string; readbackTool: string; projection: readonly string[] }>): ReviewedOutcomeOperationV1 {
   const toolSchemaDigest = authorityDigest({ v: "reelier.reviewed-outcome-tool-schema/v1", provider: input.provider, tool: input.tool, modelFields: input.modelFields });
   const readbackSchemaDigest = authorityDigest({ v: "reelier.reviewed-outcome-readback-schema/v1", provider: input.provider, tool: input.readbackTool, projection: input.projection });
@@ -149,6 +164,15 @@ export function githubReleaseOutcomeToolSchemaDigestV1(tool: string): string {
   if (dispatchFields[tool]) return authorityDigest({ v: "reelier.reviewed-outcome-tool-schema/v1", provider: "github", tool, modelFields: dispatchFields[tool] });
   if (readbackProjection[tool]) return authorityDigest({ v: "reelier.reviewed-outcome-readback-schema/v1", provider: "github", tool, projection: readbackProjection[tool] });
   throw new TypeError("GitHub release outcome tool is not reviewed");
+}
+
+/** @internal Runtime schema pin for the callback-only Linear host adapter. */
+export function linearOutcomeToolSchemaDigestV1(tool: string): string {
+  const dispatchFields: Readonly<Record<string, readonly string[]>> = Object.freeze({ linear_evidence_comment_v1: ["evidenceUrl"], linear_status_transition_v1: ["requestId"] });
+  const readbackProjection: Readonly<Record<string, readonly string[]>> = Object.freeze({ linear_evidence_comment_readback_v1: ["/workspace", "/team", "/project", "/issue", "/commentMarker", "/evidenceUrl", "/evidenceContentDigest", "/commentId"], linear_status_transition_readback_v1: ["/workspace", "/team", "/project", "/issue", "/preStatus", "/targetStatus", "/status"] });
+  if (dispatchFields[tool]) return authorityDigest({ v: "reelier.reviewed-outcome-tool-schema/v1", provider: "linear", tool, modelFields: dispatchFields[tool] });
+  if (readbackProjection[tool]) return authorityDigest({ v: "reelier.reviewed-outcome-readback-schema/v1", provider: "linear", tool, projection: readbackProjection[tool] });
+  throw new TypeError("Linear outcome tool is not reviewed");
 }
 
 function parseAuthority(value: unknown): GitHubLinearReviewedAuthorityV1 {
