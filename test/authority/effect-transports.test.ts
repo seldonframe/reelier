@@ -538,8 +538,13 @@ test("ambiguous writes use authoritative readback without resend and semantic co
   const ambiguous = await compiled.adapter.dispatch(state);
   assert.equal(ambiguous.kind, "ambiguous");
   const readback = await compiled.adapter.reconcile!(state, ambiguous);
+  assert.equal(readback.kind, "acknowledged", "legacy conflict readback preserves the shared executor lifecycle kind");
   assert.equal(readback.reconciliationStatus, "conflict");
   assert.deepEqual({ sends, reads }, { sends: 1, reads: 1 });
+
+  const absent = compileEffectTransportV1({ contract: CALENDAR_LIKE_CONTRACT, binding: CALENDAR_LIKE_BINDING, modelInput: { eventId: "event-9", title: "Review" }, resolveHostBindings: async () => host, ports: { http: { call: (request, sink) => request.method === "POST" ? succeed(sink, "unknown", null) : succeed(sink, "rejected", { eventId: "event-9", state: "absent" }) } } });
+  const absentState = dispatchState(CALENDAR_LIKE_CONTRACT, absent.effect), absentDispatch = await absent.adapter.dispatch(absentState), notApplied = await absent.adapter.reconcile!(absentState, absentDispatch);
+  assert.deepEqual({ kind: notApplied.kind, reconciliationStatus: notApplied.reconciliationStatus }, { kind: "acknowledged", reconciliationStatus: "not-applied" });
 });
 
 test("same-schema contradictory readback values produce distinct projection commitments in receipts", async () => {
