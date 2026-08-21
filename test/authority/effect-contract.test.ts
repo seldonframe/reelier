@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { createRequire } from "node:module";
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import test from "node:test";
 import {
   digestGovernedOutcomeV1,
@@ -36,6 +39,31 @@ test("readback projections use closed JSON pointer paths rather than identifier 
   assert.deepEqual(parseToolEffectContractV1({ ...contract, readback: { operation: "events.get", projection: ["/body/id", "/body/status~1code"] } }).readback?.projection, ["/body/id", "/body/status~1code"]);
   assert.throws(() => parseToolEffectContractV1({ ...contract, readback: { operation: "events.get", projection: ["body/id"] } }));
   assert.throws(() => parseToolEffectContractV1({ ...contract, readback: { operation: "events.get", projection: ["/body/~2"] } }));
+});
+
+test("ToolEffect JSON Schema accepts arbitrary valid providers and rejects every representable runtime violation", () => {
+  const Ajv2020 = createRequire(import.meta.url)("ajv/dist/2020").default;
+  const schema = JSON.parse(readFileSync(path.join(process.cwd(), "contract", "authority", "v1", "tool-effect-contract.schema.json"), "utf8"));
+  const validate = new Ajv2020({ strict: true }).compile(schema);
+  const valid = { ...structuredClone(contract), provider: "not-a-provider-enum" };
+  assert.equal(validate(valid), true, JSON.stringify(validate.errors));
+
+  const invalid = [
+    { ...valid, contractId: "contract/id" },
+    { ...valid, operationDigest: "sha256:" + "A".repeat(64) },
+    { ...valid, model: { fields: ["summary", "summary"], maxBytes: 1024 } },
+    { ...valid, model: { fields: ["summary"], maxBytes: 1_073_741_825 } },
+    { ...valid, bindings: { ...valid.bindings, credentialRef: "" } },
+    { ...valid, readback: { operation: "events.get", projection: ["/id", "/id"] } },
+    { ...valid, readback: null, maximumEvidenceGrade: "verified" },
+    { ...valid, result: { success: [], conflict: [], definitiveFailure: [], ambiguity: [] } },
+    { ...valid, result: { success: ["created"], conflict: [], definitiveFailure: [], ambiguity: [], extra: true } },
+  ];
+  for (const candidate of invalid) assert.equal(validate(candidate), false, JSON.stringify(validate.errors));
+
+  const crossGroupDuplicate = { ...valid, result: { success: ["created"], conflict: ["created"], definitiveFailure: [], ambiguity: [] } };
+  assert.equal(validate(crossGroupDuplicate), true, "JSON Schema cannot express cross-array disjointness");
+  assert.throws(() => parseToolEffectContractV1(crossGroupDuplicate), /overlap/);
 });
 
 test("effect contract rejects nested accessors without invoking them", () => {
