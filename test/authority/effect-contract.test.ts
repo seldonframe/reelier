@@ -92,22 +92,22 @@ test("wire graph bounds refuse hostile shapes before descriptor materialization"
   const manyNodes = Array.from({ length: 20 }, (_, index) => nodeLeaves.slice(index * 60, index * 60 + 60));
   const leafSet = new Set<object>(nodeLeaves);
   const cycle: Record<string, unknown> = {}; cycle.self = cycle;
-  const shared = {};
-  const original = Object.getOwnPropertyDescriptors;
+  const shared = { node: {} };
+  const original = Object.getOwnPropertyDescriptor;
   const descriptorCalls = new Map<object, number>();
-  Object.getOwnPropertyDescriptors = ((value: object) => {
+  Object.getOwnPropertyDescriptor = ((value: object, key: PropertyKey) => {
     if (value === hugeArray || value === hugeObject || value === deepest || value === cycle || value === shared || leafSet.has(value)) descriptorCalls.set(value, (descriptorCalls.get(value) ?? 0) + 1);
-    return original(value);
-  }) as typeof Object.getOwnPropertyDescriptors;
+    return original(value, key);
+  }) as typeof Object.getOwnPropertyDescriptor;
   try {
     assert.throws(() => parseToolEffectContractV1({ ...contract, model: { fields: hugeArray, maxBytes: 1 } }));
     assert.throws(() => parseToolEffectContractV1({ ...contract, model: { fields: ["field"], maxBytes: 1, hugeObject } }));
     assert.throws(() => parseToolEffectContractV1({ ...contract, deep }));
     assert.throws(() => parseToolEffectContractV1({ ...contract, manyNodes }));
-    assert.throws(() => parseToolEffectContractV1({ ...contract, cycle }));
-    assert.throws(() => parseToolEffectContractV1({ ...contract, shared: { first: shared, second: shared } }));
+    assert.throws(() => parseToolEffectContractV1({ ...contract, model: cycle }));
+    assert.throws(() => parseToolEffectContractV1({ ...contract, model: shared, bindings: shared }));
   } finally {
-    Object.getOwnPropertyDescriptors = original;
+    Object.getOwnPropertyDescriptor = original;
   }
   assert.equal(descriptorCalls.get(hugeArray) ?? 0, 0);
   assert.equal(descriptorCalls.get(hugeObject) ?? 0, 0);
