@@ -102,7 +102,12 @@ export function compileEffectTransportV1(input: Readonly<{ contract: ToolEffectC
     async dispatch(state: DispatchRequestState, call?: CoordinatorDispatchCallV1): Promise<DispatchOutcome> {
       bindDispatchState(state, effect, contractDigest);
       const authority = executorAuthority(state, contractDigest, bindingDigest);
-      if (call) bindCoordinatorDispatchCallDelegateV1(call, authority, state);
+      if (call && !bindCoordinatorDispatchCallDelegateV1(call, authority, state)) {
+        return Object.freeze({
+          kind: "definitive-failure",
+          resultDigest: authorityDigest({ v: "reelier.effect-transport-dispatch-refused/v1", bindingDigest, reservationId: state.reservation.reservationId, reason: "coordinator-delegate-binding-refused" }),
+        });
+      }
       const response = await dispatch(binding, model, await hostBindings(), executor, authority);
       return dispatchOutcome(contract, bindingDigest, response);
     },
