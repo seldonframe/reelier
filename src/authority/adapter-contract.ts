@@ -133,7 +133,7 @@ export const AUTHORITY_ADAPTER_CONTRACT_V1: AuthorityAdapterContractV1 = freezeA
     },
     {
       "path": "tool-effect-contract.schema.json",
-      "digest": "sha256:65c57e7ef88afb6d632d0d5a09315ab3fff92ce879d832a0f21fef8612a1c224"
+      "digest": "sha256:6addaf7231d1a92cbcab31f9613f6a1163a108685689d06bbe399c4e5f953155"
     },
     {
       "path": "transport-effect.schema.json",
@@ -145,7 +145,7 @@ export const AUTHORITY_ADAPTER_CONTRACT_V1: AuthorityAdapterContractV1 = freezeA
     }
   ],
   "goldenVectorsDigest": "sha256:2401f4043ae09f93ac0eb28c0440c9641e3321100a6a147899edb51fe2328c9e",
-  "digest": "sha256:25153357f68e4daf852b9b81480c1de590e48db27eff2b2a526e75e3e0a7ab52"
+  "digest": "sha256:cd092558b6963e9f414445fe2235c30530f17684bad71f1bfcfa487178ec00d7"
 });
 export const AUTHORITY_ADAPTER_CONTRACT_V1_DIGEST = AUTHORITY_ADAPTER_CONTRACT_V1.digest;
 
