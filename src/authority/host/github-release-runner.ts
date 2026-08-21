@@ -91,7 +91,7 @@ export async function createGitHubReleaseRunner(input: Readonly<{ rootDir: strin
     const authorization = context.authorization;
     assertVerifiedReleaseAuthorizationV1(authorization);
     if (invocation.reviewedHost) {
-      try { assertReviewedHost(invocation.reviewedHost, authorization.operationPlan.value); }
+      try { assertReviewedHost(invocation.reviewedHost, authorization.operationPlan.value, invocation.semanticsDigest, authorization.authorization.value.packDigest); }
       catch (error) { if (error instanceof TypeError) return Object.freeze({ status: "refused", phase: "reviewed-policy-refused", evidenceDigest: null }); throw error; }
     }
     const hostedAuthorityBindingDigest = context.hostedAuthority ? assertGitHubReleaseHostedAuthorityBindingV1(context.hostedAuthority, authorization, input.now()) : null;
@@ -539,11 +539,12 @@ function assertPullRequestPlan(pr: GitHubReleasePullRequestV1, plan: VerifiedRel
 function parseChecks(value: unknown): readonly Readonly<{ name: string; status: string; workflowDigest: string; workflowPath: string }>[] { return Object.freeze(inertArray(value, "checks list").map(raw => { const item = exactRecord(raw, ["name", "status", "workflowDigest", "workflowPath"], "check"); if (typeof item.name !== "string" || typeof item.status !== "string" || typeof item.workflowPath !== "string" || !DIGEST.test(String(item.workflowDigest))) throw new TypeError("check readback is invalid"); return Object.freeze({ name: item.name, status: item.status, workflowDigest: String(item.workflowDigest), workflowPath: item.workflowPath }); })); }
 function assertChecks(checks: readonly Readonly<{ name: string; status: string; workflowDigest: string; workflowPath: string }>[], plan: VerifiedReleaseAuthorizationV1["operationPlan"]["value"]): void { const names = checks.map(check => check.name).sort(), ci = plan.workflowCommitments.find(workflow => workflow.path === ".github/workflows/ci.yml"); if (!ci || names.join("\0") !== [...plan.requiredChecks].sort().join("\0") || checks.some(check => check.status !== "success" || check.workflowPath !== ci.path || check.workflowDigest !== ci.digest)) throw new TypeError("required release checks are not bound to the signed CI workflow commitment"); }
 
-function assertReviewedHost(host: Readonly<{ account: string; destination: string; limit: string }>, plan: VerifiedReleaseAuthorizationV1["operationPlan"]["value"]): void {
+function assertReviewedHost(host: Readonly<{ account: string; destination: string; limit: string }>, plan: VerifiedReleaseAuthorizationV1["operationPlan"]["value"], contractDigest: string, signedPackDigest: string): void {
   const ci = plan.workflowCommitments.find(workflow => workflow.path === ".github/workflows/ci.yml");
   if (!ci) throw new TypeError("reviewed GitHub release policy requires the signed CI workflow commitment");
   const policyDigest = githubReviewedOutcomePolicyDigestV1({ repository: plan.repository, baseBranch: plan.destinationBranch, baseSha: plan.baseCommit, headBranch: plan.candidateBranch, headSha: plan.expectedCommitSha, candidateDigest: plan.candidateTreeDigest, workflowPath: ci.path, workflowDigest: ci.digest, requiredChecks: plan.requiredChecks, mergeMethod: "squash", postMergeTreeSha: plan.expectedTreeSha });
-  if (host.account !== plan.repository || host.destination !== plan.candidateBranch || host.limit !== policyDigest) throw new TypeError("reviewed GitHub release host binding conflicts with signed authority");
+  const expectedPackDigest = authorityDigest({ v: "reelier.github-reviewed-signed-pack/v1", contractDigest, policyDigest });
+  if (host.account !== plan.repository || host.destination !== plan.candidateBranch || host.limit !== policyDigest || signedPackDigest !== expectedPackDigest) throw new TypeError("reviewed GitHub release contract or host binding conflicts with signed authority");
 }
 function parseMerge(value: unknown): Readonly<{ merged: boolean; sha: string }> { const item = exactRecord(value, ["merged", "sha"], "merge result"); if (typeof item.merged !== "boolean" || !GIT_SHA.test(String(item.sha))) throw new TypeError("merge result is invalid"); return Object.freeze({ merged: item.merged, sha: String(item.sha) }); }
 function parseManifest(value: unknown): Readonly<{ name: string; version: string }> { const item = exactRecord(value, ["name", "version"], "package manifest"); if (typeof item.name !== "string" || typeof item.version !== "string") throw new TypeError("package manifest is invalid"); return Object.freeze({ name: item.name, version: item.version }); }
