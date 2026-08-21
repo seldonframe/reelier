@@ -1,5 +1,6 @@
-import { authorityDigest } from "../wire.js";
+import { createHash } from "node:crypto";
 import { types as utilTypes } from "node:util";
+import canonicalize from "canonicalize";
 
 export const AGENT_TOOL_NAMES_V1 = Object.freeze([
   "reelier_agent_status",
@@ -97,10 +98,16 @@ export const AGENT_TOOL_CONTRACTS_V1: readonly AgentToolContractV1[] = Object.fr
   Object.freeze({ v: "reelier.agent-tool-contract/v1", name: "reelier_outcome_status", semantic: "outcome-status", description: "Inspect the redacted lifecycle of one Outcome request.", inputSchema: statusInput, outputSchema: outcomeOutput, http: Object.freeze({ method: "GET", path: "/v1/outcome-status/{requestId}", successStatus: 200, pathParameters: Object.freeze(["requestId"]) }) }),
 ]);
 
-export const AGENT_TOOL_ABI_DIGEST_V1 = authorityDigest({
+export const AGENT_TOOL_ABI_DIGEST_V1 = canonicalDigest({
   v: "reelier.agent-tool-abi/v1",
   contracts: AGENT_TOOL_CONTRACTS_V1,
 });
+
+function canonicalDigest(value: unknown): string {
+  const bytes = canonicalize(value);
+  if (bytes === undefined) throw new TypeError("agent tool ABI is not JSON-canonicalizable");
+  return `sha256:${createHash("sha256").update(bytes, "utf8").digest("hex")}`;
+}
 
 export interface HarnessCapabilityDescriptorV1 {
   readonly v: "reelier.harness-capability/v1";

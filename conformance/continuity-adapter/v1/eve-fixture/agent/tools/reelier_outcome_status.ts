@@ -1,15 +1,15 @@
 import { defineTool } from "eve/tools";
-import { z } from "zod";
-import { continuityRuntime } from "../lib/runtime.js";
+import { identifyAuthenticatedWorkload } from "../lib/binding.js";
+import { statusRemoteOutcome } from "../lib/cell.js";
+import { eveAgentToolInputSchema } from "../lib/agent-tool-schema.js";
 
 export const MODEL_INPUT_KEYS = ["requestId"] as const;
 
-const inputSchema = z.strictObject({ requestId: z.string().min(1).max(256) });
-
 export default defineTool({
   description: "Read the redacted lifecycle status of one governed Outcome request.",
-  inputSchema,
+  inputSchema: eveAgentToolInputSchema("reelier_outcome_status"),
   async execute(input, ctx) {
-    return continuityRuntime(ctx).statusOutcome(input);
+    identifyAuthenticatedWorkload(ctx);
+    return statusRemoteOutcome((input as {requestId:string}).requestId);
   },
 });

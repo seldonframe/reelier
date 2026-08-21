@@ -3,17 +3,17 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprot
 import { normalizeOutcomeRequestV1 } from "./request.js";
 import type { AuthorityExecutionContextV1 } from "../types.js";
 import { agentToolMcpDefinitionsV1 } from "./agent-tool-contracts.js";
-import { createAuthorityAgentTools } from "../host/agent-tools.js";
+import { createAuthorityAgentTools, type AuthorityAgentToolsV1 } from "../host/agent-tools.js";
 
 export interface AuthorityIngressOutcome { readonly requestId: string; readonly verdict: "accepted" | "refused"; readonly reasonCode: string; readonly lifecycleState: string; readonly receiptRef?: string; }
 type AuthorityContext = { readonly tenant: string; readonly requester: string; readonly executionContext?: AuthorityExecutionContextV1 };
-export interface AuthorityMcpHandler { outcome(alias: string, input: unknown, context: AuthorityContext): Promise<AuthorityIngressOutcome>; status(input: unknown, context: AuthorityContext): Promise<AuthorityIngressOutcome>; jobsSearch?: (input: unknown, context: AuthorityContext) => Promise<unknown>; jobLoad?: (input: unknown, context: AuthorityContext) => Promise<unknown>; invoke?: (input: unknown, context: AuthorityContext) => Promise<AuthorityIngressOutcome>; delegationRequest?: (input: unknown, context: AuthorityContext) => Promise<unknown>; delegationStatus?: (input: unknown, context: AuthorityContext) => Promise<unknown>; taskCreate?: (input: unknown, context: AuthorityContext) => Promise<unknown>; taskStatus?: (input: unknown, context: AuthorityContext) => Promise<unknown>; }
+export interface AuthorityMcpHandler { outcome(alias: string, input: unknown, context: AuthorityContext): Promise<AuthorityIngressOutcome>; status(input: unknown, context: AuthorityContext): Promise<AuthorityIngressOutcome>; agentTools?: AuthorityAgentToolsV1; jobsSearch?: (input: unknown, context: AuthorityContext) => Promise<unknown>; jobLoad?: (input: unknown, context: AuthorityContext) => Promise<unknown>; invoke?: (input: unknown, context: AuthorityContext) => Promise<AuthorityIngressOutcome>; delegationRequest?: (input: unknown, context: AuthorityContext) => Promise<unknown>; delegationStatus?: (input: unknown, context: AuthorityContext) => Promise<unknown>; taskCreate?: (input: unknown, context: AuthorityContext) => Promise<unknown>; taskStatus?: (input: unknown, context: AuthorityContext) => Promise<unknown>; }
 export interface AuthorityMcpDefinition { readonly alias: string; readonly description?: string; }
 
 export function buildAuthorityMcpServer(definitions: readonly AuthorityMcpDefinition[], handler: AuthorityMcpHandler, context: AuthorityContext, artifactStage?: (input: unknown, context: AuthorityContext) => Promise<unknown>): Server {
   const server = new Server({ name: "reelier-authority", version: "1.0.0" }, { capabilities: { tools: {} } });
   const directOutcomeAliases = new Set(definitions.map(definition => definition.alias));
-  const agentTools = createAuthorityAgentTools({
+  const agentTools = handler.agentTools ?? createAuthorityAgentTools({
     jobsSearch: async (input, requestContext) => {
       if (!handler.jobsSearch) throw new TypeError("agent status is unavailable");
       return handler.jobsSearch(input, requestContext);

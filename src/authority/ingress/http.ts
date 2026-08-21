@@ -11,7 +11,7 @@ export async function handleAuthorityHttp(request: IncomingMessage, response: Se
   if (!resolved) { write(response, 401, { verdict: "refused", reasonCode: "authentication-required", lifecycleState: "refused", requestId: "" }); return; }
   try {
     const requestContext = resolved;
-    const agentTools = createAuthorityAgentTools({
+    const agentTools = handler.agentTools ?? createAuthorityAgentTools({
       jobsSearch: async (input, toolContext) => {
         if (!handler.jobsSearch) throw new TypeError("agent status is unavailable");
         return handler.jobsSearch(input, toolContext);

@@ -16,6 +16,7 @@
 // WHAT IT DOES NOT DO. No Outcome is requested, no artifact is staged, no delegation is minted.
 // `jobs.search` and `job load` are the entire surface; both are reads.
 import { ContinuityConfigurationError } from "./faults.js";
+import { parseAgentToolOutputV1 } from "./agent-tool-schema.js";
 
 /** A single opaque catalogue entry. `jobRef` is the Cell's opaque reference; `alias` appears only on
  * single-definition deployments, never on a signed multi-definition Job Card. */
@@ -196,19 +197,13 @@ export function readCellJobLoad(value: unknown): CellJobLoadV1 {
 }
 
 export function readCellAgentStatus(value: unknown): CellAgentStatusV1 {
-  const record = inertRecord(value, "the agent status response");
-  closedKeys(record, AGENT_STATUS_FIELDS, "the agent status response");
-  if (!Array.isArray(record.outcomeRefs) || record.outcomeRefs.length > MAX_CATALOGUE_ENTRIES || record.outcomeRefs.some(ref => typeof ref !== "string" || !OPAQUE_OUTCOME_REF.test(ref))) throw new AuthorityCellError("the agent status response carries an invalid opaque Outcome reference");
-  const capability = readHarnessCapability(record.capability);
-  return Object.freeze({ requestId: requiredString(record, "requestId", "the agent status response"), verdict: verdictOf(record, "the agent status response"), reasonCode: requiredString(record, "reasonCode", "the agent status response"), lifecycleState: requiredString(record, "lifecycleState", "the agent status response"), outcomeRefs: Object.freeze([...record.outcomeRefs]), capability });
+  try { return parseAgentToolOutputV1("reelier_agent_status", value) as CellAgentStatusV1; }
+  catch (error) { throw new AuthorityCellError(`the agent status response violates the canonical closed contract: ${error instanceof Error ? error.message : String(error)}`); }
 }
 
 export function readCellOutcomeProposal(value: unknown): CellOutcomeProposalV1 {
-  const record = inertRecord(value, "the Outcome proposal response");
-  closedKeys(record, OUTCOME_PROPOSAL_FIELDS, "the Outcome proposal response");
-  const outcomeRef = optionalString(record, "outcomeRef", "the Outcome proposal response");
-  if (outcomeRef !== undefined && !OPAQUE_OUTCOME_REF.test(outcomeRef)) throw new AuthorityCellError("the Outcome proposal response carries no authenticated opaque reference");
-  return Object.freeze({ requestId: requiredString(record, "requestId", "the Outcome proposal response"), verdict: verdictOf(record, "the Outcome proposal response"), reasonCode: requiredString(record, "reasonCode", "the Outcome proposal response"), lifecycleState: requiredString(record, "lifecycleState", "the Outcome proposal response"), ...(outcomeRef === undefined ? {} : { outcomeRef }) });
+  try { return parseAgentToolOutputV1("reelier_outcome_proposal", value) as CellOutcomeProposalV1; }
+  catch (error) { throw new AuthorityCellError(`the Outcome proposal response violates the canonical closed contract: ${error instanceof Error ? error.message : String(error)}`); }
 }
 
 function readHarnessCapability(value: unknown): CellHarnessCapabilityV1 {
@@ -274,4 +269,13 @@ export async function readRemoteAgentStatus(): Promise<CellAgentStatusV1> {
 export async function proposeRemoteOutcome(outcomeRef: string): Promise<CellOutcomeProposalV1> {
   if (typeof outcomeRef !== "string" || !OPAQUE_OUTCOME_REF.test(outcomeRef)) throw new AuthorityCellError("the Outcome proposal requires an authenticated opaque reference");
   return readCellOutcomeProposal(await cellRequest(new URL("/v1/outcome-proposals", cellEndpoint()), { method: "POST", body: JSON.stringify({ outcomeRef }) }));
+}
+
+export async function requestRemoteOutcome(input: Readonly<{ outcomeRef:string;requestId:string;sourceRefs:Readonly<Record<string,string>>;choices:Readonly<Record<string,string|number|boolean|null>> }>): Promise<unknown> {
+  return parseAgentToolOutputV1("reelier_outcome_request", await cellRequest(new URL("/v1/outcome-requests", cellEndpoint()), { method: "POST", body: JSON.stringify(input) }));
+}
+
+export async function statusRemoteOutcome(requestId: string): Promise<unknown> {
+  if (typeof requestId !== "string" || requestId.length < 1 || requestId.length > 256) throw new AuthorityCellError("the Outcome status requires a bounded request ID");
+  return parseAgentToolOutputV1("reelier_outcome_status", await cellRequest(new URL(`/v1/outcome-status/${encodeURIComponent(requestId)}`, cellEndpoint()), { method: "GET" }));
 }

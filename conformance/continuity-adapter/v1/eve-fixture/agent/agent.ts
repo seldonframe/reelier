@@ -24,6 +24,7 @@ const outcomeInput = {
  * separate branch, ahead of the generic tool-result echo, so every loopback scenario the continuity
  * matrix drives keeps its exact previous behaviour. */
 const REMOTE_CELL_TASK = "search and load one job";
+const GOVERNED = /^governed (run|resume) (composite|linear-only) (request_[a-z0-9_]+)$/u;
 
 function cellRecord(output: unknown): Record<string, unknown> | null {
   return output && typeof output === "object" && !Array.isArray(output) ? output as Record<string, unknown> : null;
@@ -51,6 +52,23 @@ function cellOutcomeRefs(output: unknown): string[] {
 export default defineAgent({
   modelContextWindowTokens: 128_000,
   model: mockModel(({ lastUserMessage, messages, toolResults }) => {
+    const governed = GOVERNED.exec(lastUserMessage ?? "");
+    if (governed) {
+      const [, phase, kind, requestId] = governed;
+      if (phase === "resume") {
+        const status = toolResults.filter(result => result.name === "reelier_outcome_status").at(-1);
+        if (!status) return { toolCalls: [{ name: "reelier_outcome_status", input: { requestId } }] };
+        return { text: JSON.stringify({ v:"reelier.eve-governed-mission/v1",kind,requestId,lifecycleState:cellString(status.output,"lifecycleState"),receiptRef:cellString(status.output,"receiptRef") }) };
+      }
+      const status = toolResults.filter(result => result.name === "reelier_agent_status").at(-1);
+      if (!status) return { toolCalls: [{ name: "reelier_agent_status", input: {} }] };
+      const refs = cellOutcomeRefs(status.output), outcomeRef = refs[kind === "composite" ? 0 : 1];
+      const proposal = toolResults.filter(result => result.name === "reelier_outcome_proposal").at(-1);
+      if (!proposal && outcomeRef) return { toolCalls: [{ name:"reelier_outcome_proposal",input:{outcomeRef} }] };
+      const requested = toolResults.filter(result => result.name === "reelier_outcome_request").at(-1);
+      if (!requested && outcomeRef) return { toolCalls: [{name:"reelier_outcome_request",input:{outcomeRef,requestId,sourceRefs:{},choices:{}}}] };
+      return { text: JSON.stringify({v:"reelier.eve-governed-restart-boundary/v1",kind,requestId,lifecycleState:requested?cellString(requested.output,"lifecycleState"):null}) };
+    }
     if (lastUserMessage === REMOTE_CELL_TASK) {
       const searched = toolResults.filter((result) => result.name === "reelier_agent_status").at(-1);
       if (!searched) return { toolCalls: [{ name: "reelier_agent_status", input: {} }] };
