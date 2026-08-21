@@ -7,6 +7,7 @@ import {
   parseEffectTransportBindingV1,
   type EffectTransportHostBindingsV1,
   type EffectTransportPortsV1,
+  type EffectTransportResultSinkV1,
 } from "../../src/authority/host/effect-transports.js";
 import { createOutcomeKernel, type OutcomeKernelStorage, type StoredEffectLifecycleV1 } from "../../src/authority/host/outcome-kernel.js";
 import { digestGovernedOutcomeV1, digestMissionClaimV1, digestToolEffectContractV1, type GovernedReceiptV1, type MissionClaimV1, type ToolEffectContractV1 } from "../../src/authority/tool-effect-contract.js";
@@ -17,7 +18,8 @@ const sha = (digit: string): string => `sha256:${digit.repeat(64)}`;
 const at = (milliseconds: number): string => new Date(milliseconds).toISOString();
 const host: EffectTransportHostBindingsV1 = Object.freeze({ credential: "credential-super-secret", account: "account-1", destination: "destination-1", limit: "limit-1" });
 const wire = (outcome: string, data: unknown): string => JSON.stringify({ outcome, data });
-const slackSchemas = async (): Promise<string> => JSON.stringify({ serverSchemaDigest: SLACK_LIKE_BINDING.serverSchemaDigest, toolSchemaDigest: SLACK_LIKE_BINDING.toolSchemaDigest });
+const succeed = (sink: EffectTransportResultSinkV1, outcome: string, data: unknown): void => sink.success(wire(outcome, data));
+const slackSchemas = (_request: unknown, sink: EffectTransportResultSinkV1): void => sink.success(JSON.stringify({ serverSchemaDigest: SLACK_LIKE_BINDING.serverSchemaDigest, toolSchemaDigest: SLACK_LIKE_BINDING.toolSchemaDigest }));
 
 test("MCP compilation closes model input before host injection and omits credentials from evidence", async () => {
   let resolved = 0;
@@ -27,7 +29,7 @@ test("MCP compilation closes model input before host injection and omits credent
     binding: SLACK_LIKE_BINDING,
     modelInput: { channel: "general", text: "hello" },
     resolveHostBindings: async refs => { resolved++; assert.deepEqual(refs, SLACK_LIKE_CONTRACT.bindings); return host; },
-    ports: { mcp: { inspectSchemas: slackSchemas, call: async request => { received = request; return wire("ok", { messageId: "m-1" }); } } },
+    ports: { mcp: { inspectSchemas: slackSchemas, call: (request, sink) => { received = request; succeed(sink, "ok", { messageId: "m-1" }); } } },
   });
   assert.equal(resolved, 0);
   const outcome = await compiled.adapter.dispatch(dispatchState(SLACK_LIKE_CONTRACT, compiled.effect));
@@ -49,7 +51,7 @@ test("MCP compilation closes model input before host injection and omits credent
 
 test("reviewed HTTP compilation binds method, origin, path, schemas, and response projection", async () => {
   const calls: unknown[] = [];
-  const ports: EffectTransportPortsV1 = { http: { call: async request => { calls.push(request); return calls.length === 1 ? wire("ok", { eventId: "event-9", state: "accepted", ignored: "outside projection" }) : wire("ok", { eventId: "event-9", state: "visible", ignored: "outside projection" }); } } };
+  const ports: EffectTransportPortsV1 = { http: { call: (request, sink) => { calls.push(request); succeed(sink, "ok", calls.length === 1 ? { eventId: "event-9", state: "accepted", ignored: "outside projection" } : { eventId: "event-9", state: "visible", ignored: "outside projection" }); } } };
   const compiled = compileEffectTransportV1({ contract: CALENDAR_LIKE_CONTRACT, binding: CALENDAR_LIKE_BINDING, modelInput: { eventId: "event-9", title: "Review" }, resolveHostBindings: async () => host, ports });
   const dispatched = await compiled.adapter.dispatch(dispatchState(CALENDAR_LIKE_CONTRACT, compiled.effect));
   const reconciled = await compiled.adapter.reconcile!(dispatchState(CALENDAR_LIKE_CONTRACT, compiled.effect), dispatched);
@@ -97,7 +99,7 @@ test("HTTP paths reject normalization, encoded separators, confusables, query, a
       binding: CALENDAR_LIKE_BINDING,
       modelInput: { eventId: maliciousId, title: "Review" },
       resolveHostBindings: async () => host,
-      ports: { http: { call: async request => request.method === "POST" ? wire("unknown", null) : (readbackCalls++, wire("ok", { eventId: maliciousId, state: "visible" })) } },
+      ports: { http: { call: (request, sink) => request.method === "POST" ? succeed(sink, "unknown", null) : (readbackCalls++, succeed(sink, "ok", { eventId: maliciousId, state: "visible" })) } },
     });
     const dispatched = await compiled.adapter.dispatch(dispatchState(CALENDAR_LIKE_CONTRACT, compiled.effect));
     await assert.rejects(() => compiled.adapter.reconcile!(dispatchState(CALENDAR_LIKE_CONTRACT, compiled.effect), dispatched), /HTTP.*path/i, maliciousId);
@@ -112,7 +114,7 @@ test("CLI uses a fixed executable, argv array, and exact environment-name allowl
     binding: SLIDES_LIKE_BINDING,
     modelInput: { title: "Q3; Remove-Item C:/" },
     resolveHostBindings: async () => host,
-    ports: { cli: { spawn: async input => { request = input; return wire("ok", { deckId: "quarterly", revision: 2 }); } } },
+    ports: { cli: { spawn: (input, sink) => { request = input; succeed(sink, "ok", { deckId: "quarterly", revision: 2 }); } } },
   });
   await compiled.adapter.dispatch(dispatchState(SLIDES_LIKE_CONTRACT, compiled.effect));
   assert.deepEqual(request, {
@@ -131,7 +133,7 @@ test("template value validation completes before any host secret resolution", as
     binding: SLIDES_LIKE_BINDING,
     modelInput: { title: { nested: "not-an-argv-scalar" } },
     resolveHostBindings: async () => { resolutions++; return host; },
-    ports: { cli: { spawn: async () => wire("ok", {}) } },
+    ports: { cli: { spawn: (_request, sink) => succeed(sink, "ok", {}) } },
   }), /template|scalar|model/i);
   assert.equal(resolutions, 0);
 });
@@ -144,7 +146,7 @@ test("provider DTOs are detached before reads and hostile accessors, proxies, ca
     { outcome: "ok", data: { callback() {} } },
     { outcome: "ok", data: "x".repeat(1_100_000) },
   ]) {
-    const compiled = compileEffectTransportV1({ contract: SLACK_LIKE_CONTRACT, binding: SLACK_LIKE_BINDING, modelInput: { channel: "general", text: "hello" }, resolveHostBindings: async () => host, ports: { mcp: { inspectSchemas: slackSchemas, call: async () => response as never } } });
+    const compiled = compileEffectTransportV1({ contract: SLACK_LIKE_CONTRACT, binding: SLACK_LIKE_BINDING, modelInput: { channel: "general", text: "hello" }, resolveHostBindings: async () => host, ports: { mcp: { inspectSchemas: slackSchemas, call: (_request, sink) => sink.success(response as never) } } });
     await assert.rejects(() => compiled.adapter.dispatch(dispatchState(SLACK_LIKE_CONTRACT, compiled.effect)), /transport boundary failed/i);
   }
   assert.equal(getters, 0);
@@ -157,16 +159,17 @@ test("provider DTOs are detached before reads and hostile accessors, proxies, ca
 });
 
 test("a caller-controlled port return root is ignored without thenable assimilation or traps", async () => {
-  let traps = 0;
+  let calls = 0, traps = 0;
   const returnedRoot = new Proxy(Object.create(null), { get() { traps++; throw new Error("provider trap"); } });
   const ports = {
     mcp: {
-      inspectSchemas: async () => JSON.stringify({ serverSchemaDigest: SLACK_LIKE_BINDING.serverSchemaDigest, toolSchemaDigest: SLACK_LIKE_BINDING.toolSchemaDigest }),
-      call: () => returnedRoot,
+      inspectSchemas: slackSchemas,
+      call: (_request: unknown, sink: EffectTransportResultSinkV1) => { calls++; queueMicrotask(() => sink.failure()); return returnedRoot; },
     },
   } as any;
   const compiled = compileEffectTransportV1({ contract: SLACK_LIKE_CONTRACT, binding: SLACK_LIKE_BINDING, modelInput: { channel: "general", text: "hello" }, resolveHostBindings: async () => host, ports });
   await assert.rejects(() => compiled.adapter.dispatch(dispatchState(SLACK_LIKE_CONTRACT, compiled.effect)), /effect transport boundary failed/i);
+  assert.equal(calls, 1);
   assert.equal(traps, 0);
 });
 
@@ -177,7 +180,7 @@ test("provider and host boundary failures are replaced without leaking secret-be
     binding: CALENDAR_LIKE_BINDING,
     modelInput: { eventId: "event-9", title: "Review" },
     resolveHostBindings: async () => host,
-    ports: { http: { call: async () => { throw new Error(`provider response included ${secret} and arbitrary-body`); } } },
+    ports: { http: { call: () => { throw new Error(`provider response included ${secret} and arbitrary-body`); } } },
   });
   await assert.rejects(() => providerFailure.adapter.dispatch(dispatchState(CALENDAR_LIKE_CONTRACT, providerFailure.effect)), error => {
     const rendered = String(error);
@@ -205,8 +208,8 @@ test("provider and host boundary failures are replaced without leaking secret-be
     binding: CALENDAR_LIKE_BINDING,
     modelInput: { eventId: "event-9", title: "Review" },
     resolveHostBindings: async () => host,
-    ports: { http: { call: async request => {
-      if (request.method === "POST") return wire("unknown", null);
+    ports: { http: { call: (request, sink) => {
+      if (request.method === "POST") return succeed(sink, "unknown", null);
       throw new Error(`readback body included ${secret} and arbitrary-readback-body`);
     } } },
   });
@@ -228,14 +231,14 @@ test("MCP runtime schema digests are checked and passed before the consequential
     resolveHostBindings: async () => host,
     ports: {
       mcp: {
-        inspectSchemas: async () => {
+        inspectSchemas: (_request: unknown, sink: EffectTransportResultSinkV1) => {
           inspections++;
-          return JSON.stringify({ serverSchemaDigest: SLACK_LIKE_BINDING.serverSchemaDigest, toolSchemaDigest });
+          sink.success(JSON.stringify({ serverSchemaDigest: SLACK_LIKE_BINDING.serverSchemaDigest, toolSchemaDigest }));
         },
-        call: async (request: any) => {
+        call: (request: any, sink: EffectTransportResultSinkV1) => {
           calls++;
           received = request;
-          return JSON.stringify({ outcome: "ok", data: { messageId: "m-1" } });
+          succeed(sink, "ok", { messageId: "m-1" });
         },
       },
     } as any,
@@ -270,14 +273,14 @@ test("MCP readback binds its own runtime tool schema digest before the call", as
     modelInput: { channel: "general", text: "hello" },
     resolveHostBindings: async () => host,
     ports: { mcp: {
-      inspectSchemas: async request => {
+      inspectSchemas: (request, sink) => {
         inspected.push(request);
         const expected = request.tool === binding.tool ? binding.toolSchemaDigest : binding.readback.toolSchemaDigest;
-        return JSON.stringify({ serverSchemaDigest: binding.serverSchemaDigest, toolSchemaDigest: driftReadback && request.tool === binding.readback.tool ? sha("f") : expected });
+        sink.success(JSON.stringify({ serverSchemaDigest: binding.serverSchemaDigest, toolSchemaDigest: driftReadback && request.tool === binding.readback.tool ? sha("f") : expected }));
       },
-      call: async request => {
+      call: (request, sink) => {
         called.push(request);
-        return request.tool === binding.tool ? wire("unknown", null) : wire("ok", { messageId: "m-1" });
+        request.tool === binding.tool ? succeed(sink, "unknown", null) : succeed(sink, "ok", { messageId: "m-1" });
       },
     } },
   });
@@ -299,7 +302,7 @@ test("MCP readback binds its own runtime tool schema digest before the call", as
 
 test("ambiguous writes use authoritative readback without resend and semantic conflicts are explicit", async () => {
   let sends = 0, reads = 0;
-  const ports: EffectTransportPortsV1 = { http: { call: async request => request.method === "POST" ? (sends++, wire("unknown", null)) : (reads++, wire("conflict", { eventId: "event-9", state: "other" })) } };
+  const ports: EffectTransportPortsV1 = { http: { call: (request, sink) => request.method === "POST" ? (sends++, succeed(sink, "unknown", null)) : (reads++, succeed(sink, "conflict", { eventId: "event-9", state: "other" })) } };
   const compiled = compileEffectTransportV1({ contract: CALENDAR_LIKE_CONTRACT, binding: CALENDAR_LIKE_BINDING, modelInput: { eventId: "event-9", title: "Review" }, resolveHostBindings: async () => host, ports });
   const state = dispatchState(CALENDAR_LIKE_CONTRACT, compiled.effect);
   const ambiguous = await compiled.adapter.dispatch(state);
@@ -317,7 +320,7 @@ test("same-schema contradictory readback values produce distinct projection comm
       binding: CALENDAR_LIKE_BINDING,
       modelInput: { eventId: "event-9", title: "Review" },
       resolveHostBindings: async () => host,
-      ports: { http: { call: async request => request.method === "POST" ? wire("ok", { eventId: "event-9", state: "accepted" }) : wire("ok", { eventId: "event-9", state: stateValue }) } },
+      ports: { http: { call: (request, sink) => request.method === "POST" ? succeed(sink, "ok", { eventId: "event-9", state: "accepted" }) : succeed(sink, "ok", { eventId: "event-9", state: stateValue }) } },
     });
     const result = await runThroughKernel(CALENDAR_LIKE_CONTRACT, compiled, "reservation-contradictory", receipts);
     return { outcome: result.effects[0]!, receipt: receipts[0]! };
@@ -362,9 +365,9 @@ test("a durable pending write resumes after restart through authoritative readba
     resolveHostBindings: async () => host,
     ports: {
       cli: {
-        spawn: async request => request.argv[0] === "update"
-          ? (sends++, wire("unknown", null))
-          : (reads++, wire("ok", { deckId: "quarterly", revision: 2 })),
+        spawn: (request, sink) => request.argv[0] === "update"
+          ? (sends++, succeed(sink, "unknown", null))
+          : (reads++, succeed(sink, "ok", { deckId: "quarterly", revision: 2 })),
       },
     },
   });
@@ -401,11 +404,11 @@ test("a durable pending write resumes after restart through authoritative readba
   assert.deepEqual({ sends, reads }, { sends: 1, reads: 1 });
 });
 
-test("three unrelated adapters run through the unchanged Outcome kernel with honest grades", async () => {
+test("three unrelated adapters run through the same generic Outcome kernel with honest grades", async () => {
   const cases = [
-    { contract: SLACK_LIKE_CONTRACT, binding: SLACK_LIKE_BINDING, model: { channel: "general", text: "hello" }, ports: { mcp: { inspectSchemas: slackSchemas, call: async () => wire("ok", { messageId: "m-1" }) } }, status: "absent" },
-    { contract: CALENDAR_LIKE_CONTRACT, binding: CALENDAR_LIKE_BINDING, model: { eventId: "event-9", title: "Review" }, ports: { http: { call: async () => wire("ok", { eventId: "event-9", state: "visible" }) } }, status: "partial" },
-    { contract: SLIDES_LIKE_CONTRACT, binding: SLIDES_LIKE_BINDING, model: { title: "Q3" }, ports: { cli: { spawn: async () => wire("ok", { deckId: "quarterly", revision: 2 }) } }, status: "verified" },
+    { contract: SLACK_LIKE_CONTRACT, binding: SLACK_LIKE_BINDING, model: { channel: "general", text: "hello" }, ports: { mcp: { inspectSchemas: slackSchemas, call: (_request: unknown, sink: EffectTransportResultSinkV1) => succeed(sink, "ok", { messageId: "m-1" }) } }, status: "absent" },
+    { contract: CALENDAR_LIKE_CONTRACT, binding: CALENDAR_LIKE_BINDING, model: { eventId: "event-9", title: "Review" }, ports: { http: { call: (_request: unknown, sink: EffectTransportResultSinkV1) => succeed(sink, "ok", { eventId: "event-9", state: "visible" }) } }, status: "partial" },
+    { contract: SLIDES_LIKE_CONTRACT, binding: SLIDES_LIKE_BINDING, model: { title: "Q3" }, ports: { cli: { spawn: (_request: unknown, sink: EffectTransportResultSinkV1) => succeed(sink, "ok", { deckId: "quarterly", revision: 2 }) } }, status: "verified" },
   ] as const;
   for (let index = 0; index < cases.length; index++) {
     const item = cases[index], compiled = compileEffectTransportV1({ contract: item.contract, binding: item.binding, modelInput: item.model, resolveHostBindings: async () => host, ports: item.ports });

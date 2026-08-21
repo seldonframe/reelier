@@ -18,13 +18,14 @@ export type EffectTransportBindingV1 = McpEffectTransportBindingV1 | HttpEffectT
 export interface EffectTransportHostBindingsV1 { readonly credential: string; readonly account: string; readonly destination: string; readonly limit: string; }
 export interface EffectTransportProviderResponseV1 { readonly outcome: string; readonly data: unknown }
 export type EffectTransportProviderEnvelopeV1 = string;
+export interface EffectTransportResultSinkV1 { readonly success: (serializedJson: string) => void; readonly failure: () => void; }
 export interface EffectTransportPortsV1 {
   readonly mcp?: Readonly<{
-    inspectSchemas(request: Readonly<{ server: string; tool: string }>): Promise<EffectTransportProviderEnvelopeV1>;
-    call(request: Readonly<{ server: string; tool: string; serverSchemaDigest: string; toolSchemaDigest: string; arguments: Readonly<{ model: Readonly<Record<string, unknown>>; host: Readonly<{ account: string; destination: string; limit: string }> }>; credential: string }>): Promise<EffectTransportProviderEnvelopeV1>;
+    inspectSchemas(request: Readonly<{ server: string; tool: string }>, sink: EffectTransportResultSinkV1): unknown;
+    call(request: Readonly<{ server: string; tool: string; serverSchemaDigest: string; toolSchemaDigest: string; arguments: Readonly<{ model: Readonly<Record<string, unknown>>; host: Readonly<{ account: string; destination: string; limit: string }> }>; credential: string }>, sink: EffectTransportResultSinkV1): unknown;
   }>;
-  readonly http?: Readonly<{ call(request: Readonly<{ method: string; url: string; body: Readonly<{ model: Readonly<Record<string, unknown>>; host: Readonly<{ account: string; destination: string; limit: string }> }> | null; credential: string; requestSchemaDigest: string }>): Promise<EffectTransportProviderEnvelopeV1> }>;
-  readonly cli?: Readonly<{ spawn(request: Readonly<{ executable: string; argv: readonly string[]; env: Readonly<Record<string, string>> }>): Promise<EffectTransportProviderEnvelopeV1> }>;
+  readonly http?: Readonly<{ call(request: Readonly<{ method: string; url: string; body: Readonly<{ model: Readonly<Record<string, unknown>>; host: Readonly<{ account: string; destination: string; limit: string }> }> | null; credential: string; requestSchemaDigest: string }>, sink: EffectTransportResultSinkV1): unknown }>;
+  readonly cli?: Readonly<{ spawn(request: Readonly<{ executable: string; argv: readonly string[]; env: Readonly<Record<string, string>> }>, sink: EffectTransportResultSinkV1): unknown }>;
 }
 
 export interface CompiledEffectTransportV1 {
@@ -54,7 +55,7 @@ export function compileEffectTransportV1(input: Readonly<{ contract: ToolEffectC
   validateTemplateValues(binding, model);
   const effect = deepFreeze({ v: "reelier.compiled-effect-input/v1" as const, contractDigest, bindingDigest, model });
   const evidence = deepFreeze({ v: "reelier.effect-transport-evidence/v1" as const, contractDigest, bindingDigest, model });
-  const matchedProjectionDigest = (reservationId: string): string | null => contract.readback === null ? null : authorityDigest({
+  const matchedProjectionDigest = (reservationId: string, projectionDigest: string): string | null => contract.readback === null ? null : authorityDigest({
     v: "reelier.effect-authoritative-match/v1",
     contractDigest,
     bindingDigest,
@@ -63,6 +64,7 @@ export function compileEffectTransportV1(input: Readonly<{ contract: ToolEffectC
     modelDigest: authorityDigest(model),
     readbackOperation: contract.readback.operation,
     projectionSchemaDigest: authorityDigest(contract.readback.projection),
+    projectionDigest,
   });
   const hostBindings = async (): Promise<EffectTransportHostBindingsV1> => {
     try { return parseHostBindings(await input.resolveHostBindings(contract.bindings)); }
@@ -81,7 +83,7 @@ export function compileEffectTransportV1(input: Readonly<{ contract: ToolEffectC
       if (category === "success") {
         const projection = projectResponse(response.data, contract.readback.projection);
         if (projection === null) return unavailableOutcome(bindingDigest, prior);
-        const normalizedProjectionDigest = matchedProjectionDigest(state.reservation.reservationId)!;
+        const normalizedProjectionDigest = matchedProjectionDigest(state.reservation.reservationId, authorityDigest(projection))!;
         return Object.freeze({ kind: "acknowledged", resultDigest: responseDigest(bindingDigest, response), reconciliationStatus: "matched", normalizedProjectionDigest });
       }
       if (category === "conflict" || category === "definitive-failure") {
@@ -92,7 +94,7 @@ export function compileEffectTransportV1(input: Readonly<{ contract: ToolEffectC
       return unavailableOutcome(bindingDigest, prior);
     },
   });
-  const verifier = createTrustedObservationVerifier({ contractDigest, verify: observation => { const expected = matchedProjectionDigest(observation.reservationId); return expected !== null && observation.projectionDigest === expected; } });
+  const verifier = createTrustedObservationVerifier({ contractDigest, verify: observation => observation.projectionDigest !== null && observation.authoritative && observation.verdict === "matched" && observation.semanticIdentity === contract.semanticIdentity && observation.observationId === `observation_${authorityDigest({ reservationId: observation.reservationId, verdict: "matched", projectionDigest: observation.projectionDigest }).slice(7, 31)}` });
   return Object.freeze({ effect, evidence, adapter, verifier });
 }
 
@@ -142,26 +144,33 @@ function parseHostBindings(value: unknown): EffectTransportHostBindingsV1 { cons
 
 async function dispatch(binding: EffectTransportBindingV1, model: Readonly<Record<string, unknown>>, host: EffectTransportHostBindingsV1, ports: EffectTransportPortsV1): Promise<EffectTransportProviderResponseV1> {
   const publicHost = deepFreeze({ account: host.account, destination: host.destination, limit: host.limit });
-  if (binding.kind === "mcp") { if (!ports.mcp) throw new Error("MCP effect transport port is unavailable"); await assertMcpSchemas(ports.mcp, binding.server, binding.tool, binding.serverSchemaDigest, binding.toolSchemaDigest); return providerBoundary("MCP", () => ports.mcp!.call(deepFreeze({ server: binding.server, tool: binding.tool, serverSchemaDigest: binding.serverSchemaDigest, toolSchemaDigest: binding.toolSchemaDigest, arguments: { model, host: publicHost }, credential: host.credential }))); }
-  if (binding.kind === "http") { if (!ports.http) throw new Error("HTTP effect transport port is unavailable"); const url = joinUrl(binding.origin, renderTemplate(binding.pathTemplate, model, publicHost, true)); return providerBoundary("HTTP", () => ports.http!.call(deepFreeze({ method: binding.method, url, body: { model, host: publicHost }, credential: host.credential, requestSchemaDigest: binding.requestSchemaDigest }))); }
+  if (binding.kind === "mcp") { if (!ports.mcp) throw new Error("MCP effect transport port is unavailable"); await assertMcpSchemas(ports.mcp, binding.server, binding.tool, binding.serverSchemaDigest, binding.toolSchemaDigest); return providerBoundary("MCP", sink => ports.mcp!.call(deepFreeze({ server: binding.server, tool: binding.tool, serverSchemaDigest: binding.serverSchemaDigest, toolSchemaDigest: binding.toolSchemaDigest, arguments: { model, host: publicHost }, credential: host.credential }), sink)); }
+  if (binding.kind === "http") { if (!ports.http) throw new Error("HTTP effect transport port is unavailable"); const url = joinUrl(binding.origin, renderTemplate(binding.pathTemplate, model, publicHost, true)); return providerBoundary("HTTP", sink => ports.http!.call(deepFreeze({ method: binding.method, url, body: { model, host: publicHost }, credential: host.credential, requestSchemaDigest: binding.requestSchemaDigest }), sink)); }
   if (!ports.cli) throw new Error("CLI effect transport port is unavailable");
-  return providerBoundary("CLI", () => ports.cli!.spawn(deepFreeze({ executable: binding.executable, argv: binding.argvTemplates.map(item => renderTemplate(item, model, publicHost, false)), env: { [binding.credentialEnv]: host.credential } })));
+  return providerBoundary("CLI", sink => ports.cli!.spawn(deepFreeze({ executable: binding.executable, argv: binding.argvTemplates.map(item => renderTemplate(item, model, publicHost, false)), env: { [binding.credentialEnv]: host.credential } }), sink));
 }
 
 async function readback(binding: EffectTransportBindingV1, model: Readonly<Record<string, unknown>>, host: EffectTransportHostBindingsV1, ports: EffectTransportPortsV1): Promise<EffectTransportProviderResponseV1> {
   const publicHost = deepFreeze({ account: host.account, destination: host.destination, limit: host.limit });
-  if (binding.kind === "mcp" && binding.readback) { if (!ports.mcp) throw new Error("MCP effect transport port is unavailable"); await assertMcpSchemas(ports.mcp, binding.server, binding.readback.tool, binding.serverSchemaDigest, binding.readback.toolSchemaDigest); return providerBoundary("MCP readback", () => ports.mcp!.call(deepFreeze({ server: binding.server, tool: binding.readback!.tool, serverSchemaDigest: binding.serverSchemaDigest, toolSchemaDigest: binding.readback!.toolSchemaDigest, arguments: { model, host: publicHost }, credential: host.credential }))); }
-  if (binding.kind === "http" && binding.readback) { if (!ports.http) throw new Error("HTTP effect transport port is unavailable"); const url = joinUrl(binding.origin, renderTemplate(binding.readback.pathTemplate, model, publicHost, true)); return providerBoundary("HTTP readback", () => ports.http!.call(deepFreeze({ method: binding.readback!.method, url, body: null, credential: host.credential, requestSchemaDigest: binding.readback!.requestSchemaDigest }))); }
-  if (binding.kind === "cli" && binding.readback) { if (!ports.cli) throw new Error("CLI effect transport port is unavailable"); return providerBoundary("CLI readback", () => ports.cli!.spawn(deepFreeze({ executable: binding.executable, argv: binding.readback!.argvTemplates.map(item => renderTemplate(item, model, publicHost, false)), env: { [binding.credentialEnv]: host.credential } }))); }
+  if (binding.kind === "mcp" && binding.readback) { if (!ports.mcp) throw new Error("MCP effect transport port is unavailable"); await assertMcpSchemas(ports.mcp, binding.server, binding.readback.tool, binding.serverSchemaDigest, binding.readback.toolSchemaDigest); return providerBoundary("MCP readback", sink => ports.mcp!.call(deepFreeze({ server: binding.server, tool: binding.readback!.tool, serverSchemaDigest: binding.serverSchemaDigest, toolSchemaDigest: binding.readback!.toolSchemaDigest, arguments: { model, host: publicHost }, credential: host.credential }), sink)); }
+  if (binding.kind === "http" && binding.readback) { if (!ports.http) throw new Error("HTTP effect transport port is unavailable"); const url = joinUrl(binding.origin, renderTemplate(binding.readback.pathTemplate, model, publicHost, true)); return providerBoundary("HTTP readback", sink => ports.http!.call(deepFreeze({ method: binding.readback!.method, url, body: null, credential: host.credential, requestSchemaDigest: binding.readback!.requestSchemaDigest }), sink)); }
+  if (binding.kind === "cli" && binding.readback) { if (!ports.cli) throw new Error("CLI effect transport port is unavailable"); return providerBoundary("CLI readback", sink => ports.cli!.spawn(deepFreeze({ executable: binding.executable, argv: binding.readback!.argvTemplates.map(item => renderTemplate(item, model, publicHost, false)), env: { [binding.credentialEnv]: host.credential } }), sink)); }
   throw new Error("effect transport readback is unavailable");
 }
 
-async function providerBoundary(label: string, invoke: () => Promise<EffectTransportProviderEnvelopeV1>): Promise<EffectTransportProviderResponseV1> { try { return parseProviderResponse(await invoke()); } catch { throw new Error(`${label} effect transport boundary failed`); } }
+function providerBoundary(label: string, invoke: (sink: EffectTransportResultSinkV1) => unknown): Promise<EffectTransportProviderResponseV1> { return serializedBoundary(label, invoke, parseProviderResponse); }
 async function assertMcpSchemas(port: NonNullable<EffectTransportPortsV1["mcp"]>, server: string, tool: string, serverSchemaDigest: string, toolSchemaDigest: string): Promise<void> {
-  let actual: Readonly<{ serverSchemaDigest: string; toolSchemaDigest: string }>;
-  try { actual = parseMcpSchemas(await port.inspectSchemas(deepFreeze({ server, tool }))); }
-  catch { throw new Error("MCP schema inspection boundary failed"); }
+  const actual = await serializedBoundary("MCP schema inspection", sink => port.inspectSchemas(deepFreeze({ server, tool }), sink), parseMcpSchemas);
   if (actual.serverSchemaDigest !== serverSchemaDigest || actual.toolSchemaDigest !== toolSchemaDigest) throw new Error("MCP schema drift refused consequential call");
+}
+function serializedBoundary<T>(label: string, invoke: (sink: EffectTransportResultSinkV1) => unknown, parse: (value: unknown) => T): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const failure = (): void => { if (settled) return; settled = true; reject(new Error(`${label} effect transport boundary failed`)); };
+    const success = (serializedJson: string): void => { if (settled) return; settled = true; try { resolve(parse(serializedJson)); } catch { reject(new Error(`${label} effect transport boundary failed`)); } };
+    const sink = Object.freeze(Object.assign(Object.create(null) as Record<string, unknown>, { success, failure })) as EffectTransportResultSinkV1;
+    try { invoke(sink); } catch { failure(); }
+  });
 }
 function parseMcpSchemas(value: unknown): Readonly<{ serverSchemaDigest: string; toolSchemaDigest: string }> { const raw = closedRecord(parseSerializedJson(value, "MCP schema envelope", 4_096), ["serverSchemaDigest", "toolSchemaDigest"], [], "MCP schema envelope"); return deepFreeze({ serverSchemaDigest: digest(raw.serverSchemaDigest, "MCP runtime server schema"), toolSchemaDigest: digest(raw.toolSchemaDigest, "MCP runtime tool schema") }); }
 function parseProviderResponse(value: unknown): EffectTransportProviderResponseV1 { const detached = snapshotJson(parseSerializedJson(value, "provider response envelope", 1_048_576), "provider response", 1_048_576), raw = closedRecord(detached, ["outcome", "data"], [], "provider response"); return deepFreeze({ outcome: stringValue(raw.outcome, "provider outcome", 256), data: raw.data }); }
