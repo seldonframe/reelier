@@ -18,7 +18,8 @@ test("authority MCP exposes a compact job catalog and loaded Outcome fallback", 
   await client.connect(clientTransport);
   const tools = (await client.listTools()).tools;
   const names = tools.map(tool => tool.name).sort();
-  assert.deepEqual(names, ["reelier_jobs_search", "reelier_job_load", "reelier_delegation_request", "reelier_delegation_status", "reelier_task_status", "reelier_outcome_invoke", "reelier_outcome_gmail_reply_send_v1", "reelier_outcome_status", "reelier_artifact_stage"].sort());
+  assert.deepEqual(names, ["reelier_agent_status", "reelier_outcome_proposal", "reelier_outcome_request", "reelier_jobs_search", "reelier_job_load", "reelier_delegation_request", "reelier_delegation_status", "reelier_task_status", "reelier_outcome_invoke", "reelier_outcome_gmail_reply_send_v1", "reelier_outcome_status", "reelier_artifact_stage"].sort());
+  assert.equal(new Set(names).size, names.length, "the additive quartet must not duplicate an existing legacy tool name");
   const delegation = tools.find(tool => tool.name === "reelier_delegation_request")!;
   assert.deepEqual(delegation.inputSchema.required, ["child", "effects"]);
   assert.deepEqual(Object.keys(delegation.inputSchema.properties ?? {}).sort(), ["child", "effects"]);
