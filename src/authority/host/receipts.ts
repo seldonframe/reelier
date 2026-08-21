@@ -42,10 +42,11 @@ declare const fileReceiptPublicationReadbackBrand: unique symbol;
 export interface FileReceiptPublicationReadbackV1 { readonly [fileReceiptPublicationReadbackBrand]: true }
 type FileReceiptPublicationReadbackStateV1 = Readonly<{ publication: DispatchPublication; query: DurableDispatchPublicationQueryV1; reservationId: string; effectDigest: string }>;
 const genuineFilePublications = new WeakSet<object>(), filePublicationReadbacks = new WeakMap<object, FileReceiptPublicationReadbackStateV1>();
+export function assertGenuineFileReceiptPublicationV1(publication: DispatchPublication): void { if (!publication || typeof publication !== "object" || !genuineFilePublications.has(publication as object)) throw new TypeError("genuine file receipt publication is required"); }
 
 /** @internal Opaque resolver/query pair minted only by the genuine file publication. */
 export function bindFileReceiptPublicationReadbackV1(publication: DispatchPublication, reservation: ReservationSnapshot): FileReceiptPublicationReadbackV1 {
-  if (!publication || typeof publication !== "object" || !genuineFilePublications.has(publication as object)) throw new TypeError("genuine file receipt publication is required");
+  assertGenuineFileReceiptPublicationV1(publication);
   const query = governedDurableDispatchPublicationQueryV1(reservation), readback = Object.freeze(Object.create(null)) as FileReceiptPublicationReadbackV1;
   filePublicationReadbacks.set(readback as object, Object.freeze({ publication, query, reservationId: reservation.reservationId, effectDigest: reservation.intent.effectDigest }));
   return readback;

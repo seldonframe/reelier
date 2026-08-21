@@ -6,8 +6,8 @@ import { digestGovernedEffectCommitmentV1 } from "../governed-effect-commitment.
 import { parseToolEffectContractV1, type ToolEffectContractV1 } from "../tool-effect-contract.js";
 import { authorityCanonicalBytes, authorityDigest, parseCanonicalAuthorityJson } from "../wire.js";
 import { digestEffectTransportBindingV1, parseEffectTransportBindingV1, type EffectTransportBindingV1 } from "./effect-transports.js";
-import type { DispatchOutcome } from "./dispatch.js";
-import { describeFileReceiptPublicationReadbackV1, loadFileReceiptPublicationReadbackV1, type FileReceiptPublicationReadbackV1 } from "./receipts.js";
+import type { DispatchOutcome, DispatchPublication } from "./dispatch.js";
+import { assertGenuineFileReceiptPublicationV1, bindFileReceiptPublicationReadbackV1, describeFileReceiptPublicationReadbackV1, loadFileReceiptPublicationReadbackV1, type FileReceiptPublicationReadbackV1 } from "./receipts.js";
 import { normalizeReservationPublicationId } from "./reservation-identity.js";
 
 export interface GovernedOutcomeEffectJoinInputV1 {
@@ -33,15 +33,24 @@ export interface VerifiedGovernedOutcomeEffectJoinV1 {
 
 declare const governedOutcomeKernelAuthorityBrand: unique symbol;
 export interface GovernedOutcomeKernelAuthorityV1 { readonly [governedOutcomeKernelAuthorityBrand]: true }
+declare const governedOutcomeKernelAuthorityFactoryBrand: unique symbol;
+export interface GovernedOutcomeKernelAuthorityFactoryV1 { readonly [governedOutcomeKernelAuthorityFactoryBrand]: true }
 type GovernedKernelAuthorityStateV1 = Readonly<{ join: VerifiedGovernedOutcomeEffectJoinV1; gateAuthority: AcceptedGateReservationAuthorityV1 | null; publicationReadback: FileReceiptPublicationReadbackV1 }>;
-const governedKernelAuthorities = new WeakMap<object, GovernedKernelAuthorityStateV1>();
+const governedKernelAuthorities = new WeakMap<object, GovernedKernelAuthorityStateV1>(), governedKernelAuthorityFactories = new WeakMap<object, DispatchPublication>();
 
-export function createGovernedOutcomeKernelAuthorityV1(input: Readonly<{ join: GovernedOutcomeEffectJoinInputV1; gateAuthority?: AcceptedGateReservationAuthorityV1; publicationReadback: FileReceiptPublicationReadbackV1 }>): GovernedOutcomeKernelAuthorityV1 {
-  const fields = input && typeof input === "object" && Object.hasOwn(input, "gateAuthority") ? ["join", "gateAuthority", "publicationReadback"] : ["join", "publicationReadback"];
+/** @internal Captures the one durable publisher owned by the local coordinator composition. */
+export function createGovernedOutcomeKernelAuthorityFactoryV1(publication: DispatchPublication): GovernedOutcomeKernelAuthorityFactoryV1 {
+  assertGenuineFileReceiptPublicationV1(publication);
+  const factory = Object.freeze(Object.create(null)) as GovernedOutcomeKernelAuthorityFactoryV1;governedKernelAuthorityFactories.set(factory as object, publication);return factory;
+}
+
+export function createGovernedOutcomeKernelAuthorityV1(factory: GovernedOutcomeKernelAuthorityFactoryV1, input: Readonly<{ join: GovernedOutcomeEffectJoinInputV1; gateAuthority?: AcceptedGateReservationAuthorityV1 }>): GovernedOutcomeKernelAuthorityV1 {
+  const publication = governedKernelAuthorityFactories.get(factory as object);if(!publication)throw new TypeError("governed Outcome authority factory is not genuine");
+  const fields = input && typeof input === "object" && Object.hasOwn(input, "gateAuthority") ? ["join", "gateAuthority"] : ["join"];
   const raw = closedRecord(input, fields, "governed Outcome kernel authority");
   const join = verifyGovernedOutcomeEffectJoinV1(raw.join as GovernedOutcomeEffectJoinInputV1);
-  const publicationReadback = raw.publicationReadback as FileReceiptPublicationReadbackV1, publication = describeFileReceiptPublicationReadbackV1(publicationReadback);
-  if (publication.reservationId !== join.reservationId || publication.effectDigest !== join.effectDigest) throw new TypeError("genuine publication readback does not match the durable governed join");
+  const publicationReadback = bindFileReceiptPublicationReadbackV1(publication, (raw.join as GovernedOutcomeEffectJoinInputV1).reservation), publicationBinding = describeFileReceiptPublicationReadbackV1(publicationReadback);
+  if (publicationBinding.reservationId !== join.reservationId || publicationBinding.effectDigest !== join.effectDigest) throw new TypeError("genuine publication readback does not match the durable governed join");
   const gateAuthority = (raw.gateAuthority ?? null) as AcceptedGateReservationAuthorityV1 | null;
   if (gateAuthority) {
     const gate = describeAcceptedGateReservationAuthorityV1(gateAuthority);
