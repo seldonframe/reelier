@@ -4,6 +4,7 @@ import { createReservedDispatchHandle } from "../../src/authority/gate.js";
 import {
   compileEffectTransportV1,
   digestEffectTransportBindingV1,
+  parseEffectTransportBindingV1,
   type EffectTransportHostBindingsV1,
   type EffectTransportPortsV1,
 } from "../../src/authority/host/effect-transports.js";
@@ -70,6 +71,36 @@ test("reviewed HTTP compilation binds method, origin, path, schemas, and respons
   const changed = { ...CALENDAR_LIKE_BINDING, method: "PATCH" as const };
   assert.notEqual(digestEffectTransportBindingV1(changed), CALENDAR_LIKE_CONTRACT.operationDigest);
   assert.throws(() => compileEffectTransportV1({ contract: CALENDAR_LIKE_CONTRACT, binding: changed, modelInput: { eventId: "event-9", title: "Review" }, resolveHostBindings: async () => host, ports }), /binding|digest|contract/i);
+});
+
+test("HTTP paths reject normalization, encoded separators, confusables, query, and fragment drift", async () => {
+  for (const maliciousPath of [
+    "/calendars/../admin",
+    "/calendars/%2e%2e/admin",
+    "/calendars/%252e%252e/admin",
+    "/calendars\\admin",
+    "/calendars/%5cadmin",
+    "/calendars/∕admin",
+    "/calendars/%E2%88%95admin",
+    "/calendars/admin?mode=write",
+    "/calendars/admin#fragment",
+  ]) {
+    assert.throws(() => parseEffectTransportBindingV1({ ...CALENDAR_LIKE_BINDING, pathTemplate: maliciousPath }), /HTTP path/i, maliciousPath);
+  }
+
+  for (const maliciousId of ["..", "%2e%2e", "a\\b", "a∕b", "a?mode=write", "a#fragment"]) {
+    let readbackCalls = 0;
+    const compiled = compileEffectTransportV1({
+      contract: CALENDAR_LIKE_CONTRACT,
+      binding: CALENDAR_LIKE_BINDING,
+      modelInput: { eventId: maliciousId, title: "Review" },
+      resolveHostBindings: async () => host,
+      ports: { http: { call: async request => request.method === "POST" ? wire("unknown", null) : (readbackCalls++, wire("ok", { eventId: maliciousId, state: "visible" })) } },
+    });
+    const dispatched = await compiled.adapter.dispatch(dispatchState(CALENDAR_LIKE_CONTRACT, compiled.effect));
+    await assert.rejects(() => compiled.adapter.reconcile!(dispatchState(CALENDAR_LIKE_CONTRACT, compiled.effect), dispatched), /HTTP.*path/i, maliciousId);
+    assert.equal(readbackCalls, 0, maliciousId);
+  }
 });
 
 test("CLI uses a fixed executable, argv array, and exact environment-name allowlist", async () => {
