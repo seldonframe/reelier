@@ -61,7 +61,10 @@ test("real Eve 0.39.0 preserves Reelier continuity across process and session bo
       const value = matrix.scenarios.outcomeCut;
       assert.equal(value.cutSubmissionStatus, 202);
       assert.equal(value.cutLifecycle, "pending");
-      assert.equal(value.processRestarted, true);
+      assert.equal(value.processRestartCount, 1);
+      assert.equal(Array.isArray(value.processIdentities), true);
+      assert.equal((value.processIdentities as unknown[]).length, 2);
+      assert.equal(new Set((value.processIdentities as Array<{ pid: number }>).map(item => item.pid)).size, 2);
       assert.equal(value.runtimeReopens, 1);
       assert.notEqual(value.cutSessionId, value.recoveredSessionId);
       assert.equal(Number(value.cutToolEvents) > 0, true);
