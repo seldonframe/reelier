@@ -13,62 +13,40 @@ Files changed
 - `src/authority/adapter-contract.ts`
 - `scripts/build-authority-contract.mjs`
 - `test/authority/effect-contract.test.ts`
+- `test/authority/wire.test.ts`
+- `test/authority/compile.test.ts`
+- `test/authority/contract.test.ts`
+- `test/authority/agent-mandate.test.ts`
+- `test/authority/package.test.ts`
 - `.superpowers/sdd/2026-08-20-universal-governed-outcomes-oss/task-1-report.md`
+- `.superpowers/sdd/2026-08-20-universal-governed-outcomes-oss/task-1-fix-round-1-report.md`
+- `.superpowers/sdd/2026-08-20-universal-governed-outcomes-oss/task-1-fix-round-1a-report.md`
+- `.superpowers/sdd/2026-08-20-universal-governed-outcomes-oss/task-1-fix-round-1b-report.md`
+
+What changed per file
+
+- The authority source files add the closed provider-neutral governed-effect contracts, V2 mandate union, inert parsers/digests, and outcome transition verification without changing V1 wire semantics.
+- The schema, generated vectors, adapter descriptor, source descriptor, and generator publish the closed contract language.
+- The authority tests cover hostile inputs, lifecycle verification, schema behavior, V1 golden compatibility, and runtime/declaration export ABI pins.
+- The SDD reports record the original work and both sequential review-fix units.
 
 Commits
 
-- `dd560c7d test(authority): specify governed effect contracts` (RED test)
-- `4c7061e0 feat(authority): add governed effect contracts`
-- `42e88337 docs(sdd): report governed effect contract task`
-- `f027a1ec test(authority): specify neutral mandate v2` (RED test)
-- `7df9d748 feat(authority): add neutral mandate v2`
-- `cbdd17f3 test(authority): define readback projection grammar` (RED test)
-- `fcb4645c fix(authority): validate readback projections`
+- `dd560c7d` through `fcb4645c`: original Task 1 RED/GREEN units.
+- `ad797fb5` through `32733003`: first review-fix implementation units.
+- `fd7de798` through `e9dc7c8c`: review-fix unit 1A.
+- `aeaa95b7`, `5efdf542`, `e8320e03`, and `2118ac89`: review-fix unit 1B before report publication.
 
-What changed
+Deviations from the plan and why
 
-- Added a provider-neutral, closed `ToolEffectContractV1` parser/digest plus governed outcome lifecycle parser and chronology verifier.
-- Added the contract as an additive authority wire kind and public authority export; existing `TransportEffect` remains unchanged.
-- Added neutral contract/pack and compile type seams, plus a functional additive V2 mandate parser/digest and exact provider/account/destination subset mission derivation without changing V1 parsing or digests.
-- Added its published JSON schema, golden vector, and regenerated adapter contract artifacts.
-- Defined readback projection paths as closed RFC 6901-style JSON pointers and updated the package runtime/declaration export allowlists.
+- None. JSON Schema cannot express result labels being disjoint across separate arrays; AJV behavior tests document that structural limit and prove the runtime closes it.
 
-Deviations
-
-- The existing requested broad test command cannot compile this worktree before the task because package self-references resolve only after the full build; the RED test correctly also failed for the missing module before implementation.
-- V2 uses the orchestrator-specified closed bindings shape; no provider or harness enums were introduced.
-
-Test results (verbatim tail)
+Test results
 
 ```text
-node --import tsx --test test/authority/effect-contract.test.ts
-Error [ERR_MODULE_NOT_FOUND]: Cannot find package 'tsx' imported from C:\\Users\\maxim\\CascadeProjects\\.worktrees\\reelier-universal-governed-outcomes\\
-```
-
-```text
-npx tsc --noEmit --target ES2022 --module NodeNext --moduleResolution NodeNext --strict --esModuleInterop src/authority/tool-effect-contract.ts test/authority/effect-contract.test.ts src/authority/types.ts src/authority/wire.ts src/authority/pack.ts src/authority/compile.ts src/authority/agent-mandate.ts src/authority/index.ts
-(exit 0)
-
-npx tsc --noEmit --target ES2022 --module NodeNext --moduleResolution NodeNext --strict --esModuleInterop src/authority/agent-mandate.ts test/authority/agent-mandate.test.ts src/authority/index.ts
-(exit 0)
-
-node scripts/build-authority-contract.mjs --check
-(exit 0)
-
-```text
-npm run build
-(exit 0)
-
-npx tsc -p tsconfig.test.json
-(exit 0)
-
-node --test dist-test/test/authority/effect-contract.test.js dist-test/test/authority/wire.test.js dist-test/test/authority/compile.test.js dist-test/test/authority/contract.test.js dist-test/test/authority/agent-mandate.test.js dist-test/test/authority/package.test.js
-tests 66
-pass 66
-fail 0
-```
+See task-1-fix-round-1b-report.md for the final verbatim gate output.
 ```
 
 Open risks
 
-- `node --import tsx --test` remains unavailable because `tsx` is not installed; the repository's compiled test path above is the verified local prerequisite-compatible path.
+- The standard JSON Schema artifact cannot represent cross-array result disjointness, so consumers must use the closed runtime parser for that invariant.

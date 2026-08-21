@@ -1,32 +1,42 @@
 Files changed
 
 - `src/authority/tool-effect-contract.ts`
+- `src/authority/agent-mandate.ts`
 - `src/authority/index.ts`
+- `contract/authority/v1/tool-effect-contract.schema.json`
+- `contract/authority/v1/golden-vectors.json`
+- `contract/authority/v1/adapter-contract-v1.json`
+- `src/authority/adapter-contract.ts`
+- `scripts/build-authority-contract.mjs`
 - `test/authority/effect-contract.test.ts`
+- `test/authority/wire.test.ts`
+- `test/authority/package.test.ts`
+- `.superpowers/sdd/2026-08-20-universal-governed-outcomes-oss/task-1-report.md`
+- `.superpowers/sdd/2026-08-20-universal-governed-outcomes-oss/task-1-fix-round-1-report.md`
+- `.superpowers/sdd/2026-08-20-universal-governed-outcomes-oss/task-1-fix-round-1a-report.md`
+- `.superpowers/sdd/2026-08-20-universal-governed-outcomes-oss/task-1-fix-round-1b-report.md`
+
+What changed per file
+
+- Unit 1A closes inert V2 mission snapshots and governed outcome/context verification.
+- Unit 1B aligns the ToolEffect JSON Schema with runtime-representable bounds and closures, regenerates the public adapter ABI, pins declaration exports independently, and pins legacy V1 vector digests.
+- The report files correct their prior incomplete inventory and unbalanced Markdown fence.
 
 Commits
 
-- `ad797fb5 test(authority): reject inert hostile contract graphs`
-- `e5b7aefd fix(authority): snapshot effect contracts inertly`
-- `3402e471 fix(authority): parse governed lifecycle records`
+- 1A: `fd7de798`, `002761d1`, `345c97d4`, `726b3f2f`, `e9dc7c8c`.
+- 1B: `aeaa95b7`, `5efdf542`, `e8320e03`, `2118ac89` before report publication.
 
-What changed
+Deviations from the plan and why
 
-- Added descriptor-based bounded inert snapshots for ToolEffect parsing, which rejects nested accessors without invoking them.
-- Made the outcome verifier parse raw input and added closed reservation, attempt, and observation parsers/digests.
-- Enforced provider-crossing dispatch for verified outcomes and prevented provider-crossing resend after ambiguity.
+- None. Cross-array result-label disjointness remains a runtime-only rule because it is not expressible in the published JSON Schema dialect.
 
-Test results (verbatim tail)
+Test results
 
 ```text
-npm run build
-npx tsc -p tsconfig.test.json
-node --test dist-test/test/authority/effect-contract.test.js
-tests 4
-pass 4
-fail 0
+See task-1-fix-round-1b-report.md for the final verbatim gate output.
 ```
 
 Open risks
 
-- Review round remains incomplete: provider-pack, mission-claim, governed-receipt parsers/digests, verification-time/maximum-grade enforcement, schema alignment, independent declaration pinning, and report inventory repairs still require work.
+- JSON Schema validators alone cannot enforce disjoint result labels across the four result arrays.
