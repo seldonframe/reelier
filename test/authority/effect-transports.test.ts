@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import * as effectTransports from "../../src/authority/host/effect-transports.js";
 import { createReservedDispatchHandle } from "../../src/authority/gate.js";
 import {
   compileEffectTransportV1 as compileEffectTransportWithHostKeyV1,
@@ -23,6 +24,75 @@ const succeed = (sink: EffectTransportResultSinkV1, outcome: string, data: unkno
 const slackSchemas = (_request: unknown, sink: EffectTransportResultSinkV1): void => sink.success(JSON.stringify({ serverSchemaDigest: SLACK_LIKE_BINDING.serverSchemaDigest, toolSchemaDigest: SLACK_LIKE_BINDING.toolSchemaDigest }));
 const compileEffectTransportV1 = (input: Omit<Parameters<typeof compileEffectTransportWithHostKeyV1>[0], "observationAuthKey">, key = observationAuthKey) =>
   compileEffectTransportWithHostKeyV1({ ...input, observationAuthKey: key } as Parameters<typeof compileEffectTransportWithHostKeyV1>[0] & { observationAuthKey: string });
+
+const mintTrustedExecutor = (callbacks: unknown): unknown =>
+  (effectTransports as unknown as { mintTrustedEffectTransportExecutorV1(callbacks: unknown): unknown }).mintTrustedEffectTransportExecutorV1(callbacks);
+
+test("raw executor objects refuse before host binding resolution or provider execution", () => {
+  let resolutions = 0, calls = 0;
+  assert.throws(() => compileEffectTransportWithHostKeyV1({
+    contract: CALENDAR_LIKE_CONTRACT,
+    binding: CALENDAR_LIKE_BINDING,
+    modelInput: { eventId: "event-9", title: "Review" },
+    observationAuthKey,
+    resolveHostBindings: async () => { resolutions++; return host; },
+    executor: { http: { call: () => { calls++; } } },
+  } as never), /trusted.*executor|minted.*capability/i);
+  assert.deepEqual({ resolutions, calls }, { resolutions: 0, calls: 0 });
+});
+
+test("minting creates a blank opaque capability and trusted callback execution succeeds", async () => {
+  let received: unknown;
+  const executor = mintTrustedExecutor({
+    http: { call: (request: unknown, sink: EffectTransportResultSinkV1): void => { received = request; succeed(sink, "ok", { eventId: "event-9", state: "accepted" }); } },
+  });
+  assert.deepEqual(Reflect.ownKeys(executor as object), []);
+  assert.equal(Object.getPrototypeOf(executor), null);
+  const compiled = compileEffectTransportWithHostKeyV1({
+    contract: CALENDAR_LIKE_CONTRACT,
+    binding: CALENDAR_LIKE_BINDING,
+    modelInput: { eventId: "event-9", title: "Review" },
+    observationAuthKey,
+    resolveHostBindings: async () => host,
+    executor,
+  } as never);
+  const outcome = await compiled.adapter.dispatch(dispatchState(CALENDAR_LIKE_CONTRACT, compiled.effect));
+  assert.equal(outcome.kind, "acknowledged");
+  assert.deepEqual(received, {
+    method: "POST",
+    url: "https://calendar.invalid/calendars/destination-1/events",
+    body: { model: { eventId: "event-9", title: "Review" }, host: { account: "account-1", destination: "destination-1", limit: "limit-1" } },
+    credential: "credential-super-secret",
+    requestSchemaDigest: sha("3"),
+  });
+});
+
+test("trusted executor minting rejects functions, accessors, and proxies without executing traps", () => {
+  let traps = 0;
+  const accessor = Object.defineProperty(Object.create(null), "http", { enumerable: true, get() { traps++; return { call() {} }; } });
+  const proxy = new Proxy(Object.create(null), { get() { traps++; throw new Error("executor trap"); }, ownKeys() { traps++; throw new Error("executor trap"); } });
+  for (const invalid of [() => undefined, accessor, proxy]) {
+    assert.throws(() => mintTrustedExecutor(invalid), /trusted.*executor|callback|closed|data/i);
+  }
+  assert.equal(traps, 0);
+});
+
+test("callback contract violations never inspect Promise constructor or species", async () => {
+  let traps = 0;
+  const returned = Promise.resolve();
+  Object.defineProperty(returned, "constructor", { get() { traps++; throw new Error("species trap"); } });
+  const executor = mintTrustedExecutor({ http: { call: (): void => returned as never } });
+  const compiled = compileEffectTransportWithHostKeyV1({
+    contract: CALENDAR_LIKE_CONTRACT,
+    binding: CALENDAR_LIKE_BINDING,
+    modelInput: { eventId: "event-9", title: "Review" },
+    observationAuthKey,
+    resolveHostBindings: async () => host,
+    executor,
+  } as never);
+  await assert.rejects(() => compiled.adapter.dispatch(dispatchState(CALENDAR_LIKE_CONTRACT, compiled.effect)), /callback.*undefined|transport boundary failed/i);
+  assert.equal(traps, 0);
+});
 
 test("MCP compilation closes model input before host injection and omits credentials from evidence", async () => {
   let resolved = 0;
