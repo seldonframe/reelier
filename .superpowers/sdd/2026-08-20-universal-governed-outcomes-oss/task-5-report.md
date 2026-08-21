@@ -3,105 +3,122 @@
 - `.superpowers/sdd/2026-08-20-universal-governed-outcomes-oss/task-5-brief.md`
 - `.superpowers/sdd/2026-08-20-universal-governed-outcomes-oss/task-5-report.md`
 - `docs/superpowers/plans/2026-08-20-universal-governed-outcomes-oss.md`
+- `scripts/build-packs.mjs`
 - `src/authority/host/agent-tools.ts`
 - `src/authority/host/github-linear-mission-runtime.ts`
-- `src/authority/host/index.ts`
-- `src/authority/host/local.ts`
-- `src/authority/host/outcome-kernel-fs-storage.ts`
-- `src/authority/ingress/agent-tool-contracts.ts`
+- `src/authority/host/linear-outcome-runner.ts`
 - `src/authority/ingress/http.ts`
 - `src/authority/ingress/mcp.ts`
-- `src/authority/ingress/openapi.ts`
+- `src/authority/packs/github-linear-outcomes.ts`
+- `src/packs/conformance.ts`
+- `src/packs/linear-outcomes/compile.ts`
+- `src/packs/linear-outcomes/index.ts`
+- `src/packs/linear-outcomes/manifest.ts`
 - `conformance/continuity-adapter/v1/eve-fixture/agent/agent.ts`
-- `conformance/continuity-adapter/v1/eve-fixture/agent/lib/agent-tool-schema.ts`
-- `conformance/continuity-adapter/v1/eve-fixture/agent/lib/cell.ts`
-- `conformance/continuity-adapter/v1/eve-fixture/agent/lib/governed-outcomes.ts`
-- `conformance/continuity-adapter/v1/eve-fixture/agent/tools/reelier_agent_status.ts`
-- `conformance/continuity-adapter/v1/eve-fixture/agent/tools/reelier_outcome_proposal.ts`
-- `conformance/continuity-adapter/v1/eve-fixture/agent/tools/reelier_outcome_request.ts`
-- `conformance/continuity-adapter/v1/eve-fixture/agent/tools/reelier_outcome_status.ts`
-- `conformance/continuity-adapter/v1/eve-fixture/package.json`
+- `conformance/continuity-adapter/v1/eve-fixture/agent/lib/governed-outcomes.ts` (deleted)
 - `conformance/continuity-adapter/v1/eve-fixture/scripts/eve-governed-outcomes.mjs`
-- `conformance/continuity-adapter/v1/eve-fixture/tests/cell.test.ts`
+- `conformance/continuity-adapter/v1/eve-fixture/scripts/eve-process.mjs`
+- `test/acceleration-preflight.test.ts`
 - `test/authority/agent-tools.test.ts`
 - `test/authority/github-linear-mission-runtime.test.ts`
-- `test/authority/ingress.test.ts`
-- `test/authority/local-multi-definition-jobs.test.ts`
-- `test/authority/outcome-kernel-fs-storage.test.ts`
+- `test/authority/github-linear-outcomes.test.ts`
+- `test/authority/linear-outcomes-pack.test.ts`
+- `test/continuity/eve-binding-static.test.ts`
 - `test/continuity/eve-governed-outcomes.test.ts`
+- `test/continuity/eve-kill-resume.test.ts`
+- `test/continuity/support/genuine-governed-eve.ts` (created)
+- `test/packs/conformance.test.ts`
 
 # What changed
 
-- The quartet is defined once in `agent-tool-contracts.ts`. MCP definitions carry canonical input and output schemas and return structured output; HTTP and OpenAPI share the same paths, parameters, schemas, and success statuses. Parsed inputs and outputs reject proxies/accessors, are detached, closed, bounded, and response-schema validated.
-- Harness capability is an immutable protocol descriptor. Callers cannot set evidence fields; it remains `fixtureStatus: not-passed` and `liveTested: false` because this deterministic fixture is not verifier-bound live-provider evidence.
-- `outcome-kernel-fs-storage.ts` supplies production `OutcomeKernel` storage with per-record exclusive locks, same-directory temporary files, file-handle sync, and atomic rename. Claims and receipt heads converge after runtime recreation and semantic conflicts refuse.
-- `github-linear-mission-runtime.ts` is the only GitHub/Linear-specific composition. It builds the reviewed Task 4 pack, compiles every operation with `compileEffectTransportV1`, multiplexes them through `DispatchCoordinator`, and executes via production `OutcomeKernel`. The composite Outcome runs all five reviewed GitHub+Linear operations; Linear-only runs the reviewed evidence-comment and status operations. Host bindings remain host-resolved. Requests, reservations, activation evidence, receipts, and reviews are file-backed.
-- Eve consumes canonical JSON schemas rather than restating them. All four tools identify the authenticated workload and call the remote Cell; Outcome request includes the selected opaque `outcomeRef`. Cell response parsing uses the canonical closed output parser.
-- The real pinned Eve 0.39 driver POSTs run/resume prompts for both missions, waits on native stream boundaries, and proves completed native `action.result` events for all four tools twice. After the ambiguous composite request it stops Eve, recreates the production mission runtime on the same durable root, restarts Eve on the same staged app/root/Cell identity, and reconciles via readback without resend. It restarts again under a distinct authenticated Cell identity for Linear-only.
-- Two Outcomes and one review are derived from durable artifacts: review creation requires two distinct reconciled request IDs carrying receipt references. Activation and routine-approval counts are read from persisted evidence, not constants in the test report.
+- The provider-neutral canonical quartet remains one contract projected to MCP, HTTP/OpenAPI, and Eve. Inputs and backend outputs are bounded, closed, detached, proxy/accessor-safe values. HTTP/MCP resolve the current runtime on every call, so runtime B is used after a crash instead of a captured runtime A.
+- The reviewed composition now has seven internal definitions under one signed standing Job Card: three GitHub operations, composite Linear comment/status fixed to `REEL-TEST-1`, and Linear-only comment/status fixed to `REEL-TEST-2`. The model cannot supply an issue, source selector, or target choice. The two Linear pairs carry distinct policy, contract, semantic-identity, and idempotency digests and exact independent predecessor policies.
+- Both missions execute Task4C production components: the genuine gate and file ledger, `compileGovernedEffectTransportV1`, `DispatchCoordinator`, `OutcomeKernel`, signed-journal lifecycle storage, file receipt publication, reviewed GitHub runner, and reviewed Linear executors. There is no Task5 Map lifecycle or raw generic provider runtime.
+- Runtime evidence is folded rather than labeled: one activation requires the verified signed Job Card's exact seven aliases and a non-revoked signed activation event for every state; routine approvals are enumerated from signed journal events; reviews require reconciled durable receipt-bearing requests.
+- Eve 0.39 sends real run/resume prompts through all four remote Cell tools. The composite hits exact-head ambiguity, runtime A is replaced by B on the same durable root, and B reconciles without merge resend. Linear-only then selects the second host-owned target. Four native Eve sessions are distinct; two runtime execution sessions and all seven reservations are distinct.
+- The kill/resume matrix now uses the same genuine signed fixture. It kills the actual Eve process tree after durable ambiguity, reopens runtime B, starts a different Eve session, and reconciles the five-operation composite. Driver and matrix waits have bounded polling; the matrix child has a 240-second kill guard and the test a 300-second timeout.
+- The unused synthetic `runEveGovernedOutcomeRehearsalV1` implementation was deleted. Search found no production/package export capable of emitting hard-coded rehearsal success. The fixture's four model-facing tools statically import only the remote Cell binding.
+- First-party inventory remains twelve packs and grows from sixteen to eighteen aliases; the Linear pack contains exactly four definitions.
 
 # Deviations from plan
 
-- No implementation-scope deviation. The independent-review amendment authorized the two production host files, their tests, the Eve schema bridge and driver, and the additional fixture changes.
-- Eve relocates authored modules into a temporary snapshot while Reelier's existing continuity module dynamically requires Ajv. The authorized driver supplies `NODE_PATH` to the already-installed worktree root `node_modules` so the relocated snapshot can resolve the linked package dependency. This is a fixture packaging prerequisite, not production Reelier behavior.
-- A bare `npm run check:continuity-adapter` was invoked once without its required candidate and printed the documented usage failure. The correct core-candidate invocation then passed.
-- No external provider write, live-provider certification, push, merge, tag, or publication occurred.
+- No scope expansion. The two-target and genuine-Eve amendments explicitly authorized every changed implementation/test/build file above.
+- The staged Eve application sets `NODE_PATH` to the already-installed worktree-root `node_modules`. This is a fixture packaging prerequisite for Eve's relocated snapshot, not production Reelier behavior.
+- The full-suite invocation began before the request for an external timeout wrapper, so it was not externally wrapped. It completed within the 15-minute monitoring cap and was not rerun. Tool output truncation did not retain the final aggregate line; no aggregate count is claimed.
+- No external provider write, live credential, push, merge, tag, publication, or live-provider certification occurred.
 
 # Test results
 
-Focused authority/runtime/Eve suite:
+TypeScript and build gates exited 0:
 
 ```text
-ℹ tests 18
-ℹ suites 0
-ℹ pass 18
-ℹ fail 0
-ℹ cancelled 0
-ℹ skipped 0
-ℹ todo 0
-ℹ duration_ms 36447.1435
+> reelier@0.32.1 build
+> node scripts/build-authority-contract.mjs --check && node scripts/build-bootstrap-contract.mjs --check && tsc -p tsconfig.json && node scripts/build-authority-contract.mjs --copy-schemas && node scripts/build-packs.mjs
+built cloudflare_api_token, cloudflare_dns, github_issue_labels, github_release, gmail, gmail_labels, hubspot_slack_information_flow, linear_outcomes, neon_database, slack_channel_topic, stripe, vercel_deployment
 ```
 
-Pinned Eve fixture boundary suite:
+`npx tsc -p tsconfig.json --pretty false` and `npx tsc -p tsconfig.test.json --pretty false` exited 0.
+
+Focused canonical/pack/runtime/Eve gate:
 
 ```text
-ℹ tests 13
-ℹ suites 0
-ℹ pass 13
-ℹ fail 0
-ℹ cancelled 0
-ℹ skipped 0
-ℹ todo 0
-ℹ duration_ms 325.0833
+tests 34
+suites 0
+pass 34
+fail 0
+cancelled 0
+skipped 0
+todo 0
+duration_ms 54769.7904
 ```
 
-Real pinned Eve process test:
+Pack inventory/conformance/preflight gate:
 
 ```text
-✔ real Eve 0.39 drives both reviewed missions through the remote quartet and durable recovery (33608.264ms)
-ℹ tests 2
-ℹ suites 0
-ℹ pass 2
-ℹ fail 0
-ℹ cancelled 0
-ℹ skipped 0
-ℹ todo 0
-ℹ duration_ms 33823.3306
+tests 12
+suites 0
+pass 12
+fail 0
+cancelled 0
+skipped 0
+todo 0
+duration_ms 11629.0785
 ```
 
-The following commands exited 0: `npm run build`, `npx tsc -p tsconfig.test.json`, fixture `typecheck`, fixture `test:runtime`, `check:authority-contract`, `check:outcome-profile-contract`, `check:bootstrap-contract`, and `npm run check:continuity-adapter -- ./conformance/continuity-adapter/v1/fixtures/core-candidate.mjs`.
-
-The corrected continuity-adapter gate tail was:
+Real Eve governed missions:
 
 ```text
-{"v":"reelier.continuity-adapter-conformance-report/v1","status":"passed","maturity":"reproduced","adapterId":"core","harnessId":"core","harnessVersion":"1.0.0","checks":[{"id":"host-identity","status":"passed"},{"id":"identity-isolation-refuses","status":"passed"},{"id":"replacement-projection","status":"passed"},{"id":"resume-is-read-only","status":"passed"},{"id":"cursor-contention","status":"passed"},{"id":"ambiguity-blocks-resend","status":"passed"},{"id":"status-does-not-dispatch","status":"passed"},{"id":"semantic-retry-is-idempotent","status":"passed"},{"id":"request-id-conflict-refuses","status":"passed"},{"id":"uncertainty-is-honest","status":"passed"}]}
+real Eve 0.39 drives both reviewed missions through the remote quartet and durable recovery (51239.3397ms)
+tests 2
+pass 2
+fail 0
+duration_ms 51531.3293
 ```
 
-The pre-fix whole-repository run recorded on this branch remained at 3692 pass, 28 fail, and 20 skipped, in the previously reported Windows/Linux Authority Cell, release, Linux-only, and missing-native-artifact baseline classes. It was not rerun after this fix; no green full-suite claim is made. `git diff --check` exited 0.
+Real Eve kill/resume matrix:
+
+```text
+real Eve 0.39.0 preserves Reelier continuity across process and session boundaries (77436.8191ms)
+tests 10
+pass 10
+fail 0
+duration_ms 77586.0923
+```
+
+Contract/package/fixture compatibility gates exited 0: authority, bootstrap, and Outcome-profile contract checks; public package/export tests 9/9 (`duration_ms 2454.3011`); Eve fixture typecheck; Eve Cell/runtime tests 13/13 (`duration_ms 253.8292`).
+
+The full serial `npm test` completed but exited 1. All Task5 canonical ingress, pack, runtime, real Eve, and kill/resume tests passed in that run. At least these unrelated baseline/platform failures were observed in the streamed output:
+
+- `pre-readiness lifecycle ceremony exposes only activated public descriptors and an opaque process-local handle`
+- a `native-https-route-join` prepared-authority revalidation failure
+- `child replacement before, during, and after open is refused without a mixed generation`
+- `installed build digest covers this package's shipped files contract` because `native/bootstrap-helper/manifest.json` is absent
+
+The output transport truncated the final aggregate, so exact full-suite totals are not reported. `git diff --check` exited 0.
 
 # Open risks and non-claims
 
-- The file storage protects process-crash/reopen consistency with synced files and atomic rename, but does not fsync parent directories. It does not claim survival of sudden power loss or storage-controller failure.
-- The deterministic provider is local-only. It proves production kernel/pack/transport/receipt composition and no-resend recovery, not live GitHub or Linear behavior or content correctness.
-- Capability remains `liveTested: false`; the real Eve process proof is not silently promoted into a verifier-bound capability artifact.
-- Reelier receipts still do not prove traffic completeness, topology, semantic safety, or production readiness. Legacy job tools remain additive compatibility surface.
+- The deterministic local providers prove genuine production composition and crash/reopen no-resend behavior, not live GitHub/Linear behavior, provider certification, content correctness, or semantic safety.
+- Harness capability remains `fixtureStatus: not-passed` and `liveTested: false`; real Eve process evidence is not an immutable independently verified capability credential.
+- Signed authorization handles and provider/resource identities correctly remain in host-owned authority and receipt artifacts for answerability. Actual Cell/Eve bearer tokens and fixture credential values are absent from model-facing actions/results and genuine ledger/journal/receipt roots. Raw Eve prompts/reasoning are absent from Reelier durable roots; Eve's own harness transcript remains harness-owned.
+- Receipts do not prove traffic completeness, topology, exclusive enforcement, or production readiness. Legacy job tools remain additive compatibility surface.
