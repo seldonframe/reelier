@@ -199,6 +199,24 @@ test("provider and host boundary failures are replaced without leaking secret-be
     assert.doesNotMatch(rendered, new RegExp(secret));
     return true;
   });
+
+  const readbackFailure = compileEffectTransportV1({
+    contract: CALENDAR_LIKE_CONTRACT,
+    binding: CALENDAR_LIKE_BINDING,
+    modelInput: { eventId: "event-9", title: "Review" },
+    resolveHostBindings: async () => host,
+    ports: { http: { call: async request => {
+      if (request.method === "POST") return wire("unknown", null);
+      throw new Error(`readback body included ${secret} and arbitrary-readback-body`);
+    } } },
+  });
+  const dispatched = await readbackFailure.adapter.dispatch(dispatchState(CALENDAR_LIKE_CONTRACT, readbackFailure.effect));
+  await assert.rejects(() => readbackFailure.adapter.reconcile!(dispatchState(CALENDAR_LIKE_CONTRACT, readbackFailure.effect), dispatched), error => {
+    const rendered = String(error);
+    assert.match(rendered, /effect transport boundary failed/i);
+    assert.doesNotMatch(rendered, new RegExp(`${secret}|arbitrary-readback-body`));
+    return true;
+  });
 });
 
 test("MCP runtime schema digests are checked and passed before the consequential call", async () => {
@@ -231,6 +249,52 @@ test("MCP runtime schema digests are checked and passed before the consequential
   const drifted = compile(sha("f"));
   await assert.rejects(() => drifted.adapter.dispatch(dispatchState(SLACK_LIKE_CONTRACT, drifted.effect)), /MCP schema drift/i);
   assert.deepEqual({ inspections, calls }, { inspections: 2, calls: 1 });
+});
+
+test("MCP readback binds its own runtime tool schema digest before the call", async () => {
+  const readbackToolDigest = sha("a");
+  const binding = Object.freeze({
+    ...SLACK_LIKE_BINDING,
+    readback: Object.freeze({ operation: "message.get", tool: "get_message", toolSchemaDigest: readbackToolDigest }),
+  });
+  const contract: ToolEffectContractV1 = Object.freeze({
+    ...SLACK_LIKE_CONTRACT,
+    operationDigest: digestEffectTransportBindingV1(binding),
+    readback: Object.freeze({ operation: "message.get", projection: Object.freeze(["/messageId"]) }),
+    maximumEvidenceGrade: "partial",
+  });
+  const inspected: unknown[] = [], called: any[] = [];
+  const compile = (driftReadback: boolean) => compileEffectTransportV1({
+    contract,
+    binding,
+    modelInput: { channel: "general", text: "hello" },
+    resolveHostBindings: async () => host,
+    ports: { mcp: {
+      inspectSchemas: async request => {
+        inspected.push(request);
+        const expected = request.tool === binding.tool ? binding.toolSchemaDigest : binding.readback.toolSchemaDigest;
+        return JSON.stringify({ serverSchemaDigest: binding.serverSchemaDigest, toolSchemaDigest: driftReadback && request.tool === binding.readback.tool ? sha("f") : expected });
+      },
+      call: async request => {
+        called.push(request);
+        return request.tool === binding.tool ? wire("unknown", null) : wire("ok", { messageId: "m-1" });
+      },
+    } },
+  });
+  const valid = compile(false), validState = dispatchState(contract, valid.effect);
+  const ambiguous = await valid.adapter.dispatch(validState);
+  const matched = await valid.adapter.reconcile!(validState, ambiguous);
+  assert.equal(matched.reconciliationStatus, "matched");
+  assert.deepEqual(inspected, [{ server: binding.server, tool: binding.tool }, { server: binding.server, tool: binding.readback.tool }]);
+  assert.deepEqual(called.map(request => ({ server: request.server, tool: request.tool, serverSchemaDigest: request.serverSchemaDigest, toolSchemaDigest: request.toolSchemaDigest })), [
+    { server: binding.server, tool: binding.tool, serverSchemaDigest: binding.serverSchemaDigest, toolSchemaDigest: binding.toolSchemaDigest },
+    { server: binding.server, tool: binding.readback.tool, serverSchemaDigest: binding.serverSchemaDigest, toolSchemaDigest: binding.readback.toolSchemaDigest },
+  ]);
+
+  const drifted = compile(true), driftedState = dispatchState(contract, drifted.effect);
+  const secondAmbiguous = await drifted.adapter.dispatch(driftedState);
+  await assert.rejects(() => drifted.adapter.reconcile!(driftedState, secondAmbiguous), /MCP schema drift/i);
+  assert.equal(called.length, 3);
 });
 
 test("ambiguous writes use authoritative readback without resend and semantic conflicts are explicit", async () => {
@@ -312,8 +376,11 @@ test("three unrelated adapters run through the unchanged Outcome kernel with hon
   ] as const;
   for (let index = 0; index < cases.length; index++) {
     const item = cases[index], compiled = compileEffectTransportV1({ contract: item.contract, binding: item.binding, modelInput: item.model, resolveHostBindings: async () => host, ports: item.ports });
-    const result = await runThroughKernel(item.contract, compiled, `reservation-${index}`);
+    const publishedReceipts: GovernedReceiptV1[] = [];
+    const result = await runThroughKernel(item.contract, compiled, `reservation-${index}`, publishedReceipts);
     assert.equal(result.effects[0]!.status, item.status, item.contract.provider);
+    assert.equal(publishedReceipts.length, 1);
+    assert.doesNotMatch(JSON.stringify(publishedReceipts[0]), /credential-super-secret/);
   }
 });
 
@@ -322,10 +389,10 @@ function dispatchState(contract: ToolEffectContractV1, effect: unknown) {
   return { reservation: { reservationId: "reservation-1", state: "reserved" as const, intent: { effectDigest, effectCanonicalBase64: "e30=" } }, effect, effectCanonicalBase64: "e30=", effectDigest };
 }
 
-async function runThroughKernel(contract: ToolEffectContractV1, compiled: ReturnType<typeof compileEffectTransportV1>, reservationId: string) {
+async function runThroughKernel(contract: ToolEffectContractV1, compiled: ReturnType<typeof compileEffectTransportV1>, reservationId: string, publishedReceipts: GovernedReceiptV1[] = []) {
   const effectDigest = digestToolEffectContractV1(contract), state = dispatchState(contract, compiled.effect) as any;
   state.reservation.reservationId = reservationId;
-  const handle = createReservedDispatchHandle(state), storage = durableStorage(), mission: MissionClaimV1 = { v: "reelier.mission-claim/v1", missionId: `mission-${reservationId}`, mandateDigest: sha("7"), promptDigest: sha("8"), contractDigests: [effectDigest], claimedAt: at(1_000) };
+  const handle = createReservedDispatchHandle(state), storage = durableStorage(publishedReceipts), mission: MissionClaimV1 = { v: "reelier.mission-claim/v1", missionId: `mission-${reservationId}`, mandateDigest: sha("7"), promptDigest: sha("8"), contractDigests: [effectDigest], claimedAt: at(1_000) };
   const ledgerState: any = { ...state.reservation, intent: { ...state.reservation.intent } };
   const coordinator: any = {
     describe: () => ({ reservationId, state: ledgerState.state, effectDigest, allocationId: null }),
@@ -344,7 +411,7 @@ async function runThroughKernel(contract: ToolEffectContractV1, compiled: Return
   return kernel.execute({ missionId: mission.missionId, effects: [{ contract, handle, verifier: compiled.verifier }] });
 }
 
-function durableStorage(): OutcomeKernelStorage {
+function durableStorage(publishedReceipts: GovernedReceiptV1[] = []): OutcomeKernelStorage {
   const missions = new Map<string, MissionClaimV1>(), effects = new Map<string, StoredEffectLifecycleV1>(), receipts = new Map<string, { receiptId: string; receiptDigest: string; receiptRef: string }>();
   return {
     durable: true,
@@ -352,7 +419,7 @@ function durableStorage(): OutcomeKernelStorage {
     async loadMission(id) { return missions.get(id) ?? null; },
     async loadEffect(_missionId, id) { return effects.get(id) ?? null; },
     async storeEffect(value, revision) { const prior = effects.get(value.reservation.reservationId); if ((prior?.revision ?? 0) !== revision) return { status: "conflict" }; const stored = Object.freeze({ ...value, revision: revision + 1 }); effects.set(value.reservation.reservationId, stored); return { status: "stored", value: stored }; },
-    async compareAndPublishReceipt(receipt: GovernedReceiptV1, receiptDigest: string) { const prior = receipts.get(receipt.receiptId); if (prior && prior.receiptDigest !== receiptDigest) return { status: "conflict" }; const head = prior ?? { receiptId: receipt.receiptId, receiptDigest, receiptRef: authorityDigest(receipt) }; receipts.set(receipt.receiptId, head); return { status: prior ? "exact-existing" : "published", receiptDigest: head.receiptDigest, receiptRef: head.receiptRef }; },
+    async compareAndPublishReceipt(receipt: GovernedReceiptV1, receiptDigest: string) { publishedReceipts.push(receipt); const prior = receipts.get(receipt.receiptId); if (prior && prior.receiptDigest !== receiptDigest) return { status: "conflict" }; const head = prior ?? { receiptId: receipt.receiptId, receiptDigest, receiptRef: authorityDigest(receipt) }; receipts.set(receipt.receiptId, head); return { status: prior ? "exact-existing" : "published", receiptDigest: head.receiptDigest, receiptRef: head.receiptRef }; },
     async loadReceipt(id) { return receipts.get(id) ?? null; },
   };
 }
