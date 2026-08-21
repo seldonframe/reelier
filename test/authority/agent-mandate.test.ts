@@ -135,3 +135,22 @@ test("neutral mandate V2 accepts arbitrary providers and derives only an exact b
   assert.equal(deriveMandatedMissionV2({ mandate, promptDigest: `sha256:${"a".repeat(64)}`, outcomeKind: "record.create", harness: "future-harness", binding: { provider: "calendar-like", account: "account_1", destination: "calendar_1" }, requestedChildFanout: 1, requestedChangedFiles: 0, requestedChangedBytes: 0, now: new Date("2026-08-20T13:00:00.000Z") }).humanConfirmation, "not-required");
   assert.throws(() => deriveMandatedMissionV2({ mandate, promptDigest: `sha256:${"a".repeat(64)}`, outcomeKind: "record.create", harness: "future-harness", binding: { provider: "calendar-like", account: "account_1", destination: "other" }, requestedChildFanout: 1, requestedChangedFiles: 0, requestedChangedBytes: 0, now: new Date("2026-08-20T13:00:00.000Z") }));
 });
+
+test("neutral mandate V2 snapshots the complete mission request without invoking accessors", () => {
+  const mandate = { v: "reelier.agent-mandate/v2", agentId: "neutral-agent", revision: 1, rolePack: "neutral", harnesses: ["future-harness"], bindings: [{ provider: "calendar-like", account: "account_1", destinations: ["calendar_1"] }], outcomeKinds: ["record.create"], limits: { maxConcurrentMissions: 1, maxChildFanout: 1, maxChangedFiles: 0, maxChangedBytes: 0 }, humanConfirmation: "creation-only", exceptionBehavior: "stop-and-report", validFrom: "2026-08-20T12:00:00.000Z", validUntil: "2026-08-21T12:00:00.000Z", revocationGeneration: 0 } as const;
+  let getterReads = 0;
+  const hostile = Object.create(null, {
+    mandate: { enumerable: true, get() { getterReads++; return mandate; } },
+    promptDigest: { enumerable: true, value: `sha256:${"a".repeat(64)}` },
+    outcomeKind: { enumerable: true, value: "record.create" },
+    harness: { enumerable: true, value: "future-harness" },
+    binding: { enumerable: true, value: { provider: "calendar-like", account: "account_1", destination: "calendar_1" } },
+    requestedChildFanout: { enumerable: true, value: 1 },
+    requestedChangedFiles: { enumerable: true, value: 0 },
+    requestedChangedBytes: { enumerable: true, value: 0 },
+    now: { enumerable: true, value: new Date("2026-08-20T13:00:00.000Z") },
+  });
+
+  assert.throws(() => deriveMandatedMissionV2(hostile));
+  assert.equal(getterReads, 0);
+});
