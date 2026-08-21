@@ -315,12 +315,14 @@ test("prepared dispatch carries the exact one-call coordinator capability throug
     async recover() { return { ok: true, reservations: [persisted], highWaterMark: null, topology: { directorySync: "verified" } }; },
   } as any;
   let delegate: object | undefined;
+  const projection = { v: "reelier.prepared-effect-projection/v1" as const, transport: "fixed-cli", operationDigest: sha("6"), requestDigest: sha("7") };
+  const materializedRequestDigest = preparedDispatchProjectionDigest(projection);
   const restore = __testSetSourceAuthorityCellHostPlatform("linux");
   const coordinator = createSourceDispatchCoordinator(testLedger, {
     async prepare(state: import("../../src/authority/host/dispatch.js").DispatchRequestState, call: import("../../src/authority/host/dispatch.js").CoordinatorDispatchCallV1) {
       delegate = Object.freeze(Object.create(null));
       assert.equal(bindCoordinatorDispatchCallDelegateV1(call, delegate!, state), true);
-      return createSourcePreparedDispatch({ description: { v: "reelier.prepared-dispatch-description/v1", routeDigest: sha("4"), materializedRequestDigest: sha("5"), projection: { v: "reelier.prepared-effect-projection/v1", transport: "fixed-cli", operationDigest: sha("6"), requestDigest: sha("7") }, authorityGeneration: "generation_1", authorityExpiresAt: new Date(Date.now() + 60_000).toISOString(), absoluteDeadlineMs: performance.now() + 60_000, reservationId: expected.reservationId, allocationId: "allocation_1" }, send: async () => {
+      return createSourcePreparedDispatch({ description: { v: "reelier.prepared-dispatch-description/v1", routeDigest: sha("4"), materializedRequestDigest, projection, authorityGeneration: "generation_1", authorityExpiresAt: new Date(Date.now() + 60_000).toISOString(), absoluteDeadlineMs: performance.now() + 60_000, reservationId: expected.reservationId, allocationId: "allocation_1" }, send: async () => {
         assert.equal(consumeCoordinatorDispatchCallDelegateV1(delegate!, expected), true);
         return { kind: "acknowledged", resultDigest: sha("8") };
       } });

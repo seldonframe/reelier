@@ -17,7 +17,7 @@ export type ReconciliationStatus = "matched" | "not-applied" | "conflict" | "una
 export interface DispatchOutcome { readonly kind: "acknowledged" | "definitive-failure" | "ambiguous"; readonly resultDigest: string; readonly providerResultDigest?: string; readonly providerStatus?: number; readonly responseDigest?: string; /** Digest of the exact provider request bytes when confidential material was inserted inside the Authority Cell. */ readonly materializedRequestDigest?: string; readonly reconciliationStatus?: ReconciliationStatus; readonly normalizedProjectionDigest?: string | null; readonly receiptRef?: string; readonly evidenceDigest?: string; readonly priorReceiptDigest?: string; }
 declare const coordinatorDispatchCallBrand: unique symbol;
 export type CoordinatorDispatchCallV1 = Readonly<{ readonly [coordinatorDispatchCallBrand]: true }>;
-export interface DispatchAdapter { dispatch(state: DispatchRequestState, call?: CoordinatorDispatchCallV1): Promise<DispatchOutcome>; prepare?(state: DispatchRequestState): Promise<PreparedDispatch>; reconcile?(state: DispatchRequestState, outcome: DispatchOutcome): Promise<DispatchOutcome>; }
+export interface DispatchAdapter { dispatch(state: DispatchRequestState, call?: CoordinatorDispatchCallV1): Promise<DispatchOutcome>; prepare?(state: DispatchRequestState, call?: CoordinatorDispatchCallV1): Promise<PreparedDispatch>; reconcile?(state: DispatchRequestState, outcome: DispatchOutcome): Promise<DispatchOutcome>; }
 export interface DispatchEvidenceWriter { persist(input: Readonly<{ state: DispatchRequestState; outcome: DispatchOutcome; dispatchedRequestDigest: string; }>): Promise<void>; }
 export type DurableDispatchPublicationIdentityV1 = Readonly<{ v:"reelier.durable-dispatch-publication-identity/v1";reservationId:string;tenant:string;requestDigest:string;capabilityDigest:string;effectDigest:string;routeAuthorityDigest:string;expectedDispatchedRequestDigest:string;reservationIntentDigest:string }>;
 export type DurableDispatchPublicationQueryV1 = Readonly<{v:"reelier.durable-dispatch-publication-query/v1";identity:DurableDispatchPublicationIdentityV1;ledgerState:"dispatched"|"ambiguous";sendStarted:true}>;
@@ -182,9 +182,11 @@ export function createDispatchCoordinator(ledger: AuthorityLedger, adapter: Disp
         ) throw new Error("route authority generation or binding mismatch");
       }
       if (adapter.prepare && ledger.commitPreparedDispatch) {
+        const call = createCoordinatorDispatchCall(state);
+        try {
         certified?.onPhase?.("prepare");
         const context = state.reservation.intent.executionContext;
-        const prepared = await measureLatency(certified?.latencyRecorder, "prepare", () => adapter.prepare!(state));
+        const prepared = await measureLatency(certified?.latencyRecorder, "prepare", () => adapter.prepare!(state, call));
         const description: PreparedDispatchDescriptionV1 = prepared.description;
         if (routeAuthority && (description.routeDigest !== routeAuthority.routeDigest || description.materializedRequestDigest !== routeAuthority.expectedMaterializedRequestDigest)) throw new Error("prepared dispatch does not match durable route authority");
         if (certified) {
@@ -246,6 +248,7 @@ export function createDispatchCoordinator(ledger: AuthorityLedger, adapter: Disp
         const result = await measureLatency(certified?.latencyRecorder, "terminal-transition", () => ledger.transition(reservationId, "dispatched", terminal === "ambiguous" ? { to: "ambiguous" } : { to: terminal, resultDigest: outcome.resultDigest }));
         if (!result.ok) throw new Error(`dispatch result transition refused: ${result.reason}`);
         return Object.freeze({ ...outcome, materializedRequestDigest: dispatchedRequestDigest, ...(terminalPublication&&outcome.kind==="ambiguous"?{receiptRef:terminalPublication.receiptRef,evidenceDigest:terminalPublication.evidenceDigest,priorReceiptDigest:reservationRoot?.receiptRef}:{}) });
+        } finally { revokeCoordinatorDispatchCall(call as object); }
       }
       if (certified) throw new Error("certified dispatch requires prepared commit boundary");
       const transitioned = await ledger.transition(reservationId, "reserved", { to: "dispatched" });
