@@ -12,7 +12,7 @@ import { normalizeReservationPublicationId } from "./reservation-identity.js";
 import { createSignedJournal, type SignedJournal, type SignedJournalEventV1 } from "./signed-journal.js";
 import { createGitHubReleaseProviderEvidence } from "./github-release-evidence.js";
 import { assertGitHubReleaseHostedAuthorityBindingV1, type GitHubReleaseHostedAuthorityBindingV1 } from "./github-release-hosted-authority.js";
-import { mintTrustedEffectTransportExecutorV1, type TrustedEffectTransportExecutorV1 } from "./effect-transports.js";
+import { mintGovernedEffectTransportExecutorV1, type GovernedEffectTransportExecutorV1 } from "./effect-transports.js";
 import { GITHUB_RELEASE_OUTCOME_SERVER_SCHEMA_DIGEST_V1, assertGitHubReviewedReleasePackMemberV1, githubReleaseOutcomeBindingDigestV1, githubReleaseOutcomeToolSchemaDigestV1, githubReviewedOutcomePolicyDigestV1, githubReviewedReleasePackDigestV1, type GitHubLinearOutcomePackV1 } from "../packs/github-linear-outcomes.js";
 
 const ALIASES = Object.freeze({ github_release_candidate_publish_v1: "candidate-branch", github_release_pr_ensure_v1: "draft-pr", github_release_pr_merge_v1: "exact-sha-merge", github_release_tag_create_v1: "non-force-tag" } satisfies Record<string, ReleaseProviderEffectV1>);
@@ -64,8 +64,8 @@ const publicationConfirmers = new WeakMap<GitHubReleaseRunnerV1, (input: GitHubR
 const publicationEvidenceResolvers = new WeakMap<GitHubReleaseRunnerV1, (requestId: string) => Promise<string>>();
 const authoritativeHeadConfirmers = new WeakMap<GitHubReleaseRunnerV1, (query: DurableDispatchPublicationQueryV1, head: DurableDispatchPublicationHeadV1) => Promise<boolean>>();
 const runnerControllers = new WeakMap<GitHubReleaseRunnerV1, Readonly<{ execute(input: GitHubReleaseInvocationV1): Promise<GitHubReleaseRunResultV1>; reconcile(input: GitHubReleaseInvocationV1): Promise<GitHubReleaseRunResultV1>; recover(): Promise<readonly string[]> }>>();
-const outcomeExecutors = new WeakMap<GitHubReleaseRunnerV1, TrustedEffectTransportExecutorV1>();
-const outcomeExecutorFactories = new WeakMap<GitHubReleaseRunnerV1, (pack: GitHubLinearOutcomePackV1) => TrustedEffectTransportExecutorV1>();
+const outcomeExecutors = new WeakMap<GitHubReleaseRunnerV1, GovernedEffectTransportExecutorV1>();
+const outcomeExecutorFactories = new WeakMap<GitHubReleaseRunnerV1, (pack: GitHubLinearOutcomePackV1) => GovernedEffectTransportExecutorV1>();
 const brandedPreparedFallbacks = new WeakSet<object>();
 
 /** @internal Marks the genuine outcome runtime's prepared adapter as the GitHub execution owner. */
@@ -82,7 +82,7 @@ export function assertGitHubReleaseRunnerCapability(value: GitHubReleaseRunnerV1
 
 /** Adapts the reviewed candidate/PR/merge pack tools to the existing branded release saga.
  * The executor remains callback-only and carries no provider credential or release authority. */
-export function createGitHubReleaseOutcomeExecutorV1(runner: GitHubReleaseRunnerV1, pack?: GitHubLinearOutcomePackV1): TrustedEffectTransportExecutorV1 {
+export function createGitHubReleaseOutcomeExecutorV1(runner: GitHubReleaseRunnerV1, pack?: GitHubLinearOutcomePackV1): GovernedEffectTransportExecutorV1 {
   assertGitHubReleaseRunnerCapability(runner);
   if (pack) {
     githubReviewedReleasePackDigestV1(pack);
@@ -227,7 +227,7 @@ export async function createGitHubReleaseRunner(input: Readonly<{ rootDir: strin
     github_release_pr_merge_v1: Object.freeze({ alias: "github_release_pr_merge_v1" as const, reconcile: false }),
     github_release_pr_merge_readback_v1: Object.freeze({ alias: "github_release_pr_merge_v1" as const, reconcile: true }),
   });
-  const mintOutcomeExecutor = (reviewedPack: GitHubLinearOutcomePackV1 | null): TrustedEffectTransportExecutorV1 => mintTrustedEffectTransportExecutorV1({ mcp: {
+  const mintOutcomeExecutor = (reviewedPack: GitHubLinearOutcomePackV1 | null): GovernedEffectTransportExecutorV1 => mintGovernedEffectTransportExecutorV1({ mcp: {
     inspectSchemas(request, sink): void {
       try {
         if (request.server !== "reelier.github.outcomes") throw new TypeError("GitHub release pack server is invalid");

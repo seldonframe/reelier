@@ -22,19 +22,27 @@ export interface EffectTransportHostBindingsV1 { readonly credential: string; re
 export interface EffectTransportProviderResponseV1 { readonly outcome: string; readonly data: unknown }
 export type EffectTransportProviderEnvelopeV1 = string;
 export interface EffectTransportResultSinkV1 { readonly success: (serializedJson: string) => void; readonly failure: () => void; }
-export interface EffectTransportExecutorAuthorityV1 { readonly contractDigest: string; readonly bindingDigest: string; readonly reservationId: string; readonly requestId?: string; readonly governedEffectDigest?: string }
-export interface TrustedEffectTransportExecutorCallbacksV1 {
+export interface EffectTransportExecutorAuthorityV1 { readonly contractDigest: string; readonly bindingDigest: string; readonly reservationId: string }
+export interface GovernedEffectTransportExecutorAuthorityV1 { readonly contractDigest: string; readonly bindingDigest: string; readonly reservationId: string; readonly requestId: string; readonly governedEffectDigest: string }
+interface EffectTransportExecutorCallbacksV1<Authority extends EffectTransportExecutorAuthorityV1> {
   readonly mcp?: Readonly<{
     inspectSchemas(request: Readonly<{ server: string; tool: string }>, sink: EffectTransportResultSinkV1): void;
-    call(request: Readonly<{ server: string; tool: string; serverSchemaDigest: string; toolSchemaDigest: string; arguments: Readonly<{ model: Readonly<Record<string, unknown>>; host: Readonly<{ account: string; destination: string; limit: string }> }>; credential: string; authority: EffectTransportExecutorAuthorityV1 }>, sink: EffectTransportResultSinkV1): void;
+    call(request: Readonly<{ server: string; tool: string; serverSchemaDigest: string; toolSchemaDigest: string; arguments: Readonly<{ model: Readonly<Record<string, unknown>>; host: Readonly<{ account: string; destination: string; limit: string }> }>; credential: string; authority: Authority }>, sink: EffectTransportResultSinkV1): void;
   }>;
-  readonly http?: Readonly<{ call(request: Readonly<{ method: string; url: string; body: Readonly<{ model: Readonly<Record<string, unknown>>; host: Readonly<{ account: string; destination: string; limit: string }> }> | null; credential: string; requestSchemaDigest: string; authority: EffectTransportExecutorAuthorityV1 }>, sink: EffectTransportResultSinkV1): void }>;
-  readonly cli?: Readonly<{ spawn(request: Readonly<{ executable: string; argv: readonly string[]; env: Readonly<Record<string, string>>; authority: EffectTransportExecutorAuthorityV1 }>, sink: EffectTransportResultSinkV1): void }>;
+  readonly http?: Readonly<{ call(request: Readonly<{ method: string; url: string; body: Readonly<{ model: Readonly<Record<string, unknown>>; host: Readonly<{ account: string; destination: string; limit: string }> }> | null; credential: string; requestSchemaDigest: string; authority: Authority }>, sink: EffectTransportResultSinkV1): void }>;
+  readonly cli?: Readonly<{ spawn(request: Readonly<{ executable: string; argv: readonly string[]; env: Readonly<Record<string, string>>; authority: Authority }>, sink: EffectTransportResultSinkV1): void }>;
 }
+export type TrustedEffectTransportExecutorCallbacksV1 = EffectTransportExecutorCallbacksV1<EffectTransportExecutorAuthorityV1>;
+export type GovernedEffectTransportExecutorCallbacksV1 = EffectTransportExecutorCallbacksV1<GovernedEffectTransportExecutorAuthorityV1>;
+type AnyEffectTransportExecutorAuthorityV1 = EffectTransportExecutorAuthorityV1 | GovernedEffectTransportExecutorAuthorityV1;
+type AnyEffectTransportExecutorCallbacksV1 = EffectTransportExecutorCallbacksV1<AnyEffectTransportExecutorAuthorityV1>;
 declare const trustedEffectTransportExecutorBrand: unique symbol;
 export interface TrustedEffectTransportExecutorV1 { readonly [trustedEffectTransportExecutorBrand]: true; }
+declare const governedEffectTransportExecutorBrand: unique symbol;
+export interface GovernedEffectTransportExecutorV1 { readonly [governedEffectTransportExecutorBrand]: true; }
 
 const trustedEffectTransportExecutors = new WeakMap<object, TrustedEffectTransportExecutorCallbacksV1>();
+const governedEffectTransportExecutors = new WeakMap<object, GovernedEffectTransportExecutorCallbacksV1>();
 
 export interface CompiledEffectTransportV1 {
   readonly effect: Readonly<{ v: "reelier.compiled-effect-input/v1"; contractDigest: string; bindingDigest: string; model: Readonly<Record<string, unknown>> }>;
@@ -62,13 +70,30 @@ export function mintTrustedEffectTransportExecutorV1(value: TrustedEffectTranspo
   return capability;
 }
 
-export function compileEffectTransportV1(input: Readonly<{ contract: ToolEffectContractV1; binding: EffectTransportBindingV1; modelInput: unknown; observationAuthKey: string; resolveHostBindings: (references: ToolEffectContractV1["bindings"]) => Promise<EffectTransportHostBindingsV1>; executor: TrustedEffectTransportExecutorV1; }>): CompiledEffectTransportV1 {
+export function mintGovernedEffectTransportExecutorV1(value: GovernedEffectTransportExecutorCallbacksV1): GovernedEffectTransportExecutorV1 {
+  const callbacks = parseTrustedExecutorCallbacks(value) as GovernedEffectTransportExecutorCallbacksV1;
+  const capability = Object.freeze(Object.create(null)) as GovernedEffectTransportExecutorV1;
+  governedEffectTransportExecutors.set(capability, callbacks);
+  return capability;
+}
+
+type EffectTransportCompileInputV1<Executor> = Readonly<{ contract: ToolEffectContractV1; binding: EffectTransportBindingV1; modelInput: unknown; observationAuthKey: string; resolveHostBindings: (references: ToolEffectContractV1["bindings"]) => Promise<EffectTransportHostBindingsV1>; executor: Executor; }>;
+
+export function compileEffectTransportV1(input: EffectTransportCompileInputV1<TrustedEffectTransportExecutorV1>): CompiledEffectTransportV1 {
+  return compileEffectTransport(input, trustedEffectTransportExecutors, false, "trusted");
+}
+
+export function compileGovernedEffectTransportV1(input: EffectTransportCompileInputV1<GovernedEffectTransportExecutorV1>): CompiledEffectTransportV1 {
+  return compileEffectTransport(input, governedEffectTransportExecutors, true, "governed");
+}
+
+function compileEffectTransport(input: EffectTransportCompileInputV1<object>, executors: WeakMap<object, TrustedEffectTransportExecutorCallbacksV1 | GovernedEffectTransportExecutorCallbacksV1>, governed: boolean, label: string): CompiledEffectTransportV1 {
   if (!input || typeof input !== "object" || isProxy(input)) throw new TypeError("effect transport compiler input is invalid");
   const executorDescriptor = Object.getOwnPropertyDescriptor(input, "executor");
-  const executor = executorDescriptor && Object.hasOwn(executorDescriptor, "value") && executorDescriptor.enumerable && executorDescriptor.value && typeof executorDescriptor.value === "object"
-    ? trustedEffectTransportExecutors.get(executorDescriptor.value as object)
-    : undefined;
-  if (!executor) throw new TypeError("effect transport compiler requires a host-minted trusted executor capability");
+  const executor = (executorDescriptor && Object.hasOwn(executorDescriptor, "value") && executorDescriptor.enumerable && executorDescriptor.value && typeof executorDescriptor.value === "object"
+    ? executors.get(executorDescriptor.value as object)
+    : undefined) as AnyEffectTransportExecutorCallbacksV1 | undefined;
+  if (!executor) throw new TypeError(`effect transport compiler requires a host-minted ${label} executor capability`);
   if (typeof input.resolveHostBindings !== "function") throw new TypeError("effect transport compiler input is invalid");
   const contract = parseToolEffectContractV1(input.contract), binding = parseEffectTransportBindingV1(input.binding);
   const contractDigest = digestToolEffectContractV1(contract), bindingDigest = authorityDigest(binding);
@@ -103,7 +128,9 @@ export function compileEffectTransportV1(input: Readonly<{ contract: ToolEffectC
   const adapter: DispatchAdapter = Object.freeze({
     async dispatch(state: DispatchRequestState, call?: CoordinatorDispatchCallV1): Promise<DispatchOutcome> {
       bindDispatchState(state, effect, contractDigest);
-      const authority = executorAuthority(state, contractDigest, bindingDigest);
+      let authority: AnyEffectTransportExecutorAuthorityV1;
+      try { authority = executorAuthority(state, contractDigest, bindingDigest, governed); }
+      catch { return Object.freeze({ kind: "definitive-failure", resultDigest: authorityDigest({ v: "reelier.effect-transport-dispatch-refused/v1", bindingDigest, reservationId: state.reservation.reservationId, reason: "executor-authority-unavailable" }) }); }
       if (call && !bindCoordinatorDispatchCallDelegateV1(call, authority, state)) {
         return Object.freeze({
           kind: "definitive-failure",
@@ -116,7 +143,7 @@ export function compileEffectTransportV1(input: Readonly<{ contract: ToolEffectC
     async reconcile(state: DispatchRequestState, prior: DispatchOutcome): Promise<DispatchOutcome> {
       bindDispatchState(state, effect, contractDigest);
       if (!contract.readback || !binding.readback) return unavailableOutcome(bindingDigest, prior);
-      const response = await readback(binding, model, await hostBindings(), executor, executorAuthority(state, contractDigest, bindingDigest)), category = resultCategory(contract, response.outcome);
+      const response = await readback(binding, model, await hostBindings(), executor, executorAuthority(state, contractDigest, bindingDigest, governed)), category = resultCategory(contract, response.outcome);
       if (category === "success") {
         const projection = projectResponse(response.data, contract.readback.projection);
         if (projection === null) return unavailableOutcome(bindingDigest, prior);
@@ -133,7 +160,7 @@ export function compileEffectTransportV1(input: Readonly<{ contract: ToolEffectC
   });
   const prepareGoverned = async (state: DispatchRequestState, call: CoordinatorDispatchCallV1): Promise<PreparedDispatch> => {
     if (!state?.reservation || state.reservation.state !== "reserved") throw new TypeError("governed effect transport requires the exact reserved coordinator state");
-    const authority = executorAuthority(state, contractDigest, bindingDigest);
+    const authority = executorAuthority(state, contractDigest, bindingDigest, governed);
     if (!bindCoordinatorDispatchCallDelegateV1(call, authority, state)) throw new TypeError("governed effect transport coordinator authority refused before host binding");
     const host = await hostBindings(), route = state.reservation.intent.routeAuthority, allocationId = state.reservation.intent.executionContext?.allocationId;
     if (!route || !allocationId) throw new TypeError("governed effect transport requires signed route and allocation authority");
@@ -240,7 +267,7 @@ function callback<T extends (...args: never[]) => void>(value: unknown, label: s
   return value as T;
 }
 
-async function dispatch(binding: EffectTransportBindingV1, model: Readonly<Record<string, unknown>>, host: EffectTransportHostBindingsV1, executor: TrustedEffectTransportExecutorCallbacksV1, authority: EffectTransportExecutorAuthorityV1): Promise<EffectTransportProviderResponseV1> {
+async function dispatch(binding: EffectTransportBindingV1, model: Readonly<Record<string, unknown>>, host: EffectTransportHostBindingsV1, executor: AnyEffectTransportExecutorCallbacksV1, authority: AnyEffectTransportExecutorAuthorityV1): Promise<EffectTransportProviderResponseV1> {
   const publicHost = deepFreeze({ account: host.account, destination: host.destination, limit: host.limit });
   if (binding.kind === "mcp") { if (!executor.mcp) throw new Error("MCP effect transport executor is unavailable"); await assertMcpSchemas(executor.mcp, binding.server, binding.tool, binding.serverSchemaDigest, binding.toolSchemaDigest); return providerBoundary("MCP", sink => executor.mcp!.call(deepFreeze({ server: binding.server, tool: binding.tool, serverSchemaDigest: binding.serverSchemaDigest, toolSchemaDigest: binding.toolSchemaDigest, arguments: { model, host: publicHost }, credential: host.credential, authority }), sink)); }
   if (binding.kind === "http") { if (!executor.http) throw new Error("HTTP effect transport executor is unavailable"); const url = joinUrl(binding.origin, renderTemplate(binding.pathTemplate, model, publicHost, true)); return providerBoundary("HTTP", sink => executor.http!.call(deepFreeze({ method: binding.method, url, body: { model, host: publicHost }, credential: host.credential, requestSchemaDigest: binding.requestSchemaDigest, authority }), sink)); }
@@ -248,7 +275,7 @@ async function dispatch(binding: EffectTransportBindingV1, model: Readonly<Recor
   return providerBoundary("CLI", sink => executor.cli!.spawn(deepFreeze({ executable: binding.executable, argv: binding.argvTemplates.map(item => renderTemplate(item, model, publicHost, false)), env: { [binding.credentialEnv]: host.credential }, authority }), sink));
 }
 
-async function readback(binding: EffectTransportBindingV1, model: Readonly<Record<string, unknown>>, host: EffectTransportHostBindingsV1, executor: TrustedEffectTransportExecutorCallbacksV1, authority: EffectTransportExecutorAuthorityV1): Promise<EffectTransportProviderResponseV1> {
+async function readback(binding: EffectTransportBindingV1, model: Readonly<Record<string, unknown>>, host: EffectTransportHostBindingsV1, executor: AnyEffectTransportExecutorCallbacksV1, authority: AnyEffectTransportExecutorAuthorityV1): Promise<EffectTransportProviderResponseV1> {
   const publicHost = deepFreeze({ account: host.account, destination: host.destination, limit: host.limit });
   if (binding.kind === "mcp" && binding.readback) { if (!executor.mcp) throw new Error("MCP effect transport executor is unavailable"); await assertMcpSchemas(executor.mcp, binding.server, binding.readback.tool, binding.serverSchemaDigest, binding.readback.toolSchemaDigest); return providerBoundary("MCP readback", sink => executor.mcp!.call(deepFreeze({ server: binding.server, tool: binding.readback!.tool, serverSchemaDigest: binding.serverSchemaDigest, toolSchemaDigest: binding.readback!.toolSchemaDigest, arguments: { model, host: publicHost }, credential: host.credential, authority }), sink)); }
   if (binding.kind === "http" && binding.readback) { if (!executor.http) throw new Error("HTTP effect transport executor is unavailable"); const url = joinUrl(binding.origin, renderTemplate(binding.readback.pathTemplate, model, publicHost, true)); return providerBoundary("HTTP readback", sink => executor.http!.call(deepFreeze({ method: binding.readback!.method, url, body: null, credential: host.credential, requestSchemaDigest: binding.readback!.requestSchemaDigest, authority }), sink)); }
@@ -256,13 +283,15 @@ async function readback(binding: EffectTransportBindingV1, model: Readonly<Recor
   throw new Error("effect transport readback is unavailable");
 }
 
-function executorAuthority(state: DispatchRequestState, contractDigest: string, bindingDigest: string): EffectTransportExecutorAuthorityV1 {
+function executorAuthority(state: DispatchRequestState, contractDigest: string, bindingDigest: string, governed: boolean): AnyEffectTransportExecutorAuthorityV1 {
+  if (!governed) return deepFreeze({ contractDigest, bindingDigest, reservationId: state.reservation.reservationId });
   const requestId = state.reservation.intent.requestId;
-  return deepFreeze({ contractDigest, bindingDigest, reservationId: state.reservation.reservationId, ...(typeof requestId === "string" && requestId.length > 0 ? { requestId, governedEffectDigest: state.effectDigest } : {}) });
+  if (typeof requestId !== "string" || requestId.length === 0) throw new TypeError("governed effect transport requires an authenticated durable request ID");
+  return deepFreeze({ contractDigest, bindingDigest, reservationId: state.reservation.reservationId, requestId, governedEffectDigest: state.effectDigest });
 }
 
 function providerBoundary(label: string, invoke: (sink: EffectTransportResultSinkV1) => void): Promise<EffectTransportProviderResponseV1> { return serializedBoundary(label, invoke, parseProviderResponse); }
-async function assertMcpSchemas(executor: NonNullable<TrustedEffectTransportExecutorCallbacksV1["mcp"]>, server: string, tool: string, serverSchemaDigest: string, toolSchemaDigest: string): Promise<void> {
+async function assertMcpSchemas(executor: NonNullable<AnyEffectTransportExecutorCallbacksV1["mcp"]>, server: string, tool: string, serverSchemaDigest: string, toolSchemaDigest: string): Promise<void> {
   const actual = await serializedBoundary("MCP schema inspection", sink => executor.inspectSchemas(deepFreeze({ server, tool }), sink), parseMcpSchemas);
   if (actual.serverSchemaDigest !== serverSchemaDigest || actual.toolSchemaDigest !== toolSchemaDigest) throw new Error("MCP schema drift refused consequential call");
 }

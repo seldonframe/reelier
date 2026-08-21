@@ -9,7 +9,7 @@ import { authorityDigest } from "../../src/authority/wire.js";
 import { createSignedJournal } from "../../src/authority/host/signed-journal.js";
 import { createGitHubReleaseHostComposition, createGitHubReleaseRunner } from "../../src/authority/host/github-release-runner.js";
 import { createGitHubReleaseOutcomeExecutorV1 } from "../../src/authority/host/github-release-runner.js";
-import { compileEffectTransportV1 } from "../../src/authority/host/effect-transports.js";
+import { compileGovernedEffectTransportV1 as compileEffectTransportV1 } from "../../src/authority/host/effect-transports.js";
 import { createGitHubLinearOutcomePackV1, githubReviewedOutcomePolicyDigestV1, githubReviewedReleasePackDigestV1 } from "../../src/authority/packs/github-linear-outcomes.js";
 import { createDispatchCoordinator } from "../../src/authority/host/dispatch.js";
 import { createDispatchCommitLease, createPreparedDispatch, consumePreparedDispatch } from "../../src/authority/host/prepared-dispatch.js";

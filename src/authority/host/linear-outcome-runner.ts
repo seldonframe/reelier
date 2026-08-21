@@ -8,7 +8,7 @@ import {
   type GitHubLinearOutcomePackV1,
 } from "../packs/github-linear-outcomes.js";
 import { authorityDigest } from "../wire.js";
-import { mintTrustedEffectTransportExecutorV1, type TrustedEffectTransportExecutorV1 } from "./effect-transports.js";
+import { mintGovernedEffectTransportExecutorV1, type GovernedEffectTransportExecutorV1 } from "./effect-transports.js";
 import { consumeTrustedOutcomePredecessorAuthorizationV1, type TrustedOutcomePredecessorPolicyV1 } from "./outcome-kernel.js";
 import { consumeCoordinatorDispatchCallDelegateV1 } from "./dispatch.js";
 
@@ -28,13 +28,13 @@ const TOOLS = Object.freeze({
 });
 
 /** Callback-only adapter over a host-provided Linear port. It owns no SDK, credential, storage, or retry state. */
-export function createLinearOutcomeExecutorV1(input: Readonly<{ pack: GitHubLinearOutcomePackV1; provider: LinearOutcomeProviderV1; predecessorPolicy: TrustedOutcomePredecessorPolicyV1 }>): TrustedEffectTransportExecutorV1 {
+export function createLinearOutcomeExecutorV1(input: Readonly<{ pack: GitHubLinearOutcomePackV1; provider: LinearOutcomeProviderV1; predecessorPolicy: TrustedOutcomePredecessorPolicyV1 }>): GovernedEffectTransportExecutorV1 {
   const root = exactRecord(input, ["pack", "provider", "predecessorPolicy"], "Linear outcome executor input");
   const provider = providerPort(root.provider);
   const pack = root.pack as GitHubLinearOutcomePackV1;
   const predecessorPolicy = root.predecessorPolicy as TrustedOutcomePredecessorPolicyV1;
   orderedGitHubLinearOperationsV1(pack, "linear-only");
-  return mintTrustedEffectTransportExecutorV1({ mcp: {
+  return mintGovernedEffectTransportExecutorV1({ mcp: {
     inspectSchemas(request, sink): void {
       try {
         if (request.server !== "reelier.linear.outcomes") throw new TypeError("Linear outcome server is invalid");

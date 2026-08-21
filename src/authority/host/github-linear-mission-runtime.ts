@@ -10,7 +10,7 @@ import { createAuthorityAgentTools, type AuthorityAgentToolsV1, type AuthorityAg
 import { createGenuineGovernedOutcomeLocalComponentsV1, type LocalAuthorityRuntimeOptions } from "./local.js";
 import type { AuthorityHostConfig } from "./config.js";
 import type { CoordinatorDispatchCallV1, DispatchAdapter, DispatchOutcome, DispatchRequestState } from "./dispatch.js";
-import { compileEffectTransportV1, type CompiledEffectTransportV1, type EffectTransportHostBindingsV1 } from "./effect-transports.js";
+import { compileGovernedEffectTransportV1, type CompiledEffectTransportV1, type EffectTransportHostBindingsV1 } from "./effect-transports.js";
 import { createGovernedOutcomeKernelAuthorityV1, revalidateGovernedOutcomeKernelTerminalV1 } from "./governed-outcome-composition.js";
 import { governedOutcomeCompositionAliasesV1, governedOutcomeCompositionProfileStateV1, type GovernedOutcomeCompositionProfileV1, type GitHubLinearOutcomePackV1, type ReviewedOutcomeOperationV1 } from "../packs/github-linear-outcomes.js";
 import { bindGitHubReleasePreparedFallbackV1, createGitHubReleaseOutcomeExecutorV1, type GitHubReleaseRunnerV1 } from "./github-release-runner.js";
@@ -68,7 +68,7 @@ export async function createGitHubLinearMissionRuntimeV1(input: GenuineGitHubLin
     const modelInput = github ? { authorizationHandle, requestId }
       : alias === "linear_evidence_comment_v1" ? { evidenceUrl: profileState.authority.linear.evidenceUrl }
         : { requestId: "host-bound-status" };
-    const item = compileEffectTransportV1({ contract: operation.contract, binding: operation.binding, modelInput, observationAuthKey: raw.observationAuthKey, resolveHostBindings: raw.resolveHostBindings, executor: github ? githubExecutor : linearExecutor });
+    const item = compileGovernedEffectTransportV1({ contract: operation.contract, binding: operation.binding, modelInput, observationAuthKey: raw.observationAuthKey, resolveHostBindings: raw.resolveHostBindings, executor: github ? githubExecutor : linearExecutor });
     compiled.set(key, item);
     return item;
   };

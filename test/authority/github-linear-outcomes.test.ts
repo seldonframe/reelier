@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { authorityDigest } from "../../src/authority/wire.js";
-import { compileEffectTransportV1 } from "../../src/authority/host/effect-transports.js";
+import { compileGovernedEffectTransportV1 as compileEffectTransportV1 } from "../../src/authority/host/effect-transports.js";
 import { createOutcomeKernel, createTrustedObservationVerifier, createTrustedOutcomePredecessorPolicyV1, type StoredEffectLifecycleV1 } from "../../src/authority/host/outcome-kernel.js";
 import { createLinearOutcomeExecutorV1 } from "../../src/authority/host/linear-outcome-runner.js";
 import { createReservedDispatchHandle } from "../../src/authority/gate.js";
