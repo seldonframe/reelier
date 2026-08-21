@@ -47,6 +47,7 @@ export function compileEffectTransportV1(input: Readonly<{ contract: ToolEffectC
   const contractDigest = digestToolEffectContractV1(contract), bindingDigest = authorityDigest(binding);
   bindContract(contract, binding, bindingDigest);
   const model = parseModelInput(input.modelInput, contract);
+  validateTemplateValues(binding, model);
   const effect = deepFreeze({ v: "reelier.compiled-effect-input/v1" as const, contractDigest, bindingDigest, model });
   const evidence = deepFreeze({ v: "reelier.effect-transport-evidence/v1" as const, contractDigest, bindingDigest, model });
   const observedProjectionDigests = new Set<string>();
@@ -154,6 +155,20 @@ function projectResponse(data: unknown, projections: readonly string[]): Readonl
 
 function renderTemplate(template: string, model: Readonly<Record<string, unknown>>, host: Readonly<{ account: string; destination: string; limit: string }>, urlEncode: boolean): string { return template.replace(/\{(model|host)\.([A-Za-z0-9._:-]+)\}/gu, (_match, scope: string, field: string) => { const value = scope === "model" ? model[field] : host[field as keyof typeof host]; if (typeof value !== "string" && typeof value !== "number" && typeof value !== "boolean") throw new TypeError("transport template field must be a scalar"); return urlEncode ? encodeURIComponent(String(value)) : String(value); }); }
 function joinUrl(origin: string, path: string): string { return `${origin}${path}`; }
+
+function validateTemplateValues(binding: EffectTransportBindingV1, model: Readonly<Record<string, unknown>>): void {
+  const templates = binding.kind === "http"
+    ? [binding.pathTemplate, ...(binding.readback ? [binding.readback.pathTemplate] : [])]
+    : binding.kind === "cli"
+      ? [...binding.argvTemplates, ...(binding.readback?.argvTemplates ?? [])]
+      : [];
+  for (const template of templates) {
+    for (const match of template.matchAll(/\{model\.([A-Za-z0-9._:-]+)\}/gu)) {
+      const value = model[match[1]!];
+      if (typeof value !== "string" && typeof value !== "number" && typeof value !== "boolean") throw new TypeError("transport template model field must be a scalar");
+    }
+  }
+}
 
 function closedRecord(value: unknown, required: readonly string[], optional: readonly string[], label: string): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value) || isProxy(value)) throw new TypeError(`${label} must be an inert closed object`);

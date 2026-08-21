@@ -83,14 +83,13 @@ test("CLI uses a fixed executable, argv array, and exact environment-name allowl
 
 test("template value validation completes before any host secret resolution", async () => {
   let resolutions = 0;
-  const compiled = compileEffectTransportV1({
+  assert.throws(() => compileEffectTransportV1({
     contract: SLIDES_LIKE_CONTRACT,
     binding: SLIDES_LIKE_BINDING,
     modelInput: { title: { nested: "not-an-argv-scalar" } },
     resolveHostBindings: async () => { resolutions++; return host; },
     ports: { cli: { spawn: async () => ({ outcome: "ok", data: {} }) } },
-  });
-  await assert.rejects(() => compiled.adapter.dispatch(dispatchState(SLIDES_LIKE_CONTRACT, compiled.effect)), /template|scalar|model/i);
+  }), /template|scalar|model/i);
   assert.equal(resolutions, 0);
 });
 
