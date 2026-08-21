@@ -4,6 +4,7 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import type { AuthorityAgentToolsV1 } from "../../src/authority/host/agent-tools.js";
 import { runEveGovernedOutcomeRehearsalV1 } from "../../conformance/continuity-adapter/v1/eve-fixture/agent/lib/governed-outcomes.js";
+import { readCellAgentStatus, readCellOutcomeProposal } from "../../conformance/continuity-adapter/v1/eve-fixture/agent/lib/cell.js";
 
 const refs = Object.freeze([
   `outcomeref_${"a".repeat(64)}`,
@@ -83,6 +84,14 @@ test("hermetic Eve quartet reconciles composite and Linear-only missions across 
   ]);
   const retained = JSON.stringify(report);
   for (const forbidden of ["credential", "secret", "raw prompt", "model reasoning", "github.com", "api.linear.app", "providerStatusId"]) assert.equal(retained.toLowerCase().includes(forbidden.toLowerCase()), false, forbidden);
+});
+
+test("Eve Cell projections accept only the canonical quartet's closed redacted responses", () => {
+  const capability = { v: "reelier.harness-capability/v1", harnessId: null, harnessVersion: null, abiDigest: `sha256:${"c".repeat(64)}`, protocolCompatibility: "compatible", transports: ["mcp", "http", "openapi"], fixtureStatus: "not-passed", liveTested: false, providerCertification: "not-claimed" };
+  assert.deepEqual(readCellAgentStatus({ requestId: "", verdict: "accepted", reasonCode: "agent-ready", lifecycleState: "ready", outcomeRefs: refs, capability }), { requestId: "", verdict: "accepted", reasonCode: "agent-ready", lifecycleState: "ready", outcomeRefs: refs, capability });
+  assert.deepEqual(readCellOutcomeProposal({ requestId: "", verdict: "accepted", reasonCode: "outcome-proposed", lifecycleState: "proposed", outcomeRef: refs[0] }), { requestId: "", verdict: "accepted", reasonCode: "outcome-proposed", lifecycleState: "proposed", outcomeRef: refs[0] });
+  assert.throws(() => readCellAgentStatus({ requestId: "", verdict: "accepted", reasonCode: "agent-ready", lifecycleState: "ready", outcomeRefs: refs, capability, credential: "must-not-cross" }), /closed|unexpected/i);
+  assert.throws(() => readCellOutcomeProposal({ requestId: "", verdict: "accepted", reasonCode: "outcome-proposed", lifecycleState: "proposed", outcomeRef: "github_merge" }), /opaque|reference/i);
 });
 
 const eveRoot = path.resolve("conformance/continuity-adapter/v1/eve-fixture");
