@@ -330,4 +330,10 @@ test("prepared projections and provider results reject accessors without executi
   const hostile = Object.defineProperty({ v: "reelier.prepared-effect-projection/v1", transport: "fixed-cli", operationDigest: sha("1") }, "requestDigest", { enumerable: true, get() { getters++; return sha("2"); } });
   assert.throws(() => preparedDispatchProjectionDigest(hostile as any), /data|accessor|closed|inert/i);
   assert.equal(getters, 0);
+
+  const l = ledger(); let resultGetters = 0;
+  const coordinator = createDispatchCoordinator(l, { async dispatch() { return Object.defineProperty({ resultDigest: sha("3") }, "kind", { enumerable: true, get() { resultGetters++; return "acknowledged"; } }) as any; } });
+  const result = await coordinator.dispatch(createReservedDispatchHandle({ reservation: l.get(), effect: {}, effectCanonicalBase64: "e30=", effectDigest: sha("1") }));
+  assert.equal(result.kind, "ambiguous");
+  assert.equal(resultGetters, 0);
 });

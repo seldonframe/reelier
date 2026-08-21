@@ -1,11 +1,17 @@
-import type { AuthorityLedger, LedgerState, ReservationSnapshot } from "../ledger.js";
+import type { AuthorityLedger, LedgerState } from "../ledger.js";
 import type { ReservedDispatchHandle } from "../gate.js";
+import { isProxy } from "node:util/types";
 import { authorityDigest } from "../wire.js";
 import {
   digestGovernedOutcomeV1,
   digestMissionClaimV1,
   digestToolEffectContractV1,
   parseMissionClaimV1,
+  parseAttemptV1,
+  parseEffectReservationV1,
+  parseGovernedOutcomeV1,
+  parseGovernedReceiptV1,
+  parseObservationV1,
   parseToolEffectContractV1,
   verifyGovernedOutcomeTransitionV1,
   type AttemptV1,
@@ -89,37 +95,35 @@ export function createOutcomeKernel(options: OutcomeKernelOptions): OutcomeKerne
   return Object.freeze({
     async claimMission(rawClaim: MissionClaimV1) {
       const claim = parseMissionClaimV1(rawClaim), digest = digestMissionClaimV1(claim);
-      const claimed = await storage.claimMission(claim, digest);
+      const claimed = parseMissionClaimResult(await storage.claimMission(claim, digest));
       if (claimed.status === "conflict") throw new Error("mission claim semantics conflict");
       boundary("mission-claim");
       return Object.freeze({ status: claimed.status, claim: parseMissionClaimV1(claimed.claim) });
     },
 
     async execute(input: Readonly<{ missionId: string; effects: readonly OutcomeKernelEffectRequestV1[] }>): Promise<MissionOutcomeV1> {
-      const mission = await storage.loadMission(input.missionId);
+      const request = parseExecuteRequest(input);
+      const mission = await storage.loadMission(request.missionId);
       if (!mission) throw new Error("mission claim is absent");
       const parsedMission = parseMissionClaimV1(mission), missionDigest = digestMissionClaimV1(parsedMission);
-      if (!Array.isArray(input.effects) || input.effects.length === 0 || input.effects.length > 64) throw new TypeError("mission effects must be a nonempty bounded array");
       const effects: GovernedOutcomeV1[] = [], receiptRefs: string[] = [];
       let receiptsDurable = storage.durable;
 
-      for (const requested of input.effects) {
+      for (const requested of request.effects) {
         const contract = parseToolEffectContractV1(requested.contract), contractDigest = digestToolEffectContractV1(contract);
         if (!parsedMission.contractDigests.includes(contractDigest)) throw new Error("effect contract is outside the mission claim");
-        const verifier = trustedVerifierStates.get(requested.verifier as object);
-        if (!verifier || verifier.contractDigest !== contractDigest) throw new TypeError("trusted observation verifier binding mismatch");
         let described: DispatchReservationProjectionV1;
         if (requested.handle) {
           if (!options.coordinator.describe) throw new TypeError("outcome kernel requires a coordinator reservation projection hook");
-          described = options.coordinator.describe(requested.handle);
+          described = parseDispatchReservationProjection(options.coordinator.describe(requested.handle));
         } else {
-          const restarted = await options.ledger.getReservation(requested.reservationId);
+          const restarted = parseLedgerProjection(await options.ledger.getReservation(requested.reservationId));
           if (!restarted) throw new Error("durable reservation is absent on restart");
-          described = Object.freeze({ reservationId: restarted.reservationId, state: restarted.state, effectDigest: restarted.intent.effectDigest, allocationId: restarted.intent.executionContext?.allocationId ?? null });
+          described = Object.freeze({ reservationId: restarted.reservationId, state: restarted.state, effectDigest: restarted.effectDigest, allocationId: restarted.allocationId });
         }
-        let current = await options.ledger.getReservation(described.reservationId);
-        if (!current || current.reservationId !== described.reservationId || current.intent.effectDigest !== described.effectDigest) throw new Error("durable reservation projection mismatch");
-        let stored = await storage.loadEffect(parsedMission.missionId, current.reservationId);
+        let current = parseLedgerProjection(await options.ledger.getReservation(described.reservationId));
+        if (!current || described.effectDigest !== contractDigest || current.effectDigest !== contractDigest || current.reservationId !== described.reservationId || current.state !== described.state || current.allocationId !== described.allocationId) throw new Error("durable reservation projection does not bind the exact contract, state, and allocation");
+        let stored = parseStoredEffect(await storage.loadEffect(parsedMission.missionId, current.reservationId));
         if (stored && (stored.missionDigest !== missionDigest || stored.contractDigest !== contractDigest || stored.reservation.semanticIdentity !== contract.semanticIdentity)) throw new Error("stored effect semantics conflict");
         if (!stored) {
           const reservation: EffectReservationV1 = Object.freeze({ v: "reelier.effect-reservation/v1", reservationId: current.reservationId, semanticIdentity: contract.semanticIdentity, contractDigest, reservedAt: reservationTime(current, parsedMission.claimedAt) });
@@ -127,26 +131,39 @@ export function createOutcomeKernel(options: OutcomeKernelOptions): OutcomeKerne
           boundary("reservation");
         }
 
+        if (stored.outcome) {
+          const adopted = stored.outcome;
+          effects.push(adopted);
+          const receipt = receiptFor(parsedMission, missionDigest, adopted);
+          const adoptedRef = parseReceiptHead(await storage.loadReceipt(receipt.receiptId));
+          if (adoptedRef) receiptRefs.push(adoptedRef.receiptRef);
+          else await publishAndAdoptReceipt(storage, receipt, receiptRefs, () => { receiptsDurable = false; });
+          continue;
+        }
+
+        const verifier = trustedVerifierStates.get(requested.verifier as object);
+        if (!verifier || verifier.contractDigest !== contractDigest) throw new TypeError("trusted observation verifier binding mismatch");
+
         const state = current.state;
         let dispatchOutcome: DispatchOutcome | null = null;
         if (state === "reserved") {
           if (!requested.handle) {
             await options.coordinator.recover();
-            current = await options.ledger.getReservation(current.reservationId);
+            current = parseLedgerProjection(await options.ledger.getReservation(current.reservationId));
             if (!current || current.state === "reserved") throw new Error("reserved restart recovery did not close the undispatched effect");
           } else {
           const authorization = await options.authorization(Object.freeze({ mission: parsedMission, contract, reservation: described }));
           if (authorization !== "active") throw new Error(`effect authority is ${authorization}`);
-          dispatchOutcome = await options.coordinator.dispatch(requested.handle);
+          dispatchOutcome = parseDispatchOutcome(await options.coordinator.dispatch(requested.handle));
           boundary("provider-response");
           }
         } else if (state === "ambiguous") {
-          dispatchOutcome = await options.coordinator.reconcile(current.reservationId);
+          dispatchOutcome = parseDispatchOutcome(await options.coordinator.reconcile(current.reservationId));
           boundary("provider-response");
         } else if (state === "dispatched") {
           await options.coordinator.recover();
-          const recovered = await options.ledger.getReservation(current.reservationId);
-          if (recovered?.state === "ambiguous") dispatchOutcome = await options.coordinator.reconcile(current.reservationId);
+          const recovered = parseLedgerProjection(await options.ledger.getReservation(current.reservationId));
+          if (recovered?.state === "ambiguous") dispatchOutcome = parseDispatchOutcome(await options.coordinator.reconcile(current.reservationId));
         }
 
         const observedAt = canonicalNow(options.now);
@@ -161,12 +178,8 @@ export function createOutcomeKernel(options: OutcomeKernelOptions): OutcomeKerne
         stored = await persist(storage, { ...stored, outcome }, stored.revision); boundary("outcome");
         effects.push(outcome);
 
-        const receipt = constructGovernedReceiptV1({ receiptId: stableId("receipt", { missionDigest, outcomeDigest: digestGovernedOutcomeV1(outcome) }), mission: parsedMission, outcome, issuedAt: observedAt });
-        const published = await storage.publishReceipt(receipt);
-        if (published.durable) {
-          const head = await storage.loadReceipt(receipt.receiptId);
-          if (head?.receiptRef === published.receiptRef) receiptRefs.push(published.receiptRef); else receiptsDurable = false;
-        } else receiptsDurable = false;
+        const receipt = receiptFor(parsedMission, missionDigest, outcome);
+        await publishAndAdoptReceipt(storage, receipt, receiptRefs, () => { receiptsDurable = false; });
         boundary("receipt");
       }
 
@@ -178,9 +191,9 @@ export function createOutcomeKernel(options: OutcomeKernelOptions): OutcomeKerne
 
 async function persist(storage: OutcomeKernelStorage, value: Omit<StoredEffectLifecycleV1, "revision"> & { revision: number }, expectedRevision: number): Promise<StoredEffectLifecycleV1> {
   const candidate = Object.freeze({ ...value, revision: expectedRevision });
-  const stored = await storage.storeEffect(candidate, expectedRevision);
-  if (stored.status === "stored") return stored.value;
-  const prior = await storage.loadEffect(value.missionId, value.reservation.reservationId);
+  const stored = parseStoreEffectResult(await storage.storeEffect(candidate, expectedRevision));
+  if (stored.status === "stored") return parseStoredEffect(stored.value)!;
+  const prior = parseStoredEffect(await storage.loadEffect(value.missionId, value.reservation.reservationId));
   if (prior && authorityDigest({ ...prior, revision: 0 }) === authorityDigest({ ...candidate, revision: 0 })) return prior;
   throw new Error("effect lifecycle storage conflict");
 }
@@ -202,8 +215,8 @@ function projectObservation(reservation: EffectReservationV1, outcome: DispatchO
 function effectStatus(contract: ToolEffectContractV1, attempt: AttemptV1 | null, observation: ObservationV1 | null, outcome: DispatchOutcome | null, observationVerified: boolean, hermetic: boolean): EvidenceGradeV1 {
   if (outcome?.kind === "definitive-failure" || attempt?.result === "definitive-failure" || observation?.verdict === "conflict" || observation?.verdict === "not-applied") return "failed";
   if (observation?.verdict === "matched" && contract.maximumEvidenceGrade === "verified" && observationVerified && !hermetic) return "verified";
-  if (contract.maximumEvidenceGrade !== "verified") return contract.maximumEvidenceGrade;
   if (!contract.readback) return "absent";
+  if (contract.maximumEvidenceGrade !== "verified") return contract.maximumEvidenceGrade;
   return attempt?.result === "ambiguous" || !observation ? "pending" : "partial";
 }
 
@@ -215,9 +228,148 @@ function aggregateStatus(effects: readonly GovernedOutcomeV1[], durable: boolean
   return "absent";
 }
 
-function reservationTime(reservation: ReservationSnapshot, missionClaimedAt: string): string { const candidate = reservation.intent.issuedAt; const value = typeof candidate === "string" && Number.isFinite(Date.parse(candidate)) ? new Date(Date.parse(candidate)).toISOString() : missionClaimedAt; if (Date.parse(value) < Date.parse(missionClaimedAt)) throw new Error("effect reservation predates its mission claim"); return value; }
+function reservationTime(reservation: LedgerProjection, missionClaimedAt: string): string { const candidate = reservation.issuedAt; const value = typeof candidate === "string" && Number.isFinite(Date.parse(candidate)) ? new Date(Date.parse(candidate)).toISOString() : missionClaimedAt; if (Date.parse(value) < Date.parse(missionClaimedAt)) throw new Error("effect reservation predates its mission claim"); return value; }
 function canonicalNow(now: () => number): string { const value = now(); if (!Number.isFinite(value)) throw new Error("outcome kernel clock is unavailable"); return new Date(value).toISOString(); }
 function stableId(prefix: string, value: unknown): string { return `${prefix}_${authorityDigest(value).slice(7, 31)}`; }
+
+type LedgerProjection = Readonly<{ reservationId: string; state: LedgerState; effectDigest: string; allocationId: string | null; issuedAt: string | null }>;
+const SHA = /^sha256:[0-9a-f]{64}$/;
+const LEDGER_STATES: readonly LedgerState[] = ["issued", "reserved", "dispatched", "acknowledged", "definitive-failure", "ambiguous", "cancelled", "reconciled"];
+
+function dataRecord(value: unknown, required: readonly string[], optional: readonly string[], label: string): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value) || isProxy(value)) throw new TypeError(`${label} must be an inert data record`);
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) throw new TypeError(`${label} has an unsupported prototype`);
+  const permitted = new Set([...required, ...optional]);
+  let count = 0;
+  for (const key in value) {
+    if (!Object.hasOwn(value, key)) continue;
+    if (++count > 64 || !permitted.has(key)) throw new TypeError(`${label} is not closed`);
+  }
+  const result: Record<string, unknown> = Object.create(null);
+  for (const key of required) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (!descriptor || !descriptor.enumerable || !Object.hasOwn(descriptor, "value")) throw new TypeError(`${label} requires enumerable data properties`);
+    result[key] = descriptor.value;
+  }
+  for (const key of optional) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (!descriptor) continue;
+    if (!descriptor.enumerable) continue;
+    if (!Object.hasOwn(descriptor, "value")) throw new TypeError(`${label} requires enumerable data properties`);
+    result[key] = descriptor.value;
+  }
+  return result;
+}
+
+function pickedData(value: unknown, fields: readonly string[], label: string): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value) || isProxy(value)) throw new TypeError(`${label} must be an inert data record`);
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) throw new TypeError(`${label} has an unsupported prototype`);
+  const result: Record<string, unknown> = Object.create(null);
+  for (const field of fields) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, field);
+    if (!descriptor || !descriptor.enumerable || !Object.hasOwn(descriptor, "value")) throw new TypeError(`${label} requires enumerable data properties`);
+    result[field] = descriptor.value;
+  }
+  return result;
+}
+
+function parseExecuteRequest(value: unknown): Readonly<{ missionId: string; effects: readonly OutcomeKernelEffectRequestV1[] }> {
+  const raw = dataRecord(value, ["missionId", "effects"], [], "outcome execution request");
+  if (typeof raw.missionId !== "string" || raw.missionId.length === 0 || !Array.isArray(raw.effects) || raw.effects.length === 0 || raw.effects.length > 64 || isProxy(raw.effects)) throw new TypeError("mission effects must be a nonempty bounded array");
+  const effects: OutcomeKernelEffectRequestV1[] = [];
+  for (let index = 0; index < raw.effects.length; index++) {
+    const descriptor = Object.getOwnPropertyDescriptor(raw.effects, String(index));
+    if (!descriptor || !descriptor.enumerable || !Object.hasOwn(descriptor, "value")) throw new TypeError("mission effects must be a dense data array");
+    const item = dataRecord(descriptor.value, ["contract", "verifier"], ["handle", "reservationId"], "outcome effect request");
+    const hasHandle = Object.hasOwn(item, "handle"), hasReservation = Object.hasOwn(item, "reservationId");
+    if (hasHandle === hasReservation || (hasReservation && (typeof item.reservationId !== "string" || item.reservationId.length === 0))) throw new TypeError("outcome effect request must select exactly one reservation authority");
+    effects.push(Object.freeze(hasHandle ? { contract: item.contract as ToolEffectContractV1, verifier: item.verifier as TrustedObservationVerifierV1, handle: item.handle as ReservedDispatchHandle } : { contract: item.contract as ToolEffectContractV1, verifier: item.verifier as TrustedObservationVerifierV1, reservationId: item.reservationId as string }));
+  }
+  return Object.freeze({ missionId: raw.missionId, effects: Object.freeze(effects) });
+}
+
+function parseDispatchReservationProjection(value: unknown): DispatchReservationProjectionV1 {
+  const raw = dataRecord(value, ["reservationId", "state", "effectDigest", "allocationId"], [], "dispatch reservation projection");
+  if (typeof raw.reservationId !== "string" || raw.reservationId.length === 0 || !LEDGER_STATES.includes(raw.state as LedgerState) || typeof raw.effectDigest !== "string" || !SHA.test(raw.effectDigest) || raw.allocationId !== null && (typeof raw.allocationId !== "string" || raw.allocationId.length === 0)) throw new TypeError("dispatch reservation projection is invalid");
+  return Object.freeze({ reservationId: raw.reservationId, state: raw.state as LedgerState, effectDigest: raw.effectDigest, allocationId: raw.allocationId as string | null });
+}
+
+function parseLedgerProjection(value: unknown): LedgerProjection | null {
+  if (value === null || value === undefined) return null;
+  const raw = pickedData(value, ["reservationId", "state", "intent"], "ledger reservation projection");
+  const intent = pickedData(raw.intent, ["effectDigest"], "ledger reservation intent");
+  const contextDescriptor = raw.intent && typeof raw.intent === "object" ? Object.getOwnPropertyDescriptor(raw.intent, "executionContext") : undefined;
+  const issuedDescriptor = raw.intent && typeof raw.intent === "object" ? Object.getOwnPropertyDescriptor(raw.intent, "issuedAt") : undefined;
+  let allocationId: string | null = null;
+  if (contextDescriptor?.enumerable && Object.hasOwn(contextDescriptor, "value") && contextDescriptor.value !== undefined) {
+    const context = pickedData(contextDescriptor.value, ["allocationId"], "ledger execution context");
+    if (typeof context.allocationId !== "string" || context.allocationId.length === 0) throw new TypeError("ledger allocation is invalid");
+    allocationId = context.allocationId;
+  } else if (contextDescriptor && (!contextDescriptor.enumerable || !Object.hasOwn(contextDescriptor, "value"))) throw new TypeError("ledger execution context must be a data property");
+  const issuedAt = issuedDescriptor?.enumerable && Object.hasOwn(issuedDescriptor, "value") && typeof issuedDescriptor.value === "string" ? issuedDescriptor.value : null;
+  if (typeof raw.reservationId !== "string" || raw.reservationId.length === 0 || !LEDGER_STATES.includes(raw.state as LedgerState) || typeof intent.effectDigest !== "string" || !SHA.test(intent.effectDigest)) throw new TypeError("ledger reservation projection is invalid");
+  return Object.freeze({ reservationId: raw.reservationId, state: raw.state as LedgerState, effectDigest: intent.effectDigest, allocationId, issuedAt });
+}
+
+function parseStoredEffect(value: unknown): StoredEffectLifecycleV1 | null {
+  if (value === null || value === undefined) return null;
+  const raw = dataRecord(value, ["v", "missionId", "missionDigest", "contractDigest", "reservation", "attempt", "observation", "outcome", "revision"], [], "stored effect lifecycle");
+  if (raw.v !== "reelier.stored-effect-lifecycle/v1" || typeof raw.missionId !== "string" || raw.missionId.length === 0 || typeof raw.missionDigest !== "string" || !SHA.test(raw.missionDigest) || typeof raw.contractDigest !== "string" || !SHA.test(raw.contractDigest) || !Number.isSafeInteger(raw.revision) || (raw.revision as number) < 0) throw new TypeError("stored effect lifecycle is invalid");
+  const reservation = parseEffectReservationV1(raw.reservation), attempt = raw.attempt === null ? null : parseAttemptV1(raw.attempt), observation = raw.observation === null ? null : parseObservationV1(raw.observation), outcome = raw.outcome === null ? null : parseGovernedOutcomeV1(raw.outcome);
+  if (reservation.contractDigest !== raw.contractDigest || attempt && attempt.reservationId !== reservation.reservationId || observation && observation.reservationId !== reservation.reservationId || outcome && (outcome.reservation.reservationId !== reservation.reservationId || outcome.contractDigest !== raw.contractDigest)) throw new TypeError("stored effect lifecycle identity drift");
+  return Object.freeze({ v: "reelier.stored-effect-lifecycle/v1", missionId: raw.missionId, missionDigest: raw.missionDigest, contractDigest: raw.contractDigest, reservation, attempt, observation, outcome, revision: raw.revision as number });
+}
+
+function parseMissionClaimResult(value: unknown): Awaited<ReturnType<OutcomeKernelStorage["claimMission"]>> {
+  const statusDescriptor = value && typeof value === "object" && !isProxy(value) ? Object.getOwnPropertyDescriptor(value, "status") : undefined;
+  if (!statusDescriptor || !statusDescriptor.enumerable || !Object.hasOwn(statusDescriptor, "value")) throw new TypeError("mission claim result must be inert data");
+  if (statusDescriptor.value === "conflict") { dataRecord(value, ["status"], [], "mission claim conflict"); return Object.freeze({ status: "conflict" }); }
+  const raw = dataRecord(value, ["status", "claim"], [], "mission claim result");
+  if (raw.status !== "claimed" && raw.status !== "exact-existing") throw new TypeError("mission claim result is invalid");
+  return Object.freeze({ status: raw.status, claim: parseMissionClaimV1(raw.claim) });
+}
+
+function parseStoreEffectResult(value: unknown): Awaited<ReturnType<OutcomeKernelStorage["storeEffect"]>> {
+  const statusDescriptor = value && typeof value === "object" && !isProxy(value) ? Object.getOwnPropertyDescriptor(value, "status") : undefined;
+  if (!statusDescriptor || !statusDescriptor.enumerable || !Object.hasOwn(statusDescriptor, "value")) throw new TypeError("stored effect result must be inert data");
+  if (statusDescriptor.value === "conflict") { dataRecord(value, ["status"], [], "stored effect conflict"); return Object.freeze({ status: "conflict" }); }
+  const raw = dataRecord(value, ["status", "value"], [], "stored effect result");
+  if (raw.status !== "stored") throw new TypeError("stored effect result is invalid");
+  return Object.freeze({ status: "stored", value: parseStoredEffect(raw.value)! });
+}
+
+function parseDispatchOutcome(value: unknown): DispatchOutcome {
+  const raw = dataRecord(value, ["kind", "resultDigest"], ["providerResultDigest", "providerStatus", "responseDigest", "materializedRequestDigest", "reconciliationStatus", "normalizedProjectionDigest", "receiptRef", "evidenceDigest", "priorReceiptDigest"], "dispatch outcome");
+  if (!["acknowledged", "definitive-failure", "ambiguous"].includes(raw.kind as string) || typeof raw.resultDigest !== "string" || !SHA.test(raw.resultDigest)) throw new TypeError("dispatch outcome is invalid");
+  const digestFields = ["providerResultDigest", "responseDigest", "materializedRequestDigest", "receiptRef", "evidenceDigest", "priorReceiptDigest"] as const;
+  for (const field of digestFields) if (raw[field] !== undefined && (typeof raw[field] !== "string" || !SHA.test(raw[field] as string))) throw new TypeError("dispatch outcome digest is invalid");
+  if (raw.providerStatus !== undefined && (!Number.isSafeInteger(raw.providerStatus) || (raw.providerStatus as number) < 100 || (raw.providerStatus as number) > 599)) throw new TypeError("dispatch outcome provider status is invalid");
+  if (raw.reconciliationStatus !== undefined && !["matched", "not-applied", "conflict", "unavailable", "not-attempted"].includes(raw.reconciliationStatus as string)) throw new TypeError("dispatch outcome reconciliation status is invalid");
+  if (raw.normalizedProjectionDigest !== undefined && raw.normalizedProjectionDigest !== null && (typeof raw.normalizedProjectionDigest !== "string" || !SHA.test(raw.normalizedProjectionDigest))) throw new TypeError("dispatch outcome projection digest is invalid");
+  return Object.freeze(Object.fromEntries(Object.keys(raw).map(key => [key, raw[key]])) as unknown as DispatchOutcome);
+}
+
+function parseReceiptHead(value: unknown): Readonly<{ receiptRef: string }> | null {
+  if (value === null || value === undefined) return null;
+  const raw = dataRecord(value, ["receiptRef"], [], "governed receipt head");
+  if (typeof raw.receiptRef !== "string" || !SHA.test(raw.receiptRef)) throw new TypeError("governed receipt head is invalid");
+  return Object.freeze({ receiptRef: raw.receiptRef });
+}
+
+function receiptFor(mission: MissionClaimV1, missionDigest: string, outcome: GovernedOutcomeV1): GovernedReceiptV1 {
+  return constructGovernedReceiptV1({ receiptId: stableId("receipt", { missionDigest, outcomeDigest: digestGovernedOutcomeV1(outcome) }), mission, outcome, issuedAt: outcome.completedAt });
+}
+
+async function publishAndAdoptReceipt(storage: OutcomeKernelStorage, receipt: GovernedReceiptV1, refs: string[], markNotDurable: () => void): Promise<void> {
+  const raw = await storage.publishReceipt(parseGovernedReceiptV1(receipt));
+  const status = dataRecord(raw, ["durable"], raw && typeof raw === "object" && Object.getOwnPropertyDescriptor(raw, "durable")?.value === true ? ["receiptRef"] : [], "receipt publication result");
+  if (status.durable !== true || typeof status.receiptRef !== "string" || !SHA.test(status.receiptRef)) { markNotDurable(); return; }
+  const head = parseReceiptHead(await storage.loadReceipt(receipt.receiptId));
+  if (!head || head.receiptRef !== status.receiptRef) { markNotDurable(); return; }
+  refs.push(head.receiptRef);
+}
 
 function createHermeticStorage(): OutcomeKernelStorage {
   const missions = new Map<string, Readonly<{ digest: string; claim: MissionClaimV1 }>>(), effects = new Map<string, StoredEffectLifecycleV1>();

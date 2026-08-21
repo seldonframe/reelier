@@ -28,8 +28,8 @@ function mission(id = "mission_1", contracts: readonly ToolEffectContractV1[] = 
   return { v: "reelier.mission-claim/v1", missionId: id, mandateDigest: sha("4"), promptDigest: sha("5"), contractDigests: contracts.map(digestToolEffectContractV1), claimedAt: at(1_000) };
 }
 
-function reservation(id: string, state = "reserved") {
-  return { reservationId: id, state, intent: { effectDigest: sha("7"), effectCanonicalBase64: "e30=" } } as any;
+function reservation(id: string, state = "reserved", effectDigest = digestToolEffectContractV1(contract("identity_1"))) {
+  return { reservationId: id, state, intent: { effectDigest, effectCanonicalBase64: "e30=" } } as any;
 }
 
 function durableFixture(): OutcomeKernelStorage & { effects: Map<string, StoredEffectLifecycleV1>; loseHead: boolean; publishCalls: number; published: Map<string, readonly string[]>; dropReceipt(receiptId: string): void } {
@@ -66,7 +66,7 @@ function coordinator(states: Map<string, any>, counters: { send: number; readbac
 }
 
 const handleIds = new WeakMap<object, string>();
-function handle(id: string) { const opaque = createReservedDispatchHandle({ reservation: reservation(id), effect: {}, effectCanonicalBase64: "e30=", effectDigest: sha("7") }); handleIds.set(opaque as object, id); return opaque; }
+function handle(id: string) { const effectDigest = digestToolEffectContractV1(contract("identity_1")); const opaque = createReservedDispatchHandle({ reservation: reservation(id, "reserved", effectDigest), effect: {}, effectCanonicalBase64: "e30=", effectDigest }); handleIds.set(opaque as object, id); return opaque; }
 
 function verifierFor(value: ToolEffectContractV1, verify = true) { return createTrustedObservationVerifier({ contractDigest: digestToolEffectContractV1(value), verify: () => verify }); }
 
@@ -101,7 +101,7 @@ test("crash after provider response restarts from the ledger without resending",
   const restarted = createOutcomeKernel(options);
   const outcome = await restarted.execute({ missionId: "mission_1", effects: [{ contract: reviewed, reservationId: "r1", verifier: verifierFor(reviewed) }] });
   assert.equal(counters.send, 1);
-  assert.notEqual(outcome.status, "verified");
+  assert.equal(outcome.status, "pending");
 });
 
 test("every durable lifecycle boundary restarts without a second provider write", async () => {
@@ -126,10 +126,11 @@ test("a crash after the atomic mission claim converges to the exact prior semant
 });
 
 test("ambiguous restart is readback-only and a lost receipt head prevents verified aggregation", async () => {
-  const store = durableFixture(), states = new Map([["r1", reservation("r1", "ambiguous")], ["r2", reservation("r2")]]), counters = { send: 0, readback: 0 };
+  const second = contract("identity_2", "pending");
+  const store = durableFixture(), states = new Map([["r1", reservation("r1", "ambiguous")], ["r2", reservation("r2", "reserved", digestToolEffectContractV1(second))]]), counters = { send: 0, readback: 0 };
   store.loseHead = true;
   const kernel = createOutcomeKernel({ storage: store, coordinator: coordinator(states, counters), ledger: { getReservation: async (id: string) => states.get(id) } as any, now: () => 2_000, authorization: async () => "active" });
-  const first = contract("identity_1"), second = contract("identity_2", "pending");
+  const first = contract("identity_1");
   await kernel.claimMission(mission("mission_1", [first, second]));
   const outcome = await kernel.execute({ missionId: "mission_1", effects: [
     { contract: first, handle: handle("r1"), verifier: verifierFor(first) },
@@ -137,8 +138,8 @@ test("ambiguous restart is readback-only and a lost receipt head prevents verifi
   ] });
   assert.equal(counters.readback, 1);
   assert.equal(counters.send, 1);
-  assert.notEqual(outcome.status, "verified");
-  assert.deepEqual(outcome.effects.map(effect => effect.status), ["verified", "pending"]);
+  assert.equal(outcome.status, "partial");
+  assert.deepEqual(outcome.effects.map(effect => effect.status), ["verified", "absent"]);
   assert.equal(outcome.receiptsDurable, false);
 });
 
@@ -163,7 +164,7 @@ test("missing durable storage refuses and hermetic ambiguity cannot become verif
   await kernel.claimMission(mission());
   const reviewed = contract("identity_1");
   const outcome = await kernel.execute({ missionId: "mission_1", effects: [{ contract: reviewed, handle: handle("r1"), verifier: verifierFor(reviewed) }] });
-  assert.notEqual(outcome.status, "verified");
+  assert.equal(outcome.status, "partial");
   assert.equal(outcome.receiptsDurable, false);
   assert.deepEqual(counters, { send: 0, readback: 1 });
 });
@@ -210,6 +211,11 @@ test("terminal retries adopt the stored Outcome and durable receipt without reve
   assert.equal(counters.send, 1);
   assert.equal(store.publishCalls, 2);
   assert.deepEqual(store.published.get(receiptId), [store.published.get(receiptId)![0], store.published.get(receiptId)![0]]);
+  const receipts = store.published.get(receiptId)!.map(value => JSON.parse(value));
+  assert.equal(receipts[0].receiptId, receipts[1].receiptId);
+  assert.equal(receipts[0].issuedAt, receipts[1].issuedAt);
+  assert.equal(republished.effects[0]!.outcomeId, firstEffect.outcomeId);
+  assert.equal(republished.effects[0]!.completedAt, firstEffect.completedAt);
 });
 
 test("a contract without readback grades absent before its maximum-grade fallback", async () => {
@@ -231,6 +237,36 @@ test("hostile coordinator and storage DTO accessors are rejected without executi
   await kernel.claimMission(mission());
   await assert.rejects(() => kernel.execute({ missionId: "mission_1", effects: [{ contract: reviewed, handle: handle("r1"), verifier: verifierFor(reviewed) }] }), /data|accessor|projection|inert/i);
   assert.equal(getterCalls, 0);
+
+  const ledgerStore = durableFixture(); let ledgerGetters = 0;
+  const ledgerIntent = Object.defineProperty({}, "effectDigest", { enumerable: true, get() { ledgerGetters++; return digest; } });
+  const ledgerKernel = createOutcomeKernel({ storage: ledgerStore, coordinator: { describe: () => ({ reservationId: "r1", state: "reserved", effectDigest: digest, allocationId: null }) } as any, ledger: { getReservation: async () => ({ reservationId: "r1", state: "reserved", intent: ledgerIntent }) } as any, now: () => 2_000, authorization: async () => "active" });
+  await ledgerKernel.claimMission(mission());
+  await assert.rejects(() => ledgerKernel.execute({ missionId: "mission_1", effects: [{ contract: reviewed, handle: handle("r1"), verifier: verifierFor(reviewed) }] }), /data|ledger|inert/i);
+  assert.equal(ledgerGetters, 0);
+
+  const storedStore = durableFixture(), storedState = reservation("r1", "acknowledged", digest); let storedGetters = 0;
+  storedStore.loadEffect = async () => Object.defineProperty({ v: "reelier.stored-effect-lifecycle/v1", missionId: "mission_1", missionDigest: sha("1"), contractDigest: digest, reservation: {}, attempt: null, observation: null, outcome: null }, "revision", { enumerable: true, get() { storedGetters++; return 1; } }) as any;
+  const storedKernel = createOutcomeKernel({ storage: storedStore, coordinator: coordinator(new Map([["r1", storedState]]), { send: 0, readback: 0 }), ledger: { getReservation: async () => storedState } as any, now: () => 2_000, authorization: async () => "active" });
+  await storedKernel.claimMission(mission());
+  await assert.rejects(() => storedKernel.execute({ missionId: "mission_1", effects: [{ contract: reviewed, reservationId: "r1", verifier: verifierFor(reviewed) }] }), /data|stored|inert/i);
+  assert.equal(storedGetters, 0);
+
+  const providerStore = durableFixture(), providerState = reservation("r1", "reserved", digest); let providerGetters = 0;
+  const providerKernel = createOutcomeKernel({ storage: providerStore, coordinator: { describe: () => ({ reservationId: "r1", state: "reserved", effectDigest: digest, allocationId: null }), dispatch: async () => Object.defineProperty({ resultDigest: sha("a") }, "kind", { enumerable: true, get() { providerGetters++; return "acknowledged"; } }) } as any, ledger: { getReservation: async () => providerState } as any, now: () => 2_000, authorization: async () => "active" });
+  await providerKernel.claimMission(mission());
+  await assert.rejects(() => providerKernel.execute({ missionId: "mission_1", effects: [{ contract: reviewed, handle: handle("r1"), verifier: verifierFor(reviewed) }] }), /data|dispatch|inert/i);
+  assert.equal(providerGetters, 0);
+
+  const receiptStore = durableFixture(), receiptStates = new Map([["r1", reservation("r1", "reserved", digest)]]), receiptCounters = { send: 0, readback: 0 };
+  const receiptKernel = createOutcomeKernel({ storage: receiptStore, coordinator: coordinator(receiptStates, receiptCounters), ledger: { getReservation: async () => receiptStates.get("r1") } as any, now: () => 2_000, authorization: async () => "active" });
+  await receiptKernel.claimMission(mission());
+  await receiptKernel.execute({ missionId: "mission_1", effects: [{ contract: reviewed, handle: handle("r1"), verifier: verifierFor(reviewed) }] });
+  let receiptGetters = 0;
+  receiptStore.loadReceipt = async () => Object.defineProperty({}, "receiptRef", { enumerable: true, get() { receiptGetters++; return sha("9"); } }) as any;
+  await assert.rejects(() => receiptKernel.execute({ missionId: "mission_1", effects: [{ contract: reviewed, reservationId: "r1", verifier: verifierFor(reviewed) }] }), /data|receipt|inert/i);
+  assert.equal(receiptGetters, 0);
+  assert.equal(receiptCounters.send, 1);
 });
 
 test("concurrent different mission semantics produce one claim and one conflict behind the same barrier", async () => {

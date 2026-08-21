@@ -10,6 +10,7 @@ import { authorizeCoordinatorCommittedLease, authorizeCoordinatorReconciliation,
 import { normalizeReservationPublicationId } from "./reservation-identity.js";
 import type { AuthenticatedProviderIdentityV1 } from "./github-account-identity.js";
 import type { AuthorityLatencyPhase, AuthorityLatencyRecorder } from "./latency.js";
+import { isProxy } from "node:util/types";
 
 export interface DispatchRequestState { readonly reservation: { readonly reservationId: string; readonly state: LedgerState; readonly intent: Pick<StoredReservationIntent, "effectDigest" | "effectCanonicalBase64" | "executionContext" | "routeAuthority"> }; readonly effect: unknown; readonly effectCanonicalBase64: string; readonly effectDigest: string; readonly [key: string]: unknown; }
 export type ReconciliationStatus = "matched" | "not-applied" | "conflict" | "unavailable" | "not-attempted";
@@ -35,6 +36,23 @@ export interface DispatchPublication {
 }
 export interface DispatchReservationProjectionV1 { readonly reservationId: string; readonly state: LedgerState; readonly effectDigest: string; readonly allocationId: string | null; }
 export interface DispatchCoordinator { describe?(handle: ReservedDispatchHandle): DispatchReservationProjectionV1; dispatch(handle: ReservedDispatchHandle): Promise<DispatchOutcome>; cancel(handle: ReservedDispatchHandle, reason?: string): Promise<DispatchOutcome>; reconcile(reservationId: string): Promise<DispatchOutcome>; recover(): Promise<readonly string[]>; }
+
+/** Closes and detaches the provider-returned result before coordinator logic observes it. */
+export function parseDispatchOutcomeV1(value: unknown): DispatchOutcome {
+  const required = ["kind", "resultDigest"] as const;
+  const optional = ["providerResultDigest", "providerStatus", "responseDigest", "materializedRequestDigest", "reconciliationStatus", "normalizedProjectionDigest", "receiptRef", "evidenceDigest", "priorReceiptDigest"] as const;
+  if (!value || typeof value !== "object" || Array.isArray(value) || isProxy(value) || Object.getPrototypeOf(value) !== Object.prototype) throw new TypeError("dispatch outcome must be inert provider data");
+  const permitted = new Set<string>([...required, ...optional]), raw: Record<string, unknown> = Object.create(null);
+  let count = 0; for (const key in value) { if (!Object.hasOwn(value, key)) continue; if (++count > 32 || !permitted.has(key)) throw new TypeError("dispatch outcome is not closed"); }
+  for (const key of required) { const descriptor = Object.getOwnPropertyDescriptor(value, key); if (!descriptor || !descriptor.enumerable || !Object.hasOwn(descriptor, "value")) throw new TypeError("dispatch outcome requires data properties"); raw[key] = descriptor.value; }
+  for (const key of optional) { const descriptor = Object.getOwnPropertyDescriptor(value, key); if (!descriptor) continue; if (!descriptor.enumerable) continue; if (!Object.hasOwn(descriptor, "value")) throw new TypeError("dispatch outcome requires data properties"); raw[key] = descriptor.value; }
+  if (!["acknowledged", "definitive-failure", "ambiguous"].includes(raw.kind as string) || typeof raw.resultDigest !== "string" || !/^sha256:[0-9a-f]{64}$/.test(raw.resultDigest)) throw new TypeError("dispatch outcome is invalid");
+  for (const key of ["providerResultDigest", "responseDigest", "materializedRequestDigest", "receiptRef", "evidenceDigest", "priorReceiptDigest"]) if (raw[key] !== undefined && (typeof raw[key] !== "string" || !/^sha256:[0-9a-f]{64}$/.test(raw[key] as string))) throw new TypeError("dispatch outcome digest is invalid");
+  if (raw.providerStatus !== undefined && (!Number.isSafeInteger(raw.providerStatus) || (raw.providerStatus as number) < 100 || (raw.providerStatus as number) > 599)) throw new TypeError("dispatch outcome provider status is invalid");
+  if (raw.reconciliationStatus !== undefined && !["matched", "not-applied", "conflict", "unavailable", "not-attempted"].includes(raw.reconciliationStatus as string)) throw new TypeError("dispatch outcome reconciliation status is invalid");
+  if (raw.normalizedProjectionDigest !== undefined && raw.normalizedProjectionDigest !== null && (typeof raw.normalizedProjectionDigest !== "string" || !/^sha256:[0-9a-f]{64}$/.test(raw.normalizedProjectionDigest))) throw new TypeError("dispatch outcome projection digest is invalid");
+  return Object.freeze(Object.fromEntries(Object.keys(raw).map(key => [key, raw[key]])) as unknown as DispatchOutcome);
+}
 export class DispatchBoundaryFailure extends Error {
   readonly classification: string;
   readonly phase: string;
@@ -176,7 +194,7 @@ export function createDispatchCoordinator(ledger: AuthorityLedger, adapter: Disp
         }
         authorizeCoordinatorCommittedLease(lease);
         let outcome: DispatchOutcome;
-        try { certified?.onPhase?.("authority-send-boundary"); outcome = await measureLatency(certified?.latencyRecorder, "authority-send-boundary", () => consumePreparedDispatch(prepared, lease)); certified?.onPhase?.("send"); }
+        try { certified?.onPhase?.("authority-send-boundary"); outcome = parseDispatchOutcomeV1(await measureLatency(certified?.latencyRecorder, "authority-send-boundary", () => consumePreparedDispatch(prepared, lease))); certified?.onPhase?.("send"); }
         catch { outcome = { kind: "ambiguous", resultDigest: authorityDigest({ v: "reelier.dispatch-result/v1", reservationId, status: "ambiguous" }) }; }
         const current = await ledger.getReservation(reservationId);
         if (current?.state === "reserved") {
@@ -198,11 +216,11 @@ export function createDispatchCoordinator(ledger: AuthorityLedger, adapter: Disp
       const budgetClaim = budgetFor(state);
       if (budget && budgetClaim) await budget.consumeOnce(budgetClaim);
       let outcome: DispatchOutcome;
-      try { outcome = await adapter.dispatch(state); }
+      try { outcome = parseDispatchOutcomeV1(await adapter.dispatch(state)); }
       catch { outcome = { kind: "ambiguous", resultDigest: authorityDigest({ v: "reelier.dispatch-result/v1", reservationId, status: "ambiguous" }) }; }
       if (adapter.reconcile && outcome.kind !== "ambiguous") {
         try {
-          outcome = Object.freeze(await adapter.reconcile(state, outcome));
+          outcome = parseDispatchOutcomeV1(await adapter.reconcile(state, outcome));
         } catch {
           outcome = Object.freeze({ ...outcome, kind: "ambiguous", reconciliationStatus: "unavailable" as const, normalizedProjectionDigest: null });
         }
@@ -266,7 +284,7 @@ export function createDispatchCoordinator(ledger: AuthorityLedger, adapter: Disp
       });
       const reconciliationContext = state.reservation.intent.executionContext;
       if (reconciliationContext) authorizeCoordinatorReconciliation(state, { reservationId, allocationId: reconciliationContext.allocationId, effectDigest: state.effectDigest });
-      let outcome = Object.freeze(await adapter.reconcile(state, pending));
+      let outcome = parseDispatchOutcomeV1(await adapter.reconcile(state, pending));
       if (outcome.reconciliationStatus === "not-attempted") throw new Error("reconciliation did not produce a verdict");
       const budgetClaim = budgetFor(state);
       if (budget && budgetClaim && outcome.reconciliationStatus === "not-applied") {
