@@ -159,18 +159,28 @@ test("attempt and observation parsers close provider-crossing evidence combinati
 
 test("governed outcome transition refuses unverifiable chronology and verified masquerades", () => {
   const contractDigest = digestToolEffectContractV1(contract);
-  const projectionDigest = authorityDigest(contract.readback.projection);
+  const pointerListDigest = authorityDigest(contract.readback.projection);
+  let verifierCalls = 0;
+  const verifyObservation = (input: unknown) => {
+    verifierCalls++;
+    const trusted = input as { contract: typeof contract; observation: { projectionDigest: string | null } };
+    assert.equal(Object.isFrozen(trusted), true);
+    assert.equal(Object.isFrozen(trusted.contract), true);
+    assert.equal(Object.isFrozen(trusted.observation), true);
+    return trusted.contract.contractId === contract.contractId && trusted.observation.projectionDigest === digest;
+  };
   const outcome = {
     v: "reelier.governed-outcome/v1", outcomeId: "outcome_1", contractDigest, semanticIdentity: contract.semanticIdentity,
     reservation: { v: "reelier.effect-reservation/v1", reservationId: "reservation_1", semanticIdentity: contract.semanticIdentity, contractDigest, reservedAt: "2026-08-20T12:00:00.000Z" },
     attempts: [{ v: "reelier.attempt/v1", attemptId: "attempt_1", reservationId: "reservation_1", semanticIdentity: contract.semanticIdentity, dispatchedAt: "2026-08-20T12:00:01.000Z", crossedProviderBoundary: true, result: "acknowledged" }],
-    observation: { v: "reelier.observation/v1", observationId: "observation_1", reservationId: "reservation_1", semanticIdentity: contract.semanticIdentity, observedAt: "2026-08-20T12:00:02.000Z", authoritative: true, verdict: "matched", projectionDigest },
+    observation: { v: "reelier.observation/v1", observationId: "observation_1", reservationId: "reservation_1", semanticIdentity: contract.semanticIdentity, observedAt: "2026-08-20T12:00:02.000Z", authoritative: true, verdict: "matched", projectionDigest: digest },
     status: "verified", completedAt: "2026-08-20T12:00:03.000Z",
   } as const;
-  const context = { contract, now: "2026-08-20T12:00:04.000Z" } as const;
+  const context = { contract, now: "2026-08-20T12:00:04.000Z", verifyObservation } as const;
   assert.equal(parseGovernedOutcomeV1(outcome).status, "verified");
   const verified = verifyGovernedOutcomeTransitionV1(outcome, context);
   assert.equal(verified.status, "verified");
+  assert.equal(verifierCalls, 1);
   assert.equal(Object.isFrozen(verified), true);
   assert.equal(typeof digestGovernedOutcomeV1(outcome), "string");
   assert.throws(() => parseGovernedOutcomeV1({ ...outcome, observation: { ...outcome.observation, authoritative: false } }));
@@ -182,7 +192,11 @@ test("governed outcome transition refuses unverifiable chronology and verified m
   const differentContract = { ...contract, operation: "events.update" } as const;
   assert.throws(() => verifyGovernedOutcomeTransitionV1(outcome, { ...context, contract: differentContract }));
   assert.throws(() => verifyGovernedOutcomeTransitionV1(outcome, { ...context, extra: true }));
-  assert.throws(() => verifyGovernedOutcomeTransitionV1({ ...outcome, observation: { ...outcome.observation, projectionDigest: digest } }, context));
+  assert.throws(() => verifyGovernedOutcomeTransitionV1({ ...outcome, observation: { ...outcome.observation, projectionDigest: `sha256:${"b".repeat(64)}` } }, context));
+  assert.throws(() => verifyGovernedOutcomeTransitionV1({ ...outcome, observation: { ...outcome.observation, projectionDigest: pointerListDigest } }, { ...context, verifyObservation: () => false }));
+  assert.throws(() => verifyGovernedOutcomeTransitionV1(outcome, { ...context, verifyObservation: () => false }));
+  assert.throws(() => verifyGovernedOutcomeTransitionV1(outcome, { ...context, verifyObservation: () => { throw new Error("untrusted observation"); } }));
+  assert.throws(() => verifyGovernedOutcomeTransitionV1(outcome, { ...context, verifyObservation: (() => "yes") as unknown as typeof verifyObservation }));
   const partialContract = { ...contract, maximumEvidenceGrade: "partial" } as const;
   const partialDigest = digestToolEffectContractV1(partialContract);
   assert.throws(() => verifyGovernedOutcomeTransitionV1({ ...outcome, contractDigest: partialDigest, reservation: { ...outcome.reservation, contractDigest: partialDigest } }, { ...context, contract: partialContract }));
@@ -206,7 +220,17 @@ test("governed outcome transition refuses unverifiable chronology and verified m
   const hostileContext = Object.create(null, {
     contract: { enumerable: true, get() { getterReads++; return contract; } },
     now: { enumerable: true, value: context.now },
+    verifyObservation: { enumerable: true, value: context.verifyObservation },
   });
   assert.throws(() => verifyGovernedOutcomeTransitionV1(outcome, hostileContext));
   assert.equal(getterReads, 0);
+
+  let verifierGetterReads = 0;
+  const hostileVerifier = Object.create(null, {
+    contract: { enumerable: true, value: contract },
+    now: { enumerable: true, value: context.now },
+    verifyObservation: { enumerable: true, get() { verifierGetterReads++; return verifyObservation; } },
+  });
+  assert.throws(() => verifyGovernedOutcomeTransitionV1(outcome, hostileVerifier));
+  assert.equal(verifierGetterReads, 0);
 });
