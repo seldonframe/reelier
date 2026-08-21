@@ -22,6 +22,8 @@ Commits
 - `42e88337 docs(sdd): report governed effect contract task`
 - `f027a1ec test(authority): specify neutral mandate v2` (RED test)
 - `7df9d748 feat(authority): add neutral mandate v2`
+- `cbdd17f3 test(authority): define readback projection grammar` (RED test)
+- `fcb4645c fix(authority): validate readback projections`
 
 What changed
 
@@ -29,6 +31,7 @@ What changed
 - Added the contract as an additive authority wire kind and public authority export; existing `TransportEffect` remains unchanged.
 - Added neutral contract/pack and compile type seams, plus a functional additive V2 mandate parser/digest and exact provider/account/destination subset mission derivation without changing V1 parsing or digests.
 - Added its published JSON schema, golden vector, and regenerated adapter contract artifacts.
+- Defined readback projection paths as closed RFC 6901-style JSON pointers and updated the package runtime/declaration export allowlists.
 
 Deviations
 
@@ -51,8 +54,21 @@ npx tsc --noEmit --target ES2022 --module NodeNext --moduleResolution NodeNext -
 
 node scripts/build-authority-contract.mjs --check
 (exit 0)
+
+```text
+npm run build
+(exit 0)
+
+npx tsc -p tsconfig.test.json
+(exit 0)
+
+node --test dist-test/test/authority/effect-contract.test.js dist-test/test/authority/wire.test.js dist-test/test/authority/compile.test.js dist-test/test/authority/contract.test.js dist-test/test/authority/agent-mandate.test.js dist-test/test/authority/package.test.js
+tests 66
+pass 66
+fail 0
+```
 ```
 
 Open risks
 
-- The task’s complete required test suite could not be run in this worktree because `tsx` is not installed and baseline self-reference failures prevent `tsconfig.test.json` from compiling.
+- `node --import tsx --test` remains unavailable because `tsx` is not installed; the repository's compiled test path above is the verified local prerequisite-compatible path.
