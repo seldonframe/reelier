@@ -93,9 +93,9 @@ export function bindCoordinatorDispatchCallDelegateV1(call: unknown, delegate: o
 export function consumeCoordinatorDispatchCallDelegateV1(delegate: unknown, expected: Readonly<{ reservationId: string; effectDigest: string }>): boolean {
   if (!delegate || typeof delegate !== "object") return false;
   const binding = coordinatorDispatchDelegates.get(delegate as object);
-  if (!binding || binding.delegate !== delegate) return false;
+  if (!binding || binding.delegate !== delegate || binding.reservationId !== expected.reservationId || binding.effectDigest !== expected.effectDigest) return false;
   revokeCoordinatorDispatchCall(binding.call);
-  return binding.reservationId === expected.reservationId && binding.effectDigest === expected.effectDigest;
+  return true;
 }
 
 function createCoordinatorDispatchCall(state: DispatchRequestState): CoordinatorDispatchCallV1 {
