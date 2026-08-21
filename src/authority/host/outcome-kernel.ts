@@ -4,6 +4,7 @@ import { isProxy } from "node:util/types";
 import { authorityDigest } from "../wire.js";
 import {
   digestGovernedOutcomeV1,
+  digestGovernedReceiptV1,
   digestMissionClaimV1,
   digestToolEffectContractV1,
   parseMissionClaimV1,
@@ -56,7 +57,7 @@ export interface OutcomeKernelStorage {
   loadMission(missionId: string): Promise<MissionClaimV1 | null>;
   loadEffect(missionId: string, reservationId: string): Promise<StoredEffectLifecycleV1 | null>;
   storeEffect(value: StoredEffectLifecycleV1, expectedRevision: number): Promise<Readonly<{ status: "stored"; value: StoredEffectLifecycleV1 }> | Readonly<{ status: "conflict" }>>;
-  publishReceipt(receipt: GovernedReceiptV1): Promise<Readonly<{ durable: true; receiptRef: string }> | Readonly<{ durable: false }>>;
+  compareAndPublishReceipt(receipt: GovernedReceiptV1, receiptDigest: string): Promise<Readonly<{ status: "published" | "exact-existing"; receiptDigest: string; receiptRef: string }> | Readonly<{ status: "conflict" }>>;
   loadReceipt(receiptId: string): Promise<Readonly<{ receiptRef: string }> | null>;
 }
 
@@ -97,6 +98,7 @@ export function createOutcomeKernel(options: OutcomeKernelOptions): OutcomeKerne
       const claim = parseMissionClaimV1(rawClaim), digest = digestMissionClaimV1(claim);
       const claimed = parseMissionClaimResult(await storage.claimMission(claim, digest));
       if (claimed.status === "conflict") throw new Error("mission claim semantics conflict");
+      if (claimed.claim.missionId !== claim.missionId || digestMissionClaimV1(claimed.claim) !== digest) throw new Error("mission claim result does not bind the submitted mission digest");
       boundary("mission-claim");
       return Object.freeze({ status: claimed.status, claim: parseMissionClaimV1(claimed.claim) });
     },
@@ -106,6 +108,7 @@ export function createOutcomeKernel(options: OutcomeKernelOptions): OutcomeKerne
       const mission = await storage.loadMission(request.missionId);
       if (!mission) throw new Error("mission claim is absent");
       const parsedMission = parseMissionClaimV1(mission), missionDigest = digestMissionClaimV1(parsedMission);
+      if (parsedMission.missionId !== request.missionId) throw new Error("loaded mission does not bind the queried mission ID");
       const effects: GovernedOutcomeV1[] = [], receiptRefs: string[] = [];
       let receiptsDurable = storage.durable;
 
@@ -124,7 +127,7 @@ export function createOutcomeKernel(options: OutcomeKernelOptions): OutcomeKerne
         let current = parseLedgerProjection(await options.ledger.getReservation(described.reservationId));
         if (!current || described.effectDigest !== contractDigest || current.effectDigest !== contractDigest || current.reservationId !== described.reservationId || current.state !== described.state || current.allocationId !== described.allocationId) throw new Error("durable reservation projection does not bind the exact contract, state, and allocation");
         let stored = parseStoredEffect(await storage.loadEffect(parsedMission.missionId, current.reservationId));
-        if (stored && (stored.missionDigest !== missionDigest || stored.contractDigest !== contractDigest || stored.reservation.semanticIdentity !== contract.semanticIdentity)) throw new Error("stored effect semantics conflict");
+        if (stored && (stored.missionId !== parsedMission.missionId || stored.reservation.reservationId !== current.reservationId || stored.missionDigest !== missionDigest || stored.contractDigest !== contractDigest || stored.reservation.semanticIdentity !== contract.semanticIdentity)) throw new Error("stored effect identity or semantics conflict");
         if (!stored) {
           const reservation: EffectReservationV1 = Object.freeze({ v: "reelier.effect-reservation/v1", reservationId: current.reservationId, semanticIdentity: contract.semanticIdentity, contractDigest, reservedAt: reservationTime(current, parsedMission.claimedAt) });
           stored = await persist(storage, Object.freeze({ v: "reelier.stored-effect-lifecycle/v1", missionId: parsedMission.missionId, missionDigest, contractDigest, reservation, attempt: null, observation: null, outcome: null, revision: 0 }), 0);
@@ -192,8 +195,13 @@ export function createOutcomeKernel(options: OutcomeKernelOptions): OutcomeKerne
 async function persist(storage: OutcomeKernelStorage, value: Omit<StoredEffectLifecycleV1, "revision"> & { revision: number }, expectedRevision: number): Promise<StoredEffectLifecycleV1> {
   const candidate = Object.freeze({ ...value, revision: expectedRevision });
   const stored = parseStoreEffectResult(await storage.storeEffect(candidate, expectedRevision));
-  if (stored.status === "stored") return parseStoredEffect(stored.value)!;
+  if (stored.status === "stored") {
+    const result = parseStoredEffect(stored.value)!;
+    if (result.missionId !== value.missionId || result.reservation.reservationId !== value.reservation.reservationId) throw new Error("stored effect result does not bind the requested identities");
+    return result;
+  }
   const prior = parseStoredEffect(await storage.loadEffect(value.missionId, value.reservation.reservationId));
+  if (prior && (prior.missionId !== value.missionId || prior.reservation.reservationId !== value.reservation.reservationId)) throw new Error("stored effect conflict read does not bind the requested identities");
   if (prior && authorityDigest({ ...prior, revision: 0 }) === authorityDigest({ ...candidate, revision: 0 })) return prior;
   throw new Error("effect lifecycle storage conflict");
 }
@@ -308,7 +316,11 @@ function parseLedgerProjection(value: unknown): LedgerProjection | null {
     if (typeof context.allocationId !== "string" || context.allocationId.length === 0) throw new TypeError("ledger allocation is invalid");
     allocationId = context.allocationId;
   } else if (contextDescriptor && (!contextDescriptor.enumerable || !Object.hasOwn(contextDescriptor, "value"))) throw new TypeError("ledger execution context must be a data property");
-  const issuedAt = issuedDescriptor?.enumerable && Object.hasOwn(issuedDescriptor, "value") && typeof issuedDescriptor.value === "string" ? issuedDescriptor.value : null;
+  let issuedAt: string | null = null;
+  if (issuedDescriptor) {
+    if (!issuedDescriptor.enumerable || !Object.hasOwn(issuedDescriptor, "value") || typeof issuedDescriptor.value !== "string" || !Number.isFinite(Date.parse(issuedDescriptor.value)) || new Date(Date.parse(issuedDescriptor.value)).toISOString() !== issuedDescriptor.value) throw new TypeError("ledger issuedAt must be a canonical data timestamp");
+    issuedAt = issuedDescriptor.value;
+  }
   if (typeof raw.reservationId !== "string" || raw.reservationId.length === 0 || !LEDGER_STATES.includes(raw.state as LedgerState) || typeof intent.effectDigest !== "string" || !SHA.test(intent.effectDigest)) throw new TypeError("ledger reservation projection is invalid");
   return Object.freeze({ reservationId: raw.reservationId, state: raw.state as LedgerState, effectDigest: intent.effectDigest, allocationId, issuedAt });
 }
@@ -363,9 +375,14 @@ function receiptFor(mission: MissionClaimV1, missionDigest: string, outcome: Gov
 }
 
 async function publishAndAdoptReceipt(storage: OutcomeKernelStorage, receipt: GovernedReceiptV1, refs: string[], markNotDurable: () => void): Promise<void> {
-  const raw = await storage.publishReceipt(parseGovernedReceiptV1(receipt));
-  const status = dataRecord(raw, ["durable"], raw && typeof raw === "object" && Object.getOwnPropertyDescriptor(raw, "durable")?.value === true ? ["receiptRef"] : [], "receipt publication result");
-  if (status.durable !== true || typeof status.receiptRef !== "string" || !SHA.test(status.receiptRef)) { markNotDurable(); return; }
+  if (!storage.durable) { markNotDurable(); return; }
+  const parsed = parseGovernedReceiptV1(receipt), receiptDigest = digestGovernedReceiptV1(parsed);
+  const raw = await storage.compareAndPublishReceipt(parsed, receiptDigest);
+  const statusDescriptor = raw && typeof raw === "object" && !isProxy(raw) ? Object.getOwnPropertyDescriptor(raw, "status") : undefined;
+  if (!statusDescriptor || !statusDescriptor.enumerable || !Object.hasOwn(statusDescriptor, "value")) throw new TypeError("atomic receipt publication result must be inert data");
+  if (statusDescriptor.value === "conflict") { dataRecord(raw, ["status"], [], "atomic receipt publication conflict"); throw new Error("atomic receipt identity conflict"); }
+  const status = dataRecord(raw, ["status", "receiptDigest", "receiptRef"], [], "atomic receipt publication result");
+  if ((status.status !== "published" && status.status !== "exact-existing") || status.receiptDigest !== receiptDigest || typeof status.receiptRef !== "string" || !SHA.test(status.receiptRef)) throw new TypeError("atomic receipt publication result does not bind the exact receipt");
   const head = parseReceiptHead(await storage.loadReceipt(receipt.receiptId));
   if (!head || head.receiptRef !== status.receiptRef) { markNotDurable(); return; }
   refs.push(head.receiptRef);
@@ -379,7 +396,7 @@ function createHermeticStorage(): OutcomeKernelStorage {
     async loadMission(id: string) { return missions.get(id)?.claim ?? null; },
     async loadEffect(_missionId: string, id: string) { return effects.get(id) ?? null; },
     async storeEffect(value: StoredEffectLifecycleV1, revision: number) { const prior = effects.get(value.reservation.reservationId); if ((prior?.revision ?? 0) !== revision) return { status: "conflict" as const }; const stored = Object.freeze({ ...value, revision: revision + 1 }); effects.set(value.reservation.reservationId, stored); return { status: "stored" as const, value: stored }; },
-    async publishReceipt() { return { durable: false as const }; },
+    async compareAndPublishReceipt() { return { status: "conflict" as const }; },
     async loadReceipt() { return null; },
   });
 }

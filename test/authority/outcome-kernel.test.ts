@@ -32,13 +32,13 @@ function reservation(id: string, state = "reserved", effectDigest = digestToolEf
   return { reservationId: id, state, intent: { effectDigest, effectCanonicalBase64: "e30=" } } as any;
 }
 
-function durableFixture(): OutcomeKernelStorage & { effects: Map<string, StoredEffectLifecycleV1>; loseHead: boolean; publishCalls: number; atomicCalls: number; durableCreates: number; published: Map<string, readonly string[]>; dropReceipt(receiptId: string): void; compareAndPublishReceipt(receipt: GovernedReceiptV1, receiptDigest: string): Promise<any> } {
+function durableFixture(): OutcomeKernelStorage & { effects: Map<string, StoredEffectLifecycleV1>; loseHead: boolean; atomicCalls: number; durableCreates: number; published: Map<string, readonly string[]>; dropReceipt(receiptId: string): void; compareAndPublishReceipt(receipt: GovernedReceiptV1, receiptDigest: string): Promise<any> } {
   const missions = new Map<string, { digest: string; claim: MissionClaimV1 }>();
   const effects = new Map<string, StoredEffectLifecycleV1>();
   const receipts = new Map<string, string>();
   const receiptClaims = new Map<string, { digest: string; ref: string }>();
   return {
-    durable: true, effects, loseHead: false, publishCalls: 0, atomicCalls: 0, durableCreates: 0, published: new Map(),
+    durable: true, effects, loseHead: false, atomicCalls: 0, durableCreates: 0, published: new Map(),
     dropReceipt(receiptId) { receipts.delete(receiptId); },
     async claimMission(claim, digest) {
       const prior = missions.get(claim.missionId);
@@ -52,7 +52,6 @@ function durableFixture(): OutcomeKernelStorage & { effects: Map<string, StoredE
       if ((prior?.revision ?? 0) !== expectedRevision) return { status: "conflict" as const };
       const stored = Object.freeze({ ...value, revision: expectedRevision + 1 }); effects.set(value.reservation.reservationId, stored); return { status: "stored" as const, value: stored };
     },
-    async publishReceipt(receipt) { this.publishCalls++; const prior = this.published.get(receipt.receiptId) ?? []; this.published.set(receipt.receiptId, Object.freeze([...prior, JSON.stringify(receipt)])); const ref = sha("9"); receipts.set(receipt.receiptId, ref); return this.loseHead ? { durable: false as const } : { durable: true as const, receiptRef: ref }; },
     async compareAndPublishReceipt(receipt, receiptDigest) {
       this.atomicCalls++;
       const priorBytes = this.published.get(receipt.receiptId) ?? []; this.published.set(receipt.receiptId, Object.freeze([...priorBytes, JSON.stringify(receipt)]));
@@ -214,13 +213,14 @@ test("terminal retries adopt the stored Outcome and durable receipt without reve
   assert.deepEqual(retry.effects[0], firstEffect);
   assert.equal(verifies, 1);
   assert.equal(counters.send, 1);
-  assert.equal(store.publishCalls, 1);
+  assert.equal(store.atomicCalls, 1);
 
   store.dropReceipt(receiptId);
   const republished = await kernel.execute({ missionId: "mission_1", effects: [{ contract: reviewed, reservationId: "r1", verifier: createTrustedObservationVerifier({ contractDigest: digest, verify: () => { throw new Error("terminal Outcome must not be reverified"); } }) }] });
   assert.deepEqual(republished.effects[0], firstEffect);
   assert.equal(counters.send, 1);
-  assert.equal(store.publishCalls, 2);
+  assert.equal(store.atomicCalls, 2);
+  assert.equal(store.durableCreates, 1);
   assert.deepEqual(store.published.get(receiptId), [store.published.get(receiptId)![0], store.published.get(receiptId)![0]]);
   const receipts = store.published.get(receiptId)!.map(value => JSON.parse(value));
   assert.equal(receipts[0].receiptId, receipts[1].receiptId);
@@ -351,7 +351,7 @@ test("an atomic receipt identity conflict refuses without provider resend", asyn
   await kernel.claimMission(mission());
   const first = await kernel.execute({ missionId: "mission_1", effects: [{ contract: reviewed, handle: handle("r1"), verifier: verifierFor(reviewed) }] });
   store.dropReceipt([...store.published.keys()][0]!);
-  store.compareAndPublishReceipt = async (_receipt, receiptDigest) => ({ status: "conflict" as const, receiptDigest });
+  store.compareAndPublishReceipt = async () => ({ status: "conflict" as const });
   await assert.rejects(() => kernel.execute({ missionId: "mission_1", effects: [{ contract: reviewed, reservationId: "r1", verifier: verifierFor(reviewed) }] }), /receipt.*conflict|conflict.*receipt/i);
   assert.equal(first.effects[0]!.status, "verified");
   assert.equal(counters.send, 1);

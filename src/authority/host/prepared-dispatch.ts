@@ -162,6 +162,7 @@ function validateProjection(value: PreparedDispatchProjectionV1): PreparedDispat
   if (!version || !version.enumerable || !Object.hasOwn(version, "value")) throw new TypeError("prepared projection requires inert data properties");
   if (version.value !== "reelier.materialized-http-request/v1") return validateNeutralProjection(value);
   const raw = inertRecord(value, ["v", "method", "origin", "normalizedPath", "normalizedQuery", "reviewedHeaders", "bodyDigest"], [], "materialized HTTP projection");
+  if (!["POST", "PUT", "PATCH", "DELETE"].includes(raw.method as string) || typeof raw.origin !== "string" || typeof raw.normalizedPath !== "string" || typeof raw.normalizedQuery !== "string" || typeof raw.bodyDigest !== "string" || !/^sha256:[0-9a-f]{64}$/.test(raw.bodyDigest)) throw new TypeError("materialized HTTP projection primitives are invalid");
   const headersRaw = raw.reviewedHeaders;
   if (!headersRaw || typeof headersRaw !== "object" || Array.isArray(headersRaw) || isProxy(headersRaw) || Object.getPrototypeOf(headersRaw) !== Object.prototype) throw new TypeError("materialized HTTP headers are not inert");
   const headers: Record<string, string> = {}; let count = 0;
@@ -171,7 +172,7 @@ function validateProjection(value: PreparedDispatchProjectionV1): PreparedDispat
 
 function validateNeutralProjection(value: PreparedDispatchProjectionV1): PreparedEffectProjectionV1 {
   const raw = inertRecord(value, ["v", "transport", "operationDigest", "requestDigest"], [], "prepared effect projection");
-  if (raw.v !== "reelier.prepared-effect-projection/v1" || typeof raw.transport !== "string" || raw.transport.length === 0 || typeof raw.operationDigest !== "string" || !DIGEST.test(raw.operationDigest) || typeof raw.requestDigest !== "string" || !DIGEST.test(raw.requestDigest)) throw new TypeError("prepared effect projection is invalid");
+  if (raw.v !== "reelier.prepared-effect-projection/v1" || typeof raw.transport !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(raw.transport) || typeof raw.operationDigest !== "string" || !DIGEST.test(raw.operationDigest) || typeof raw.requestDigest !== "string" || !DIGEST.test(raw.requestDigest)) throw new TypeError("prepared effect projection is invalid");
   return Object.freeze({ v: raw.v, transport: raw.transport, operationDigest: raw.operationDigest, requestDigest: raw.requestDigest });
 }
 
