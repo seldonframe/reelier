@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, readdir, unlink, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, readdir, rm, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createFileReceiptPublication, __testSetReceiptsDurabilityProbe, type ReceiptsDurabilityProbeEventV1 } from "../../src/authority/host/receipts.js";
@@ -40,6 +40,17 @@ test("file receipt publication persists an authoritative durable chain across re
     assert.deepEqual(head, { v: "reelier.durable-dispatch-publication-head/v1", identity, receiptRef: terminal.receiptRef, evidenceDigest: terminal.evidenceDigest, reservationReceiptRef: rootReceipt.receiptRef, priorReceiptRef: rootReceipt.receiptRef, phase: "dispatch", terminalKind: "acknowledged" });
     assert.deepEqual(await restarted.loadDurableHead!({ v: "reelier.durable-dispatch-publication-query/v1", identity, ledgerState: "dispatched", sendStarted: true }), head, "exact readback converges");
   } finally { restore(); }
+});
+
+test("a valid durable chain copied to a different genuine publication root refuses", async () => {
+  const restore = __testSetAuthorityCellHostPlatform("linux"), parent = await mkdtemp(path.join(tmpdir(), "reelier-durable-root-binding-")), rootA = path.join(parent, "root-a"), rootB = path.join(parent, "root-b");
+  try {
+    await mkdir(rootA);
+    const { identity, terminal } = await publishedDurableChain(rootA), query = { v: "reelier.durable-dispatch-publication-query/v1", identity, ledgerState: "dispatched", sendStarted: true } as const;
+    assert.equal((await createFileReceiptPublication({ rootDir: rootA }).loadDurableHead!(query))?.receiptRef, terminal.receiptRef, "reopening the same resolved root preserves its publisher identity");
+    await cp(rootA, rootB, { recursive: true });
+    await assert.rejects(() => createFileReceiptPublication({ rootDir: rootB }).loadDurableHead!(query), /publisher|root|binding|legacy|version/i);
+  } finally { restore(); await rm(parent, { recursive: true, force: true }); }
 });
 
 async function publishedDurableChain(root: string) {
