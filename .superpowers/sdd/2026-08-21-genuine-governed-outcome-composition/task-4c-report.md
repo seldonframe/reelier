@@ -11,10 +11,12 @@
 - `src/authority/host/github-release-runner.ts`
 - `src/authority/host/governed-outcome-composition.ts`
 - `src/authority/host/index.ts`
+- `src/authority/host/linear-outcome-runner.ts`
 - `src/authority/host/local.ts`
 - `src/authority/host/outcome-kernel-fs-storage.ts`
 - `src/authority/host/outcome-kernel.ts`
 - `src/authority/host/prepared-dispatch.ts`
+- `src/authority/host/receipts.ts`
 - `src/authority/pack.ts`
 - `src/authority/packs/github-linear-outcomes.ts`
 - `src/packs/conformance.ts`
@@ -83,33 +85,59 @@
 - `test/authority/github-release-serve-fixture.ts` adds only an opt-in executable candidate with real signed bytes/digests; default fixture behavior is unchanged.
 - `test/authority/github-linear-mission-runtime.test.ts` proves raw legacy refusal before filesystem/provider access, a primary Linear-only mission with exactly two writes and two authoritative reads plus zero GitHub runner calls/reservations, and the full five-definition candidate→PR→ambiguous merge→recreate/readback→comment→status path with exactly one merge write.
 
+### Independent-review fix round
+
+- `src/authority/host/outcome-kernel.ts` and `src/authority/host/github-linear-mission-runtime.ts` require all five Outcomes and their exact coordinator publication heads to be verified. A later success cannot overwrite an earlier failed or partial effect, and restart after the Linear comment preserves the exact verified predecessor only through the coordinator head.
+- `src/authority/host/effect-transports.ts`, `src/authority/host/github-release-runner.ts`, and `src/authority/host/linear-outcome-runner.ts` bind branded execution to the durable request ID, governed effect digest, exact coordinator call, reviewed contract/binding, and canonical release-pack membership. The runtime uses only the branded GitHub and Linear executors; the generic GitHub verifier/provider path is absent. Legacy generic transports retain their exact three-field conditional authority shape, but branded paths refuse it before provider access.
+- The GitHub model request ID must equal the authenticated durable request ID. The coordinator delegate separately binds reservation ID and governed effect digest; reservation identity is never substituted for model identity. Candidate, pull request, merge, Linear comment, and Linear status each consume their own exact coordinator call. Status additionally consumes the exact predecessor arm without confusing it with the comment call.
+- `src/authority/host/dispatch.ts` revalidates the same signed gate authority before prepare, after prepare/host resolution, after budget consumption immediately before prepared CAS, and again after CAS/publication immediately before send. The late-revocation falsifier records zero provider calls.
+- `src/authority/gate.ts` exposes an opaque readback-only recovery linkage for an accepted reservation that crashed before indexing. Restart reconstructs it only from durable ledger intent, signed decision index, ingress linkage, current signed authority, and contract; it neither exposes a handle nor remints or sends. If no provider write crossed the boundary, genuine coordinator recovery cancels the orphan and records an honest terminal non-success, so retries converge instead of remaining pending.
+- `src/authority/host/receipts.ts`, `src/authority/host/governed-outcome-composition.ts`, and `src/authority/host/local.ts` closure-bind exact publication readback to the publisher-specific factory captured by the local coordinator composition. A second genuine publisher/root, a copied or cloned factory, a duck-typed resolver/query, and a substituted readback capability cannot resolve or authorize the first publisher's head. The coordinator publication head remains the sole verified authority; journals remain indexes only.
+- `test/authority/github-linear-outcomes.test.ts` gives every intended branded-success reservation its authenticated durable request ID. The direct legacy-envelope comment/status probes remain deliberately unbranded and prove zero provider writes.
+
 ## Deviations from the plan
 
 - No implementation behavior was broadened beyond tracked amendments. `src/packs/conformance.ts`, `src/authority/host/github-release-runner.ts`, `test/authority/github-release-runner.test.ts`, `test/authority/github-release-serve-fixture.ts`, `src/authority/host/prepared-dispatch.ts`, and `test/acceleration-preflight.test.ts` were touched only after their exact amendments were committed.
 - `src/authority/host/prepared-dispatch.ts` became necessary because deterministic GitHub refusals cross two closed dispatch sanitizers. Both now preserve only an inert, non-empty reason bounded to 4096 characters.
 - The full suite was run once but produced no terminal aggregate: it hung for more than eleven minutes in the obsolete Task-5 `continuity/eve-kill-resume.test` outcome scenario after the checkpoint scenario completed. Genuine Task4C refuses that raw legacy runtime before the provider boundary, so the fixture's unbounded wait for a provider-fault marker can never settle. Per final direction, the hanging full suite was not rerun.
 - Actual packed-consumer execution was unavailable in this clean Windows worktree. `npm pack` correctly refused because `native/bootstrap-helper/manifest.json` and the universal Linux+Windows artifacts are absent. The matching-host builder cannot produce the Linux artifact on Windows; no artifact was fabricated or downloaded. Static package/packed-harness tests passed.
+- One verification command initially invoked the parameterized `check:agent-adapter` script without its required candidate argument. It correctly returned the machine-readable usage failure `usage: check.mjs <candidate.json>`. The two repository-pinned candidates were then supplied explicitly and both passed; this was an invocation correction, not an implementation change.
 
 ## Test results
 
-### Final build and exact Task4C gates
+### Review-fix focused gate
+
+```text
+ℹ tests 43
+ℹ suites 0
+ℹ pass 43
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 10795.904
+```
+
+This focused gate covers effect transports, the full signed composite and Linear-only runtimes, the reviewed GitHub/Linear pack, and publication binding. The explicit publication adversary is `governed publication readback refuses duck-typed resolver and query substitution`: publisher/root B, factory clones/copies, and substituted resolver/query capabilities cannot adopt publisher/root A's terminal head.
+
+### Final build and complete scoped Task4C gates
 
 ```text
 > reelier@0.32.1 build
 > node scripts/build-authority-contract.mjs --check && node scripts/build-bootstrap-contract.mjs --check && tsc -p tsconfig.json && node scripts/build-authority-contract.mjs --copy-schemas && node scripts/build-packs.mjs
 
 built cloudflare_api_token, cloudflare_dns, github_issue_labels, github_release, gmail, gmail_labels, hubspot_slack_information_flow, linear_outcomes, neon_database, slack_channel_topic, stripe, vercel_deployment
-ℹ tests 47
+ℹ tests 219
 ℹ suites 0
-ℹ pass 47
+ℹ pass 219
 ℹ fail 0
 ℹ cancelled 0
 ℹ skipped 0
 ℹ todo 0
-ℹ duration_ms 28313.0594
+ℹ duration_ms 58042.0348
 ```
 
-The wider focused Task4C authority/pack/runtime/conformance run also passed 140/140 before the final narrowed rerun.
+Both `npx tsc -p tsconfig.test.json` and `npx tsc -p tsconfig.json` exited 0 with no diagnostics. `npm run build` passed, and a separate `node scripts/build-packs.mjs` produced the same exact twelve-pack inventory.
 
 ### Legacy GitHub release compatibility
 
@@ -121,20 +149,20 @@ The wider focused Task4C authority/pack/runtime/conformance run also passed 140/
 ℹ cancelled 0
 ℹ skipped 0
 ℹ todo 0
-ℹ duration_ms 22995.7557
+ℹ duration_ms 23672.8867
 ```
 
 ### Package and compatibility specs
 
 ```text
-ℹ tests 32
+ℹ tests 65
 ℹ suites 0
-ℹ pass 31
+ℹ pass 64
 ℹ fail 0
 ℹ cancelled 0
 ℹ skipped 1
 ℹ todo 0
-ℹ duration_ms 15448.812
+ℹ duration_ms 9015.3891
 ```
 
 The skip is the declared `public governed Linux factory evidence` test, which requires an already available Linux Node executor.
@@ -147,7 +175,7 @@ The skip is the declared `public governed Linux factory evidence` test, which re
 {"v":"reelier.continuity-adapter-conformance-report/v1","status":"passed","maturity":"reproduced","adapterId":"core",...}
 ```
 
-`check:outcome-profile-contract` passed. Authority and bootstrap contract checks passed as the first two build steps.
+Fresh, separate `check:authority-contract`, `check:bootstrap-contract`, and `check:outcome-profile-contract` invocations passed. The first zero-argument adapter invocation returned only the documented usage failure; the correctly parameterized `grok-build-observed.json`, `grok-bot-observed.json`, and `core-candidate.mjs` checks produced the passing reports above.
 
 ### Full-suite honest result
 
