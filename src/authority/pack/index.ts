@@ -3,7 +3,10 @@ export { createStaticPackRegistry, definitionRegistrationDigest, assertStaticFir
 export type { PackReconciliationResult, PackReconciliationStatus, PackReconciler, ProviderResponse } from "../../packs/types.js";
 export {
   assertLinearStatusPredecessorV1,
+  assertGitHubLinearProviderReadbackV1,
   createGitHubLinearOutcomePackV1,
+  GITHUB_RELEASE_OUTCOME_SERVER_SCHEMA_DIGEST_V1,
+  githubReleaseOutcomeToolSchemaDigestV1,
   orderedGitHubLinearOperationsV1,
 } from "../packs/github-linear-outcomes.js";
 export type {

@@ -83,7 +83,7 @@ test("Linear readback binds exact project, issue, marker, and status without acc
 test("GitHub merge readback closes exact base, head, merge commit, and post-merge tree", () => {
   const pack = createGitHubLinearOutcomePackV1(reviewedInput());
   const exact = { repository: "seldonframe/reelier", baseSha: git("a"), headSha: git("b"), mergeCommitSha: git("f"), treeSha: git("e") };
-  assert.deepEqual(assertGitHubLinearProviderReadbackV1(pack, "exactHeadMerge", exact), exact);
+  assert.deepEqual({ ...assertGitHubLinearProviderReadbackV1(pack, "exactHeadMerge", exact) }, exact);
   for (const changed of [{ ...exact, baseSha: git("0") }, { ...exact, headSha: git("1") }, { ...exact, treeSha: git("2") }, { ...exact, repository: "other/repo" }]) assert.throws(() => assertGitHubLinearProviderReadbackV1(pack, "exactHeadMerge", changed), /conflict|exact/i);
 });
 

@@ -12,6 +12,8 @@ import { normalizeReservationPublicationId } from "./reservation-identity.js";
 import { createSignedJournal, type SignedJournal, type SignedJournalEventV1 } from "./signed-journal.js";
 import { createGitHubReleaseProviderEvidence } from "./github-release-evidence.js";
 import { assertGitHubReleaseHostedAuthorityBindingV1, type GitHubReleaseHostedAuthorityBindingV1 } from "./github-release-hosted-authority.js";
+import { mintTrustedEffectTransportExecutorV1, type TrustedEffectTransportExecutorV1 } from "./effect-transports.js";
+import { GITHUB_RELEASE_OUTCOME_SERVER_SCHEMA_DIGEST_V1, githubReleaseOutcomeToolSchemaDigestV1 } from "../packs/github-linear-outcomes.js";
 
 const ALIASES = Object.freeze({ github_release_candidate_publish_v1: "candidate-branch", github_release_pr_ensure_v1: "draft-pr", github_release_pr_merge_v1: "exact-sha-merge", github_release_tag_create_v1: "non-force-tag" } satisfies Record<string, ReleaseProviderEffectV1>);
 const ENDPOINTS = Object.freeze(Object.fromEntries(Object.entries(ALIASES).map(([alias, effect]) => [`github.release.${effect}`, alias])) as Record<string, GitHubReleaseAliasV1>);
@@ -61,10 +63,20 @@ export interface GitHubReleaseRunnerV1 { run(input: GitHubReleaseRunRequestV1): 
 const publicationConfirmers = new WeakMap<GitHubReleaseRunnerV1, (input: GitHubReleasePublicationConfirmationV1) => Promise<void>>();
 const authoritativeHeadConfirmers = new WeakMap<GitHubReleaseRunnerV1, (query: DurableDispatchPublicationQueryV1, head: DurableDispatchPublicationHeadV1) => Promise<boolean>>();
 const runnerControllers = new WeakMap<GitHubReleaseRunnerV1, Readonly<{ execute(input: GitHubReleaseInvocationV1): Promise<GitHubReleaseRunResultV1>; reconcile(input: GitHubReleaseInvocationV1): Promise<GitHubReleaseRunResultV1>; recover(): Promise<readonly string[]> }>>();
+const outcomeExecutors = new WeakMap<GitHubReleaseRunnerV1, TrustedEffectTransportExecutorV1>();
 
 /** @internal Host composition brand check. Deliberately absent from the public package barrel. */
 export function assertGitHubReleaseRunnerCapability(value: GitHubReleaseRunnerV1): void {
   if (!value || !runnerControllers.has(value) || !publicationConfirmers.has(value) || !authoritativeHeadConfirmers.has(value)) throw new TypeError("GitHub release runner capability is absent or unrecognized");
+}
+
+/** Adapts the reviewed candidate/PR/merge pack tools to the existing branded release saga.
+ * The executor remains callback-only and carries no provider credential or release authority. */
+export function createGitHubReleaseOutcomeExecutorV1(runner: GitHubReleaseRunnerV1): TrustedEffectTransportExecutorV1 {
+  assertGitHubReleaseRunnerCapability(runner);
+  const executor = outcomeExecutors.get(runner);
+  if (!executor) throw new TypeError("GitHub release outcome executor capability is unavailable");
+  return executor;
 }
 
 export async function createGitHubReleaseRunner(input: Readonly<{ rootDir: string; journalSigner: Readonly<{ signerId: string; privateKey: KeyObject; publicKey: KeyObject }>; evidenceSigner: ReleaseContractSignerV1; authorizationResolver: (handle: string) => Promise<GitHubReleaseAuthorizationContextV1 | VerifiedReleaseAuthorizationV1>; provider: GitHubReleaseProviderV1; now: () => Date }>): Promise<GitHubReleaseRunnerV1> {
@@ -181,6 +193,49 @@ export async function createGitHubReleaseRunner(input: Readonly<{ rootDir: strin
   publicationConfirmers.set(runner, confirmPublication);
   authoritativeHeadConfirmers.set(runner, confirmAuthoritativeHead);
   runnerControllers.set(runner, Object.freeze({ execute: run, reconcile: request => runOnce(request, true), recover }));
+  const tools = Object.freeze({
+    github_release_candidate_publish_v1: Object.freeze({ alias: "github_release_candidate_publish_v1" as const, reconcile: false }),
+    github_release_candidate_publish_readback_v1: Object.freeze({ alias: "github_release_candidate_publish_v1" as const, reconcile: true }),
+    github_release_pr_ensure_v1: Object.freeze({ alias: "github_release_pr_ensure_v1" as const, reconcile: false }),
+    github_release_pr_ensure_readback_v1: Object.freeze({ alias: "github_release_pr_ensure_v1" as const, reconcile: true }),
+    github_release_pr_merge_v1: Object.freeze({ alias: "github_release_pr_merge_v1" as const, reconcile: false }),
+    github_release_pr_merge_readback_v1: Object.freeze({ alias: "github_release_pr_merge_v1" as const, reconcile: true }),
+  });
+  const executor = mintTrustedEffectTransportExecutorV1({ mcp: {
+    inspectSchemas(request, sink): void {
+      try {
+        if (request.server !== "reelier.github.outcomes") throw new TypeError("GitHub release pack server is invalid");
+        sink.success(JSON.stringify({ serverSchemaDigest: GITHUB_RELEASE_OUTCOME_SERVER_SCHEMA_DIGEST_V1, toolSchemaDigest: githubReleaseOutcomeToolSchemaDigestV1(request.tool) }));
+      } catch { sink.failure(); }
+    },
+    call(request, sink): void {
+      let selected: (typeof tools)[keyof typeof tools], invocation: GitHubReleaseInvocationV1;
+      try {
+        if (request.server !== "reelier.github.outcomes" || request.serverSchemaDigest !== GITHUB_RELEASE_OUTCOME_SERVER_SCHEMA_DIGEST_V1 || request.toolSchemaDigest !== githubReleaseOutcomeToolSchemaDigestV1(request.tool)) throw new TypeError("GitHub release pack transport binding is invalid");
+        selected = tools[request.tool as keyof typeof tools];
+        if (!selected) throw new TypeError("GitHub release pack tool is not reviewed");
+        const model = exactRecord(request.arguments.model, ["authorizationHandle", "requestId", "semanticsDigest"], "GitHub release pack model input");
+        invocation = Object.freeze({ alias: selected.alias, authorizationHandle: String(model.authorizationHandle), requestId: String(model.requestId), semanticsDigest: String(model.semanticsDigest) });
+        validateInvocation(invocation);
+      } catch { sink.failure(); return; }
+      const controller = runnerControllers.get(runner)!;
+      const execute = selected.reconcile ? controller.reconcile(invocation) : controller.execute(invocation);
+      void execute.then(async result => {
+        try {
+          const context = normalizeContext(await input.authorizationResolver(invocation.authorizationHandle)), plan = context.authorization.operationPlan.value;
+          const events = await journal.load(invocation.requestId), mergeSha = String([...events].reverse().find(event => event.phase === "merge-verified")?.data.mergeSha ?? "");
+          const number = Number([...events].reverse().find(event => event.phase === "pr-ready-confirmed")?.data.number ?? 0);
+          const data = selected.alias === "github_release_candidate_publish_v1"
+            ? { repository: plan.repository, baseSha: plan.baseCommit, headSha: plan.expectedCommitSha, candidateDigest: plan.candidateTreeDigest }
+            : selected.alias === "github_release_pr_ensure_v1"
+              ? { repository: plan.repository, baseBranch: plan.destinationBranch, headSha: plan.expectedCommitSha, pullRequest: number, ready: result.status === "verified" }
+              : { repository: plan.repository, baseSha: plan.baseCommit, headSha: plan.expectedCommitSha, mergeCommitSha: mergeSha, treeSha: plan.expectedTreeSha };
+          sink.success(JSON.stringify({ outcome: result.status === "verified" ? "applied" : result.status === "pending-reconciliation" ? "uncertain" : "refused", data }));
+        } catch { sink.failure(); }
+      }, () => sink.failure());
+    },
+  } });
+  outcomeExecutors.set(runner, executor);
   return runner;
 }
 

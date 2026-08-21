@@ -17,7 +17,7 @@ const SHA = /^sha256:[0-9a-f]{64}$/;
 const GIT_SHA = /^[0-9a-f]{40}$/;
 const REF = /^[A-Za-z0-9][A-Za-z0-9._:~/-]{0,255}$/;
 const REQUIRED_CHECKS = Object.freeze(["coverage", "full-tests", "mutation"]);
-const GITHUB_SERVER_SCHEMA = authorityDigest({ v: "reelier.github-release-pack-server-schema/v1", transport: "internal-mcp" });
+export const GITHUB_RELEASE_OUTCOME_SERVER_SCHEMA_DIGEST_V1 = authorityDigest({ v: "reelier.github-release-pack-server-schema/v1", transport: "internal-mcp" });
 const LINEAR_SERVER_SCHEMA = authorityDigest({ v: "reelier.linear-outcomes-pack-server-schema/v1", transport: "credential-broker-port" });
 
 export type GitHubLinearOutcomeOperationNameV1 = "candidatePublish" | "pullRequestEnsure" | "exactHeadMerge" | "linearEvidenceComment" | "linearStatusTransition";
@@ -51,6 +51,8 @@ export interface GitHubLinearOutcomePackV1 {
   readonly operations: Readonly<Record<GitHubLinearOutcomeOperationNameV1, ReviewedOutcomeOperationV1>>;
 }
 
+const packAuthorities = new WeakMap<object, GitHubLinearReviewedAuthorityV1>();
+
 export function createGitHubLinearOutcomePackV1(value: GitHubLinearReviewedAuthorityV1): GitHubLinearOutcomePackV1 {
   const authority = parseAuthority(value);
   const authorityDigestValue = authorityDigest(authority);
@@ -59,13 +61,15 @@ export function createGitHubLinearOutcomePackV1(value: GitHubLinearReviewedAutho
   const githubBindings = { credentialRef: authority.github.credentialRef, accountRef: authority.github.accountRef, destinationRef: authority.github.destinationRef, limitRef: authority.github.limitRef };
   const linearBindings = { credentialRef: authority.linear.credentialRef, accountRef: authority.linear.accountRef, destinationRef: authority.linear.destinationRef, limitRef: authority.linear.limitRef };
   const operations = Object.freeze({
-    candidatePublish: operation({ key: "candidate-publish", provider: "github", policyDigest: githubPolicyDigest, bindings: githubBindings, modelFields: ["authorizationHandle", "requestId", "semanticsDigest"], serverSchemaDigest: GITHUB_SERVER_SCHEMA, tool: "github_release_candidate_publish_v1", readbackTool: "github_release_candidate_publish_readback_v1", projection: ["/repository", "/baseSha", "/headSha", "/candidateDigest"] }),
-    pullRequestEnsure: operation({ key: "pull-request-ensure", provider: "github", policyDigest: githubPolicyDigest, bindings: githubBindings, modelFields: ["authorizationHandle", "requestId", "semanticsDigest"], serverSchemaDigest: GITHUB_SERVER_SCHEMA, tool: "github_release_pr_ensure_v1", readbackTool: "github_release_pr_ensure_readback_v1", projection: ["/repository", "/baseBranch", "/headSha", "/pullRequest", "/ready"] }),
-    exactHeadMerge: operation({ key: "exact-head-squash-merge", provider: "github", policyDigest: githubPolicyDigest, bindings: githubBindings, modelFields: ["authorizationHandle", "requestId", "semanticsDigest"], serverSchemaDigest: GITHUB_SERVER_SCHEMA, tool: "github_release_pr_merge_v1", readbackTool: "github_release_pr_merge_readback_v1", projection: ["/repository", "/baseSha", "/headSha", "/mergeCommitSha", "/treeSha"] }),
+    candidatePublish: operation({ key: "candidate-publish", provider: "github", policyDigest: githubPolicyDigest, bindings: githubBindings, modelFields: ["authorizationHandle", "requestId", "semanticsDigest"], serverSchemaDigest: GITHUB_RELEASE_OUTCOME_SERVER_SCHEMA_DIGEST_V1, tool: "github_release_candidate_publish_v1", readbackTool: "github_release_candidate_publish_readback_v1", projection: ["/repository", "/baseSha", "/headSha", "/candidateDigest"] }),
+    pullRequestEnsure: operation({ key: "pull-request-ensure", provider: "github", policyDigest: githubPolicyDigest, bindings: githubBindings, modelFields: ["authorizationHandle", "requestId", "semanticsDigest"], serverSchemaDigest: GITHUB_RELEASE_OUTCOME_SERVER_SCHEMA_DIGEST_V1, tool: "github_release_pr_ensure_v1", readbackTool: "github_release_pr_ensure_readback_v1", projection: ["/repository", "/baseBranch", "/headSha", "/pullRequest", "/ready"] }),
+    exactHeadMerge: operation({ key: "exact-head-squash-merge", provider: "github", policyDigest: githubPolicyDigest, bindings: githubBindings, modelFields: ["authorizationHandle", "requestId", "semanticsDigest"], serverSchemaDigest: GITHUB_RELEASE_OUTCOME_SERVER_SCHEMA_DIGEST_V1, tool: "github_release_pr_merge_v1", readbackTool: "github_release_pr_merge_readback_v1", projection: ["/repository", "/baseSha", "/headSha", "/mergeCommitSha", "/treeSha"] }),
     linearEvidenceComment: operation({ key: "evidence-comment", provider: "linear", policyDigest: linearPolicyDigest, bindings: linearBindings, modelFields: ["evidenceUrl"], serverSchemaDigest: LINEAR_SERVER_SCHEMA, tool: "linear_evidence_comment_v1", readbackTool: "linear_evidence_comment_readback_v1", projection: ["/workspace", "/team", "/project", "/issue", "/commentMarker", "/commentId"] }),
     linearStatusTransition: operation({ key: "status-transition", provider: "linear", policyDigest: linearPolicyDigest, bindings: linearBindings, modelFields: ["requestId"], serverSchemaDigest: LINEAR_SERVER_SCHEMA, tool: "linear_status_transition_v1", readbackTool: "linear_status_transition_readback_v1", projection: ["/workspace", "/team", "/project", "/issue", "/preStatus", "/targetStatus", "/status"] }),
   });
-  return Object.freeze({ v: "reelier.github-linear-outcome-pack/v1", authorityDigest: authorityDigestValue, githubPolicyDigest, linearPolicyDigest, operations });
+  const pack = Object.freeze({ v: "reelier.github-linear-outcome-pack/v1" as const, authorityDigest: authorityDigestValue, githubPolicyDigest, linearPolicyDigest, operations });
+  packAuthorities.set(pack, authority);
+  return pack;
 }
 
 export function orderedGitHubLinearOperationsV1(pack: GitHubLinearOutcomePackV1, mode: GitHubLinearOutcomeModeV1): readonly ReviewedOutcomeOperationV1[] {
@@ -83,6 +87,38 @@ export function assertLinearStatusPredecessorV1(pack: GitHubLinearOutcomePackV1,
   if (outcome.contractDigest !== expectedContractDigest || outcome.semanticIdentity !== parsed.operations.linearEvidenceComment.contract.semanticIdentity || receipt.outcomeDigest !== digestGovernedOutcomeV1(outcome)) throw new TypeError("Linear status requires the exact verified comment predecessor");
 }
 
+export function assertGitHubLinearProviderReadbackV1(pack: GitHubLinearOutcomePackV1, operationName: GitHubLinearOutcomeOperationNameV1, value: unknown): Readonly<Record<string, string | number | boolean>> {
+  const parsed = requirePack(pack), authority = packAuthorities.get(parsed as object);
+  if (!authority) throw new TypeError("reviewed outcome pack authority is unavailable");
+  let raw: Record<string, unknown>, expected: Readonly<Record<string, unknown>>;
+  if (operationName === "candidatePublish") {
+    raw = inertRecord(value, ["repository", "baseSha", "headSha", "candidateDigest"], "candidate publication readback");
+    expected = { repository: authority.github.repository, baseSha: authority.github.baseSha, headSha: authority.github.headSha, candidateDigest: authority.github.candidateDigest };
+  } else if (operationName === "pullRequestEnsure") {
+    raw = inertRecord(value, ["repository", "baseBranch", "headSha", "pullRequest", "ready"], "pull request readback");
+    expected = { repository: authority.github.repository, baseBranch: authority.github.baseBranch, headSha: authority.github.headSha, ready: true };
+    if (!Number.isSafeInteger(raw.pullRequest) || Number(raw.pullRequest) < 1) throw new TypeError("pull request readback conflicts with exact reviewed authority");
+  } else if (operationName === "exactHeadMerge") {
+    raw = inertRecord(value, ["repository", "baseSha", "headSha", "mergeCommitSha", "treeSha"], "merge readback");
+    expected = { repository: authority.github.repository, baseSha: authority.github.baseSha, headSha: authority.github.headSha, treeSha: authority.github.postMergeTreeSha };
+    if (typeof raw.mergeCommitSha !== "string" || !GIT_SHA.test(raw.mergeCommitSha)) throw new TypeError("merge readback conflicts with exact reviewed authority");
+  } else if (operationName === "linearEvidenceComment") {
+    raw = inertRecord(value, ["workspace", "team", "project", "issue", "commentMarker", "commentId"], "Linear comment readback");
+    expected = { workspace: authority.linear.workspace, team: authority.linear.team, project: authority.linear.project, issue: authority.linear.issue, commentMarker: authority.linear.commentMarker };
+    text(raw.commentId, "Linear comment ID");
+  } else if (operationName === "linearStatusTransition") {
+    raw = inertRecord(value, ["workspace", "team", "project", "issue", "preStatus", "targetStatus", "status"], "Linear status readback");
+    expected = { workspace: authority.linear.workspace, team: authority.linear.team, project: authority.linear.project, issue: authority.linear.issue, preStatus: authority.linear.preStatus, targetStatus: authority.linear.targetStatus, status: authority.linear.targetStatus };
+  } else throw new TypeError("reviewed outcome operation is invalid");
+  for (const [key, expectedValue] of Object.entries(expected)) if (raw[key] !== expectedValue) throw new TypeError(`${operationName} readback conflicts with exact reviewed authority`);
+  const result: Record<string, string | number | boolean> = Object.create(null);
+  for (const [key, item] of Object.entries(raw)) {
+    if (typeof item !== "string" && typeof item !== "number" && typeof item !== "boolean") throw new TypeError("provider readback contains an invalid value");
+    result[key] = item;
+  }
+  return Object.freeze(result);
+}
+
 function operation(input: Readonly<{ key: string; provider: string; policyDigest: string; bindings: ToolEffectContractV1["bindings"]; modelFields: readonly string[]; serverSchemaDigest: string; tool: string; readbackTool: string; projection: readonly string[] }>): ReviewedOutcomeOperationV1 {
   const toolSchemaDigest = authorityDigest({ v: "reelier.reviewed-outcome-tool-schema/v1", provider: input.provider, tool: input.tool, modelFields: input.modelFields });
   const readbackSchemaDigest = authorityDigest({ v: "reelier.reviewed-outcome-readback-schema/v1", provider: input.provider, tool: input.readbackTool, projection: input.projection });
@@ -93,6 +129,14 @@ function operation(input: Readonly<{ key: string; provider: string; policyDigest
   const contractDigest = digestToolEffectContractV1(contract);
   const metadata: ProviderOutcomePackV1 = Object.freeze({ v: "reelier.provider-outcome-pack/v1", packId: `reelier.reviewed.${input.provider}.${input.key}.v1`, provider: input.provider, contractDigest, preflightOperation: `${operationName}.preflight`, dispatchOperation: operationName, readbackOperation });
   return Object.freeze({ contract, binding, metadata });
+}
+
+export function githubReleaseOutcomeToolSchemaDigestV1(tool: string): string {
+  const dispatchFields: Readonly<Record<string, readonly string[]>> = Object.freeze({ github_release_candidate_publish_v1: ["authorizationHandle", "requestId", "semanticsDigest"], github_release_pr_ensure_v1: ["authorizationHandle", "requestId", "semanticsDigest"], github_release_pr_merge_v1: ["authorizationHandle", "requestId", "semanticsDigest"] });
+  const readbackProjection: Readonly<Record<string, readonly string[]>> = Object.freeze({ github_release_candidate_publish_readback_v1: ["/repository", "/baseSha", "/headSha", "/candidateDigest"], github_release_pr_ensure_readback_v1: ["/repository", "/baseBranch", "/headSha", "/pullRequest", "/ready"], github_release_pr_merge_readback_v1: ["/repository", "/baseSha", "/headSha", "/mergeCommitSha", "/treeSha"] });
+  if (dispatchFields[tool]) return authorityDigest({ v: "reelier.reviewed-outcome-tool-schema/v1", provider: "github", tool, modelFields: dispatchFields[tool] });
+  if (readbackProjection[tool]) return authorityDigest({ v: "reelier.reviewed-outcome-readback-schema/v1", provider: "github", tool, projection: readbackProjection[tool] });
+  throw new TypeError("GitHub release outcome tool is not reviewed");
 }
 
 function parseAuthority(value: unknown): GitHubLinearReviewedAuthorityV1 {
@@ -112,7 +156,7 @@ function parseAuthority(value: unknown): GitHubLinearReviewedAuthorityV1 {
 function requirePack(pack: unknown): GitHubLinearOutcomePackV1 {
   if (!pack || typeof pack !== "object" || isProxy(pack) || Object.getPrototypeOf(pack) !== null && Object.getPrototypeOf(pack) !== Object.prototype) throw new TypeError("outcome pack is invalid");
   const value = pack as GitHubLinearOutcomePackV1;
-  if (value.v !== "reelier.github-linear-outcome-pack/v1" || !SHA.test(value.authorityDigest) || !SHA.test(value.githubPolicyDigest) || !SHA.test(value.linearPolicyDigest)) throw new TypeError("outcome pack is invalid");
+  if (value.v !== "reelier.github-linear-outcome-pack/v1" || !SHA.test(value.authorityDigest) || !SHA.test(value.githubPolicyDigest) || !SHA.test(value.linearPolicyDigest) || !packAuthorities.has(value as object)) throw new TypeError("outcome pack is invalid");
   return value;
 }
 
