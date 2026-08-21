@@ -109,6 +109,18 @@ Replace raw executable port objects with an opaque host-minted trusted executor 
 
 Define reviewed contracts for candidate publication, PR ensure, exact-head squash merge, Linear evidence comment, and Linear status transition. The GitHub adapter must preserve unchanged base, exact head SHA, signed workflow path/digest, successful required checks, allowed candidate digest, and post-merge commit/tree readback. The Linear contracts bind exact workspace/team/project/issue, pre-status, target status, and an immutable comment marker; comment and status are separate one-effect allocations and comment receipt is the status predecessor. No Linear SDK or credential enters the OSS contract. Tests prove GitHub+Linear composite ordering, Linear-only execution with zero git fields/calls, wrong workflow/status/project refusal, duplicate/conflicting comment, ambiguous merge/comment/status no-resend, and partial Outcome after merge plus pending Linear.
 
+### Task 4B: Make coordinator-call delegation collision-free
+
+**Files:**
+
+- Modify `src/authority/host/dispatch.ts` only to reject a delegate already bound to any live coordinator call and preserve exact-call cleanup.
+- Modify `test/authority/dispatch-coordinator.test.ts`.
+- Create `.superpowers/sdd/2026-08-20-universal-governed-outcomes-oss/task-4b-report.md`.
+
+**Requirements:**
+
+Task 4 stopped after three fix loops because the same delegate could be bound to two concurrent live coordinator calls. Reject the second bind without changing the first mapping. Prove deterministic concurrent shared-delegate isolation, exact first-call consumption, second-call refusal, revocation after success and throw, and refusal of fake, copied, serialized, or cross-reservation call/delegate identities. Keep the capability private, optional adapter compatibility intact, and prepared/readback paths unchanged. Do not begin Task 5 until Task 4B independently ships.
+
 ### Task 5: Expose the harness-neutral four-tool surface and Eve 0.39 rehearsal fixture
 
 **Files:**
