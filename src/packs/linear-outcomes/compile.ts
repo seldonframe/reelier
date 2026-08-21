@@ -2,18 +2,18 @@ import { authorityCanonicalBytes, authorityDigest } from "../../authority/wire.j
 import { digestGovernedEffectCommitmentV1 } from "../../authority/governed-effect-commitment.js";
 import { isStaticPackProxy } from "../../authority/pack.js";
 import type { StaticPackCompileInput, StaticPackDefinition } from "../../authority/pack.js";
-import { linearEvidenceCommentAlias, linearOutcomeAliases, linearOutcomeDefinitionDigests, linearOutcomeEffects, linearOutcomePackDigest, linearOutcomePolicySchemaId, linearOutcomeProjectionSchemaId, linearOutcomeReadEndpointId, linearOutcomeRecipeId, linearOutcomeRiskClass, type LinearOutcomeEffect, type LinearOutcomeProjection } from "./manifest.js";
+import { linearEvidenceCommentAlias, linearOnlyEvidenceCommentAlias, linearOutcomeAliases, linearOutcomeDefinitionDigests, linearOutcomeEffects, linearOutcomePackDigest, linearOutcomePolicySchemaId, linearOutcomeProjectionSchemaId, linearOutcomeReadEndpointId, linearOutcomeRecipeId, linearOutcomeRiskClass, type LinearOutcomeAlias, type LinearOutcomeEffect, type LinearOutcomeProjection } from "./manifest.js";
 
 const DIGEST = /^sha256:[0-9a-f]{64}$/;
 const ID = /^[a-z0-9][a-z0-9-]{7,127}$/;
 const OPERATION = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/;
 
 export interface LinearOutcomeGovernedBinding { readonly toolEffectContractDigest: string; readonly transportBindingDigest: string; readonly operationKind: string; readonly reviewedPolicyDigest: string; readonly predecessorToolEffectContractDigest?: string }
-export interface LinearOutcomeAllocationPolicy { readonly allocationDigest: string; readonly allocationId: string; readonly authorizationHandleDigest: string; readonly effect: LinearOutcomeEffect; readonly maxEffects: 1; readonly governed: LinearOutcomeGovernedBinding; readonly predecessorAlias?: typeof linearEvidenceCommentAlias; readonly predecessorContractDigest?: string; readonly predecessorReceiptRequired?: true }
+export interface LinearOutcomeAllocationPolicy { readonly allocationDigest: string; readonly allocationId: string; readonly authorizationHandleDigest: string; readonly effect: LinearOutcomeEffect; readonly maxEffects: 1; readonly governed: LinearOutcomeGovernedBinding; readonly predecessorAlias?: LinearOutcomeAlias; readonly predecessorContractDigest?: string; readonly predecessorReceiptRequired?: true }
 
 export function validateLinearOutcomeChoices(value: unknown): Record<string, never> { inertRecord(value, [], "Linear Outcome choices (empty)"); return Object.freeze({}); }
 
-function parsePolicy(value: unknown, expectedEffect: LinearOutcomeEffect): LinearOutcomeAllocationPolicy {
+function parsePolicy(value: unknown, expectedEffect: LinearOutcomeEffect, expectedPredecessor?: LinearOutcomeAlias): LinearOutcomeAllocationPolicy {
   const status = expectedEffect === "status-transition";
   const keys = status ? ["allocationDigest", "allocationId", "authorizationHandleDigest", "effect", "maxEffects", "governed", "predecessorAlias", "predecessorContractDigest", "predecessorReceiptRequired"] : ["allocationDigest", "allocationId", "authorizationHandleDigest", "effect", "maxEffects", "governed"];
   const raw = inertRecord(value, keys, "Linear Outcome policy");
@@ -22,7 +22,7 @@ function parsePolicy(value: unknown, expectedEffect: LinearOutcomeEffect): Linea
   const governed = Object.freeze({ toolEffectContractDigest: governedRaw.toolEffectContractDigest, transportBindingDigest: governedRaw.transportBindingDigest, operationKind: governedRaw.operationKind, reviewedPolicyDigest: governedRaw.reviewedPolicyDigest, ...(status ? { predecessorToolEffectContractDigest: governedRaw.predecessorToolEffectContractDigest } : {}) }) as LinearOutcomeGovernedBinding;
   const policy = Object.freeze({ allocationDigest: raw.allocationDigest, allocationId: raw.allocationId, authorizationHandleDigest: raw.authorizationHandleDigest, effect: raw.effect, maxEffects: raw.maxEffects, governed, ...(status ? { predecessorAlias: raw.predecessorAlias, predecessorContractDigest: raw.predecessorContractDigest, predecessorReceiptRequired: raw.predecessorReceiptRequired } : {}) }) as unknown as LinearOutcomeAllocationPolicy;
   if (!DIGEST.test(policy.allocationDigest) || !DIGEST.test(policy.authorizationHandleDigest) || !ID.test(policy.allocationId) || policy.effect !== expectedEffect || policy.maxEffects !== 1 || [governed.toolEffectContractDigest, governed.transportBindingDigest, governed.reviewedPolicyDigest].some(item => typeof item !== "string" || !DIGEST.test(item)) || typeof governed.operationKind !== "string" || !OPERATION.test(governed.operationKind)) throw new TypeError("Linear Outcome policy allocation, effect, or governed binding is invalid");
-  if (status && (policy.predecessorAlias !== linearEvidenceCommentAlias || typeof policy.predecessorContractDigest !== "string" || !DIGEST.test(policy.predecessorContractDigest) || policy.predecessorReceiptRequired !== true || governed.predecessorToolEffectContractDigest !== policy.predecessorContractDigest)) throw new TypeError("Linear status requires the exact verified comment predecessor contract and receipt");
+  if (status && (policy.predecessorAlias !== expectedPredecessor || typeof policy.predecessorContractDigest !== "string" || !DIGEST.test(policy.predecessorContractDigest) || policy.predecessorReceiptRequired !== true || governed.predecessorToolEffectContractDigest !== policy.predecessorContractDigest)) throw new TypeError("Linear status requires the exact verified comment predecessor contract and receipt");
   return policy;
 }
 
@@ -50,9 +50,12 @@ function inertRecord(value: unknown, keys: readonly string[], label: string): Re
 
 function definition(index: number): StaticPackDefinition {
   const alias = linearOutcomeAliases[index], effect = linearOutcomeEffects[index];
-  return Object.freeze({ alias, packDigest: linearOutcomePackDigest, definitionDigest: linearOutcomeDefinitionDigests[index], resolverId: `${alias}_source`, projectionSchemaId: linearOutcomeProjectionSchemaId, maxFreshnessSeconds: 60, readEndpointIds: [linearOutcomeReadEndpointId], writeEndpointIds: [`linear.outcomes.${effect}`], riskClasses: [linearOutcomeRiskClass], policySchemaId: linearOutcomePolicySchemaId, requiredGroundedPointers: ["/authorizationHandle"], validateChoices: validateLinearOutcomeChoices, parsePolicy: (value: unknown) => parsePolicy(value, effect), compile: (input: StaticPackCompileInput) => compile(input, effect, index) });
+  const predecessor = index === 1 ? linearEvidenceCommentAlias : index === 3 ? linearOnlyEvidenceCommentAlias : undefined;
+  return Object.freeze({ alias, packDigest: linearOutcomePackDigest, definitionDigest: linearOutcomeDefinitionDigests[index], resolverId: `${alias}_source`, projectionSchemaId: linearOutcomeProjectionSchemaId, maxFreshnessSeconds: 60, readEndpointIds: [linearOutcomeReadEndpointId], writeEndpointIds: [`linear.outcomes.${effect}`], riskClasses: [linearOutcomeRiskClass], policySchemaId: linearOutcomePolicySchemaId, requiredGroundedPointers: ["/authorizationHandle"], validateChoices: validateLinearOutcomeChoices, parsePolicy: (value: unknown) => parsePolicy(value, effect, predecessor), compile: (input: StaticPackCompileInput) => compile(input, effect, index) });
 }
 
 export const linearEvidenceCommentDefinition = definition(0);
 export const linearStatusTransitionDefinition = definition(1);
-export const linearOutcomeDefinitions = Object.freeze([linearEvidenceCommentDefinition, linearStatusTransitionDefinition]);
+export const linearOnlyEvidenceCommentDefinition = definition(2);
+export const linearOnlyStatusTransitionDefinition = definition(3);
+export const linearOutcomeDefinitions = Object.freeze([linearEvidenceCommentDefinition, linearStatusTransitionDefinition, linearOnlyEvidenceCommentDefinition, linearOnlyStatusTransitionDefinition]);

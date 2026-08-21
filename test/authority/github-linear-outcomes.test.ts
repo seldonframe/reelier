@@ -9,6 +9,7 @@ import { createDispatchCoordinator } from "../../src/authority/host/dispatch.js"
 import { __testSetAuthorityCellHostPlatform } from "../../src/authority/host/platform.js";
 import {
   assertGitHubLinearProviderReadbackV1,
+  allGovernedGitHubLinearOperationsV1,
   createGovernedOutcomeCompositionProfileV1,
   createGitHubLinearOutcomePackV1,
   describeGovernedOutcomeCompositionProfileV1,
@@ -57,6 +58,11 @@ function reviewedInput() {
   };
 }
 
+function twoTargetReviewedInput() {
+  const base=reviewedInput(),target=(issue:string,suffix:string)=>({...base.linear,issue,commentMarker:`reelier:evidence:${suffix}`,evidenceUrl:`https://www.reelier.com/r/${suffix}`,evidenceContentDigest:sha(suffix==="composite"?"f":"e"),accountRef:`linear_account_${suffix}`,destinationRef:`linear_issue_${suffix}`,credentialRef:`linear_credential_${suffix}`,limitRef:`linear_policy_${suffix}`});
+  return {...base,linear:{targets:{githubLinear:target("REEL-TEST-1","composite"),linearOnly:target("REEL-TEST-2","linear-only")}}};
+}
+
 function predecessorPolicyFor(pack: ReturnType<typeof createGitHubLinearOutcomePackV1>) {
   return createTrustedOutcomePredecessorPolicyV1({ predecessorContractDigest: authorityDigest(pack.operations.linearEvidenceComment.contract), successorContractDigest: authorityDigest(pack.operations.linearStatusTransition.contract) });
 }
@@ -76,7 +82,7 @@ function coordinatorFor(compiled: ReturnType<typeof compileEffectTransportV1>, s
 
 test("reviewed pack binds exact GitHub and Linear authority while model fields contain no provider identity", () => {
   const pack = createGitHubLinearOutcomePackV1(reviewedInput());
-  assert.deepEqual(Object.keys(pack.operations), ["candidatePublish", "pullRequestEnsure", "exactHeadMerge", "linearEvidenceComment", "linearStatusTransition"]);
+  assert.deepEqual(Object.keys(pack.operations), ["candidatePublish", "pullRequestEnsure", "exactHeadMerge", "linearEvidenceComment", "linearStatusTransition", "linearOnlyEvidenceComment", "linearOnlyStatusTransition"]);
   for (const operation of Object.values(pack.operations)) {
     assert.equal(operation.contract.operationDigest, authorityDigest(operation.binding));
     assert.equal(operation.metadata.contractDigest, authorityDigest(operation.contract));
@@ -89,17 +95,22 @@ test("reviewed pack binds exact GitHub and Linear authority while model fields c
   assert.equal(pack.operations.linearStatusTransition.contract.policyDigest, pack.linearPolicyDigest);
 });
 
+test("two reviewed Linear targets have distinct immutable authority and the model cannot select either issue", () => {
+  const pack=createGitHubLinearOutcomePackV1(twoTargetReviewedInput());
+  assert.notEqual(pack.linearPolicyDigests.githubLinear,pack.linearPolicyDigests.linearOnly);
+  for(const key of ["linearEvidenceComment","linearStatusTransition"] as const){const other=key==="linearEvidenceComment"?"linearOnlyEvidenceComment":"linearOnlyStatusTransition";assert.notEqual(authorityDigest(pack.operations[key].contract),authorityDigest(pack.operations[other].contract));assert.notEqual(pack.operations[key].contract.semanticIdentity,pack.operations[other].contract.semanticIdentity);assert.notEqual(pack.operations[key].contract.idempotencyKey,pack.operations[other].contract.idempotencyKey);}
+  for(const operation of [pack.operations.linearEvidenceComment,pack.operations.linearStatusTransition,pack.operations.linearOnlyEvidenceComment,pack.operations.linearOnlyStatusTransition])assert.equal(operation.contract.model.fields.includes("issue"),false);
+});
+
 test("the governed composition profile admits only one exact ordered five-operation scope", () => {
   const pack = createGitHubLinearOutcomePackV1(reviewedInput());
-  const operations = orderedGitHubLinearOperationsV1(pack, "github-linear");
+  const operations = allGovernedGitHubLinearOperationsV1(pack);
   const profile = createGovernedOutcomeCompositionProfileV1({ aliases: governedOutcomeCompositionAliasesV1, pack, operations });
   assert.deepEqual(Reflect.ownKeys(profile), []);
   assert.deepEqual(describeGovernedOutcomeCompositionProfileV1(profile), {
     aliases: governedOutcomeCompositionAliasesV1,
     repository: "seldonframe/reelier",
-    workspace: "workspace_01",
-    project: "project_01",
-    issue: "REEL-TEST-1",
+    linearTargets: { githubLinear: "REEL-TEST-1", linearOnly: "REEL-TEST-1" },
     contractDigests: operations.map(item => authorityDigest(item.contract)),
   });
 
@@ -297,7 +308,7 @@ test("composite and Linear-only plans have exact ordering and Linear-only carrie
     pack.operations.linearStatusTransition,
   ]);
   const linearOnly = orderedGitHubLinearOperationsV1(pack, "linear-only");
-  assert.deepEqual(linearOnly, [pack.operations.linearEvidenceComment, pack.operations.linearStatusTransition]);
+  assert.deepEqual(linearOnly, [pack.operations.linearOnlyEvidenceComment, pack.operations.linearOnlyStatusTransition]);
   assert.equal(JSON.stringify(linearOnly).match(/baseSha|headSha|repository|workflow|candidate|merge/gi), null);
 });
 

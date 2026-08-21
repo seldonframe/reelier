@@ -2,8 +2,10 @@ import { authorityDigest } from "../../authority/wire.js";
 
 export const linearEvidenceCommentAlias = "linear_evidence_comment_v1" as const;
 export const linearStatusTransitionAlias = "linear_status_transition_v1" as const;
-export const linearOutcomeAliases = [linearEvidenceCommentAlias, linearStatusTransitionAlias] as const;
-export const linearOutcomeEffects = ["evidence-comment", "status-transition"] as const;
+export const linearOnlyEvidenceCommentAlias = "linear_only_evidence_comment_v1" as const;
+export const linearOnlyStatusTransitionAlias = "linear_only_status_transition_v1" as const;
+export const linearOutcomeAliases = [linearEvidenceCommentAlias, linearStatusTransitionAlias, linearOnlyEvidenceCommentAlias, linearOnlyStatusTransitionAlias] as const;
+export const linearOutcomeEffects = ["evidence-comment", "status-transition", "evidence-comment", "status-transition"] as const;
 export type LinearOutcomeAlias = (typeof linearOutcomeAliases)[number];
 export type LinearOutcomeEffect = (typeof linearOutcomeEffects)[number];
 

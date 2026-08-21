@@ -25,15 +25,20 @@ const TOOLS = Object.freeze({
   linear_evidence_comment_readback_v1: Object.freeze({ operation: "linearEvidenceComment" as const, method: "readComment" as const, readback: true }),
   linear_status_transition_v1: Object.freeze({ operation: "linearStatusTransition" as const, method: "transitionStatus" as const, readback: false }),
   linear_status_transition_readback_v1: Object.freeze({ operation: "linearStatusTransition" as const, method: "readStatus" as const, readback: true }),
+  linear_only_evidence_comment_v1: Object.freeze({ operation: "linearOnlyEvidenceComment" as const, method: "comment" as const, readback: false }),
+  linear_only_evidence_comment_readback_v1: Object.freeze({ operation: "linearOnlyEvidenceComment" as const, method: "readComment" as const, readback: true }),
+  linear_only_status_transition_v1: Object.freeze({ operation: "linearOnlyStatusTransition" as const, method: "transitionStatus" as const, readback: false }),
+  linear_only_status_transition_readback_v1: Object.freeze({ operation: "linearOnlyStatusTransition" as const, method: "readStatus" as const, readback: true }),
 });
 
 /** Callback-only adapter over a host-provided Linear port. It owns no SDK, credential, storage, or retry state. */
-export function createLinearOutcomeExecutorV1(input: Readonly<{ pack: GitHubLinearOutcomePackV1; provider: LinearOutcomeProviderV1; predecessorPolicy: TrustedOutcomePredecessorPolicyV1 }>): GovernedEffectTransportExecutorV1 {
-  const root = exactRecord(input, ["pack", "provider", "predecessorPolicy"], "Linear outcome executor input");
+export function createLinearOutcomeExecutorV1(input: Readonly<{ pack: GitHubLinearOutcomePackV1; provider: LinearOutcomeProviderV1; predecessorPolicy: TrustedOutcomePredecessorPolicyV1; mode?: "github-linear" | "linear-only" }>): GovernedEffectTransportExecutorV1 {
+  const root = exactRecord(input, Object.hasOwn(input, "mode") ? ["pack", "provider", "predecessorPolicy", "mode"] : ["pack", "provider", "predecessorPolicy"], "Linear outcome executor input");
   const provider = providerPort(root.provider);
   const pack = root.pack as GitHubLinearOutcomePackV1;
   const predecessorPolicy = root.predecessorPolicy as TrustedOutcomePredecessorPolicyV1;
-  orderedGitHubLinearOperationsV1(pack, "linear-only");
+  const mode = (root.mode ?? "github-linear") as "github-linear" | "linear-only";
+  orderedGitHubLinearOperationsV1(pack, mode);
   return mintGovernedEffectTransportExecutorV1({ mcp: {
     inspectSchemas(request, sink): void {
       try {
@@ -47,12 +52,13 @@ export function createLinearOutcomeExecutorV1(input: Readonly<{ pack: GitHubLine
         if (request.server !== "reelier.linear.outcomes" || request.serverSchemaDigest !== LINEAR_OUTCOME_SERVER_SCHEMA_DIGEST_V1 || request.toolSchemaDigest !== linearOutcomeToolSchemaDigestV1(request.tool)) throw new TypeError("Linear outcome transport binding is invalid");
         tool = TOOLS[request.tool as keyof typeof TOOLS];
         if (!tool) throw new TypeError("Linear outcome tool is not reviewed");
+        if ((mode === "linear-only") !== tool.operation.startsWith("linearOnly")) throw new TypeError("Linear outcome tool conflicts with authenticated mission mode");
         const reviewed = pack.operations[tool.operation];
         if (request.authority.contractDigest !== reviewed.metadata.contractDigest || request.authority.bindingDigest !== authorityDigest(reviewed.binding)) throw new TypeError("Linear outcome compiler authority is invalid");
         if (typeof request.authority.requestId !== "string" || typeof request.authority.governedEffectDigest !== "string") throw new TypeError("Linear outcome write requires authenticated governed authority");
         providerInput = assertLinearOutcomeDispatchV1(pack, tool.operation, request.arguments.model, request.arguments.host);
-        if (!tool.readback && tool.operation === "linearEvidenceComment" && !consumeCoordinatorDispatchCallDelegateV1(request.authority, { reservationId: request.authority.reservationId, effectDigest: request.authority.governedEffectDigest })) throw new TypeError("Linear comment requires the exact coordinator call capability");
-        if (!tool.readback && tool.operation === "linearStatusTransition" && !consumeTrustedOutcomePredecessorAuthorizationV1(predecessorPolicy, { reservationId: request.authority.reservationId, successorContractDigest: request.authority.contractDigest, dispatchAuthority: request.authority })) throw new TypeError("Linear status requires the exact coordinator call and predecessor authorization");
+        if (!tool.readback && tool.operation.endsWith("EvidenceComment") && !consumeCoordinatorDispatchCallDelegateV1(request.authority, { reservationId: request.authority.reservationId, effectDigest: request.authority.governedEffectDigest })) throw new TypeError("Linear comment requires the exact coordinator call capability");
+        if (!tool.readback && tool.operation.endsWith("StatusTransition") && !consumeTrustedOutcomePredecessorAuthorizationV1(predecessorPolicy, { reservationId: request.authority.reservationId, successorContractDigest: request.authority.contractDigest, dispatchAuthority: request.authority })) throw new TypeError("Linear status requires the exact coordinator call and predecessor authorization");
       } catch { sink.success(JSON.stringify({ outcome: "refused", data: {} })); return; }
       let settled = false;
       const providerSink = Object.freeze({

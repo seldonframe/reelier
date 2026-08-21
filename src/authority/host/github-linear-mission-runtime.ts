@@ -12,7 +12,7 @@ import type { AuthorityHostConfig } from "./config.js";
 import type { CoordinatorDispatchCallV1, DispatchAdapter, DispatchOutcome, DispatchRequestState } from "./dispatch.js";
 import { compileGovernedEffectTransportV1, type CompiledEffectTransportV1, type EffectTransportHostBindingsV1 } from "./effect-transports.js";
 import { createGovernedOutcomeKernelAuthorityV1, revalidateGovernedOutcomeKernelTerminalV1 } from "./governed-outcome-composition.js";
-import { governedOutcomeCompositionAliasesV1, governedOutcomeCompositionProfileStateV1, type GovernedOutcomeCompositionProfileV1, type GitHubLinearOutcomePackV1, type ReviewedOutcomeOperationV1 } from "../packs/github-linear-outcomes.js";
+import { governedOutcomeCompositionAliasesV1, governedOutcomeCompositionProfileStateV1, reviewedLinearTargetV1, type GovernedOutcomeCompositionProfileV1, type GitHubLinearOutcomePackV1, type ReviewedOutcomeOperationV1 } from "../packs/github-linear-outcomes.js";
 import { bindGitHubReleasePreparedFallbackV1, createGitHubReleaseOutcomeExecutorV1, type GitHubReleaseRunnerV1 } from "./github-release-runner.js";
 import { createLinearOutcomeExecutorV1, type LinearOutcomeProviderV1 } from "./linear-outcome-runner.js";
 import type { AuthorityExecutionContextV1 } from "../types.js";
@@ -27,7 +27,7 @@ export type GovernedMissionSequenceEntryV1 = Readonly<{ alias: string; status: s
 export function requireVerifiedGovernedMissionSequenceV1(expectedAliases: readonly string[], entries: readonly GovernedMissionSequenceEntryV1[]): void {
   if (entries.length !== expectedAliases.length || expectedAliases.some((alias, index) => entries[index]?.alias !== alias)) throw new TypeError("governed mission requires its exact ordered effect sequence");
   if (entries.some(entry => entry.status !== "verified" || typeof entry.publicationReceiptRef !== "string" || !/^sha256:[0-9a-f]{64}$/.test(entry.publicationReceiptRef))) throw new TypeError("every governed mission Outcome and coordinator publication must be verified");
-  const commentIndex = expectedAliases.indexOf("linear_evidence_comment_v1"), statusIndex = expectedAliases.indexOf("linear_status_transition_v1");
+  const linearOnly = expectedAliases.includes("linear_only_status_transition_v1"), commentIndex = expectedAliases.indexOf(linearOnly ? "linear_only_evidence_comment_v1" : "linear_evidence_comment_v1"), statusIndex = expectedAliases.indexOf(linearOnly ? "linear_only_status_transition_v1" : "linear_status_transition_v1");
   if (statusIndex >= 0 && (commentIndex < 0 || entries[statusIndex]!.predecessorReceiptRef !== entries[commentIndex]!.publicationReceiptRef)) throw new TypeError("Linear status requires the exact verified comment coordinator predecessor");
 }
 
@@ -53,8 +53,11 @@ export async function createGitHubLinearMissionRuntimeV1(input: GenuineGitHubLin
   if (!/^[0-9a-f]{64}$/.test(raw.observationAuthKey) || typeof raw.now !== "function" || typeof raw.resolveHostBindings !== "function") throw new TypeError("genuine governed mission runtime host bindings are invalid");
   if (Object.hasOwn(raw.localOptions, "dispatchAdapter") || Object.hasOwn(raw.localOptions, "githubReleaseRunner")) throw new TypeError("genuine governed mission runtime owns its exact prepared adapters");
   const pack = profileState.pack, operations = operationMap(pack);
-  const predecessorPolicy = createTrustedOutcomePredecessorPolicyV1({ predecessorContractDigest: authorityDigest(pack.operations.linearEvidenceComment.contract), successorContractDigest: authorityDigest(pack.operations.linearStatusTransition.contract) });
-  const linearExecutor = createLinearOutcomeExecutorV1({ pack, provider: raw.linearProvider, predecessorPolicy });
+  const predecessorPolicies = Object.freeze({
+    "github-linear": createTrustedOutcomePredecessorPolicyV1({ predecessorContractDigest: authorityDigest(pack.operations.linearEvidenceComment.contract), successorContractDigest: authorityDigest(pack.operations.linearStatusTransition.contract) }),
+    "linear-only": createTrustedOutcomePredecessorPolicyV1({ predecessorContractDigest: authorityDigest(pack.operations.linearOnlyEvidenceComment.contract), successorContractDigest: authorityDigest(pack.operations.linearOnlyStatusTransition.contract) }),
+  });
+  const linearExecutors = Object.freeze({ "github-linear": createLinearOutcomeExecutorV1({ pack, provider: raw.linearProvider, predecessorPolicy: predecessorPolicies["github-linear"], mode: "github-linear" }), "linear-only": createLinearOutcomeExecutorV1({ pack, provider: raw.linearProvider, predecessorPolicy: predecessorPolicies["linear-only"], mode: "linear-only" }) });
   const githubExecutor = createGitHubReleaseOutcomeExecutorV1(raw.githubReleaseRunner, pack);
   const compiled = new Map<string, CompiledEffectTransportV1>();
   const compileFor = (alias: string, reservationId: string, requestId: string, sourceRefs: Readonly<Record<string, string>>): CompiledEffectTransportV1 => {
@@ -65,10 +68,11 @@ export async function createGitHubLinearMissionRuntimeV1(input: GenuineGitHubLin
     const github = alias.startsWith("github_release_");
     const authorizationHandle = sourceRefs.authorization;
     if (github && (typeof authorizationHandle !== "string" || authorizationHandle.length === 0)) throw new TypeError("governed GitHub release authorization handle is absent");
+    const mode: Mode = alias.startsWith("linear_only_") ? "linear-only" : "github-linear", target = reviewedLinearTargetV1(pack, mode);
     const modelInput = github ? { authorizationHandle, requestId }
-      : alias === "linear_evidence_comment_v1" ? { evidenceUrl: profileState.authority.linear.evidenceUrl }
+      : alias.endsWith("evidence_comment_v1") ? { evidenceUrl: target.evidenceUrl }
         : { requestId: "host-bound-status" };
-    const item = compileGovernedEffectTransportV1({ contract: operation.contract, binding: operation.binding, modelInput, observationAuthKey: raw.observationAuthKey, resolveHostBindings: raw.resolveHostBindings, executor: github ? githubExecutor : linearExecutor });
+    const item = compileGovernedEffectTransportV1({ contract: operation.contract, binding: operation.binding, modelInput, observationAuthKey: raw.observationAuthKey, resolveHostBindings: raw.resolveHostBindings, executor: github ? githubExecutor : linearExecutors[mode] });
     compiled.set(key, item);
     return item;
   };
@@ -79,7 +83,7 @@ export async function createGitHubLinearMissionRuntimeV1(input: GenuineGitHubLin
   }));
   const components = await createGenuineGovernedOutcomeLocalComponentsV1(raw.config, Object.freeze({ ...raw.localOptions, dispatchAdapter: fallback, githubReleaseRunner: raw.githubReleaseRunner }));
   const storage = await createSignedJournalOutcomeKernelStorage({ journal: raw.journal, receiptPublication: raw.outcomeReceiptPublication });
-  const kernel = createOutcomeKernel({ storage, ledger: components.ledger, coordinator: components.coordinator, now: raw.now, authorization: async () => { throw new TypeError("legacy kernel authorization is prohibited in genuine governed composition"); }, predecessorPolicy });
+  const kernels = Object.freeze({ "github-linear": createOutcomeKernel({ storage, ledger: components.ledger, coordinator: components.coordinator, now: raw.now, authorization: async () => { throw new TypeError("legacy kernel authorization is prohibited in genuine governed composition"); }, predecessorPolicy: predecessorPolicies["github-linear"] }), "linear-only": createOutcomeKernel({ storage, ledger: components.ledger, coordinator: components.coordinator, now: raw.now, authorization: async () => { throw new TypeError("legacy kernel authorization is prohibited in genuine governed composition"); }, predecessorPolicy: predecessorPolicies["linear-only"] }) });
 
   const backend = {
     async jobsSearch(_value: unknown, context: AuthorityAgentToolContextV1) { const execution = requiredContext(context); return { requestId: "", verdict: "accepted" as const, reasonCode: "agent-ready", lifecycleState: "ready", jobs: (["github-linear", "linear-only"] as const).map(mode => ({ jobRef: opaqueRef(execution, mode) })) }; },
@@ -97,7 +101,7 @@ export async function createGitHubLinearMissionRuntimeV1(input: GenuineGitHubLin
       if (plan?.lifecycleState === "cancelled" && plan.receiptRef) return terminalRefusedIngress(requestId, "accepted-reservation-cancelled-on-restart", plan.receiptRef);
       if (plan?.lifecycleState === "failed" && plan.receiptRef) return failedIngress(requestId, plan.receiptRef);
       if (plan?.lifecycleState === "reconciled" && plan.receiptRef) {
-        const aliases = mode === "linear-only" ? governedOutcomeCompositionAliasesV1.slice(3) : governedOutcomeCompositionAliasesV1;
+        const aliases = mode === "linear-only" ? governedOutcomeCompositionAliasesV1.slice(5) : governedOutcomeCompositionAliasesV1.slice(0, 5);
         if (plan.joins.length !== aliases.length || aliases.some((alias, index) => plan!.joins[index]?.alias !== alias)) return refusedIngress(requestId, "reconciled-index-conflict");
         for (const stored of plan.joins) {
           const reservation = await components.ledger.getReservation(stored.reservationId), operation = operations.get(stored.alias);
@@ -112,8 +116,9 @@ export async function createGitHubLinearMissionRuntimeV1(input: GenuineGitHubLin
         plan = Object.freeze({ requestId, semanticsDigest, missionId: `mission_${authorityDigest({ semanticsDigest }).slice(7)}`, claimedAt: new Date(raw.now()).toISOString(), mode, executionContext, sourceRefs, choices, joins: Object.freeze([]), lifecycleState: "claimed" });
         await appendPlan(raw.journal, key, plan);
       }
-      const aliases = mode === "linear-only" ? governedOutcomeCompositionAliasesV1.slice(3) : governedOutcomeCompositionAliasesV1;
+      const aliases = mode === "linear-only" ? governedOutcomeCompositionAliasesV1.slice(5) : governedOutcomeCompositionAliasesV1.slice(0, 5);
       const requestedOperations = aliases.map(alias => operations.get(alias)!);
+      const kernel = kernels[mode];
       await kernel.claimMission({ v: "reelier.mission-claim/v1", missionId: plan.missionId, mandateDigest: authorityDigest(profileState.scope), promptDigest: authorityDigest({ requestId, source: "prompt-redacted" }), contractDigests: requestedOperations.map(operation => authorityDigest(operation.contract)), claimedAt: plan.claimedAt });
       const effectRequests: any[] = [];
       let verifiedCommentRequest: any | undefined;
@@ -198,7 +203,7 @@ export async function createGitHubLinearMissionRuntimeV1(input: GenuineGitHubLin
 }
 
 function exactInput(value: unknown): GenuineGitHubLinearMissionRuntimeInputV1 { const keys = ["config", "profile", "githubReleaseRunner", "linearProvider", "resolveHostBindings", "journal", "outcomeReceiptPublication", "localOptions", "observationAuthKey", "now"]; if (!value || typeof value !== "object" || Array.isArray(value) || isProxy(value) || Reflect.ownKeys(value).length !== keys.length || Reflect.ownKeys(value).some(key => typeof key !== "string" || !keys.includes(key))) throw new TypeError("legacy or raw governed mission runtime options are prohibited"); for (const key of keys) { const descriptor = Object.getOwnPropertyDescriptor(value, key); if (!descriptor?.enumerable || !Object.hasOwn(descriptor, "value")) throw new TypeError("genuine governed mission runtime options must be inert data properties"); } return value as GenuineGitHubLinearMissionRuntimeInputV1; }
-function operationMap(pack: GitHubLinearOutcomePackV1): Map<string, ReviewedOutcomeOperationV1> { return new Map([[governedOutcomeCompositionAliasesV1[0], pack.operations.candidatePublish], [governedOutcomeCompositionAliasesV1[1], pack.operations.pullRequestEnsure], [governedOutcomeCompositionAliasesV1[2], pack.operations.exactHeadMerge], [governedOutcomeCompositionAliasesV1[3], pack.operations.linearEvidenceComment], [governedOutcomeCompositionAliasesV1[4], pack.operations.linearStatusTransition]]); }
+function operationMap(pack: GitHubLinearOutcomePackV1): Map<string, ReviewedOutcomeOperationV1> { return new Map([[governedOutcomeCompositionAliasesV1[0], pack.operations.candidatePublish], [governedOutcomeCompositionAliasesV1[1], pack.operations.pullRequestEnsure], [governedOutcomeCompositionAliasesV1[2], pack.operations.exactHeadMerge], [governedOutcomeCompositionAliasesV1[3], pack.operations.linearEvidenceComment], [governedOutcomeCompositionAliasesV1[4], pack.operations.linearStatusTransition], [governedOutcomeCompositionAliasesV1[5], pack.operations.linearOnlyEvidenceComment], [governedOutcomeCompositionAliasesV1[6], pack.operations.linearOnlyStatusTransition]]); }
 function translated(state: DispatchRequestState, compiled: CompiledEffectTransportV1): DispatchRequestState { return Object.freeze({ reservation: state.reservation, effect: compiled.effect, effectDigest: compiled.effect.contractDigest, effectCanonicalBase64: Buffer.from(JSON.stringify(compiled.effect)).toString("base64") }); }
 function refused(state: DispatchRequestState, reason: string): DispatchOutcome { return Object.freeze({ kind: "definitive-failure", resultDigest: authorityDigest({ reservationId: state.reservation.reservationId, reason }) }); }
 function requiredContext(context: AuthorityAgentToolContextV1): AuthorityExecutionContextV1 { if (!context.executionContext || context.executionContext.principalId !== context.requester || context.executionContext.authorityCellId.length === 0) throw new TypeError("authenticated execution context is required"); return context.executionContext; }

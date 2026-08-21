@@ -15,9 +15,11 @@ const REQUIRED_CHECKS = Object.freeze(["coverage", "full-tests", "mutation"]);
 export const GITHUB_RELEASE_OUTCOME_SERVER_SCHEMA_DIGEST_V1 = authorityDigest({ v: "reelier.github-release-pack-server-schema/v1", transport: "internal-mcp" });
 export const LINEAR_OUTCOME_SERVER_SCHEMA_DIGEST_V1 = authorityDigest({ v: "reelier.linear-outcomes-pack-server-schema/v1", transport: "credential-broker-port" });
 
-export type GitHubLinearOutcomeOperationNameV1 = "candidatePublish" | "pullRequestEnsure" | "exactHeadMerge" | "linearEvidenceComment" | "linearStatusTransition";
+export type GitHubLinearOutcomeOperationNameV1 = "candidatePublish" | "pullRequestEnsure" | "exactHeadMerge" | "linearEvidenceComment" | "linearStatusTransition" | "linearOnlyEvidenceComment" | "linearOnlyStatusTransition";
 export type GitHubLinearOutcomeModeV1 = "github-linear" | "linear-only";
-export const governedOutcomeCompositionAliasesV1 = Object.freeze(["github_release_candidate_publish_v1", "github_release_pr_ensure_v1", "github_release_pr_merge_v1", "linear_evidence_comment_v1", "linear_status_transition_v1"] as const);
+export const governedOutcomeCompositionAliasesV1 = Object.freeze(["github_release_candidate_publish_v1", "github_release_pr_ensure_v1", "github_release_pr_merge_v1", "linear_evidence_comment_v1", "linear_status_transition_v1", "linear_only_evidence_comment_v1", "linear_only_status_transition_v1"] as const);
+
+export interface LinearReviewedTargetV1 { readonly workspace: string; readonly team: string; readonly project: string; readonly issue: string; readonly preStatus: string; readonly targetStatus: string; readonly commentMarker: string; readonly evidenceUrl: string; readonly evidenceContentDigest: string; readonly accountRef: string; readonly destinationRef: string; readonly credentialRef: string; readonly limitRef: string }
 
 export interface GitHubLinearReviewedAuthorityV1 {
   readonly v: "reelier.github-linear-reviewed-authority/v1";
@@ -27,10 +29,7 @@ export interface GitHubLinearReviewedAuthorityV1 {
     mergeMethod: "squash"; postMergeTreeSha: string;
     accountRef: string; destinationRef: string; credentialRef: string; limitRef: string;
   }>;
-  readonly linear: Readonly<{
-    workspace: string; team: string; project: string; issue: string; preStatus: string; targetStatus: string; commentMarker: string; evidenceUrl: string; evidenceContentDigest: string;
-    accountRef: string; destinationRef: string; credentialRef: string; limitRef: string;
-  }>;
+  readonly linear: Readonly<{ targets: Readonly<{ githubLinear: LinearReviewedTargetV1; linearOnly: LinearReviewedTargetV1 }> }> | LinearReviewedTargetV1;
 }
 
 export interface ReviewedOutcomeOperationV1 {
@@ -44,6 +43,7 @@ export interface GitHubLinearOutcomePackV1 {
   readonly authorityDigest: string;
   readonly githubPolicyDigest: string;
   readonly linearPolicyDigest: string;
+  readonly linearPolicyDigests: Readonly<{ githubLinear: string; linearOnly: string }>;
   readonly operations: Readonly<Record<GitHubLinearOutcomeOperationNameV1, ReviewedOutcomeOperationV1>>;
 }
 
@@ -63,7 +63,7 @@ interface GitHubReviewedOutcomePolicyV1 {
 const packAuthorities = new WeakMap<object, GitHubLinearReviewedAuthorityV1>();
 declare const governedOutcomeCompositionProfileBrand: unique symbol;
 export interface GovernedOutcomeCompositionProfileV1 { readonly [governedOutcomeCompositionProfileBrand]: true }
-type GovernedOutcomeCompositionScopeV1 = Readonly<{ aliases: typeof governedOutcomeCompositionAliasesV1; repository: string; workspace: string; project: string; issue: string; contractDigests: readonly string[] }>;
+type GovernedOutcomeCompositionScopeV1 = Readonly<{ aliases: typeof governedOutcomeCompositionAliasesV1; repository: string; linearTargets: Readonly<{ githubLinear: string; linearOnly: string }>; contractDigests: readonly string[] }>;
 type GovernedOutcomeCompositionProfileStateV1 = Readonly<{ scope: GovernedOutcomeCompositionScopeV1; pack: GitHubLinearOutcomePackV1; authority: GitHubLinearReviewedAuthorityV1 }>;
 const governedOutcomeProfiles = new WeakMap<object, GovernedOutcomeCompositionProfileStateV1>();
 
@@ -75,9 +75,10 @@ export function createGovernedOutcomeCompositionProfileV1(input: Readonly<{ alia
   const aliases = exactArray(raw.aliases, "governed Outcome aliases");
   if (aliases.length !== governedOutcomeCompositionAliasesV1.length || aliases.some((alias, index) => alias !== governedOutcomeCompositionAliasesV1[index])) throw new TypeError("governed Outcome profile requires the exact canonical five aliases");
   const operations = exactObjectArray(raw.operations, "governed Outcome operations");
-  const expected = [pack.operations.candidatePublish, pack.operations.pullRequestEnsure, pack.operations.exactHeadMerge, pack.operations.linearEvidenceComment, pack.operations.linearStatusTransition] as const;
+  const expected = [pack.operations.candidatePublish, pack.operations.pullRequestEnsure, pack.operations.exactHeadMerge, pack.operations.linearEvidenceComment, pack.operations.linearStatusTransition, pack.operations.linearOnlyEvidenceComment, pack.operations.linearOnlyStatusTransition] as const;
   if (operations.length !== expected.length || operations.some((operation, index) => operation !== expected[index])) throw new TypeError("governed Outcome profile operations do not share one exact reviewed scope");
-  const scope = Object.freeze({ aliases: governedOutcomeCompositionAliasesV1, repository: authority.github.repository, workspace: authority.linear.workspace, project: authority.linear.project, issue: authority.linear.issue, contractDigests: Object.freeze(expected.map(operation => digestToolEffectContractV1(operation.contract))) });
+  const linearTargets = targetsOf(authority);
+  const scope = Object.freeze({ aliases: governedOutcomeCompositionAliasesV1, repository: authority.github.repository, linearTargets: Object.freeze({ githubLinear: linearTargets.githubLinear.issue, linearOnly: linearTargets.linearOnly.issue }), contractDigests: Object.freeze(expected.map(operation => digestToolEffectContractV1(operation.contract))) });
   const profile = Object.freeze(Object.create(null)) as GovernedOutcomeCompositionProfileV1;
   governedOutcomeProfiles.set(profile as object, Object.freeze({ scope, pack, authority }));
   return profile;
@@ -92,22 +93,27 @@ export function describeGovernedOutcomeCompositionProfileV1(profile: GovernedOut
 /** @internal Host composition access; the profile remains non-serializable and non-authoritative for dispatch. */
 export function governedOutcomeCompositionProfileStateV1(profile: GovernedOutcomeCompositionProfileV1): GovernedOutcomeCompositionProfileStateV1 { const state = governedOutcomeProfiles.get(profile as object); if (!state) throw new TypeError("governed Outcome composition profile capability is invalid"); return state; }
 
+/** @internal Exact host-selected target; mode is resolved from the authenticated opaque Outcome reference. */
+export function reviewedLinearTargetV1(pack: GitHubLinearOutcomePackV1, mode: GitHubLinearOutcomeModeV1): LinearReviewedTargetV1 { const authority = packAuthorities.get(requirePack(pack) as object); if (!authority) throw new TypeError("reviewed outcome pack authority is unavailable"); return targetsOf(authority)[mode === "github-linear" ? "githubLinear" : "linearOnly"]; }
+
 export function createGitHubLinearOutcomePackV1(value: GitHubLinearReviewedAuthorityV1): GitHubLinearOutcomePackV1 {
   const authority = parseAuthority(value);
   const authorityDigestValue = authorityDigest(authority);
   const githubPolicyDigest = githubReviewedOutcomePolicyDigestV1(authority.github);
-  const { accountRef: _linearAccountRef, destinationRef: _linearDestinationRef, credentialRef: _linearCredentialRef, limitRef: _linearLimitRef, ...linearPolicy } = authority.linear;
-  const linearPolicyDigest = authorityDigest({ v: "reelier.linear-reviewed-outcome-policy/v1", ...linearPolicy });
+  const linearPolicyDigestFor = (target: LinearReviewedTargetV1) => { const { accountRef: _a, destinationRef: _d, credentialRef: _c, limitRef: _l, ...policy } = target; return authorityDigest({ v: "reelier.linear-reviewed-outcome-policy/v1", ...policy }); };
+  const targets = targetsOf(authority), linearPolicyDigests = Object.freeze({ githubLinear: linearPolicyDigestFor(targets.githubLinear), linearOnly: linearPolicyDigestFor(targets.linearOnly) });
   const githubBindings = { credentialRef: authority.github.credentialRef, accountRef: authority.github.accountRef, destinationRef: authority.github.destinationRef, limitRef: authority.github.limitRef };
-  const linearBindings = { credentialRef: authority.linear.credentialRef, accountRef: authority.linear.accountRef, destinationRef: authority.linear.destinationRef, limitRef: authority.linear.limitRef };
+  const linearBindings = (target: LinearReviewedTargetV1) => ({ credentialRef: target.credentialRef, accountRef: target.accountRef, destinationRef: target.destinationRef, limitRef: target.limitRef });
   const operations = Object.freeze({
     candidatePublish: operation({ key: "candidate-publish", provider: "github", policyDigest: githubPolicyDigest, bindings: githubBindings, modelFields: ["authorizationHandle", "requestId"], serverSchemaDigest: GITHUB_RELEASE_OUTCOME_SERVER_SCHEMA_DIGEST_V1, tool: "github_release_candidate_publish_v1", readbackTool: "github_release_candidate_publish_readback_v1", projection: ["/repository", "/baseSha", "/headSha", "/candidateDigest"] }),
     pullRequestEnsure: operation({ key: "pull-request-ensure", provider: "github", policyDigest: githubPolicyDigest, bindings: githubBindings, modelFields: ["authorizationHandle", "requestId"], serverSchemaDigest: GITHUB_RELEASE_OUTCOME_SERVER_SCHEMA_DIGEST_V1, tool: "github_release_pr_ensure_v1", readbackTool: "github_release_pr_ensure_readback_v1", projection: ["/repository", "/baseBranch", "/headSha", "/pullRequest", "/ready"] }),
     exactHeadMerge: operation({ key: "exact-head-squash-merge", provider: "github", policyDigest: githubPolicyDigest, bindings: githubBindings, modelFields: ["authorizationHandle", "requestId"], serverSchemaDigest: GITHUB_RELEASE_OUTCOME_SERVER_SCHEMA_DIGEST_V1, tool: "github_release_pr_merge_v1", readbackTool: "github_release_pr_merge_readback_v1", projection: ["/repository", "/baseSha", "/headSha", "/mergeCommitSha", "/treeSha"] }),
-    linearEvidenceComment: operation({ key: "evidence-comment", provider: "linear", policyDigest: linearPolicyDigest, bindings: linearBindings, modelFields: ["evidenceUrl"], serverSchemaDigest: LINEAR_OUTCOME_SERVER_SCHEMA_DIGEST_V1, tool: "linear_evidence_comment_v1", readbackTool: "linear_evidence_comment_readback_v1", projection: ["/workspace", "/team", "/project", "/issue", "/commentMarker", "/evidenceUrl", "/evidenceContentDigest", "/commentId"] }),
-    linearStatusTransition: operation({ key: "status-transition", provider: "linear", policyDigest: linearPolicyDigest, bindings: linearBindings, modelFields: ["requestId"], serverSchemaDigest: LINEAR_OUTCOME_SERVER_SCHEMA_DIGEST_V1, tool: "linear_status_transition_v1", readbackTool: "linear_status_transition_readback_v1", projection: ["/workspace", "/team", "/project", "/issue", "/preStatus", "/targetStatus", "/status"] }),
+    linearEvidenceComment: operation({ key: "evidence-comment", provider: "linear", policyDigest: linearPolicyDigests.githubLinear, bindings: linearBindings(targets.githubLinear), modelFields: ["evidenceUrl"], serverSchemaDigest: LINEAR_OUTCOME_SERVER_SCHEMA_DIGEST_V1, tool: "linear_evidence_comment_v1", readbackTool: "linear_evidence_comment_readback_v1", projection: ["/workspace", "/team", "/project", "/issue", "/commentMarker", "/evidenceUrl", "/evidenceContentDigest", "/commentId"] }),
+    linearStatusTransition: operation({ key: "status-transition", provider: "linear", policyDigest: linearPolicyDigests.githubLinear, bindings: linearBindings(targets.githubLinear), modelFields: ["requestId"], serverSchemaDigest: LINEAR_OUTCOME_SERVER_SCHEMA_DIGEST_V1, tool: "linear_status_transition_v1", readbackTool: "linear_status_transition_readback_v1", projection: ["/workspace", "/team", "/project", "/issue", "/preStatus", "/targetStatus", "/status"] }),
+    linearOnlyEvidenceComment: operation({ key: "linear-only-evidence-comment", provider: "linear", policyDigest: linearPolicyDigests.linearOnly, bindings: linearBindings(targets.linearOnly), modelFields: ["evidenceUrl"], serverSchemaDigest: LINEAR_OUTCOME_SERVER_SCHEMA_DIGEST_V1, tool: "linear_only_evidence_comment_v1", readbackTool: "linear_only_evidence_comment_readback_v1", projection: ["/workspace", "/team", "/project", "/issue", "/commentMarker", "/evidenceUrl", "/evidenceContentDigest", "/commentId"] }),
+    linearOnlyStatusTransition: operation({ key: "linear-only-status-transition", provider: "linear", policyDigest: linearPolicyDigests.linearOnly, bindings: linearBindings(targets.linearOnly), modelFields: ["requestId"], serverSchemaDigest: LINEAR_OUTCOME_SERVER_SCHEMA_DIGEST_V1, tool: "linear_only_status_transition_v1", readbackTool: "linear_only_status_transition_readback_v1", projection: ["/workspace", "/team", "/project", "/issue", "/preStatus", "/targetStatus", "/status"] }),
   });
-  const pack = Object.freeze({ v: "reelier.github-linear-outcome-pack/v1" as const, authorityDigest: authorityDigestValue, githubPolicyDigest, linearPolicyDigest, operations });
+  const pack = Object.freeze({ v: "reelier.github-linear-outcome-pack/v1" as const, authorityDigest: authorityDigestValue, githubPolicyDigest, linearPolicyDigest: linearPolicyDigests.githubLinear, linearPolicyDigests, operations });
   packAuthorities.set(pack, authority);
   return pack;
 }
@@ -171,14 +177,17 @@ export function githubReviewedOutcomePolicyDigestV1(value: GitHubReviewedOutcome
 
 export function orderedGitHubLinearOperationsV1(pack: GitHubLinearOutcomePackV1, mode: GitHubLinearOutcomeModeV1): readonly ReviewedOutcomeOperationV1[] {
   const parsed = requirePack(pack);
-  if (mode === "linear-only") return Object.freeze([parsed.operations.linearEvidenceComment, parsed.operations.linearStatusTransition]);
+  if (mode === "linear-only") return Object.freeze([parsed.operations.linearOnlyEvidenceComment, parsed.operations.linearOnlyStatusTransition]);
   if (mode !== "github-linear") throw new TypeError("outcome pack mode is invalid");
   return Object.freeze([parsed.operations.candidatePublish, parsed.operations.pullRequestEnsure, parsed.operations.exactHeadMerge, parsed.operations.linearEvidenceComment, parsed.operations.linearStatusTransition]);
 }
 
+export function allGovernedGitHubLinearOperationsV1(pack: GitHubLinearOutcomePackV1): readonly ReviewedOutcomeOperationV1[] { const parsed = requirePack(pack); return Object.freeze([parsed.operations.candidatePublish, parsed.operations.pullRequestEnsure, parsed.operations.exactHeadMerge, parsed.operations.linearEvidenceComment, parsed.operations.linearStatusTransition, parsed.operations.linearOnlyEvidenceComment, parsed.operations.linearOnlyStatusTransition]); }
+
 export function assertGitHubLinearProviderReadbackV1(pack: GitHubLinearOutcomePackV1, operationName: GitHubLinearOutcomeOperationNameV1, value: unknown): Readonly<Record<string, string | number | boolean>> {
   const parsed = requirePack(pack), authority = packAuthorities.get(parsed as object);
   if (!authority) throw new TypeError("reviewed outcome pack authority is unavailable");
+  const targets = targetsOf(authority), target = operationName.startsWith("linearOnly") ? targets.linearOnly : targets.githubLinear;
   let raw: Record<string, unknown>, expected: Readonly<Record<string, unknown>>;
   if (operationName === "candidatePublish") {
     raw = inertRecord(value, ["repository", "baseSha", "headSha", "candidateDigest"], "candidate publication readback");
@@ -193,11 +202,11 @@ export function assertGitHubLinearProviderReadbackV1(pack: GitHubLinearOutcomePa
     if (typeof raw.mergeCommitSha !== "string" || !GIT_SHA.test(raw.mergeCommitSha)) throw new TypeError("merge readback conflicts with exact reviewed authority");
   } else if (operationName === "linearEvidenceComment") {
     raw = inertRecord(value, ["workspace", "team", "project", "issue", "commentMarker", "evidenceUrl", "evidenceContentDigest", "commentId"], "Linear comment readback");
-    expected = { workspace: authority.linear.workspace, team: authority.linear.team, project: authority.linear.project, issue: authority.linear.issue, commentMarker: authority.linear.commentMarker, evidenceUrl: authority.linear.evidenceUrl, evidenceContentDigest: authority.linear.evidenceContentDigest };
+    expected = { workspace: target.workspace, team: target.team, project: target.project, issue: target.issue, commentMarker: target.commentMarker, evidenceUrl: target.evidenceUrl, evidenceContentDigest: target.evidenceContentDigest };
     text(raw.commentId, "Linear comment ID");
   } else if (operationName === "linearStatusTransition") {
     raw = inertRecord(value, ["workspace", "team", "project", "issue", "preStatus", "targetStatus", "status"], "Linear status readback");
-    expected = { workspace: authority.linear.workspace, team: authority.linear.team, project: authority.linear.project, issue: authority.linear.issue, preStatus: authority.linear.preStatus, targetStatus: authority.linear.targetStatus, status: authority.linear.targetStatus };
+    expected = { workspace: target.workspace, team: target.team, project: target.project, issue: target.issue, preStatus: target.preStatus, targetStatus: target.targetStatus, status: target.targetStatus };
   } else throw new TypeError("reviewed outcome operation is invalid");
   for (const [key, expectedValue] of Object.entries(expected)) if (raw[key] !== expectedValue) throw new TypeError(`${operationName} readback conflicts with exact reviewed authority`);
   const result: Record<string, string | number | boolean> = Object.create(null);
@@ -209,18 +218,20 @@ export function assertGitHubLinearProviderReadbackV1(pack: GitHubLinearOutcomePa
 }
 
 /** @internal Host-side Linear dispatch binding; credentials never enter this projection. */
-export function assertLinearOutcomeDispatchV1(pack: GitHubLinearOutcomePackV1, operationName: "linearEvidenceComment" | "linearStatusTransition", modelValue: unknown, hostValue: unknown): Readonly<Record<string, string>> {
+export function assertLinearOutcomeDispatchV1(pack: GitHubLinearOutcomePackV1, operationName: "linearEvidenceComment" | "linearStatusTransition" | "linearOnlyEvidenceComment" | "linearOnlyStatusTransition", modelValue: unknown, hostValue: unknown): Readonly<Record<string, string>> {
   const parsed = requirePack(pack), authority = packAuthorities.get(parsed)!;
+  const targets = targetsOf(authority), target = operationName.startsWith("linearOnly") ? targets.linearOnly : targets.githubLinear;
   const host = inertRecord(hostValue, ["account", "destination", "limit"], "Linear outcome host binding");
-  if (host.account !== authority.linear.workspace || host.destination !== authority.linear.issue || host.limit !== parsed.linearPolicyDigest) throw new TypeError("Linear outcome host binding conflicts with reviewed authority");
-  if (operationName === "linearEvidenceComment") {
+  const policyDigest = operationName.startsWith("linearOnly") ? parsed.linearPolicyDigests.linearOnly : parsed.linearPolicyDigests.githubLinear;
+  if (host.account !== target.workspace || host.destination !== target.issue || host.limit !== policyDigest) throw new TypeError("Linear outcome host binding conflicts with reviewed authority");
+  if (operationName.endsWith("EvidenceComment")) {
     const model = inertRecord(modelValue, ["evidenceUrl"], "Linear evidence comment model");
-    if (model.evidenceUrl !== authority.linear.evidenceUrl) throw new TypeError("Linear evidence URL conflicts with reviewed authority");
-    return Object.freeze({ workspace: authority.linear.workspace, team: authority.linear.team, project: authority.linear.project, issue: authority.linear.issue, commentMarker: authority.linear.commentMarker, evidenceUrl: authority.linear.evidenceUrl, evidenceContentDigest: authority.linear.evidenceContentDigest });
+    if (model.evidenceUrl !== target.evidenceUrl) throw new TypeError("Linear evidence URL conflicts with reviewed authority");
+    return Object.freeze({ workspace: target.workspace, team: target.team, project: target.project, issue: target.issue, commentMarker: target.commentMarker, evidenceUrl: target.evidenceUrl, evidenceContentDigest: target.evidenceContentDigest });
   }
   const model = inertRecord(modelValue, ["requestId"], "Linear status model");
   const requestId = text(model.requestId, "Linear status request ID");
-  return Object.freeze({ workspace: authority.linear.workspace, team: authority.linear.team, project: authority.linear.project, issue: authority.linear.issue, preStatus: authority.linear.preStatus, targetStatus: authority.linear.targetStatus, requestId });
+  return Object.freeze({ workspace: target.workspace, team: target.team, project: target.project, issue: target.issue, preStatus: target.preStatus, targetStatus: target.targetStatus, requestId });
 }
 
 function operation(input: Readonly<{ key: string; provider: string; policyDigest: string; bindings: ToolEffectContractV1["bindings"]; modelFields: readonly string[]; serverSchemaDigest: string; tool: string; readbackTool: string; projection: readonly string[] }>): ReviewedOutcomeOperationV1 {
@@ -261,8 +272,8 @@ export function githubReleaseOutcomeBindingDigestV1(tool: string): string {
 
 /** @internal Runtime schema pin for the callback-only Linear host adapter. */
 export function linearOutcomeToolSchemaDigestV1(tool: string): string {
-  const dispatchFields: Readonly<Record<string, readonly string[]>> = Object.freeze({ linear_evidence_comment_v1: ["evidenceUrl"], linear_status_transition_v1: ["requestId"] });
-  const readbackProjection: Readonly<Record<string, readonly string[]>> = Object.freeze({ linear_evidence_comment_readback_v1: ["/workspace", "/team", "/project", "/issue", "/commentMarker", "/evidenceUrl", "/evidenceContentDigest", "/commentId"], linear_status_transition_readback_v1: ["/workspace", "/team", "/project", "/issue", "/preStatus", "/targetStatus", "/status"] });
+  const dispatchFields: Readonly<Record<string, readonly string[]>> = Object.freeze({ linear_evidence_comment_v1: ["evidenceUrl"], linear_status_transition_v1: ["requestId"], linear_only_evidence_comment_v1: ["evidenceUrl"], linear_only_status_transition_v1: ["requestId"] });
+  const readbackProjection: Readonly<Record<string, readonly string[]>> = Object.freeze({ linear_evidence_comment_readback_v1: ["/workspace", "/team", "/project", "/issue", "/commentMarker", "/evidenceUrl", "/evidenceContentDigest", "/commentId"], linear_status_transition_readback_v1: ["/workspace", "/team", "/project", "/issue", "/preStatus", "/targetStatus", "/status"], linear_only_evidence_comment_readback_v1: ["/workspace", "/team", "/project", "/issue", "/commentMarker", "/evidenceUrl", "/evidenceContentDigest", "/commentId"], linear_only_status_transition_readback_v1: ["/workspace", "/team", "/project", "/issue", "/preStatus", "/targetStatus", "/status"] });
   if (dispatchFields[tool]) return authorityDigest({ v: "reelier.reviewed-outcome-tool-schema/v1", provider: "linear", tool, modelFields: dispatchFields[tool] });
   if (readbackProjection[tool]) return authorityDigest({ v: "reelier.reviewed-outcome-readback-schema/v1", provider: "linear", tool, projection: readbackProjection[tool] });
   throw new TypeError("Linear outcome tool is not reviewed");
@@ -272,20 +283,26 @@ function parseAuthority(value: unknown): GitHubLinearReviewedAuthorityV1 {
   const root = inertRecord(value, ["v", "github", "linear"], "reviewed GitHub and Linear authority");
   if (root.v !== "reelier.github-linear-reviewed-authority/v1") throw new TypeError("reviewed authority version is invalid");
   const github = inertRecord(root.github, ["repository", "baseBranch", "baseSha", "headBranch", "headSha", "candidateDigest", "workflowPath", "workflowDigest", "requiredChecks", "mergeMethod", "postMergeTreeSha", "accountRef", "destinationRef", "credentialRef", "limitRef"], "reviewed GitHub authority");
-  const linear = inertRecord(root.linear, ["workspace", "team", "project", "issue", "preStatus", "targetStatus", "commentMarker", "evidenceUrl", "evidenceContentDigest", "accountRef", "destinationRef", "credentialRef", "limitRef"], "reviewed Linear authority");
+  const linearTarget = (value: unknown, label: string) => inertRecord(value, ["workspace", "team", "project", "issue", "preStatus", "targetStatus", "commentMarker", "evidenceUrl", "evidenceContentDigest", "accountRef", "destinationRef", "credentialRef", "limitRef"], label);
+  let githubLinear: Record<string, unknown>, linearOnly: Record<string, unknown>;
+  try { const linear = inertRecord(root.linear, ["targets"], "reviewed Linear authority"), targets = inertRecord(linear.targets, ["githubLinear", "linearOnly"], "reviewed Linear targets"); githubLinear = linearTarget(targets.githubLinear, "reviewed composite Linear target"); linearOnly = linearTarget(targets.linearOnly, "reviewed Linear-only target"); }
+  catch { githubLinear = linearTarget(root.linear, "reviewed Linear authority"); linearOnly = githubLinear; }
   const requiredChecks = stringArray(github.requiredChecks, "required checks");
   if (github.baseBranch !== "main" || github.workflowPath !== ".github/workflows/ci.yml" || github.mergeMethod !== "squash" || authorityDigest(requiredChecks) !== authorityDigest(REQUIRED_CHECKS)) throw new TypeError("GitHub outcome authority must bind main, the signed CI workflow, exact required checks, and squash merge");
-  for (const [raw, label] of [[github.repository, "repository"], [github.headBranch, "head branch"], [linear.workspace, "workspace"], [linear.team, "team"], [linear.project, "project"], [linear.issue, "issue"], [linear.preStatus, "pre-status"], [linear.targetStatus, "target status"], [linear.commentMarker, "comment marker"], [linear.evidenceUrl, "evidence URL"]] as const) text(raw, label);
+  text(github.repository, "repository"); text(github.headBranch, "head branch");
+  for (const [index, target] of [githubLinear, linearOnly].entries()) for (const key of ["workspace", "team", "project", "issue", "preStatus", "targetStatus", "commentMarker", "evidenceUrl"] as const) text(target[key], `${key} ${index}`);
   for (const [raw, label] of [[github.baseSha, "base SHA"], [github.headSha, "head SHA"], [github.postMergeTreeSha, "post-merge tree SHA"]] as const) if (typeof raw !== "string" || !GIT_SHA.test(raw)) throw new TypeError(`${label} is invalid`);
-  for (const [raw, label] of [[github.candidateDigest, "candidate digest"], [github.workflowDigest, "workflow digest"], [linear.evidenceContentDigest, "evidence content digest"]] as const) digest(raw, label);
-  const githubRefs = refs(github), linearRefs = refs(linear);
-  return deepFreeze({ v: root.v, github: { repository: github.repository, baseBranch: github.baseBranch, baseSha: github.baseSha, headBranch: github.headBranch, headSha: github.headSha, candidateDigest: github.candidateDigest, workflowPath: github.workflowPath, workflowDigest: github.workflowDigest, requiredChecks, mergeMethod: github.mergeMethod, postMergeTreeSha: github.postMergeTreeSha, ...githubRefs }, linear: { workspace: linear.workspace, team: linear.team, project: linear.project, issue: linear.issue, preStatus: linear.preStatus, targetStatus: linear.targetStatus, commentMarker: linear.commentMarker, evidenceUrl: linear.evidenceUrl, evidenceContentDigest: linear.evidenceContentDigest, ...linearRefs } }) as GitHubLinearReviewedAuthorityV1;
+  for (const [raw, label] of [[github.candidateDigest, "candidate digest"], [github.workflowDigest, "workflow digest"], [githubLinear.evidenceContentDigest, "composite evidence content digest"], [linearOnly.evidenceContentDigest, "Linear-only evidence content digest"]] as const) digest(raw, label);
+  const cleanTarget = (target: Record<string, unknown>) => ({ workspace: target.workspace, team: target.team, project: target.project, issue: target.issue, preStatus: target.preStatus, targetStatus: target.targetStatus, commentMarker: target.commentMarker, evidenceUrl: target.evidenceUrl, evidenceContentDigest: target.evidenceContentDigest, ...refs(target) });
+  return deepFreeze({ v: root.v, github: { repository: github.repository, baseBranch: github.baseBranch, baseSha: github.baseSha, headBranch: github.headBranch, headSha: github.headSha, candidateDigest: github.candidateDigest, workflowPath: github.workflowPath, workflowDigest: github.workflowDigest, requiredChecks, mergeMethod: github.mergeMethod, postMergeTreeSha: github.postMergeTreeSha, ...refs(github) }, linear: { targets: { githubLinear: cleanTarget(githubLinear), linearOnly: cleanTarget(linearOnly) } } }) as GitHubLinearReviewedAuthorityV1;
 }
 
 function requirePack(pack: unknown): GitHubLinearOutcomePackV1 {
   if (!pack || typeof pack !== "object" || isProxy(pack) || !packAuthorities.has(pack)) throw new TypeError("outcome pack brand is invalid");
   return pack as GitHubLinearOutcomePackV1;
 }
+
+function targetsOf(authority: GitHubLinearReviewedAuthorityV1): Readonly<{ githubLinear: LinearReviewedTargetV1; linearOnly: LinearReviewedTargetV1 }> { return "targets" in authority.linear ? authority.linear.targets : Object.freeze({ githubLinear: authority.linear, linearOnly: authority.linear }); }
 
 function refs(value: Record<string, unknown>): Readonly<{ accountRef: string; destinationRef: string; credentialRef: string; limitRef: string }> { return Object.freeze({ accountRef: ref(value.accountRef, "account ref"), destinationRef: ref(value.destinationRef, "destination ref"), credentialRef: ref(value.credentialRef, "credential ref"), limitRef: ref(value.limitRef, "limit ref") }); }
 function ref(value: unknown, label: string): string { const result = text(value, label); if (!REF.test(result)) throw new TypeError(`${label} is invalid`); return result; }
