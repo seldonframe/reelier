@@ -4,7 +4,6 @@ import { authorityDigest } from "../../src/authority/wire.js";
 import { compileEffectTransportV1, mintTrustedEffectTransportExecutorV1 } from "../../src/authority/host/effect-transports.js";
 import { createOutcomeKernel, createTrustedObservationVerifier, type StoredEffectLifecycleV1 } from "../../src/authority/host/outcome-kernel.js";
 import {
-  assertLinearStatusPredecessorV1,
   assertGitHubLinearProviderReadbackV1,
   createGitHubLinearOutcomePackV1,
   orderedGitHubLinearOperationsV1,
@@ -41,6 +40,8 @@ function reviewedInput() {
       preStatus: "In Progress",
       targetStatus: "Done",
       commentMarker: "reelier:evidence:mission_01",
+      evidenceUrl: "https://www.reelier.com/r/receipt_01",
+      evidenceContentDigest: sha("f"),
       accountRef: "linear_account_ref",
       destinationRef: "linear_issue_ref",
       credentialRef: "linear_credential_ref",
@@ -66,7 +67,7 @@ test("reviewed pack binds exact GitHub and Linear authority while model fields c
 
 test("Linear readback binds exact project, issue, marker, and status without accepting credentials", () => {
   const pack = createGitHubLinearOutcomePackV1(reviewedInput());
-  const exactComment = { workspace: "workspace_01", team: "team_01", project: "project_01", issue: "REEL-TEST-1", commentMarker: "reelier:evidence:mission_01", commentId: "comment_01" };
+  const exactComment = { workspace: "workspace_01", team: "team_01", project: "project_01", issue: "REEL-TEST-1", commentMarker: "reelier:evidence:mission_01", evidenceUrl: "https://www.reelier.com/r/receipt_01", evidenceContentDigest: sha("f"), commentId: "comment_01" };
   const first = assertGitHubLinearProviderReadbackV1(pack, "linearEvidenceComment", exactComment);
   const duplicate = assertGitHubLinearProviderReadbackV1(pack, "linearEvidenceComment", structuredClone(exactComment));
   assert.deepEqual(duplicate, first, "an exact duplicate comment converges to the same projection");
@@ -74,6 +75,8 @@ test("Linear readback binds exact project, issue, marker, and status without acc
     { ...exactComment, project: "other_project" },
     { ...exactComment, issue: "REEL-OTHER" },
     { ...exactComment, commentMarker: "conflicting-marker" },
+    { ...exactComment, evidenceUrl: "https://www.reelier.com/r/other" },
+    { ...exactComment, evidenceContentDigest: sha("0") },
   ]) assert.throws(() => assertGitHubLinearProviderReadbackV1(pack, "linearEvidenceComment", changed), /conflict|exact/i);
   const status = assertGitHubLinearProviderReadbackV1(pack, "linearStatusTransition", { workspace: "workspace_01", team: "team_01", project: "project_01", issue: "REEL-TEST-1", preStatus: "In Progress", targetStatus: "Done", status: "Done" });
   assert.equal(status.status, "Done");
@@ -173,18 +176,23 @@ test("closed reviewed authority refuses wrong identities and hostile DTO roots i
   assert.throws(() => createGitHubLinearOutcomePackV1({ ...base, github: { ...base.github, workflowPath: ".github/workflows/other.yml" } }), /workflow/i);
   assert.throws(() => createGitHubLinearOutcomePackV1({ ...base, github: { ...base.github, baseBranch: "develop" } }), /main/i);
   assert.throws(() => createGitHubLinearOutcomePackV1({ ...base, extra: true } as any), /closed|unknown/i);
+  const hidden = structuredClone(base) as any;
+  Object.defineProperty(hidden, "hidden", { value: true });
+  assert.throws(() => createGitHubLinearOutcomePackV1(hidden), /closed|unknown/i);
+  const symbol = structuredClone(base) as any;
+  Object.defineProperty(symbol, Symbol("unknown"), { value: true, enumerable: true });
+  assert.throws(() => createGitHubLinearOutcomePackV1(symbol), /closed|unknown/i);
+  let getterCalls = 0;
+  const accessor = structuredClone(base) as any;
+  Object.defineProperty(accessor.linear, "project", { enumerable: true, get() { getterCalls += 1; return "project_01"; } });
+  assert.throws(() => createGitHubLinearOutcomePackV1(accessor), /inert|data|property/i);
+  assert.equal(getterCalls, 0);
   let traps = 0;
   assert.throws(() => createGitHubLinearOutcomePackV1(new Proxy(base, { ownKeys() { traps += 1; return []; } }) as any), /inert|proxy/i);
   assert.equal(traps, 0);
-});
-
-test("Linear status requires the exact verified comment receipt predecessor", () => {
   const pack = createGitHubLinearOutcomePackV1(reviewedInput());
-  const comment = pack.operations.linearEvidenceComment.contract;
-  const reservation = { v: "reelier.effect-reservation/v1", reservationId: "reservation_comment", contractDigest: authorityDigest(comment), semanticIdentity: comment.semanticIdentity, reservedAt: "2026-08-21T12:00:00.000Z" } as const;
-  const outcome = { v: "reelier.governed-outcome/v1", outcomeId: "outcome_comment", contractDigest: authorityDigest(comment), semanticIdentity: comment.semanticIdentity, reservation, attempts: [{ v: "reelier.attempt/v1", attemptId: "attempt_comment", reservationId: reservation.reservationId, semanticIdentity: reservation.semanticIdentity, dispatchedAt: "2026-08-21T12:00:01.000Z", crossedProviderBoundary: true, result: "acknowledged" }], observation: { v: "reelier.observation/v1", observationId: "observation_comment", reservationId: reservation.reservationId, semanticIdentity: reservation.semanticIdentity, observedAt: "2026-08-21T12:00:02.000Z", authoritative: true, verdict: "matched", projectionDigest: sha("9") }, status: "verified", completedAt: "2026-08-21T12:00:03.000Z" } as const;
-  const receipt = { v: "reelier.governed-receipt/v1", receiptId: "receipt_comment", missionDigest: sha("1"), outcomeDigest: authorityDigest(outcome), status: "verified", issuedAt: outcome.completedAt } as const;
-  assert.doesNotThrow(() => assertLinearStatusPredecessorV1(pack, { receipt, outcome }));
-  assert.throws(() => assertLinearStatusPredecessorV1(pack, { receipt: { ...receipt, status: "pending" }, outcome: { ...outcome, status: "pending" } } as any), /verified/i);
-  assert.throws(() => assertLinearStatusPredecessorV1(createGitHubLinearOutcomePackV1({ ...reviewedInput(), linear: { ...reviewedInput().linear, issue: "REEL-TEST-2" } }), { receipt, outcome }), /exact.*comment|predecessor/i);
+  const fake = Object.create(null);
+  Object.defineProperty(fake, "v", { enumerable: true, get() { getterCalls += 1; return pack.v; } });
+  assert.throws(() => orderedGitHubLinearOperationsV1(fake, "linear-only"), /pack|brand|invalid/i);
+  assert.equal(getterCalls, 0, "pack brand is checked before reading caller properties");
 });
