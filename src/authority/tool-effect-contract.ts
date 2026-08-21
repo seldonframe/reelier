@@ -17,14 +17,18 @@ const sha = /^sha256:[0-9a-f]{64}$/;
 const id = /^[A-Za-z0-9._:-]{1,256}$/;
 /** Inertly copies a small JSON graph using descriptors only: no getter, clone, or proxy trap executes user code. */
 function snapshot(value: unknown, depth = 0, seen = new WeakSet<object>(), budget = { nodes: 0 }): unknown {
+  if (depth > 16 || ++budget.nodes > 1024) throw new TypeError("wire graph is too deeply nested or too large");
   if (value === null || typeof value === "string" || typeof value === "boolean") return value;
   if (typeof value === "number") { if (!Number.isFinite(value)) throw new TypeError("wire graph contains a non-finite number"); return value; }
-  if (typeof value !== "object" || isProxy(value) || depth > 16) throw new TypeError("wire graph is not a bounded inert JSON value");
-  if (seen.has(value) || ++budget.nodes > 256) throw new TypeError("wire graph is cyclic or too large"); seen.add(value);
+  if (typeof value !== "object" || isProxy(value)) throw new TypeError("wire graph is not a bounded inert JSON value");
+  if (seen.has(value)) throw new TypeError("wire graph is cyclic or shares object identity"); seen.add(value);
+  const array = Array.isArray(value);
+  if (array && value.length > 64) throw new TypeError("wire graph contains a huge array");
   const prototype = Object.getPrototypeOf(value); if (prototype !== Object.prototype && prototype !== null && prototype !== Array.prototype) throw new TypeError("wire graph has an unsupported prototype");
-  const descriptors = Object.getOwnPropertyDescriptors(value); const array = Array.isArray(value); if (Object.getOwnPropertySymbols(value).length || Object.entries(descriptors).some(([key, descriptor]) => (!descriptor.enumerable && !(array && key === "length")) || !Object.hasOwn(descriptor, "value"))) throw new TypeError("wire graph contains hidden or accessor properties");
-  if (Array.isArray(value)) { if (value.length > 64 || Object.keys(descriptors).length !== value.length + 1) throw new TypeError("wire graph contains a sparse or huge array"); const result: unknown[] = []; for (let index = 0; index < value.length; index++) { const descriptor = descriptors[String(index)]; if (!descriptor || !Object.hasOwn(descriptor, "value")) throw new TypeError("wire graph contains a sparse array"); result.push(snapshot(descriptor.value, depth + 1, seen, budget)); } return result; }
-  const keys = Object.keys(descriptors); if (keys.length > 64) throw new TypeError("wire graph contains too many properties"); const result: Record<string, unknown> = Object.create(null); for (const key of keys) result[key] = snapshot(descriptors[key]!.value, depth + 1, seen, budget); return result;
+  if (!array) { let enumerableKeys = 0; for (const ignored in value) { void ignored; if (++enumerableKeys > 64) throw new TypeError("wire graph contains too many properties"); } }
+  const descriptors = Object.getOwnPropertyDescriptors(value); if (Object.getOwnPropertySymbols(value).length || Object.entries(descriptors).some(([key, descriptor]) => (!descriptor.enumerable && !(array && key === "length")) || !Object.hasOwn(descriptor, "value"))) throw new TypeError("wire graph contains hidden or accessor properties");
+  if (array) { if (Object.keys(descriptors).length !== value.length + 1) throw new TypeError("wire graph contains a sparse array"); const result: unknown[] = []; for (let index = 0; index < value.length; index++) { const descriptor = descriptors[String(index)]; if (!descriptor || !Object.hasOwn(descriptor, "value")) throw new TypeError("wire graph contains a sparse array"); result.push(snapshot(descriptor.value, depth + 1, seen, budget)); } return result; }
+  const keys = Object.keys(descriptors); const result: Record<string, unknown> = Object.create(null); for (const key of keys) result[key] = snapshot(descriptors[key]!.value, depth + 1, seen, budget); return result;
 }
 function own(value: unknown, fields: readonly string[], label: string): Record<string, unknown> { const item = snapshot(value); if (!item || typeof item !== "object" || Array.isArray(item)) throw new TypeError(`${label} must be a plain closed object`); const keys = Object.keys(item); if (keys.length !== fields.length || keys.some(key => !fields.includes(key))) throw new TypeError(`${label} has missing or unknown fields`); return item as Record<string, unknown>; }
 function text(value: unknown, label: string): string { if (typeof value !== "string" || !id.test(value)) throw new TypeError(`${label} is invalid`); return value; }
