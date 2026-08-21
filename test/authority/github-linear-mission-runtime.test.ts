@@ -5,7 +5,7 @@ import { access, copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:
 import os from "node:os";
 import path from "node:path";
 import { authorityCanonicalBytes, authorityDigest, signAuthorityDigest, signJobCard, signedJobCardDigest } from "../../src/authority/index.js";
-import { createGitHubLinearMissionRuntimeV1 } from "../../src/authority/host/index.js";
+import { createGitHubLinearMissionRuntimeV1, requireVerifiedGovernedMissionSequenceV1 } from "../../src/authority/host/index.js";
 import { materializedHttpRequestDigest } from "../../src/authority/host/http-response-semantics.js";
 import { buildAuthorityDeployment } from "../../src/authority/host/deploy.js";
 import { createFileOutcomeKernelStorage } from "../../src/authority/host/outcome-kernel-fs-storage.js";
@@ -41,6 +41,23 @@ test("legacy raw authority and generic provider runtime options refuse before fi
 
 const sha = (seed: string): string => `sha256:${seed.repeat(64).slice(0, 64)}`;
 const git = (seed: string): string => seed.repeat(40);
+
+test("mission success requires all five verified Outcomes and exact coordinator publication heads", () => {
+  const exact = governedOutcomeCompositionAliasesV1.map((alias, index) => Object.freeze({
+    alias,
+    status: "verified" as const,
+    publicationReceiptRef: sha(String(index + 1)),
+    predecessorReceiptRef: index === 4 ? sha("4") : null,
+  }));
+  assert.doesNotThrow(() => requireVerifiedGovernedMissionSequenceV1(governedOutcomeCompositionAliasesV1, exact));
+  for (const changed of [
+    exact.slice(1),
+    exact.map((item, index) => index === 0 ? { ...item, status: "failed" as const } : item),
+    exact.map((item, index) => index === 1 ? { ...item, status: "partial" as const } : item),
+    exact.map((item, index) => index === 3 ? { ...item, publicationReceiptRef: null } : item),
+    exact.map((item, index) => index === 4 ? { ...item, predecessorReceiptRef: sha("0") } : item),
+  ]) assert.throws(() => requireVerifiedGovernedMissionSequenceV1(governedOutcomeCompositionAliasesV1, changed as never), /five|verified|publication|predecessor/i);
+});
 
 test("signed five-definition runtime recovers an exact Linear-only mission without GitHub effects or resend", async () => {
   const restorePlatform = __testSetAuthorityCellHostPlatform("linux"), release = await releaseServeFixture();
