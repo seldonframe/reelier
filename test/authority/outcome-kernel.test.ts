@@ -101,6 +101,17 @@ test("revocation and expiry refuse before dispatch", async () => {
   }
 });
 
+test("governed execution accepts only an opaque joined kernel authority", async () => {
+  const reviewed = contract("identity_1"), store = durableFixture();
+  const states = new Map([["r1", reservation("r1", "reserved", sha("e"))]]);
+  const kernel = createOutcomeKernel({ storage: store, coordinator: coordinator(states, { send: 0, readback: 0 }), ledger: { getReservation: async () => states.get("r1") } as any, now: () => 2_000, authorization: async () => "active" });
+  await kernel.claimMission(mission("mission_1", [reviewed]));
+  await assert.rejects(
+    () => kernel.execute({ missionId: "mission_1", effects: [{ contract: reviewed, verifier: verifierFor(reviewed), governedAuthority: Object.freeze(Object.create(null)) } as any] }),
+    /governed Outcome kernel authority/i,
+  );
+});
+
 test("crash after provider response restarts from the ledger without resending", async () => {
   const store = durableFixture(), states = new Map([["r1", reservation("r1")]]), counters = { send: 0, readback: 0 }; let crash = true;
   const options = { storage: store, coordinator: coordinator(states, counters), ledger: { getReservation: async () => states.get("r1") } as any, now: () => 2_000, authorization: async () => "active" as const, onBoundary: (name: string) => { if (crash && name === "provider-response") throw new Error("crash:provider-response"); } };
