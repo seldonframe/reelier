@@ -14,7 +14,7 @@ import { createFileGateDecisionSink } from "../decision.js";
 import { FsAuthorityLedger } from "./fs-ledger.js";
 import { createDispatchCoordinator, type DispatchAdapter, type DispatchPublication } from "./dispatch.js";
 import { createJsonHttpsDispatchAdapter } from "./json-https-connector.js";
-import { createFileReceiptPublication } from "./receipts.js";
+import { bindFileReceiptPublicationReadbackV1, createFileReceiptPublication, type FileReceiptPublicationReadbackV1 } from "./receipts.js";
 import { createFileDispatchFailureRecorder } from "./runtime-failures.js";
 import { createPortableAuthorityReceiptPublication } from "./portable-receipts.js";
 import { createAuthorityHostRuntime } from "./runtime.js";
@@ -122,7 +122,7 @@ export async function createStdioBoundLocalAuthorityRuntime(config: AuthorityHos
   return createLocalAuthorityRuntimeCore(config, options, { authenticatedExecutionContext: executionContext });
 }
 
-export interface GenuineGovernedOutcomeLocalComponentsV1 { readonly gate: AuthorityGate; readonly ledger: AuthorityLedger; readonly coordinator: DispatchCoordinator; readonly publication: DispatchPublication; readonly deployment: LoadedAuthorityDeployment }
+export interface GenuineGovernedOutcomeLocalComponentsV1 { readonly gate: AuthorityGate; readonly ledger: AuthorityLedger; readonly coordinator: DispatchCoordinator; readonly publication: DispatchPublication; readonly bindPublicationReadback: (reservation: import("../ledger.js").ReservationSnapshot) => FileReceiptPublicationReadbackV1; readonly deployment: LoadedAuthorityDeployment }
 interface LocalAuthorityRuntimeInternalOptions {readonly gateSigner?:LocalGateSigner;readonly beforeReserve?:(intent:Readonly<import("../ledger.js").ReservationIntent>)=>Promise<void>;readonly governedPublication?:DispatchPublication;readonly deployment?:LoadedAuthorityDeployment;readonly authenticatedExecutionContext?:AuthorityExecutionContextV1;readonly captureGovernedComponents?:(components:GenuineGovernedOutcomeLocalComponentsV1)=>void}
 async function createLocalAuthorityRuntimeCore(config:AuthorityHostConfig,options:LocalAuthorityRuntimeOptions,internal:LocalAuthorityRuntimeInternalOptions):Promise<LocalAuthorityRuntime>{
   if (config.cloud && config.topology !== "isolated") throw new TypeError("managed authority requires isolated topology");
@@ -182,7 +182,8 @@ async function createLocalAuthorityRuntimeCore(config:AuthorityHostConfig,option
     },
   });
   const gate = createAuthorityGate({ trustRoots, packs, sources, connectors: connectorRegistry, state, ledger, ...(options.routeAuthority ? { routeAuthority: options.routeAuthority } : {}), ...(options.authenticatedProviderIdentity ? { authenticatedProviderIdentity: options.authenticatedProviderIdentity } : {}), ...(internal.beforeReserve?{beforeReserve:internal.beforeReserve}:{}), ...(options.latencyRecorder ? { latencyRecorder: options.latencyRecorder } : {}), localGatePolicyDigest: authorityDigest({ v: "reelier.local-gate-policy/v1", tenant: config.tenant }), decisionSink: decisions, signer: { async sign(input) { return { signerId: "local-gate", signature: signAuthorityDigest(privateKey, input.purpose, input.digest) }; } }, eventId: () => `evt_${randomUUID()}`, capabilityId: () => `cap_${randomUUID()}` });
-  const basePublication = internal.governedPublication??createLocalAuthorityReceiptPublication({ localPublication: createFileReceiptPublication({ rootDir: config.receiptDir }), ...(options.portableReceiptPublication ? { portablePublication: options.portableReceiptPublication } : {}) });
+  const filePublication = createFileReceiptPublication({ rootDir: config.receiptDir });
+  const basePublication = internal.governedPublication??createLocalAuthorityReceiptPublication({ localPublication: filePublication, ...(options.portableReceiptPublication ? { portablePublication: options.portableReceiptPublication } : {}) });
   const secrets = options.secretResolver ?? createSecretResolver(options.secretResolverOptions);
   if (config.nativeHttpsRoutes && config.nativeHttpsRoutes.length > 0 && (!options.routeAuthority || !options.authenticatedProviderIdentity || !options.certifiedDispatch || !options.verifyAuthenticatedProviderIdentity)) throw new TypeError("native HTTPS routes require certified route, identity, verifier, and dispatch wiring");
   const certifiedDispatch = options.certifiedDispatch ? { ...options.certifiedDispatch, ...(options.latencyRecorder ? { latencyRecorder: options.latencyRecorder } : {}), verifyIdentity: options.verifyAuthenticatedProviderIdentity ?? options.certifiedDispatch.verifyIdentity } : undefined;
@@ -191,7 +192,7 @@ async function createLocalAuthorityRuntimeCore(config:AuthorityHostConfig,option
   const releaseHost = createGitHubReleaseHostComposition({ runner: options.githubReleaseRunner ?? null, fallback: fallbackAdapter, publication: basePublication });
   const { adapter, publication } = releaseHost;
   const dispatch = createDispatchCoordinator(ledger, adapter, undefined, publication, options.delegation?.budget, certifiedDispatch);
-  if(internal.captureGovernedComponents){if(!deployment)throw new TypeError("governed Outcome composition requires a signed deployment");internal.captureGovernedComponents(Object.freeze({gate,ledger,coordinator:dispatch,publication,deployment}));}
+  if(internal.captureGovernedComponents){if(!deployment||internal.governedPublication)throw new TypeError("governed Outcome composition requires a signed deployment and local durable publication");internal.captureGovernedComponents(Object.freeze({gate,ledger,coordinator:dispatch,publication,bindPublicationReadback:(reservation:import("../ledger.js").ReservationSnapshot)=>bindFileReceiptPublicationReadbackV1(filePublication,reservation),deployment}));}
   const runtime = createAuthorityHostRuntime({ gate, dispatch, ledger, decisions, failureRecorder: createFileDispatchFailureRecorder(path.join(config.receiptDir, "runtime-failures")), delegation: options.delegation, ...(options.delegation ? { verifyRootGrant: (grant, tenant) => { verifyTrustedAuthority(trustRoots, { tenant, signerId: grant.signerId, purpose: "delegation-grant", advertisedDigest: grant.digest, value: grant.grant, signature: grant.signature }); } } : {}) });
   const jobs = deployment?.jobCard
     ? Object.freeze(deployment.jobCard.definitionAliases.map(alias => Object.freeze({ jobId: deployment.jobCard!.jobId, alias })))

@@ -61,36 +61,18 @@ test("every durable commitment substitution refuses before any host binding", ()
   assert.throws(() => verifyGovernedOutcomeEffectJoinV1({ ...base.input, reservation: changed } as never), /canonical|ledger|commitment/i);
 });
 
-test("only the exact terminal coordinator publication head resolves as verified", async () => {
-  const identity = { v: "reelier.durable-dispatch-publication-identity/v1" as const, reservationId: "reservation_1", tenant: "tenant_1", requestDigest: sha("1"), capabilityDigest: sha("2"), effectDigest: sha("3"), routeAuthorityDigest: sha("4"), expectedDispatchedRequestDigest: sha("5"), reservationIntentDigest: sha("6") };
-  const query = { v: "reelier.durable-dispatch-publication-query/v1" as const, identity, ledgerState: "dispatched" as const, sendStarted: true as const };
-  const outcome = { kind: "acknowledged" as const, resultDigest: sha("7"), providerResultDigest: sha("8"), receiptRef: sha("7"), evidenceDigest: sha("9"), priorReceiptDigest: sha("a") };
-  const head = { v: "reelier.durable-dispatch-publication-head/v1" as const, identity, receiptRef: outcome.receiptRef, evidenceDigest: outcome.evidenceDigest, reservationReceiptRef: outcome.priorReceiptDigest, priorReceiptRef: outcome.priorReceiptDigest, phase: "dispatch" as const, terminalKind: "acknowledged" as const };
-  const publication = { async publish() { throw new Error("not used"); }, async publishReservation() { throw new Error("not used"); }, async loadDurableHead(_query: unknown, expect?: string) { assert.equal(expect, "terminal"); return head; } };
-  assert.equal(await resolveGovernedCoordinatorPublicationV1(publication, { query, outcome }), outcome.receiptRef);
-  const preparedMatched = { ...outcome, reconciliationStatus: "matched" as const, normalizedProjectionDigest: sha("c") };
-  assert.equal(await resolveGovernedCoordinatorPublicationV1(publication, { query, outcome: preparedMatched }), outcome.receiptRef, "prepared exact readback remains bound to its dispatch head");
-  const recovered = { ...preparedMatched, receiptRef: sha("b"), evidenceDigest: sha("c"), priorReceiptDigest: sha("d") };
-  const recoveredHead = { ...head, receiptRef: recovered.receiptRef, evidenceDigest: recovered.evidenceDigest, priorReceiptRef: recovered.priorReceiptDigest, phase: "reconcile" as const, terminalKind: "reconciled" as const };
-  assert.equal(await resolveGovernedCoordinatorPublicationV1({ ...publication, async loadDurableHead() { return recoveredHead; } }, { query, outcome: recovered }), recovered.receiptRef, "ambiguous recovery binds the reconcile head and its exact prior");
-
-  for (const replacement of [null, { ...head, receiptRef: sha("b") }, { ...head, evidenceDigest: sha("b") }, { ...head, priorReceiptRef: sha("b") }, { ...head, identity: { ...identity, effectDigest: sha("b") } }, { ...head, phase: "reservation", terminalKind: null, priorReceiptRef: null }]) {
-    const candidate = { ...publication, async loadDurableHead() { return replacement as never; } };
-    assert.equal(await resolveGovernedCoordinatorPublicationV1(candidate, { query, outcome }), null);
-  }
-});
-
 test("a restarted governed authority is opaque and readback-only", async () => {
+  const restore = __testSetAuthorityCellHostPlatform("linux"), root = await mkdtemp(path.join(os.tmpdir(), "reelier-governed-readback-only-"));
   const joined = fixture();
-  const identity = { v: "reelier.durable-dispatch-publication-identity/v1" as const, reservationId: "reservation_1", tenant: "tenant_1", requestDigest: sha("1"), capabilityDigest: sha("2"), effectDigest: joined.reservation.intent.effectDigest, routeAuthorityDigest: sha("4"), expectedDispatchedRequestDigest: sha("5"), reservationIntentDigest: sha("6") };
-  const query = { v: "reelier.durable-dispatch-publication-query/v1" as const, identity, ledgerState: "dispatched" as const, sendStarted: true as const };
   const outcome = { kind: "acknowledged" as const, resultDigest: sha("7"), providerResultDigest: sha("8"), receiptRef: sha("7"), evidenceDigest: sha("9"), priorReceiptDigest: sha("a") };
-  const head = { v: "reelier.durable-dispatch-publication-head/v1" as const, identity, receiptRef: outcome.receiptRef, evidenceDigest: outcome.evidenceDigest, reservationReceiptRef: outcome.priorReceiptDigest, priorReceiptRef: outcome.priorReceiptDigest, phase: "dispatch" as const, terminalKind: "acknowledged" as const };
-  const authority = createGovernedOutcomeKernelAuthorityV1({ join: joined.input as never, publication: { async publish() { throw new Error("not used"); }, async publishReservation() { throw new Error("not used"); }, async loadDurableHead() { return head; } }, publicationQuery: query });
-  assert.deepEqual(Reflect.ownKeys(authority), []);
-  assert.deepEqual(describeGovernedOutcomeKernelAuthorityV1(authority, authorityDigest(toolEffectContract)), { reservationId: "reservation_1", effectDigest: joined.reservation.intent.effectDigest, hasLiveHandle: false });
-  await assert.rejects(() => takeGovernedOutcomeKernelHandleV1(authority), /readback-only/i);
-  assert.equal(await resolveGovernedOutcomeKernelPublicationV1(authority, outcome), outcome.receiptRef);
+  try {
+    const readback = bindFileReceiptPublicationReadbackV1(createFileReceiptPublication({ rootDir: root }), joined.reservation as never), authority = createGovernedOutcomeKernelAuthorityV1({ join: joined.input as never, publicationReadback: readback });
+    assert.deepEqual(Reflect.ownKeys(authority), []);
+    assert.deepEqual(describeGovernedOutcomeKernelAuthorityV1(authority, authorityDigest(toolEffectContract)), { reservationId: "reservation_1", effectDigest: joined.reservation.intent.effectDigest, hasLiveHandle: false });
+    await assert.rejects(() => takeGovernedOutcomeKernelHandleV1(authority), /readback-only/i);
+    assert.equal(await resolveGovernedOutcomeKernelPublicationV1(authority, outcome), null);
+    assert.equal(await resolveGovernedCoordinatorPublicationV1(readback, outcome), null);
+  } finally { restore(); await rm(root, { recursive: true, force: true }); }
 });
 
 test("governed publication readback refuses duck-typed resolver and query substitution", async () => {
@@ -99,7 +81,10 @@ test("governed publication readback refuses duck-typed resolver and query substi
     const joined = fixture(), publication = createFileReceiptPublication({ rootDir: root }), readback = bindFileReceiptPublicationReadbackV1(publication, joined.reservation as never);
     const authority = createGovernedOutcomeKernelAuthorityV1({ join: joined.input as never, publicationReadback: readback });
     assert.deepEqual(describeGovernedOutcomeKernelAuthorityV1(authority, authorityDigest(toolEffectContract)), { reservationId: "reservation_1", effectDigest: joined.reservation.intent.effectDigest, hasLiveHandle: false });
+    assert.throws(() => bindFileReceiptPublicationReadbackV1({ loadDurableHead: async () => null } as never, joined.reservation as never), /genuine|publication/i);
     assert.throws(() => createGovernedOutcomeKernelAuthorityV1({ join: joined.input as never, publicationReadback: {} as never }), /genuine|publication|readback/i);
     assert.throws(() => createGovernedOutcomeKernelAuthorityV1({ join: joined.input as never, publicationReadback: structuredClone(readback) as never }), /genuine|publication|readback/i);
+    const crossed = bindFileReceiptPublicationReadbackV1(publication, { ...joined.reservation, reservationId: "reservation_other" } as never);
+    assert.throws(() => createGovernedOutcomeKernelAuthorityV1({ join: joined.input as never, publicationReadback: crossed }), /publication|join|reservation/i);
   } finally { restore(); await rm(root, { recursive: true, force: true }); }
 });

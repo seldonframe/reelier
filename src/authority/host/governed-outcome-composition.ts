@@ -6,7 +6,9 @@ import { digestGovernedEffectCommitmentV1 } from "../governed-effect-commitment.
 import { parseToolEffectContractV1, type ToolEffectContractV1 } from "../tool-effect-contract.js";
 import { authorityCanonicalBytes, authorityDigest, parseCanonicalAuthorityJson } from "../wire.js";
 import { digestEffectTransportBindingV1, parseEffectTransportBindingV1, type EffectTransportBindingV1 } from "./effect-transports.js";
-import type { DispatchOutcome, DispatchPublication, DurableDispatchPublicationQueryV1 } from "./dispatch.js";
+import type { DispatchOutcome } from "./dispatch.js";
+import { describeFileReceiptPublicationReadbackV1, loadFileReceiptPublicationReadbackV1, type FileReceiptPublicationReadbackV1 } from "./receipts.js";
+import { normalizeReservationPublicationId } from "./reservation-identity.js";
 
 export interface GovernedOutcomeEffectJoinInputV1 {
   readonly reservation: ReservationSnapshot;
@@ -31,22 +33,22 @@ export interface VerifiedGovernedOutcomeEffectJoinV1 {
 
 declare const governedOutcomeKernelAuthorityBrand: unique symbol;
 export interface GovernedOutcomeKernelAuthorityV1 { readonly [governedOutcomeKernelAuthorityBrand]: true }
-type GovernedKernelAuthorityStateV1 = Readonly<{ join: VerifiedGovernedOutcomeEffectJoinV1; gateAuthority: AcceptedGateReservationAuthorityV1 | null; publication: DispatchPublication; query: DurableDispatchPublicationQueryV1 }>;
+type GovernedKernelAuthorityStateV1 = Readonly<{ join: VerifiedGovernedOutcomeEffectJoinV1; gateAuthority: AcceptedGateReservationAuthorityV1 | null; publicationReadback: FileReceiptPublicationReadbackV1 }>;
 const governedKernelAuthorities = new WeakMap<object, GovernedKernelAuthorityStateV1>();
 
-export function createGovernedOutcomeKernelAuthorityV1(input: Readonly<{ join: GovernedOutcomeEffectJoinInputV1; gateAuthority?: AcceptedGateReservationAuthorityV1; publication: DispatchPublication; publicationQuery: DurableDispatchPublicationQueryV1 }>): GovernedOutcomeKernelAuthorityV1 {
-  const fields = input && typeof input === "object" && Object.hasOwn(input, "gateAuthority") ? ["join", "gateAuthority", "publication", "publicationQuery"] : ["join", "publication", "publicationQuery"];
+export function createGovernedOutcomeKernelAuthorityV1(input: Readonly<{ join: GovernedOutcomeEffectJoinInputV1; gateAuthority?: AcceptedGateReservationAuthorityV1; publicationReadback: FileReceiptPublicationReadbackV1 }>): GovernedOutcomeKernelAuthorityV1 {
+  const fields = input && typeof input === "object" && Object.hasOwn(input, "gateAuthority") ? ["join", "gateAuthority", "publicationReadback"] : ["join", "publicationReadback"];
   const raw = closedRecord(input, fields, "governed Outcome kernel authority");
-  if (!raw.publication || typeof raw.publication !== "object" || typeof (raw.publication as DispatchPublication).loadDurableHead !== "function") throw new TypeError("governed Outcome authority requires coordinator publication readback");
   const join = verifyGovernedOutcomeEffectJoinV1(raw.join as GovernedOutcomeEffectJoinInputV1);
+  const publicationReadback = raw.publicationReadback as FileReceiptPublicationReadbackV1, publication = describeFileReceiptPublicationReadbackV1(publicationReadback);
+  if (publication.reservationId !== join.reservationId || publication.effectDigest !== join.effectDigest) throw new TypeError("genuine publication readback does not match the durable governed join");
   const gateAuthority = (raw.gateAuthority ?? null) as AcceptedGateReservationAuthorityV1 | null;
   if (gateAuthority) {
     const gate = describeAcceptedGateReservationAuthorityV1(gateAuthority);
     if (gate.reservationId !== join.reservationId || gate.effectDigest !== join.effectDigest || gate.contractDigest !== join.pathCContractDigest) throw new TypeError("genuine gate reservation does not match the durable governed join");
   }
-  durableIdentity(picked(raw.publicationQuery, ["identity"], "governed publication query").identity);
   const authority = Object.freeze(Object.create(null)) as GovernedOutcomeKernelAuthorityV1;
-  governedKernelAuthorities.set(authority as object, Object.freeze({ join, gateAuthority, publication: raw.publication as DispatchPublication, query: raw.publicationQuery as DurableDispatchPublicationQueryV1 }));
+  governedKernelAuthorities.set(authority as object, Object.freeze({ join, gateAuthority, publicationReadback }));
   return authority;
 }
 
@@ -69,7 +71,7 @@ export async function takeGovernedOutcomeKernelHandleV1(authority: GovernedOutco
 export async function resolveGovernedOutcomeKernelPublicationV1(authority: GovernedOutcomeKernelAuthorityV1, outcome: DispatchOutcome): Promise<string | null> {
   const state = governedKernelAuthorities.get(authority as object);
   if (!state) return null;
-  return resolveGovernedCoordinatorPublicationV1(state.publication, { query: state.query, outcome });
+  return resolveGovernedCoordinatorPublicationV1(state.publicationReadback, outcome);
 }
 
 /** @internal Restart adoption is authorized only by the coordinator's exact terminal head. */
@@ -77,25 +79,23 @@ export async function revalidateGovernedOutcomeKernelTerminalV1(authority: Gover
   const state = governedKernelAuthorities.get(authority as object);
   if (!state || typeof expectedReceiptRef !== "string" || !SHA.test(expectedReceiptRef)) return false;
   try {
-    const head = await state.publication.loadDurableHead!(state.query, "terminal");
-    return Boolean(head && authorityDigest(durableIdentity(head.identity)) === authorityDigest(durableIdentity(state.query.identity)) && head.receiptRef === expectedReceiptRef && (head.phase === "dispatch" || head.phase === "reconcile"));
+    const head = await loadFileReceiptPublicationReadbackV1(state.publicationReadback, "terminal");
+    return Boolean(head && head.receiptRef === expectedReceiptRef && (head.phase === "dispatch" || head.phase === "reconcile"));
   } catch { return false; }
 }
 
-export async function resolveGovernedCoordinatorPublicationV1(publication: DispatchPublication, input: Readonly<{ query: DurableDispatchPublicationQueryV1; outcome: DispatchOutcome }>): Promise<string | null> {
-  if (!publication?.loadDurableHead) return null;
+export async function resolveGovernedCoordinatorPublicationV1(readback: FileReceiptPublicationReadbackV1, outcomeInput: DispatchOutcome): Promise<string | null> {
   try {
-    const query = picked(input.query, ["v", "identity", "ledgerState", "sendStarted"], "durable publication query");
-    if (query.v !== "reelier.durable-dispatch-publication-query/v1" || !["dispatched", "ambiguous"].includes(query.ledgerState as string) || query.sendStarted !== true) return null;
-    const identity = durableIdentity(query.identity);
-    const outcome = picked(input.outcome, ["kind", "receiptRef", "evidenceDigest", "priorReceiptDigest"], "dispatch outcome");
+    const binding = describeFileReceiptPublicationReadbackV1(readback);
+    const outcome = picked(outcomeInput, ["kind", "receiptRef", "evidenceDigest", "priorReceiptDigest"], "dispatch outcome");
     if (!outcome.receiptRef || !outcome.evidenceDigest || !outcome.priorReceiptDigest || ![outcome.receiptRef, outcome.evidenceDigest, outcome.priorReceiptDigest].every(value => typeof value === "string" && SHA.test(value))) return null;
-    const rawHead = await publication.loadDurableHead(input.query, "terminal");
+    const rawHead = await loadFileReceiptPublicationReadbackV1(readback, "terminal");
     if (!rawHead) return null;
     const head = picked(rawHead, ["v", "identity", "receiptRef", "evidenceDigest", "reservationReceiptRef", "priorReceiptRef", "phase", "terminalKind"], "durable publication head");
-    if (head.v !== "reelier.durable-dispatch-publication-head/v1" || authorityDigest(durableIdentity(head.identity)) !== authorityDigest(identity) || head.receiptRef !== outcome.receiptRef || head.evidenceDigest !== outcome.evidenceDigest || typeof head.reservationReceiptRef !== "string" || !SHA.test(head.reservationReceiptRef) || head.priorReceiptRef !== outcome.priorReceiptDigest) return null;
-    const reconciled = input.outcome.reconciliationStatus !== undefined && input.outcome.reconciliationStatus !== "not-attempted";
-    const exactTerminal = head.phase === "reconcile" ? head.terminalKind === "reconciled" : head.phase === "dispatch" ? head.terminalKind === input.outcome.kind : !reconciled && head.phase === "ambiguous" && head.terminalKind === "ambiguous";
+    const identity = durableIdentity(head.identity);
+    if (head.v !== "reelier.durable-dispatch-publication-head/v1" || identity.reservationId !== normalizeReservationPublicationId(binding.reservationId) || identity.effectDigest !== binding.effectDigest || head.receiptRef !== outcome.receiptRef || head.evidenceDigest !== outcome.evidenceDigest || typeof head.reservationReceiptRef !== "string" || !SHA.test(head.reservationReceiptRef) || head.priorReceiptRef !== outcome.priorReceiptDigest) return null;
+    const reconciled = outcomeInput.reconciliationStatus !== undefined && outcomeInput.reconciliationStatus !== "not-attempted";
+    const exactTerminal = head.phase === "reconcile" ? head.terminalKind === "reconciled" : head.phase === "dispatch" ? head.terminalKind === outcomeInput.kind : !reconciled && head.phase === "ambiguous" && head.terminalKind === "ambiguous";
     if (!exactTerminal || reconciled && head.phase !== "dispatch" && head.phase !== "reconcile") return null;
     return outcome.receiptRef as string;
   } catch { return null; }

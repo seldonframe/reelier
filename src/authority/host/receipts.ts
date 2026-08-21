@@ -3,6 +3,8 @@ import { randomBytes } from "node:crypto";
 import path from "node:path";
 import { authorityCanonicalBytes, authorityDigest } from "../wire.js";
 import type { DispatchPublication, DispatchRequestState, DispatchOutcome, DurableDispatchPublicationHeadV1, DurableDispatchPublicationIdentityV1, DurableDispatchPublicationQueryV1 } from "./dispatch.js";
+import { governedDurableDispatchPublicationQueryV1 } from "./dispatch.js";
+import type { ReservationSnapshot } from "../ledger.js";
 import { assertLinuxAuthorityCellHost } from "./platform.js";
 import { noteDurableEntryCreated, syncDirectory } from "./durability.js";
 import { normalizeReservationPublicationId } from "./reservation-identity.js";
@@ -35,6 +37,21 @@ export interface LocalAuthorityPublication {
 export interface FileReceiptPublicationOptions {
   readonly rootDir: string;
 }
+
+declare const fileReceiptPublicationReadbackBrand: unique symbol;
+export interface FileReceiptPublicationReadbackV1 { readonly [fileReceiptPublicationReadbackBrand]: true }
+type FileReceiptPublicationReadbackStateV1 = Readonly<{ publication: DispatchPublication; query: DurableDispatchPublicationQueryV1; reservationId: string; effectDigest: string }>;
+const genuineFilePublications = new WeakSet<object>(), filePublicationReadbacks = new WeakMap<object, FileReceiptPublicationReadbackStateV1>();
+
+/** @internal Opaque resolver/query pair minted only by the genuine file publication. */
+export function bindFileReceiptPublicationReadbackV1(publication: DispatchPublication, reservation: ReservationSnapshot): FileReceiptPublicationReadbackV1 {
+  if (!publication || typeof publication !== "object" || !genuineFilePublications.has(publication as object)) throw new TypeError("genuine file receipt publication is required");
+  const query = governedDurableDispatchPublicationQueryV1(reservation), readback = Object.freeze(Object.create(null)) as FileReceiptPublicationReadbackV1;
+  filePublicationReadbacks.set(readback as object, Object.freeze({ publication, query, reservationId: reservation.reservationId, effectDigest: reservation.intent.effectDigest }));
+  return readback;
+}
+export function describeFileReceiptPublicationReadbackV1(readback: FileReceiptPublicationReadbackV1): Readonly<{ reservationId: string; effectDigest: string }> { const state = filePublicationReadbacks.get(readback as object); if (!state) throw new TypeError("file receipt publication readback is not genuine"); return Object.freeze({ reservationId: state.reservationId, effectDigest: state.effectDigest }); }
+export async function loadFileReceiptPublicationReadbackV1(readback: FileReceiptPublicationReadbackV1, expect: "terminal" | "root-or-terminal" = "terminal"): Promise<DurableDispatchPublicationHeadV1 | null> { const state = filePublicationReadbacks.get(readback as object); if (!state) throw new TypeError("file receipt publication readback is not genuine"); return state.publication.loadDurableHead!(state.query, expect); }
 
 function fileName(receiptRef: string): string {
   return `receipt-${receiptRef.replace(/[^A-Za-z0-9_-]/g, "_")}.json`;
@@ -145,7 +162,7 @@ export function createFileReceiptPublication(options: FileReceiptPublicationOpti
     if (!reread || reread.receiptRef !== receiptRef || authorityDigest(reread) !== authorityDigest(head)) throw new Error("durable publication authoritative readback mismatch");
     return Object.freeze({ receiptRef, evidenceDigest });
   };
-  return Object.freeze({
+  const publication = Object.freeze({
     async publishReservation(input: Parameters<NonNullable<DispatchPublication["publishReservation"]>>[0]) {
       const identity = snapshotDurableIdentity(input.identity);
       identities.set(normalizeReservationPublicationId(identity.reservationId), identity);
@@ -164,6 +181,8 @@ export function createFileReceiptPublication(options: FileReceiptPublicationOpti
       return publishDurable(identity, { phase: input.phase, state: input.state, outcome: input.outcome, dispatchedRequestDigest: input.dispatchedRequestDigest, priorReceiptDigest: input.priorReceiptDigest ?? null });
     },
   });
+  genuineFilePublications.add(publication as object);
+  return publication;
 }
 
 const DIGEST = /^sha256:(?!0{64}$)[0-9a-f]{64}$/;

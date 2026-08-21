@@ -10,8 +10,8 @@ import { createAuthorityAgentTools, type AuthorityAgentToolsV1, type AuthorityAg
 import { createGenuineGovernedOutcomeLocalComponentsV1, type LocalAuthorityRuntimeOptions } from "./local.js";
 import type { AuthorityHostConfig } from "./config.js";
 import type { CoordinatorDispatchCallV1, DispatchAdapter, DispatchOutcome, DispatchRequestState } from "./dispatch.js";
-import { governedDurableDispatchPublicationQueryV1 } from "./dispatch.js";
 import { compileEffectTransportV1, type CompiledEffectTransportV1, type EffectTransportHostBindingsV1 } from "./effect-transports.js";
+import { loadFileReceiptPublicationReadbackV1 } from "./receipts.js";
 import { createGovernedOutcomeKernelAuthorityV1 } from "./governed-outcome-composition.js";
 import { governedOutcomeCompositionAliasesV1, governedOutcomeCompositionProfileStateV1, type GovernedOutcomeCompositionProfileV1, type GitHubLinearOutcomePackV1, type ReviewedOutcomeOperationV1 } from "../packs/github-linear-outcomes.js";
 import { bindGitHubReleasePreparedFallbackV1, createGitHubReleaseOutcomeExecutorV1, type GitHubReleaseRunnerV1 } from "./github-release-runner.js";
@@ -102,9 +102,10 @@ export async function createGitHubLinearMissionRuntimeV1(input: GenuineGitHubLin
         for (const stored of plan.joins) {
           const reservation = await components.ledger.getReservation(stored.reservationId), operation = operations.get(stored.alias);
           if (!reservation || !operation || !["acknowledged", "reconciled"].includes(reservation.state) || !reservation.resultDigest) return refusedIngress(requestId, "reconciled-authority-absent");
-          createGovernedOutcomeKernelAuthorityV1({ join: { ...stored.join, reservation } as never, publication: components.publication, publicationQuery: governedDurableDispatchPublicationQueryV1(reservation) });
+          const publicationReadback = components.bindPublicationReadback(reservation);
+          createGovernedOutcomeKernelAuthorityV1({ join: { ...stored.join, reservation } as never, publicationReadback });
           const indexed = await storage.loadEffect(plan.missionId, reservation.reservationId);
-          const head = await components.publication.loadDurableHead!(governedDurableDispatchPublicationQueryV1(reservation), "terminal");
+          const head = await loadFileReceiptPublicationReadbackV1(publicationReadback, "terminal");
           if (indexed?.outcome?.status !== "verified" || indexed.outcome.reservation.reservationId !== reservation.reservationId || !head || head.receiptRef !== reservation.resultDigest) return refusedIngress(requestId, "reconciled-authority-conflict");
         }
         return { requestId, verdict: "accepted" as const, reasonCode: "reconciled", lifecycleState: "reconciled", receiptRef: plan.receiptRef };
@@ -150,7 +151,7 @@ export async function createGitHubLinearMissionRuntimeV1(input: GenuineGitHubLin
         const authenticatedRequestId = reservation.intent.requestId;
         if (typeof authenticatedRequestId !== "string" || authenticatedRequestId !== `effect_${authorityDigest({ semanticsDigest, alias }).slice(7, 39)}`) return refusedIngress(requestId, "authenticated-effect-request-conflict");
         const compiledEffect = compileFor(alias, reservation.reservationId, authenticatedRequestId, sourceRefs);
-        const governedAuthority = createGovernedOutcomeKernelAuthorityV1({ join: { ...stored.join, reservation } as never, ...(gateAuthority ? { gateAuthority } : {}), publication: components.publication, publicationQuery: governedDurableDispatchPublicationQueryV1(reservation) });
+        const governedAuthority = createGovernedOutcomeKernelAuthorityV1({ join: { ...stored.join, reservation } as never, ...(gateAuthority ? { gateAuthority } : {}), publicationReadback: components.bindPublicationReadback(reservation) });
         effectRequests.push({ contract: operation.contract, verifier: compiledEffect.verifier, governedAuthority });
         const groupBoundary = mode === "linear-only" ? index === aliases.length - 1 : index === 2 || index === aliases.length - 1;
         if (groupBoundary) {
@@ -170,7 +171,7 @@ export async function createGitHubLinearMissionRuntimeV1(input: GenuineGitHubLin
       for (const stored of plan.joins) {
         const reservation = await components.ledger.getReservation(stored.reservationId), indexed = await storage.loadEffect(plan.missionId, stored.reservationId);
         if (!reservation) throw new TypeError("governed mission reservation is absent");
-        const head = await components.publication.loadDurableHead!(governedDurableDispatchPublicationQueryV1(reservation), "terminal");
+        const head = await loadFileReceiptPublicationReadbackV1(components.bindPublicationReadback(reservation), "terminal");
         if (stored.alias === "linear_evidence_comment_v1") commentPublicationRef = head?.receiptRef ?? null;
         sequence.push(Object.freeze({ alias: stored.alias, status: indexed?.outcome?.status ?? "absent", publicationReceiptRef: head?.receiptRef ?? null, predecessorReceiptRef: stored.alias === "linear_status_transition_v1" ? commentPublicationRef : null }));
       }
