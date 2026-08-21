@@ -1,6 +1,7 @@
 import { isProxy } from "node:util/types";
 import type { ReservationSnapshot } from "../ledger.js";
 import type { OutcomeContract, SourceBundle } from "../types.js";
+import { describeAcceptedGateReservationAuthorityV1, revalidateAcceptedGateReservationAuthorityV1, takeAcceptedGateReservationHandleV1, type AcceptedGateReservationAuthorityV1, type ReservedDispatchHandle } from "../gate.js";
 import { digestGovernedEffectCommitmentV1 } from "../governed-effect-commitment.js";
 import { parseToolEffectContractV1, type ToolEffectContractV1 } from "../tool-effect-contract.js";
 import { authorityCanonicalBytes, authorityDigest, parseCanonicalAuthorityJson } from "../wire.js";
@@ -26,6 +27,49 @@ export interface VerifiedGovernedOutcomeEffectJoinV1 {
   readonly pathCContractDigest: string;
   readonly toolEffectContractDigest: string;
   readonly transportBindingDigest: string;
+}
+
+declare const governedOutcomeKernelAuthorityBrand: unique symbol;
+export interface GovernedOutcomeKernelAuthorityV1 { readonly [governedOutcomeKernelAuthorityBrand]: true }
+type GovernedKernelAuthorityStateV1 = Readonly<{ join: VerifiedGovernedOutcomeEffectJoinV1; gateAuthority: AcceptedGateReservationAuthorityV1 | null; publication: DispatchPublication; query: DurableDispatchPublicationQueryV1 }>;
+const governedKernelAuthorities = new WeakMap<object, GovernedKernelAuthorityStateV1>();
+
+export function createGovernedOutcomeKernelAuthorityV1(input: Readonly<{ join: GovernedOutcomeEffectJoinInputV1; gateAuthority?: AcceptedGateReservationAuthorityV1; publication: DispatchPublication; publicationQuery: DurableDispatchPublicationQueryV1 }>): GovernedOutcomeKernelAuthorityV1 {
+  const fields = input && typeof input === "object" && Object.hasOwn(input, "gateAuthority") ? ["join", "gateAuthority", "publication", "publicationQuery"] : ["join", "publication", "publicationQuery"];
+  const raw = closedRecord(input, fields, "governed Outcome kernel authority");
+  if (!raw.publication || typeof raw.publication !== "object" || typeof (raw.publication as DispatchPublication).loadDurableHead !== "function") throw new TypeError("governed Outcome authority requires coordinator publication readback");
+  const join = verifyGovernedOutcomeEffectJoinV1(raw.join as GovernedOutcomeEffectJoinInputV1);
+  const gateAuthority = (raw.gateAuthority ?? null) as AcceptedGateReservationAuthorityV1 | null;
+  if (gateAuthority) {
+    const gate = describeAcceptedGateReservationAuthorityV1(gateAuthority);
+    if (gate.reservationId !== join.reservationId || gate.effectDigest !== join.effectDigest || gate.contractDigest !== join.pathCContractDigest) throw new TypeError("genuine gate reservation does not match the durable governed join");
+  }
+  durableIdentity(picked(raw.publicationQuery, ["identity"], "governed publication query").identity);
+  const authority = Object.freeze(Object.create(null)) as GovernedOutcomeKernelAuthorityV1;
+  governedKernelAuthorities.set(authority as object, Object.freeze({ join, gateAuthority, publication: raw.publication as DispatchPublication, query: raw.publicationQuery as DurableDispatchPublicationQueryV1 }));
+  return authority;
+}
+
+/** @internal Kernel-only projection; contains no send-capable handle. */
+export function describeGovernedOutcomeKernelAuthorityV1(authority: GovernedOutcomeKernelAuthorityV1, taskContractDigest: string): Readonly<{ reservationId: string; effectDigest: string; hasLiveHandle: boolean }> {
+  const state = governedKernelAuthorities.get(authority as object);
+  if (!state || state.join.toolEffectContractDigest !== taskContractDigest) throw new TypeError("governed Outcome kernel authority does not bind the Task-4 contract");
+  return Object.freeze({ reservationId: state.join.reservationId, effectDigest: state.join.effectDigest, hasLiveHandle: state.gateAuthority !== null });
+}
+
+/** @internal Revalidates current signed gate state immediately before releasing the exact handle. */
+export async function takeGovernedOutcomeKernelHandleV1(authority: GovernedOutcomeKernelAuthorityV1): Promise<ReservedDispatchHandle> {
+  const state = governedKernelAuthorities.get(authority as object);
+  if (!state?.gateAuthority) throw new TypeError("governed Outcome authority is readback-only");
+  await revalidateAcceptedGateReservationAuthorityV1(state.gateAuthority);
+  return takeAcceptedGateReservationHandleV1(state.gateAuthority);
+}
+
+/** @internal Resolves only the coordinator's exact terminal publication head. */
+export async function resolveGovernedOutcomeKernelPublicationV1(authority: GovernedOutcomeKernelAuthorityV1, outcome: DispatchOutcome): Promise<string | null> {
+  const state = governedKernelAuthorities.get(authority as object);
+  if (!state) return null;
+  return resolveGovernedCoordinatorPublicationV1(state.publication, { query: state.query, outcome });
 }
 
 export async function resolveGovernedCoordinatorPublicationV1(publication: DispatchPublication, input: Readonly<{ query: DurableDispatchPublicationQueryV1; outcome: DispatchOutcome }>): Promise<string | null> {
@@ -99,6 +143,12 @@ function picked(value: unknown, fields: readonly string[], label: string): Recor
     result[field] = descriptor.value;
   }
   return result;
+}
+
+function closedRecord(value: unknown, fields: readonly string[], label: string): Record<string, unknown> {
+  const record = picked(value, fields, label), keys = Reflect.ownKeys(value as object);
+  if (keys.length !== fields.length || keys.some(key => typeof key !== "string" || !fields.includes(key))) throw new TypeError(`${label} is not closed`);
+  return record;
 }
 
 function durableIdentity(value: unknown): Record<string, unknown> {

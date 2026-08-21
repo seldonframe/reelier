@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { authorityCanonicalBytes, authorityDigest } from "../../src/authority/wire.js";
 import { digestGovernedEffectCommitmentV1 } from "../../src/authority/governed-effect-commitment.js";
-import { resolveGovernedCoordinatorPublicationV1, verifyGovernedOutcomeEffectJoinV1 } from "../../src/authority/host/governed-outcome-composition.js";
+import { createGovernedOutcomeKernelAuthorityV1, describeGovernedOutcomeKernelAuthorityV1, resolveGovernedCoordinatorPublicationV1, resolveGovernedOutcomeKernelPublicationV1, takeGovernedOutcomeKernelHandleV1, verifyGovernedOutcomeEffectJoinV1 } from "../../src/authority/host/governed-outcome-composition.js";
 
 const sha = (character: string) => `sha256:${character.repeat(64)}`;
 const alias = "github_release_candidate_publish_v1";
@@ -68,4 +68,17 @@ test("only the exact terminal coordinator publication head resolves as verified"
     const candidate = { ...publication, async loadDurableHead() { return replacement as never; } };
     assert.equal(await resolveGovernedCoordinatorPublicationV1(candidate, { query, outcome }), null);
   }
+});
+
+test("a restarted governed authority is opaque and readback-only", async () => {
+  const joined = fixture();
+  const identity = { v: "reelier.durable-dispatch-publication-identity/v1" as const, reservationId: "reservation_1", tenant: "tenant_1", requestDigest: sha("1"), capabilityDigest: sha("2"), effectDigest: joined.reservation.intent.effectDigest, routeAuthorityDigest: sha("4"), expectedDispatchedRequestDigest: sha("5"), reservationIntentDigest: sha("6") };
+  const query = { v: "reelier.durable-dispatch-publication-query/v1" as const, identity, ledgerState: "dispatched" as const, sendStarted: true as const };
+  const outcome = { kind: "acknowledged" as const, resultDigest: sha("7"), providerResultDigest: sha("8"), receiptRef: sha("7"), evidenceDigest: sha("9"), priorReceiptDigest: sha("a") };
+  const head = { v: "reelier.durable-dispatch-publication-head/v1" as const, identity, receiptRef: outcome.receiptRef, evidenceDigest: outcome.evidenceDigest, reservationReceiptRef: outcome.priorReceiptDigest, priorReceiptRef: outcome.priorReceiptDigest, phase: "dispatch" as const, terminalKind: "acknowledged" as const };
+  const authority = createGovernedOutcomeKernelAuthorityV1({ join: joined.input as never, publication: { async publish() { throw new Error("not used"); }, async publishReservation() { throw new Error("not used"); }, async loadDurableHead() { return head; } }, publicationQuery: query });
+  assert.deepEqual(Reflect.ownKeys(authority), []);
+  assert.deepEqual(describeGovernedOutcomeKernelAuthorityV1(authority, authorityDigest(toolEffectContract)), { reservationId: "reservation_1", effectDigest: joined.reservation.intent.effectDigest, hasLiveHandle: false });
+  await assert.rejects(() => takeGovernedOutcomeKernelHandleV1(authority), /readback-only/i);
+  assert.equal(await resolveGovernedOutcomeKernelPublicationV1(authority, outcome), outcome.receiptRef);
 });

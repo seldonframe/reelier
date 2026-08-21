@@ -25,6 +25,12 @@ import {
   type ToolEffectContractV1,
 } from "../tool-effect-contract.js";
 import { consumeCoordinatorDispatchCallDelegateV1, type DispatchCoordinator, type DispatchOutcome, type DispatchReservationProjectionV1 } from "./dispatch.js";
+import {
+  describeGovernedOutcomeKernelAuthorityV1,
+  resolveGovernedOutcomeKernelPublicationV1,
+  takeGovernedOutcomeKernelHandleV1,
+  type GovernedOutcomeKernelAuthorityV1,
+} from "./governed-outcome-composition.js";
 import { constructGovernedReceiptV1 } from "./receipt-authority.js";
 
 const trustedVerifierStates = new WeakMap<object, Readonly<{ contractDigest: string; verify: (observation: ObservationV1) => boolean }>>();
@@ -102,7 +108,11 @@ export interface OutcomeKernel {
   claimMission(claim: MissionClaimV1): Promise<Readonly<{ status: "claimed" | "exact-existing"; claim: MissionClaimV1 }>>;
   execute(input: Readonly<{ missionId: string; effects: readonly OutcomeKernelEffectRequestV1[] }>): Promise<MissionOutcomeV1>;
 }
-export type OutcomeKernelEffectRequestV1 = Readonly<{ contract: ToolEffectContractV1; verifier: TrustedObservationVerifierV1 } & ({ handle: ReservedDispatchHandle; reservationId?: never } | { handle?: never; reservationId: string })>;
+export type OutcomeKernelEffectRequestV1 = Readonly<{ contract: ToolEffectContractV1; verifier: TrustedObservationVerifierV1 } & (
+  { handle: ReservedDispatchHandle; reservationId?: never; governedAuthority?: never }
+  | { handle?: never; reservationId: string; governedAuthority?: never }
+  | { handle?: never; reservationId?: never; governedAuthority: GovernedOutcomeKernelAuthorityV1 }
+)>;
 
 export interface OutcomeKernelOptions {
   readonly ledger: AuthorityLedger;
@@ -146,17 +156,24 @@ export function createOutcomeKernel(options: OutcomeKernelOptions): OutcomeKerne
       for (const requested of request.effects) {
         const contract = parseToolEffectContractV1(requested.contract), contractDigest = digestToolEffectContractV1(contract);
         if (!parsedMission.contractDigests.includes(contractDigest)) throw new Error("effect contract is outside the mission claim");
+        const governed = requested.governedAuthority === undefined ? null : describeGovernedOutcomeKernelAuthorityV1(requested.governedAuthority, contractDigest);
         let described: DispatchReservationProjectionV1;
-        if (requested.handle) {
+        if (governed) {
+          const joined = parseLedgerProjection(await options.ledger.getReservation(governed.reservationId));
+          if (!joined) throw new Error("durable governed reservation is absent");
+          described = Object.freeze({ reservationId: joined.reservationId, state: joined.state, effectDigest: joined.effectDigest, allocationId: joined.allocationId });
+        } else if (requested.handle) {
           if (!options.coordinator.describe) throw new TypeError("outcome kernel requires a coordinator reservation projection hook");
           described = parseDispatchReservationProjection(options.coordinator.describe(requested.handle));
         } else {
+          if (requested.reservationId === undefined) throw new TypeError("outcome effect request reservation authority is invalid");
           const restarted = parseLedgerProjection(await options.ledger.getReservation(requested.reservationId));
           if (!restarted) throw new Error("durable reservation is absent on restart");
           described = Object.freeze({ reservationId: restarted.reservationId, state: restarted.state, effectDigest: restarted.effectDigest, allocationId: restarted.allocationId });
         }
         let current = parseLedgerProjection(await options.ledger.getReservation(described.reservationId));
-        if (!current || described.effectDigest !== contractDigest || current.effectDigest !== contractDigest || current.reservationId !== described.reservationId || current.state !== described.state || current.allocationId !== described.allocationId) throw new Error("durable reservation projection does not bind the exact contract, state, and allocation");
+        const expectedEffectDigest = governed?.effectDigest ?? contractDigest;
+        if (!current || described.effectDigest !== expectedEffectDigest || current.effectDigest !== expectedEffectDigest || current.reservationId !== described.reservationId || current.state !== described.state || current.allocationId !== described.allocationId) throw new Error("durable reservation projection does not bind the exact governed effect, state, and allocation");
         let stored = parseStoredEffect(await storage.loadEffect(parsedMission.missionId, current.reservationId));
         if (stored && (stored.missionId !== parsedMission.missionId || stored.reservation.reservationId !== current.reservationId || stored.missionDigest !== missionDigest || stored.contractDigest !== contractDigest || stored.reservation.semanticIdentity !== contract.semanticIdentity)) throw new Error("stored effect identity or semantics conflict");
         if (!stored) {
@@ -169,7 +186,9 @@ export function createOutcomeKernel(options: OutcomeKernelOptions): OutcomeKerne
 
         const resumablePending = stored.outcome?.status === "pending" && (current.state === "ambiguous" || current.state === "dispatched");
         if (stored.outcome && !resumablePending) {
-          const adopted = stored.outcome;
+          const adopted = governed && stored.outcome.status === "verified"
+            ? parseGovernedOutcomeV1({ ...stored.outcome, status: "partial" })
+            : stored.outcome;
           effects.push(adopted);
           const receipt = receiptFor(parsedMission, missionDigest, adopted);
           const adoptedRef = parseReceiptHead(await storage.loadReceipt(receipt.receiptId), receipt);
@@ -184,14 +203,15 @@ export function createOutcomeKernel(options: OutcomeKernelOptions): OutcomeKerne
         const state = current.state;
         let dispatchOutcome: DispatchOutcome | null = null;
         if (state === "reserved") {
-          if (!requested.handle) {
+          if (!requested.handle && !governed?.hasLiveHandle) {
             await options.coordinator.recover();
             current = parseLedgerProjection(await options.ledger.getReservation(current.reservationId));
             if (!current || current.state === "reserved") throw new Error("reserved restart recovery did not close the undispatched effect");
           } else {
           const authorization = await options.authorization(Object.freeze({ mission: parsedMission, contract, reservation: described }));
           if (authorization !== "active") throw new Error(`effect authority is ${authorization}`);
-          dispatchOutcome = parseDispatchOutcome(await dispatchWithPredecessorArm(predecessorPolicy, current.reservationId, contractDigest, () => options.coordinator.dispatch(requested.handle!)));
+          const dispatchHandle = governed ? await takeGovernedOutcomeKernelHandleV1(requested.governedAuthority!) : requested.handle!;
+          dispatchOutcome = parseDispatchOutcome(await dispatchWithPredecessorArm(predecessorPolicy, current.reservationId, contractDigest, () => options.coordinator.dispatch(dispatchHandle)));
           boundary("provider-response");
           }
         } else if (state === "ambiguous") {
@@ -209,7 +229,8 @@ export function createOutcomeKernel(options: OutcomeKernelOptions): OutcomeKerne
         const observation = stored.observation ?? projectObservation(stored.reservation, dispatchOutcome, observedAt);
         if (observation && !stored.observation) { stored = await persist(storage, { ...stored, observation }, stored.revision); boundary("observation"); }
         const observationVerified = observation?.verdict === "matched" ? verifier.verify(observation) === true : false;
-        const status = effectStatus(contract, attempt, observation, dispatchOutcome, observationVerified, hermetic);
+        const publicationVerified = !governed || dispatchOutcome !== null && await resolveGovernedOutcomeKernelPublicationV1(requested.governedAuthority!, dispatchOutcome) !== null;
+        const status = effectStatus(contract, attempt, observation, dispatchOutcome, observationVerified && publicationVerified, hermetic);
         const outcome: GovernedOutcomeV1 = Object.freeze({ v: "reelier.governed-outcome/v1", outcomeId: stableId("outcome", { missionDigest, reservationId: current.reservationId }), contractDigest, semanticIdentity: contract.semanticIdentity, reservation: stored.reservation, attempts: Object.freeze(attempt ? [attempt] : []), observation, status, completedAt: observedAt });
         if (status === "verified") verifyGovernedOutcomeTransitionV1(outcome, { contract, now: observedAt, verifyObservation: ({ observation: candidate }: { observation: ObservationV1 }) => candidate.observationId === observation?.observationId && observationVerified });
         stored = await persist(storage, { ...stored, outcome }, stored.revision); boundary("outcome");
@@ -365,10 +386,14 @@ function parseExecuteRequest(value: unknown): Readonly<{ missionId: string; effe
   for (let index = 0; index < raw.effects.length; index++) {
     const descriptor = Object.getOwnPropertyDescriptor(raw.effects, String(index));
     if (!descriptor || !descriptor.enumerable || !Object.hasOwn(descriptor, "value")) throw new TypeError("mission effects must be a dense data array");
-    const item = dataRecord(descriptor.value, ["contract", "verifier"], ["handle", "reservationId"], "outcome effect request");
-    const hasHandle = Object.hasOwn(item, "handle"), hasReservation = Object.hasOwn(item, "reservationId");
-    if (hasHandle === hasReservation || (hasReservation && (typeof item.reservationId !== "string" || item.reservationId.length === 0))) throw new TypeError("outcome effect request must select exactly one reservation authority");
-    effects.push(Object.freeze(hasHandle ? { contract: item.contract as ToolEffectContractV1, verifier: item.verifier as TrustedObservationVerifierV1, handle: item.handle as ReservedDispatchHandle } : { contract: item.contract as ToolEffectContractV1, verifier: item.verifier as TrustedObservationVerifierV1, reservationId: item.reservationId as string }));
+    const item = dataRecord(descriptor.value, ["contract", "verifier"], ["handle", "reservationId", "governedAuthority"], "outcome effect request");
+    const hasHandle = Object.hasOwn(item, "handle"), hasReservation = Object.hasOwn(item, "reservationId"), hasGoverned = Object.hasOwn(item, "governedAuthority");
+    if (Number(hasHandle) + Number(hasReservation) + Number(hasGoverned) !== 1 || (hasReservation && (typeof item.reservationId !== "string" || item.reservationId.length === 0))) throw new TypeError("outcome effect request must select exactly one reservation authority");
+    effects.push(Object.freeze(hasHandle
+      ? { contract: item.contract as ToolEffectContractV1, verifier: item.verifier as TrustedObservationVerifierV1, handle: item.handle as ReservedDispatchHandle }
+      : hasReservation
+        ? { contract: item.contract as ToolEffectContractV1, verifier: item.verifier as TrustedObservationVerifierV1, reservationId: item.reservationId as string }
+        : { contract: item.contract as ToolEffectContractV1, verifier: item.verifier as TrustedObservationVerifierV1, governedAuthority: item.governedAuthority as GovernedOutcomeKernelAuthorityV1 }));
   }
   return Object.freeze({ missionId: raw.missionId, effects: Object.freeze(effects) });
 }
