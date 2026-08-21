@@ -72,6 +72,16 @@ export async function resolveGovernedOutcomeKernelPublicationV1(authority: Gover
   return resolveGovernedCoordinatorPublicationV1(state.publication, { query: state.query, outcome });
 }
 
+/** @internal Restart adoption is authorized only by the coordinator's exact terminal head. */
+export async function revalidateGovernedOutcomeKernelTerminalV1(authority: GovernedOutcomeKernelAuthorityV1, expectedReceiptRef: string | null): Promise<boolean> {
+  const state = governedKernelAuthorities.get(authority as object);
+  if (!state || typeof expectedReceiptRef !== "string" || !SHA.test(expectedReceiptRef)) return false;
+  try {
+    const head = await state.publication.loadDurableHead!(state.query, "terminal");
+    return Boolean(head && authorityDigest(durableIdentity(head.identity)) === authorityDigest(durableIdentity(state.query.identity)) && head.receiptRef === expectedReceiptRef && (head.phase === "dispatch" || head.phase === "reconcile"));
+  } catch { return false; }
+}
+
 export async function resolveGovernedCoordinatorPublicationV1(publication: DispatchPublication, input: Readonly<{ query: DurableDispatchPublicationQueryV1; outcome: DispatchOutcome }>): Promise<string | null> {
   if (!publication?.loadDurableHead) return null;
   try {

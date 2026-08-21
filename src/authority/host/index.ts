@@ -6,7 +6,7 @@ export type { DispatchAdapter, DispatchCoordinator, DispatchOutcome, DispatchEvi
 export { createDispatchCoordinator } from "./dispatch.js";
 export { createOutcomeKernel, createTrustedObservationVerifier, type OutcomeKernel, type OutcomeKernelOptions, type OutcomeKernelStorage, type OutcomeKernelEffectRequestV1, type StoredEffectLifecycleV1, type MissionOutcomeV1, type TrustedObservationVerifierV1 } from "./outcome-kernel.js";
 export { createFileOutcomeKernelStorage, createSignedJournalOutcomeKernelStorage } from "./outcome-kernel-fs-storage.js";
-export { createGitHubLinearMissionRuntimeV1, type GenuineGitHubLinearMissionRuntimeInputV1, type GitHubLinearMissionProviderV1 } from "./github-linear-mission-runtime.js";
+export { createGitHubLinearMissionRuntimeV1, requireVerifiedGovernedMissionSequenceV1, type GenuineGitHubLinearMissionRuntimeInputV1, type GitHubLinearMissionProviderV1 } from "./github-linear-mission-runtime.js";
 export { compileEffectTransportV1, digestEffectTransportBindingV1, mintTrustedEffectTransportExecutorV1, parseEffectTransportBindingV1, type CliEffectTransportBindingV1, type CompiledEffectTransportV1, type EffectTransportBindingV1, type EffectTransportHostBindingsV1, type EffectTransportProviderEnvelopeV1, type EffectTransportProviderResponseV1, type EffectTransportResultSinkV1, type HttpEffectTransportBindingV1, type McpEffectTransportBindingV1, type TrustedEffectTransportExecutorCallbacksV1, type TrustedEffectTransportExecutorV1 } from "./effect-transports.js";
 export type { McpDispatchRoute, McpDispatchAdapterOptions } from "./mcp-connector.js";
 export { createMcpDispatchAdapter } from "./mcp-connector.js";

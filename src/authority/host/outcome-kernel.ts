@@ -28,6 +28,7 @@ import { consumeCoordinatorDispatchCallDelegateV1, type DispatchCoordinator, typ
 import {
   describeGovernedOutcomeKernelAuthorityV1,
   resolveGovernedOutcomeKernelPublicationV1,
+  revalidateGovernedOutcomeKernelTerminalV1,
   takeGovernedOutcomeKernelHandleV1,
   type GovernedOutcomeKernelAuthorityV1,
 } from "./governed-outcome-composition.js";
@@ -186,9 +187,10 @@ export function createOutcomeKernel(options: OutcomeKernelOptions): OutcomeKerne
 
         const resumablePending = stored.outcome?.status === "pending" && (current.state === "ambiguous" || current.state === "dispatched");
         if (stored.outcome && !resumablePending) {
-          const adopted = governed && stored.outcome.status === "verified"
-            ? parseGovernedOutcomeV1({ ...stored.outcome, status: "partial" })
-            : stored.outcome;
+          const terminalVerified = governed && stored.outcome.status === "verified"
+            ? await revalidateGovernedOutcomeKernelTerminalV1(requested.governedAuthority!, current.resultDigest)
+            : true;
+          const adopted = terminalVerified ? stored.outcome : parseGovernedOutcomeV1({ ...stored.outcome, status: "partial" });
           effects.push(adopted);
           const receipt = receiptFor(parsedMission, missionDigest, adopted);
           const adoptedRef = parseReceiptHead(await storage.loadReceipt(receipt.receiptId), receipt);
@@ -339,7 +341,7 @@ function reservationTime(reservation: LedgerProjection, missionClaimedAt: string
 function canonicalNow(now: () => number): string { const value = now(); if (!Number.isFinite(value)) throw new Error("outcome kernel clock is unavailable"); return new Date(value).toISOString(); }
 function stableId(prefix: string, value: unknown): string { return `${prefix}_${authorityDigest(value).slice(7, 31)}`; }
 
-type LedgerProjection = Readonly<{ reservationId: string; state: LedgerState; effectDigest: string; allocationId: string | null; issuedAt: string | null }>;
+type LedgerProjection = Readonly<{ reservationId: string; state: LedgerState; effectDigest: string; allocationId: string | null; issuedAt: string | null; resultDigest: string | null }>;
 const SHA = /^sha256:[0-9a-f]{64}$/;
 const LEDGER_STATES: readonly LedgerState[] = ["issued", "reserved", "dispatched", "acknowledged", "definitive-failure", "ambiguous", "cancelled", "reconciled"];
 
@@ -413,6 +415,7 @@ function parseLedgerProjection(value: unknown): LedgerProjection | null {
   const intent = pickedData(raw.intent, ["effectDigest"], "ledger reservation intent");
   const contextDescriptor = raw.intent && typeof raw.intent === "object" ? Object.getOwnPropertyDescriptor(raw.intent, "executionContext") : undefined;
   const issuedDescriptor = raw.intent && typeof raw.intent === "object" ? Object.getOwnPropertyDescriptor(raw.intent, "issuedAt") : undefined;
+  const resultDescriptor = value && typeof value === "object" ? Object.getOwnPropertyDescriptor(value, "resultDigest") : undefined;
   let allocationId: string | null = null;
   if (contextDescriptor?.enumerable && Object.hasOwn(contextDescriptor, "value") && contextDescriptor.value !== undefined) {
     const context = pickedData(contextDescriptor.value, ["allocationId"], "ledger execution context");
@@ -425,7 +428,8 @@ function parseLedgerProjection(value: unknown): LedgerProjection | null {
     issuedAt = issuedDescriptor.value;
   }
   if (typeof raw.reservationId !== "string" || raw.reservationId.length === 0 || !LEDGER_STATES.includes(raw.state as LedgerState) || typeof intent.effectDigest !== "string" || !SHA.test(intent.effectDigest)) throw new TypeError("ledger reservation projection is invalid");
-  return Object.freeze({ reservationId: raw.reservationId, state: raw.state as LedgerState, effectDigest: intent.effectDigest, allocationId, issuedAt });
+  const resultDigest = resultDescriptor === undefined ? null : resultDescriptor.enumerable && Object.hasOwn(resultDescriptor, "value") && typeof resultDescriptor.value === "string" && SHA.test(resultDescriptor.value) ? resultDescriptor.value : null;
+  return Object.freeze({ reservationId: raw.reservationId, state: raw.state as LedgerState, effectDigest: intent.effectDigest, allocationId, issuedAt, resultDigest });
 }
 
 function parseStoredEffect(value: unknown): StoredEffectLifecycleV1 | null {

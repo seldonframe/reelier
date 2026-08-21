@@ -56,7 +56,7 @@ test("mission success requires all five verified Outcomes and exact coordinator 
     exact.map((item, index) => index === 1 ? { ...item, status: "partial" as const } : item),
     exact.map((item, index) => index === 3 ? { ...item, publicationReceiptRef: null } : item),
     exact.map((item, index) => index === 4 ? { ...item, predecessorReceiptRef: sha("0") } : item),
-  ]) assert.throws(() => requireVerifiedGovernedMissionSequenceV1(governedOutcomeCompositionAliasesV1, changed as never), /five|verified|publication|predecessor/i);
+  ]) assert.throws(() => requireVerifiedGovernedMissionSequenceV1(governedOutcomeCompositionAliasesV1, changed as never), /sequence|verified|publication|predecessor/i);
 });
 
 test("signed five-definition runtime recovers an exact Linear-only mission without GitHub effects or resend", async () => {
