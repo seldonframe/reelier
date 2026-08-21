@@ -124,3 +124,14 @@ test("GitHub release emits the exact governed Task-4 digest join from signed inp
   }));
   assert.throws(() => definition.parsePolicy({ ...(policy as object), commitmentDigest: authorityDigest({ attacker: true }) }), /closed|policy/i);
 });
+
+test("GitHub release governed binding rejects coercible fields without executing them", () => {
+  let effects = 0;
+  const coercible = Object.freeze({ toString() { effects += 1; return "github.candidate-publish"; } });
+  assert.throws(() => githubReleaseCandidatePublishDefinition.parsePolicy({
+    allocationDigest: authorityDigest({ allocation: 1 }), allocationId: "release-candidate-branch-01",
+    authorizationHandleDigest: authorityDigest({ handle: "release_auth_1" }), effect: "candidate-branch", maxEffects: 1,
+    governed: { toolEffectContractDigest: authorityDigest({ tool: 1 }), transportBindingDigest: authorityDigest({ binding: 1 }), operationKind: coercible, reviewedPolicyDigest: authorityDigest({ policy: 1 }) },
+  }), /governed|binding|invalid/i);
+  assert.equal(effects, 0);
+});
