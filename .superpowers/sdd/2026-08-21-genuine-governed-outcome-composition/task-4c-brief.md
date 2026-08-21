@@ -11,3 +11,5 @@ Scope amendment: `src/packs/conformance.ts` is authorized only to extend its exa
 Scope amendment: `src/authority/host/github-release-runner.ts` and `test/authority/github-release-runner.test.ts` are authorized only to forward and pin the exact optional coordinator call capability through the existing prepared fallback adapter. The wrapper must not otherwise change GitHub release behavior.
 
 Scope amendment: `test/authority/github-release-serve-fixture.ts` is authorized only to add an opt-in executable-candidate variant with real signed file bytes/digests for the full composite test. The existing startup/refusal fixture behavior must remain unchanged.
+
+Scope amendment: `src/authority/host/prepared-dispatch.ts` and `test/authority/prepared-dispatch.test.ts` are authorized only to preserve and test the exact optional bounded deterministic-refusal `reason` through the prepared closed sanitizer. Existing ambiguity semantics must remain unchanged.

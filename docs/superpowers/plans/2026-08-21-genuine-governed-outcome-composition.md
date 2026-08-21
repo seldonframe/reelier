@@ -103,6 +103,7 @@ Modify:
 - `src/authority/host/local.ts`
 - `src/authority/host/governed-cell.ts`
 - `src/authority/host/dispatch.ts`
+- `src/authority/host/prepared-dispatch.ts` only to preserve the exact optional bounded deterministic-refusal `reason` through its closed outcome sanitizer
 - `src/authority/host/outcome-kernel.ts`
 - `src/authority/host/effect-transports.ts`
 - `src/authority/host/outcome-kernel-fs-storage.ts`
@@ -118,6 +119,7 @@ Modify:
 - `test/authority/gate.test.ts`
 - `test/authority/governed-cell.test.ts`
 - `test/authority/dispatch-coordinator.test.ts`
+- `test/authority/prepared-dispatch.test.ts` only to pin closed refusal-reason preservation and all existing ambiguity behavior
 - `test/authority/outcome-kernel.test.ts`
 - `test/authority/effect-transports.test.ts`
 - `test/authority/outcome-kernel-fs-storage.test.ts`
