@@ -127,7 +127,7 @@ const STATIC_RUNTIME_SPECIFIER_ALLOWLIST: Readonly<Record<string, ReadonlySet<st
   "src/packs/github/reconcile.ts": new Set(["../../authority/wire.js", "./manifest.js", "../types.js"]),
   "src/packs/github-release/manifest.ts": new Set(["../../authority/wire.js"]),
   "src/packs/github-release/source.ts": new Set(["../../authority/wire.js", "./manifest.js"]),
-  "src/packs/github-release/compile.ts": new Set(["../../authority/pack.js", "../../authority/wire.js", "./manifest.js"]),
+  "src/packs/github-release/compile.ts": new Set(["../../authority/governed-effect-commitment.js", "../../authority/pack.js", "../../authority/wire.js", "./manifest.js"]),
   "src/packs/github-release/reconcile.ts": new Set(["../../authority/pack.js", "../../authority/wire.js", "../types.js", "./manifest.js"]),
   "src/packs/github-release/index.ts": new Set(["./manifest.js", "./compile.js", "./source.js", "./reconcile.js"]),
   "src/packs/slack-topic/manifest.ts": new Set(["../../authority/wire.js"]),
