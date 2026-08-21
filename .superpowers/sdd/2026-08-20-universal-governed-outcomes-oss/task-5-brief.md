@@ -12,6 +12,7 @@
 - Modify `src/authority/host/local.ts`.
 - Modify `src/authority/host/index.ts`.
 - Create `test/authority/agent-tools.test.ts`.
+- Modify `test/authority/ingress.test.ts` only to extend its exact MCP inventory with the four canonical agent tools while retaining every legacy tool.
 - Modify `test/authority/local-multi-definition-jobs.test.ts`.
 - Modify files under `conformance/continuity-adapter/v1/eve-fixture/agent/` and `conformance/continuity-adapter/v1/eve-fixture/tests/` only as needed for the four-tool adapter.
 - Create `test/continuity/eve-governed-outcomes.test.ts`.
