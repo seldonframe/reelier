@@ -114,12 +114,14 @@ Define reviewed contracts for candidate publication, PR ensure, exact-head squas
 **Files:**
 
 - Modify `src/authority/host/dispatch.ts` only to reject a delegate already bound to any live coordinator call and preserve exact-call cleanup.
+- Modify `src/authority/host/effect-transports.ts` only to fail before host-binding resolution or executor invocation when a present coordinator call cannot bind its fresh executor authority delegate.
 - Modify `test/authority/dispatch-coordinator.test.ts`.
+- Modify `test/authority/effect-transports.test.ts` for a re-entrant real-adapter bind-collision refusal with zero additional resolver or provider calls.
 - Create `.superpowers/sdd/2026-08-20-universal-governed-outcomes-oss/task-4b-report.md`.
 
 **Requirements:**
 
-Task 4 stopped after three fix loops because the same delegate could be bound to two concurrent live coordinator calls. Reject the second bind without changing the first mapping. Prove deterministic concurrent shared-delegate isolation, exact first-call consumption, second-call refusal, revocation after success and throw, and refusal of fake, copied, serialized, or cross-reservation call/delegate identities. Keep the capability private, optional adapter compatibility intact, and prepared/readback paths unchanged. Do not begin Task 5 until Task 4B independently ships.
+Task 4 stopped after three fix loops because the same delegate could be bound to two concurrent live coordinator calls. Reject the second bind without changing the first mapping. A compiled adapter whose present coordinator call cannot bind its fresh authority delegate must fail before host-binding resolution or executor invocation. Prove deterministic concurrent shared-delegate isolation, exact first-call consumption, second-call refusal, revocation after success and throw, and refusal of fake, copied, serialized, or cross-reservation call/delegate identities. Keep the capability private, optional adapter compatibility intact, and prepared/readback paths unchanged. Do not begin Task 5 until Task 4B independently ships.
 
 ### Task 5: Expose the harness-neutral four-tool surface and Eve 0.39 rehearsal fixture
 
