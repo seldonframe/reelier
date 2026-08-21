@@ -370,3 +370,58 @@ test("an atomic publication ref that disagrees with the durable head refuses as 
   await assert.rejects(() => kernel.execute({ missionId: "mission_1", effects: [{ contract: reviewed, reservationId: "r1", verifier: verifierFor(reviewed) }] }), /receipt|head|ref|integrity|mismatch/i);
   assert.equal(counters.send, 1);
 });
+
+test("successful lifecycle stores cannot substitute any submitted mission, contract, or nested reservation identity", async () => {
+  const reviewed = contract("identity_1"), contractDigest = digestToolEffectContractV1(reviewed), submittedMission = mission(), submittedMissionDigest = digestMissionClaimV1(submittedMission);
+  for (const mutation of ["mission-id", "reservation-id", "mission-digest", "contract-digest", "semantic-identity"] as const) {
+    const store = durableFixture(), states = new Map([["r1", reservation("r1", "reserved", contractDigest)]]), counters = { send: 0, readback: 0 };
+    const original = store.storeEffect.bind(store);
+    store.storeEffect = async (value, revision) => {
+      const result = await original(value, revision);
+      if (result.status !== "stored") return result;
+      const changedContractDigest = mutation === "contract-digest" ? sha("e") : result.value.contractDigest;
+      return { status: "stored" as const, value: Object.freeze({
+        ...result.value,
+        missionId: mutation === "mission-id" ? "mission_other" : result.value.missionId,
+        missionDigest: mutation === "mission-digest" ? sha("f") : result.value.missionDigest,
+        contractDigest: changedContractDigest,
+        reservation: Object.freeze({
+          ...result.value.reservation,
+          reservationId: mutation === "reservation-id" ? "r_other" : result.value.reservation.reservationId,
+          contractDigest: changedContractDigest,
+          semanticIdentity: mutation === "semantic-identity" ? "identity_other" : result.value.reservation.semanticIdentity,
+        }),
+      }) };
+    };
+    const kernel = createOutcomeKernel({ storage: store, coordinator: coordinator(states, counters), ledger: { getReservation: async () => states.get("r1") } as any, now: () => 2_000, authorization: async () => "active" });
+    await kernel.claimMission(submittedMission);
+    await assert.rejects(() => kernel.execute({ missionId: submittedMission.missionId, effects: [{ contract: reviewed, handle: handle("r1"), verifier: verifierFor(reviewed) }] }), /stored|lifecycle|identity|semantics|digest|reservation/i, mutation);
+    assert.equal(counters.send, 0, mutation);
+    assert.equal(submittedMissionDigest, digestMissionClaimV1(submittedMission));
+  }
+});
+
+test("pre-existing receipt heads require the exact receipt ID and digest before adoption", async () => {
+  const reviewed = contract("identity_1"), digest = digestToolEffectContractV1(reviewed), store = durableFixture(), states = new Map([["r1", reservation("r1", "reserved", digest)]]), counters = { send: 0, readback: 0 };
+  const kernel = createOutcomeKernel({ storage: store, coordinator: coordinator(states, counters), ledger: { getReservation: async () => states.get("r1") } as any, now: () => 2_000, authorization: async () => "active" });
+  await kernel.claimMission(mission());
+  const first = await kernel.execute({ missionId: "mission_1", effects: [{ contract: reviewed, handle: handle("r1"), verifier: verifierFor(reviewed) }] });
+  const receiptId = [...store.published.keys()][0]!, receipt = JSON.parse(store.published.get(receiptId)![0]!) as GovernedReceiptV1, receiptDigest = digestGovernedReceiptV1(receipt), receiptRef = first.receiptRefs[0]!;
+  const atomicCalls = store.atomicCalls;
+
+  store.loadReceipt = async () => ({ receiptId, receiptDigest, receiptRef } as any);
+  const converged = await kernel.execute({ missionId: "mission_1", effects: [{ contract: reviewed, reservationId: "r1", verifier: verifierFor(reviewed) }] });
+  assert.deepEqual(converged.receiptRefs, [receiptRef]);
+  assert.equal(store.atomicCalls, atomicCalls);
+  assert.equal(counters.send, 1);
+
+  for (const head of [
+    { receiptRef },
+    { receiptId: "receipt_unrelated", receiptDigest, receiptRef },
+    { receiptId, receiptDigest: sha("e"), receiptRef },
+  ]) {
+    store.loadReceipt = async () => head as any;
+    await assert.rejects(() => kernel.execute({ missionId: "mission_1", effects: [{ contract: reviewed, reservationId: "r1", verifier: verifierFor(reviewed) }] }), /receipt|head|identity|digest|closed/i);
+    assert.equal(counters.send, 1);
+  }
+});
