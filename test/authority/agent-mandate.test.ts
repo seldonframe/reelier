@@ -13,6 +13,7 @@ import {
   parseReconciledOutcomeV1,
   verifyMandateLockV1,
 } from "../../src/authority/agent-mandate.js";
+import { deriveMandatedMissionV2, digestAgentMandateV2, parseAgentMandateV2 } from "../../src/authority/agent-mandate.js";
 import { authorityDigest } from "../../src/authority/wire.js";
 
 const frontmatter = {
@@ -124,4 +125,13 @@ test("the shipped Eve release tracer is a real portable AGENT.md, not an invente
   assert.equal(parsed.mandate.rolePack, "github_patch_release_operator_v1");
   assert.deepEqual(parsed.mandate.harnesses, ["eve"]);
   assert.match(parsed.prose, /No routine human approval/u);
+});
+
+test("neutral mandate V2 accepts arbitrary providers and derives only an exact bound subset", () => {
+  const mandate = { v: "reelier.agent-mandate/v2", agentId: "neutral-agent", revision: 1, rolePack: "neutral", harnesses: ["future-harness"], bindings: [{ provider: "calendar-like", account: "account_1", destinations: ["calendar_1"] }], outcomeKinds: ["record.create"], limits: { maxConcurrentMissions: 1, maxChildFanout: 1, maxChangedFiles: 0, maxChangedBytes: 0 }, humanConfirmation: "creation-only", exceptionBehavior: "stop-and-report", validFrom: "2026-08-20T12:00:00.000Z", validUntil: "2026-08-21T12:00:00.000Z", revocationGeneration: 0 } as const;
+  const parsed = parseAgentMandateV2(mandate);
+  assert.equal(parsed.bindings[0].provider, "calendar-like");
+  assert.equal(digestAgentMandateV2(parsed), digestAgentMandateV2(mandate));
+  assert.equal(deriveMandatedMissionV2({ mandate, promptDigest: `sha256:${"a".repeat(64)}`, outcomeKind: "record.create", harness: "future-harness", binding: { provider: "calendar-like", account: "account_1", destination: "calendar_1" }, requestedChildFanout: 1, requestedChangedFiles: 0, requestedChangedBytes: 0, now: new Date("2026-08-20T13:00:00.000Z") }).humanConfirmation, "not-required");
+  assert.throws(() => deriveMandatedMissionV2({ mandate, promptDigest: `sha256:${"a".repeat(64)}`, outcomeKind: "record.create", harness: "future-harness", binding: { provider: "calendar-like", account: "account_1", destination: "other" }, requestedChildFanout: 1, requestedChangedFiles: 0, requestedChangedBytes: 0, now: new Date("2026-08-20T13:00:00.000Z") }));
 });
