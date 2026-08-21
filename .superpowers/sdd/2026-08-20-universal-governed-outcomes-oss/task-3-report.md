@@ -50,7 +50,7 @@ node --test --test-concurrency=1 dist-test/test/authority/effect-transports.test
 Exit `0`. Verbatim tail:
 
 ```text
-✔ public production export parses DecisionContext and its portable evidence against packaged schemas (733.8349ms)
+✔ public production export parses DecisionContext and its portable evidence against packaged schemas (745.4775ms)
 ℹ tests 68
 ℹ suites 0
 ℹ pass 68
@@ -58,7 +58,7 @@ Exit `0`. Verbatim tail:
 ℹ cancelled 0
 ℹ skipped 0
 ℹ todo 0
-ℹ duration_ms 4927.7186
+ℹ duration_ms 4963.1349
 ```
 
 The transport file contributed 14/14 passing tests. The actual provider-port return was a hostile root proxy; the port was reached once, asynchronous sink failure completed the call, and get/then trap count remained exactly zero.
