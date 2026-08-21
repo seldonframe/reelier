@@ -18,6 +18,7 @@ export async function startEveProcess({ cwd, env }) {
   let last;
   for (let attempt = 0; attempt < 5; attempt += 1) {
     const port = await unusedLoopbackPort();
+    const startedAt = new Date().toISOString(), processNonce = randomBytes(16).toString("hex");
     const lines = [];
     const child = spawn(process.execPath, [eveCliPath, "dev", "--port", String(port)], {
       cwd,
@@ -33,7 +34,7 @@ export async function startEveProcess({ cwd, env }) {
       await waitForHealth(`http://127.0.0.1:${port}`, child, env.EVE_EVAL_AUTH_TOKEN, http);
       const url = `http://127.0.0.1:${port}`;
       listenerByChild.set(child, Object.freeze({ url, http }));
-      return Object.freeze({ child, pid: child.pid, port, url, http, diagnostics: () => lines.slice(-80).join("\n") });
+      return Object.freeze({ child, pid: child.pid, port, url, http, startedAt, processNonce, diagnostics: () => lines.slice(-80).join("\n") });
     } catch (error) {
       last = error;
       await stopEveProcess(child);
@@ -41,6 +42,11 @@ export async function startEveProcess({ cwd, env }) {
     }
   }
   throw last ?? new Error("Eve could not reserve a loopback port");
+}
+
+function observedProcessIdentity(handle) {
+  if (!Number.isSafeInteger(handle.pid) || handle.pid < 1 || !Number.isSafeInteger(handle.port) || handle.port < 1 || typeof handle.startedAt !== "string" || typeof handle.processNonce !== "string") throw new TypeError("Eve process identity is incomplete");
+  return Object.freeze({ pid: handle.pid, port: handle.port, startedAt: handle.startedAt, processNonce: handle.processNonce });
 }
 
 export async function runEveCommand({ cwd, env, args }) {
@@ -217,13 +223,14 @@ async function outcomeScenario(context) {
   const root = resolve(context.runtimeRoot, "outcome"), runKey = createHash("sha256").update(context.runtimeRoot).digest("hex").slice(0, 12), appRoot = resolve(repositoryRoot, ".superpowers", "task5-eve-runtime", `task5-${runKey}-outcome`);
   await mkdir(root, { recursive: true }); await copyFixture(appRoot, false);
   const fixture = await context.createGenuineGovernedEveFixture(root), eveToken = randomBytes(32).toString("base64url"), cellToken = randomBytes(32).toString("base64url"), cellContext = fixture.context("composite");
-  let processHandle, runtime = await fixture.openRuntime(), cellServer;
+  let processHandle, runtime = await fixture.openRuntime(), cellServer; const processIdentities = [];
   try {
     cellServer = createServer((request, response) => void context.handleAuthorityHttp(request, response, { agentTools: runtime.agentTools, async outcome() { throw new Error("legacy disabled"); }, async status() { throw new Error("legacy disabled"); } }, { tenant: cellContext.tenant, requester: cellContext.requester, resolvePrincipal: async header => header === `Bearer ${cellToken}` ? cellContext : undefined }));
     await new Promise((resolveListen, reject) => { cellServer.once("error", reject); cellServer.listen(0, "127.0.0.1", resolveListen); });
     const cellPort = cellServer.address().port, registry = { [createHash("sha256").update(eveToken).digest("hex")]: { principalId: "principal_eve", taskId: "task_eve", taskOwnerPrincipalId: "principal_eve", workloadId: "workload_eve" } };
     const env = localOnlyEnvironment({ NODE_PATH: resolve(repositoryRoot, "node_modules"), EVE_EVAL_AUTH_TOKEN: eveToken, REELIER_EVE_AUTH_REGISTRY_JSON: JSON.stringify(registry), REELIER_CELL_URL: `http://127.0.0.1:${cellPort}`, REELIER_CELL_TOKEN: cellToken, REELIER_AUTHORIZATION_HANDLE: fixture.authorizationHandle, REELIER_CONTINUITY_ROOT: resolve(root, "continuity"), REELIER_CONTINUITY_PROTOCOL_V: "reelier.continuity-checkpoint/v1", REELIER_JOB_CARD_DIGEST: `sha256:${"a".repeat(64)}`, REELIER_AUTHORITY_SNAPSHOT_DIGEST: `sha256:${"b".repeat(64)}`, REELIER_PATH_C_PORT_URL: "http://127.0.0.1:1", REELIER_PATH_C_PORT_TOKEN: randomBytes(32).toString("base64url") });
     processHandle = await startEveProcess({ cwd: appRoot, env });
+    processIdentities.push(observedProcessIdentity(processHandle));
     const created = await post(processHandle, "/eve/v1/session", eveToken, { message: "governed run composite request_composite", operationId: "genuine-outcome-cut" });
     assert.equal(created.status, 202, `${JSON.stringify(created.body)}\n${processHandle.diagnostics()}`);
     const cutSessionId = created.body.sessionId, cut = await waitForBoundary(processHandle, cutSessionId, eveToken, 0), cutEvidence = await runtime.inspectEvidence();
@@ -232,11 +239,12 @@ async function outcomeScenario(context) {
     processHandle = undefined;
     runtime = await fixture.openRuntime();
     processHandle = await startEveProcess({ cwd: appRoot, env });
+    processIdentities.push(observedProcessIdentity(processHandle));
     const resumed = await post(processHandle, "/eve/v1/session", eveToken, { message: "governed resume composite request_composite", operationId: "genuine-outcome-resume" });
     assert.equal(resumed.status, 202); const recovered = await waitForBoundary(processHandle, resumed.body.sessionId, eveToken, 0), evidence = await runtime.inspectEvidence(), ledger = await (await fixture.ledger()).recover(), counters = fixture.counters();
     assert.equal(evidence.requests[0]?.lifecycleState, "reconciled"); assert.equal(ledger.ok, true);
     const messages = recovered.rows.filter(event => event.type === "message.completed" && typeof event?.data?.message === "string").map(event => event.data.message);
-    return Object.freeze({ cutSubmissionStatus: created.status, cutLifecycle: cutEvidence.requests[0]?.lifecycleState, cutSessionId, recoveredSessionId: resumed.body.sessionId, processRestarted: true, runtimeReopens: fixture.runtimeGenerations() - 1, mergeWrites: counters.mergeWrites, linearWrites: counters.linearWrites, linearReads: counters.linearReads, reservationCount: ledger.reservations.length, reconciledRequestCount: evidence.requests.filter(item => item.lifecycleState === "reconciled").length, statusToolMessages: messages, ledgerHeadDigest: context.authority.authorityDigest(ledger), receiptGraphDigest: context.authority.authorityDigest(evidence), cutToolEvents: cut.rows.filter(event => event.type.startsWith("action.")).length });
+    return Object.freeze({ cutSubmissionStatus: created.status, cutLifecycle: cutEvidence.requests[0]?.lifecycleState, cutSessionId, recoveredSessionId: resumed.body.sessionId, processIdentities: Object.freeze(processIdentities), processRestartCount: Math.max(0, processIdentities.length - 1), runtimeReopens: fixture.runtimeGenerations() - 1, mergeWrites: counters.mergeWrites, linearWrites: counters.linearWrites, linearReads: counters.linearReads, reservationCount: ledger.reservations.length, reconciledRequestCount: evidence.requests.filter(item => item.lifecycleState === "reconciled").length, statusToolMessages: messages, ledgerHeadDigest: context.authority.authorityDigest(ledger), receiptGraphDigest: context.authority.authorityDigest(evidence), cutToolEvents: cut.rows.filter(event => event.type.startsWith("action.")).length });
   } finally {
     diagnostic("outcome:close:start");
     await stopEveProcess(processHandle?.child);
