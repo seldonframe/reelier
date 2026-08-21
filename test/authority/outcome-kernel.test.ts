@@ -35,7 +35,7 @@ function reservation(id: string, state = "reserved", effectDigest = digestToolEf
 function durableFixture(): OutcomeKernelStorage & { effects: Map<string, StoredEffectLifecycleV1>; loseHead: boolean; atomicCalls: number; durableCreates: number; published: Map<string, readonly string[]>; dropReceipt(receiptId: string): void; seedReceiptClaim(receiptId: string, receiptDigest: string, receiptRef: string): void; compareAndPublishReceipt(receipt: GovernedReceiptV1, receiptDigest: string): Promise<any> } {
   const missions = new Map<string, { digest: string; claim: MissionClaimV1 }>();
   const effects = new Map<string, StoredEffectLifecycleV1>();
-  const receipts = new Map<string, string>();
+  const receipts = new Map<string, { receiptId: string; receiptDigest: string; receiptRef: string }>();
   const receiptClaims = new Map<string, { digest: string; ref: string }>();
   return {
     durable: true, effects, loseHead: false, atomicCalls: 0, durableCreates: 0, published: new Map(),
@@ -60,10 +60,10 @@ function durableFixture(): OutcomeKernelStorage & { effects: Map<string, StoredE
       if (prior && prior.digest !== receiptDigest) return { status: "conflict" as const };
       const claim = prior ?? { digest: receiptDigest, ref: sha("9") };
       if (!prior) { receiptClaims.set(receipt.receiptId, claim); this.durableCreates++; }
-      receipts.set(receipt.receiptId, claim.ref);
+      receipts.set(receipt.receiptId, { receiptId: receipt.receiptId, receiptDigest: claim.digest, receiptRef: claim.ref });
       return { status: prior ? "exact-existing" as const : "published" as const, receiptDigest: claim.digest, receiptRef: claim.ref };
     },
-    async loadReceipt(receiptId) { const receiptRef = receipts.get(receiptId); return receiptRef && !this.loseHead ? { receiptRef } : null; },
+    async loadReceipt(receiptId) { const head = receipts.get(receiptId); return head && !this.loseHead ? { ...head } : null; },
   };
 }
 

@@ -58,7 +58,7 @@ export interface OutcomeKernelStorage {
   loadEffect(missionId: string, reservationId: string): Promise<StoredEffectLifecycleV1 | null>;
   storeEffect(value: StoredEffectLifecycleV1, expectedRevision: number): Promise<Readonly<{ status: "stored"; value: StoredEffectLifecycleV1 }> | Readonly<{ status: "conflict" }>>;
   compareAndPublishReceipt(receipt: GovernedReceiptV1, receiptDigest: string): Promise<Readonly<{ status: "published" | "exact-existing"; receiptDigest: string; receiptRef: string }> | Readonly<{ status: "conflict" }>>;
-  loadReceipt(receiptId: string): Promise<Readonly<{ receiptRef: string }> | null>;
+  loadReceipt(receiptId: string): Promise<Readonly<{ receiptId: string; receiptDigest: string; receiptRef: string }> | null>;
 }
 
 export interface MissionOutcomeV1 {
@@ -138,7 +138,7 @@ export function createOutcomeKernel(options: OutcomeKernelOptions): OutcomeKerne
           const adopted = stored.outcome;
           effects.push(adopted);
           const receipt = receiptFor(parsedMission, missionDigest, adopted);
-          const adoptedRef = parseReceiptHead(await storage.loadReceipt(receipt.receiptId));
+          const adoptedRef = parseReceiptHead(await storage.loadReceipt(receipt.receiptId), receipt);
           if (adoptedRef) receiptRefs.push(adoptedRef.receiptRef);
           else await publishAndAdoptReceipt(storage, receipt, receiptRefs, () => { receiptsDurable = false; });
           continue;
@@ -197,7 +197,7 @@ async function persist(storage: OutcomeKernelStorage, value: Omit<StoredEffectLi
   const stored = parseStoreEffectResult(await storage.storeEffect(candidate, expectedRevision));
   if (stored.status === "stored") {
     const result = parseStoredEffect(stored.value)!;
-    if (result.missionId !== value.missionId || result.reservation.reservationId !== value.reservation.reservationId) throw new Error("stored effect result does not bind the requested identities");
+    if (result.revision !== expectedRevision + 1 || authorityDigest({ ...result, revision: 0 }) !== authorityDigest({ ...candidate, revision: 0 })) throw new Error("stored effect lifecycle result does not exactly bind the submitted mission, contract, and reservation identities");
     return result;
   }
   const prior = parseStoredEffect(await storage.loadEffect(value.missionId, value.reservation.reservationId));
@@ -363,11 +363,12 @@ function parseDispatchOutcome(value: unknown): DispatchOutcome {
   return Object.freeze(Object.fromEntries(Object.keys(raw).map(key => [key, raw[key]])) as unknown as DispatchOutcome);
 }
 
-function parseReceiptHead(value: unknown): Readonly<{ receiptRef: string }> | null {
+function parseReceiptHead(value: unknown, expectedReceipt: GovernedReceiptV1): Readonly<{ receiptId: string; receiptDigest: string; receiptRef: string }> | null {
   if (value === null || value === undefined) return null;
-  const raw = dataRecord(value, ["receiptRef"], [], "governed receipt head");
-  if (typeof raw.receiptRef !== "string" || !SHA.test(raw.receiptRef)) throw new TypeError("governed receipt head is invalid");
-  return Object.freeze({ receiptRef: raw.receiptRef });
+  const raw = dataRecord(value, ["receiptId", "receiptDigest", "receiptRef"], [], "governed receipt head");
+  const expectedDigest = digestGovernedReceiptV1(expectedReceipt);
+  if (raw.receiptId !== expectedReceipt.receiptId || raw.receiptDigest !== expectedDigest || typeof raw.receiptRef !== "string" || !SHA.test(raw.receiptRef)) throw new TypeError("governed receipt head does not bind the exact receipt identity and digest");
+  return Object.freeze({ receiptId: raw.receiptId, receiptDigest: raw.receiptDigest, receiptRef: raw.receiptRef });
 }
 
 function receiptFor(mission: MissionClaimV1, missionDigest: string, outcome: GovernedOutcomeV1): GovernedReceiptV1 {
@@ -383,7 +384,7 @@ async function publishAndAdoptReceipt(storage: OutcomeKernelStorage, receipt: Go
   if (statusDescriptor.value === "conflict") { dataRecord(raw, ["status"], [], "atomic receipt publication conflict"); throw new Error("atomic receipt identity conflict"); }
   const status = dataRecord(raw, ["status", "receiptDigest", "receiptRef"], [], "atomic receipt publication result");
   if ((status.status !== "published" && status.status !== "exact-existing") || status.receiptDigest !== receiptDigest || typeof status.receiptRef !== "string" || !SHA.test(status.receiptRef)) throw new TypeError("atomic receipt publication result does not bind the exact receipt");
-  const head = parseReceiptHead(await storage.loadReceipt(receipt.receiptId));
+  const head = parseReceiptHead(await storage.loadReceipt(receipt.receiptId), receipt);
   if (!head) { markNotDurable(); return; }
   if (head.receiptRef !== status.receiptRef) throw new Error("atomic receipt publication ref does not match the durable head");
   refs.push(head.receiptRef);
