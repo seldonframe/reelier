@@ -61,7 +61,22 @@ const requestInput = Object.freeze({
 });
 const statusInput = Object.freeze({ type: "object", additionalProperties: false, required: Object.freeze(["requestId"]), properties: Object.freeze({ requestId: identifier }) });
 const proposalOutput = Object.freeze({ ...outcomeOutput, properties: Object.freeze({ ...publicOutcomeFields, outcomeRef: opaqueOutcomeRef }) });
-const capabilitySchema = Object.freeze({ type: "object", additionalProperties: false });
+const capabilitySchema = Object.freeze({
+  type: "object",
+  additionalProperties: false,
+  required: Object.freeze(["v", "harnessId", "harnessVersion", "abiDigest", "protocolCompatibility", "transports", "fixtureStatus", "liveTested", "providerCertification"]),
+  properties: Object.freeze({
+    v: Object.freeze({ const: "reelier.harness-capability/v1" }),
+    harnessId: Object.freeze({ type: Object.freeze(["string", "null"]), enum: Object.freeze([...CERTIFIABLE_HARNESSES_V1, null]) }),
+    harnessVersion: Object.freeze({ type: Object.freeze(["string", "null"]) }),
+    abiDigest: Object.freeze({ type: "string", pattern: "^sha256:[0-9a-f]{64}$" }),
+    protocolCompatibility: Object.freeze({ const: "compatible" }),
+    transports: Object.freeze({ type: "array", prefixItems: Object.freeze([{ const: "mcp" }, { const: "http" }, { const: "openapi" }]), minItems: 3, maxItems: 3 }),
+    fixtureStatus: Object.freeze({ type: "string", enum: Object.freeze(["passed", "not-passed"]) }),
+    liveTested: Object.freeze({ type: "boolean" }),
+    providerCertification: Object.freeze({ const: "not-claimed" }),
+  }),
+});
 const agentStatusOutput = Object.freeze({
   type: "object",
   additionalProperties: false,
@@ -87,8 +102,8 @@ export const AGENT_TOOL_ABI_DIGEST_V1 = authorityDigest({
 
 export interface HarnessCapabilityDescriptorV1 {
   readonly v: "reelier.harness-capability/v1";
-  readonly harnessId: CertifiableHarnessV1;
-  readonly harnessVersion: string;
+  readonly harnessId: CertifiableHarnessV1 | null;
+  readonly harnessVersion: string | null;
   readonly abiDigest: string;
   readonly protocolCompatibility: "compatible";
   readonly transports: readonly ["mcp", "http", "openapi"];

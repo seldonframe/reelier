@@ -44,6 +44,7 @@ import { loadProfileGovernanceFromOperatorTrust } from "./profile-governance-loa
 import type { AuthorityExecutionContextV1 } from "../types.js";
 import { assertGitHubReleaseRunnerCapability, createGitHubReleaseHostComposition, type GitHubReleaseRunnerV1 } from "./github-release-runner.js";
 import { githubReleaseAliases } from "../../packs/github-release/manifest.js";
+import { createAuthorityAgentTools, type AuthorityAgentToolsV1 } from "./agent-tools.js";
 
 /** Builds the local host from signed-artifact boundaries. An empty workspace is intentionally
  * usable for discovery and status, but every Outcome refuses until a signed contract is installed. */
@@ -79,6 +80,7 @@ export interface LocalAuthorityRuntimeOptions {
 }
 
 export interface LocalAuthorityRuntime extends AuthorityHostRuntime {
+  readonly agentTools: AuthorityAgentToolsV1;
   /** Explicitly opens an adopted host-owned route. Loading the deployment never calls this. */
   resolveAdoptedConnection(connectionId: string): Promise<DownstreamConnection>;
 }
@@ -207,7 +209,7 @@ async function createLocalAuthorityRuntimeCore(config:AuthorityHostConfig,option
     }));
   };
   const catalogRefusal = (requestId = "") => Object.freeze({ requestId, verdict: "refused" as const, reasonCode: "job-authority-refused", lifecycleState: "refused" });
-  return Object.freeze({
+  const legacyRuntime = {
     ...runtime,
     directOutcomeAliases: Object.freeze(multiDefinitionSigned ? [] : [...config.definitions]),
     requiresAuthenticatedExecutionContext: multiDefinitionSigned,
@@ -266,6 +268,10 @@ async function createLocalAuthorityRuntimeCore(config:AuthorityHostConfig,option
       try { return await promise; }
       finally { if (invokeFlights.get(flightKey)?.promise === promise) invokeFlights.delete(flightKey); }
     },
+  };
+  return Object.freeze({
+    ...legacyRuntime,
+    agentTools: createAuthorityAgentTools({ jobsSearch: legacyRuntime.jobsSearch, jobLoad: legacyRuntime.jobLoad, invoke: legacyRuntime.invoke, status: legacyRuntime.status }),
   });
 }
 
@@ -287,5 +293,6 @@ export async function createAdmittedLocalAuthorityRuntime(config: AuthorityHostC
   const revalidate=async(intent?:Readonly<import("../ledger.js").ReservationIntent>)=>{const original=admittedProfileGovernanceState(admitted),freshHandle=await loadProfileGovernanceFromOperatorTrust({...original.reload,verificationTime:new Date()}),fresh=admittedProfileGovernanceState(freshHandle);if(authorityDigest(fresh.manifest)!==authorityDigest(original.manifest)||fresh.operatorRootDigest!==original.operatorRootDigest)throw new TypeError("profile governance changed after admission");assertProfileRuntimeBinding({governance:freshHandle,expectedProfileDigest:original.manifest.profileDigest,expectedActivationDigest:original.manifest.activationDigest},{packDigest:installedPack.definition.packDigest,definitionDigest:installedPack.definition.definitionDigest,registrationDigest:definitionRegistrationDigest(installedRegistry,fresh.draft.packAlias)},{contractDigest:fresh.activation.contractDigest,jobCardDigest:fresh.activation.jobCardDigest,deploymentDigest:fresh.activation.deploymentDigest,routeScopeDigest:fresh.activation.routeScopeDigest,trustHeadDigest:fresh.activation.trustHeadDigest,authorityTrustHeadDigest:fresh.activation.authorityTrustHeadDigest});await internal.externalRevalidate?.(intent);};
   const gateSigner=internal.gateSigner??await loadExistingLocalGateSigner(config.gateKeyFile ?? path.join(config.receiptDir,"..","keys","local-gate.pem"));
   const runtime=await createLocalAuthorityRuntimeCore(config,options,{gateSigner,beforeReserve:async intent=>revalidate(intent),...(internal.deployment?{deployment:internal.deployment}:{}),...(internal.governedPublication?{governedPublication:internal.governedPublication}:{})});
-  return Object.freeze({...runtime,async outcome(alias:string,input:unknown,context:{readonly tenant:string;readonly requester:string}){await revalidate();return runtime.outcome(alias,input,context);},async invoke(input:unknown,context:{readonly tenant:string;readonly requester:string}){await revalidate();return runtime.invoke!(input,context);}});
+  const admittedRuntime={...runtime,async outcome(alias:string,input:unknown,context:{readonly tenant:string;readonly requester:string}){await revalidate();return runtime.outcome(alias,input,context);},async invoke(input:unknown,context:{readonly tenant:string;readonly requester:string}){await revalidate();return runtime.invoke!(input,context);}};
+  return Object.freeze({...admittedRuntime,agentTools:createAuthorityAgentTools({jobsSearch:admittedRuntime.jobsSearch!,jobLoad:admittedRuntime.jobLoad!,invoke:admittedRuntime.invoke,status:admittedRuntime.status})});
 }

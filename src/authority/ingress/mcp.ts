@@ -2,6 +2,8 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { normalizeOutcomeRequestV1 } from "./request.js";
 import type { AuthorityExecutionContextV1 } from "../types.js";
+import { agentToolMcpDefinitionsV1 } from "./agent-tool-contracts.js";
+import { createAuthorityAgentTools } from "../host/agent-tools.js";
 
 export interface AuthorityIngressOutcome { readonly requestId: string; readonly verdict: "accepted" | "refused"; readonly reasonCode: string; readonly lifecycleState: string; readonly receiptRef?: string; }
 type AuthorityContext = { readonly tenant: string; readonly requester: string; readonly executionContext?: AuthorityExecutionContextV1 };
@@ -11,7 +13,23 @@ export interface AuthorityMcpDefinition { readonly alias: string; readonly descr
 export function buildAuthorityMcpServer(definitions: readonly AuthorityMcpDefinition[], handler: AuthorityMcpHandler, context: AuthorityContext, artifactStage?: (input: unknown, context: AuthorityContext) => Promise<unknown>): Server {
   const server = new Server({ name: "reelier-authority", version: "1.0.0" }, { capabilities: { tools: {} } });
   const directOutcomeAliases = new Set(definitions.map(definition => definition.alias));
+  const agentTools = createAuthorityAgentTools({
+    jobsSearch: async (input, requestContext) => {
+      if (!handler.jobsSearch) throw new TypeError("agent status is unavailable");
+      return handler.jobsSearch(input, requestContext);
+    },
+    jobLoad: async (input, requestContext) => {
+      if (!handler.jobLoad) throw new TypeError("Outcome proposal is unavailable");
+      return handler.jobLoad(input, requestContext);
+    },
+    invoke: async (input, requestContext) => {
+      if (!handler.invoke) throw new TypeError("Outcome request is unavailable");
+      return handler.invoke(input, requestContext);
+    },
+    status: handler.status,
+  });
   server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [
+    ...agentToolMcpDefinitionsV1(),
     { name: "reelier_jobs_search", description: "Find deployed jobs without loading every Outcome schema.", inputSchema: { type: "object", additionalProperties: false, properties: { query: { type: "string", maxLength: 256 } } } },
     { name: "reelier_job_load", description: "Load one deployed job and its bounded Outcome.", inputSchema: { type: "object", additionalProperties: false, required: ["jobId"], properties: { jobId: { type: "string", minLength: 1, maxLength: 128 } } } },
     { name: "reelier_delegation_request", description: "Request a narrower child authority from the authenticated parent task and allocation. Fan-out is computed by the Authority Cell.", inputSchema: { type: "object", additionalProperties: false, required: ["child", "effects"], properties: { child: { type: "object" }, effects: { type: "integer", minimum: 0 } } } },
@@ -23,9 +41,15 @@ export function buildAuthorityMcpServer(definitions: readonly AuthorityMcpDefini
     ...(artifactStage ? [{ name: "reelier_artifact_stage", description: "Stage text for a reviewed outcome; returns an opaque commitment only.", inputSchema: { type: "object", additionalProperties: false, required: ["requestId", "text", "mediaType"], properties: { requestId: { type: "string" }, text: { type: "string", maxLength: 262144 }, mediaType: { type: "string", const: "text/plain" }, sourceBinding: { type: "string" } } } }] : []),
   ] }));
   server.setRequestHandler(CallToolRequestSchema, async request => {
-    const name = request.params.name; const args = normalizeOutcomeRequestV1((request.params.arguments ?? {}) as Record<string, unknown>);
+    const name = request.params.name;
+    const rawArgs = (request.params.arguments ?? {}) as Record<string, unknown>;
+    const args = normalizeOutcomeRequestV1(rawArgs);
     try {
-      const value = name === "reelier_jobs_search" && handler.jobsSearch ? await handler.jobsSearch(args, context)
+      const value = name === "reelier_agent_status" ? await agentTools.agentStatus(rawArgs, context)
+        : name === "reelier_outcome_proposal" ? await agentTools.outcomeProposal(rawArgs, context)
+        : name === "reelier_outcome_request" ? await agentTools.outcomeRequest(rawArgs, context)
+        : name === "reelier_outcome_status" ? await agentTools.outcomeStatus(rawArgs, context)
+        : name === "reelier_jobs_search" && handler.jobsSearch ? await handler.jobsSearch(args, context)
         : name === "reelier_job_load" && handler.jobLoad ? await handler.jobLoad(args, context)
         : name === "reelier_delegation_request" && handler.delegationRequest ? await handler.delegationRequest(args, context)
         : name === "reelier_delegation_status" && handler.delegationStatus ? await handler.delegationStatus(args, context)

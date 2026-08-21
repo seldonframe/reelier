@@ -18,6 +18,9 @@ export type { AuthorityLedger, LedgerState, ReservationSnapshot, TransitionEvent
 export type { AuthorityMcpHandler, AuthorityMcpDefinition } from "../ingress/mcp.js";
 export { buildAuthorityMcpServer } from "../ingress/mcp.js";
 export { handleAuthorityHttp } from "../ingress/http.js";
+export { AGENT_TOOL_ABI_DIGEST_V1, AGENT_TOOL_CONTRACTS_V1, AGENT_TOOL_NAMES_V1, CERTIFIABLE_HARNESSES_V1, agentToolHttpRoutesV1, agentToolMcpDefinitionsV1, buildAgentToolOpenApiV1, createHarnessCapabilityDescriptorV1, parseAgentToolInputV1, type AgentToolContractV1, type AgentToolNameV1, type CertifiableHarnessV1, type HarnessCapabilityDescriptorV1 } from "../ingress/agent-tool-contracts.js";
+export { authorityAgentToolOpenApiV1 } from "../ingress/openapi.js";
+export { createAuthorityAgentTools, type AuthorityAgentToolBackendV1, type AuthorityAgentToolContextV1, type AuthorityAgentToolOutcomeV1, type AuthorityAgentToolsV1, type AuthorityAgentStatusV1, type AuthorityOutcomeProposalV1 } from "./agent-tools.js";
 export type { AuthorityHostRuntime, AuthorityHostServer } from "./server.js";
 export { createAuthorityHostServer } from "./server.js";
 export type { AuthorityHostRuntimeDependencies } from "./runtime.js";

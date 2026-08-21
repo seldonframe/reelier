@@ -1,5 +1,5 @@
 import type { AuthorityExecutionContextV1 } from "../types.js";
-import { createHarnessCapabilityDescriptorV1, parseAgentToolInputV1, type HarnessCapabilityDescriptorV1 } from "../ingress/agent-tool-contracts.js";
+import { AGENT_TOOL_ABI_DIGEST_V1, parseAgentToolInputV1, type HarnessCapabilityDescriptorV1 } from "../ingress/agent-tool-contracts.js";
 
 export type AuthorityAgentToolContextV1 = Readonly<{ tenant: string; requester: string; executionContext?: AuthorityExecutionContextV1 }>;
 export type AuthorityAgentToolOutcomeV1 = Readonly<{ requestId: string; verdict: "accepted" | "refused"; reasonCode: string; lifecycleState: string; receiptRef?: string }>;
@@ -20,7 +20,17 @@ export interface AuthorityAgentToolsV1 {
   readonly outcomeStatus: (input: unknown, context: AuthorityAgentToolContextV1) => Promise<AuthorityAgentToolOutcomeV1>;
 }
 
-const neutralCapability = createHarnessCapabilityDescriptorV1({ harnessId: "eve", harnessVersion: "unbound", fixturePassed: false });
+const neutralCapability: HarnessCapabilityDescriptorV1 = Object.freeze({
+  v: "reelier.harness-capability/v1",
+  harnessId: null,
+  harnessVersion: null,
+  abiDigest: AGENT_TOOL_ABI_DIGEST_V1,
+  protocolCompatibility: "compatible",
+  transports: Object.freeze(["mcp", "http", "openapi"] as const),
+  fixtureStatus: "not-passed",
+  liveTested: false,
+  providerCertification: "not-claimed",
+});
 
 export function createAuthorityAgentTools(backend: AuthorityAgentToolBackendV1, capability: HarnessCapabilityDescriptorV1 = neutralCapability): AuthorityAgentToolsV1 {
   if (!backend || typeof backend !== "object" || typeof backend.jobsSearch !== "function" || typeof backend.jobLoad !== "function" || typeof backend.invoke !== "function" || typeof backend.status !== "function") throw new TypeError("agent tool backend is invalid");
