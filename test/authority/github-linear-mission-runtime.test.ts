@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash, createPrivateKey, createPublicKey, generateKeyPairSync } from "node:crypto";
-import { access, copyFile, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { access, copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { authorityCanonicalBytes, authorityDigest, signAuthorityDigest, signJobCard, signedJobCardDigest } from "../../src/authority/index.js";
@@ -11,6 +11,7 @@ import { buildAuthorityDeployment } from "../../src/authority/host/deploy.js";
 import { createFileOutcomeKernelStorage } from "../../src/authority/host/outcome-kernel-fs-storage.js";
 import { createReleaseAuthorizationResolver, createGitHubReleaseRunnerFromOperatorConfig, parseGitHubReleaseRunnerOperatorConfig } from "../../src/authority/host/github-release-runner-config.js";
 import { createGitHubReleaseRunner } from "../../src/authority/host/github-release-runner.js";
+import { FsAuthorityLedger } from "../../src/authority/host/fs-ledger.js";
 import { createSignedJournal } from "../../src/authority/host/signed-journal.js";
 import { __testSetAuthorityCellHostPlatform } from "../../src/authority/host/platform.js";
 import { createGovernedOutcomeCompositionProfileV1, createGitHubLinearOutcomePackV1, governedOutcomeCompositionAliasesV1, orderedGitHubLinearOperationsV1 } from "../../src/authority/packs/github-linear-outcomes.js";
@@ -49,7 +50,7 @@ test("signed five-definition runtime recovers an exact Linear-only mission witho
     const reviewed = reviewedAuthority(), pack = createGitHubLinearOutcomePackV1(reviewed);
     const profile = createGovernedOutcomeCompositionProfileV1({ aliases: governedOutcomeCompositionAliasesV1, pack, operations: orderedGitHubLinearOperationsV1(pack, "github-linear") });
     const fixture = await fiveDefinitionDeployment(root, pack, release.authorizationHandle);
-    const runner = await createGitHubReleaseRunnerFromOperatorConfig(parseGitHubReleaseRunnerOperatorConfig(release.runnerConfigBody as never), () => release.authorizationNow);
+    const operatorConfig = parseGitHubReleaseRunnerOperatorConfig(release.runnerConfigBody as never), runner = await createGitHubReleaseRunnerFromOperatorConfig(operatorConfig, () => release.authorizationNow);
     let linearStatus = reviewed.linear.preStatus;
     const linearProvider = {
       comment(_input: unknown, sink: any) { linearWrites += 1; sink.success(JSON.stringify({ outcome: "applied", data: { workspace: reviewed.linear.workspace, team: reviewed.linear.team, project: reviewed.linear.project, issue: reviewed.linear.issue, commentMarker: reviewed.linear.commentMarker, evidenceUrl: reviewed.linear.evidenceUrl, evidenceContentDigest: reviewed.linear.evidenceContentDigest, commentId: "comment_1" } })); },
@@ -77,7 +78,13 @@ test("signed five-definition runtime recovers an exact Linear-only mission witho
     assert.deepEqual({ linearWrites, linearReads }, { linearWrites: 2, linearReads: 2 }, "restart adopts durable Outcomes and never resends");
     const evidence = await restarted.inspectEvidence();
     assert.deepEqual(evidence.requests[0]?.joins.map(item => item.alias), governedOutcomeCompositionAliasesV1.slice(3));
-    assert.equal((await (await import("node:fs/promises")).readdir(fixture.config.ledgerDir)).length > 0, true);
+    const runnerPrivateKey = createPrivateKey(await readFile(operatorConfig.journalKeyFile)), runnerJournal = await createSignedJournal({ rootDir: path.join(operatorConfig.rootDir, "journal"), journalId: "github-release", signerId: operatorConfig.journalSignerId, privateKey: runnerPrivateKey, publicKey: createPublicKey(runnerPrivateKey) });
+    assert.deepEqual(await runnerJournal.listRequestIds(), [], "Linear-only reaches no GitHub runner call");
+    const recoveredLedger = await new FsAuthorityLedger(fixture.config.ledgerDir).recover();
+    assert.equal(recoveredLedger.ok, true);
+    const reservedAliases = recoveredLedger.ok ? recoveredLedger.reservations.map(item => item.intent.definitionAlias) : [];
+    assert.equal(governedOutcomeCompositionAliasesV1.slice(0, 3).some(alias => reservedAliases.includes(alias)), false, "Linear-only creates no GitHub reservation");
+    assert.deepEqual(reservedAliases.sort(), [...governedOutcomeCompositionAliasesV1.slice(3)].sort(), "both Linear reservations are durable");
   } finally { restorePlatform(); await Promise.all([rm(root, { recursive: true, force: true }), rm(release.root, { recursive: true, force: true })]); }
 });
 
