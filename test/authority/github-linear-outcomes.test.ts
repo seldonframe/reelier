@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { authorityDigest } from "../../src/authority/wire.js";
 import {
   assertLinearStatusPredecessorV1,
+  assertGitHubLinearProviderReadbackV1,
   createGitHubLinearOutcomePackV1,
   orderedGitHubLinearOperationsV1,
 } from "../../src/authority/packs/github-linear-outcomes.js";
@@ -59,6 +60,31 @@ test("reviewed pack binds exact GitHub and Linear authority while model fields c
   assert.deepEqual(pack.operations.linearStatusTransition.contract.model.fields, ["requestId"]);
   assert.equal(pack.operations.exactHeadMerge.contract.policyDigest, pack.githubPolicyDigest);
   assert.equal(pack.operations.linearStatusTransition.contract.policyDigest, pack.linearPolicyDigest);
+});
+
+test("Linear readback binds exact project, issue, marker, and status without accepting credentials", () => {
+  const pack = createGitHubLinearOutcomePackV1(reviewedInput());
+  const exactComment = { workspace: "workspace_01", team: "team_01", project: "project_01", issue: "REEL-TEST-1", commentMarker: "reelier:evidence:mission_01", commentId: "comment_01" };
+  const first = assertGitHubLinearProviderReadbackV1(pack, "linearEvidenceComment", exactComment);
+  const duplicate = assertGitHubLinearProviderReadbackV1(pack, "linearEvidenceComment", structuredClone(exactComment));
+  assert.deepEqual(duplicate, first, "an exact duplicate comment converges to the same projection");
+  for (const changed of [
+    { ...exactComment, project: "other_project" },
+    { ...exactComment, issue: "REEL-OTHER" },
+    { ...exactComment, commentMarker: "conflicting-marker" },
+  ]) assert.throws(() => assertGitHubLinearProviderReadbackV1(pack, "linearEvidenceComment", changed), /conflict|exact/i);
+  const status = assertGitHubLinearProviderReadbackV1(pack, "linearStatusTransition", { workspace: "workspace_01", team: "team_01", project: "project_01", issue: "REEL-TEST-1", preStatus: "In Progress", targetStatus: "Done", status: "Done" });
+  assert.equal(status.status, "Done");
+  assert.throws(() => assertGitHubLinearProviderReadbackV1(pack, "linearStatusTransition", { ...status, preStatus: "Todo" }), /conflict|exact/i);
+  assert.throws(() => assertGitHubLinearProviderReadbackV1(pack, "linearStatusTransition", { ...status, targetStatus: "Cancelled" }), /conflict|exact/i);
+  assert.throws(() => assertGitHubLinearProviderReadbackV1(pack, "linearStatusTransition", { ...status, credential: "secret" } as any), /closed|unknown/i);
+});
+
+test("GitHub merge readback closes exact base, head, merge commit, and post-merge tree", () => {
+  const pack = createGitHubLinearOutcomePackV1(reviewedInput());
+  const exact = { repository: "seldonframe/reelier", baseSha: git("a"), headSha: git("b"), mergeCommitSha: git("f"), treeSha: git("e") };
+  assert.deepEqual(assertGitHubLinearProviderReadbackV1(pack, "exactHeadMerge", exact), exact);
+  for (const changed of [{ ...exact, baseSha: git("0") }, { ...exact, headSha: git("1") }, { ...exact, treeSha: git("2") }, { ...exact, repository: "other/repo" }]) assert.throws(() => assertGitHubLinearProviderReadbackV1(pack, "exactHeadMerge", changed), /conflict|exact/i);
 });
 
 test("composite and Linear-only plans have exact ordering and Linear-only carries no git operation", () => {
