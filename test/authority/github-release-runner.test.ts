@@ -8,6 +8,9 @@ import path from "node:path";
 import { authorityDigest } from "../../src/authority/wire.js";
 import { createSignedJournal } from "../../src/authority/host/signed-journal.js";
 import { createGitHubReleaseHostComposition, createGitHubReleaseRunner } from "../../src/authority/host/github-release-runner.js";
+import { createGitHubReleaseOutcomeExecutorV1 } from "../../src/authority/host/github-release-runner.js";
+import { compileEffectTransportV1 } from "../../src/authority/host/effect-transports.js";
+import { createGitHubLinearOutcomePackV1 } from "../../src/authority/packs/github-linear-outcomes.js";
 import { createDispatchCoordinator } from "../../src/authority/host/dispatch.js";
 import { createDispatchCommitLease, createPreparedDispatch, consumePreparedDispatch } from "../../src/authority/host/prepared-dispatch.js";
 import { createReservedDispatchHandle } from "../../src/authority/gate.js";
@@ -58,6 +61,21 @@ function candidateProvider(overrides: Record<string, unknown> = {}) {
     ...overrides,
   } as any;
 }
+
+test("generic reviewed pack delegates candidate publication into the existing branded release saga", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "reelier-release-generic-pack-"));
+  const fixture = releaseAuthorityFixture(), keys = generateKeyPairSync("ed25519"), plan = fixture.context.authorization.operationPlan.value;
+  try {
+    const runner = await createGitHubReleaseRunner({ rootDir: root, journalSigner: { signerId: "release-journal-2026", ...keys }, evidenceSigner: fixture.evidenceSigner, authorizationResolver: async () => fixture.context, provider: candidateProvider(), now: () => new Date("2026-08-18T06:00:00.000Z") });
+    const pack = createGitHubLinearOutcomePackV1({ v: "reelier.github-linear-reviewed-authority/v1", github: { repository: plan.repository, baseBranch: plan.destinationBranch, baseSha: plan.baseCommit, headBranch: plan.candidateBranch, headSha: plan.expectedCommitSha, candidateDigest: plan.candidateTreeDigest, workflowPath: ".github/workflows/ci.yml", workflowDigest: plan.workflowCommitments.find(item => item.path === ".github/workflows/ci.yml")!.digest, requiredChecks: plan.requiredChecks, mergeMethod: "squash", postMergeTreeSha: plan.expectedTreeSha, accountRef: "github_account_ref", destinationRef: "github_repository_ref", credentialRef: "github_credential_ref", limitRef: "github_release_policy_ref" }, linear: { workspace: "workspace_01", team: "team_01", project: "project_01", issue: "REEL-TEST-1", preStatus: "In Progress", targetStatus: "Done", commentMarker: "reelier:evidence:generic_pack", accountRef: "linear_account_ref", destinationRef: "linear_issue_ref", credentialRef: "linear_credential_ref", limitRef: "linear_transition_policy_ref" } });
+    const reviewed = pack.operations.candidatePublish, executor = createGitHubReleaseOutcomeExecutorV1(runner);
+    assert.deepEqual(Object.keys(executor), []);
+    const compiled = compileEffectTransportV1({ contract: reviewed.contract, binding: reviewed.binding, modelInput: { authorizationHandle: "release_auth_1", requestId: "generic_candidate_publish", semanticsDigest: authorityDigest(reviewed.contract) }, observationAuthKey: "a".repeat(64), resolveHostBindings: async () => ({ credential: "host-only-secret", account: "seldonframe/reelier", destination: plan.candidateBranch, limit: plan.candidateTreeDigest }), executor });
+    const outcome = await compiled.adapter.dispatch({ reservation: { reservationId: "generic_candidate_publish", state: "dispatched", intent: { effectDigest: authorityDigest(reviewed.contract) } }, effect: compiled.effect, effectDigest: authorityDigest(reviewed.contract), effectCanonicalBase64: Buffer.from(JSON.stringify(compiled.effect)).toString("base64") } as any);
+    assert.equal(outcome.kind, "acknowledged");
+    assert.equal(JSON.stringify({ pack, compiled: compiled.evidence, outcome }).includes("host-only-secret"), false);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
 
 async function confirmTestPublication(runner: Awaited<ReturnType<typeof createGitHubReleaseRunner>>, requestId: string, result: { status: string; evidenceDigest: string | null }, phase: "dispatch" | "reconcile" = "dispatch"): Promise<void> {
   if (result.status === "verified" && result.evidenceDigest) {
