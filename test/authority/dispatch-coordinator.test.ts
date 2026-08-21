@@ -315,6 +315,7 @@ test("exact coordinator dispatch delegates are single-use and revoked when the a
       const competing = Object.freeze(Object.create(null)) as object;
       assert.equal(bindCoordinatorDispatchCallDelegateV1(call, firstDelegate, state), true);
       assert.equal(bindCoordinatorDispatchCallDelegateV1(call, competing, state), false);
+      assert.equal(consumeCoordinatorDispatchCallDelegateV1(competing, expected), false);
       assert.equal(consumeCoordinatorDispatchCallDelegateV1(firstDelegate, expected), true);
       assert.equal(consumeCoordinatorDispatchCallDelegateV1(firstDelegate, expected), false);
       return { kind: "acknowledged", resultDigest: "sha256:" + "2".repeat(64) };
@@ -443,14 +444,15 @@ test("one delegate cannot be bound to two live coordinator calls", async () => {
   await firstReady;
   const secondDispatch = secondCoordinator.dispatch(createSourceReservedDispatchHandle({ reservation: secondLedger.get(), effect: { x: 2 }, effectCanonicalBase64: "e30=", effectDigest: secondExpected.effectDigest }));
   await secondReady;
+  const rejectedSecondConsumed = consumeCoordinatorDispatchCallDelegateV1(delegate, secondExpected);
   const firstConsumed = consumeCoordinatorDispatchCallDelegateV1(delegate, firstExpected);
   const firstConsumedAgain = consumeCoordinatorDispatchCallDelegateV1(delegate, firstExpected);
   releaseFirst();
   releaseSecond();
   await Promise.all([firstDispatch, secondDispatch]);
   assert.deepEqual(
-    { firstBound, secondBound, firstConsumed, firstConsumedAgain },
-    { firstBound: true, secondBound: false, firstConsumed: true, firstConsumedAgain: false },
+    { firstBound, secondBound, rejectedSecondConsumed, firstConsumed, firstConsumedAgain },
+    { firstBound: true, secondBound: false, rejectedSecondConsumed: false, firstConsumed: true, firstConsumedAgain: false },
   );
 });
 
