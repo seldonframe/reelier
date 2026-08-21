@@ -1,4 +1,5 @@
 import { authorityDigest } from "../wire.js";
+import { hasAcceptedGateReservationHandleRevalidatorV1, revalidateAcceptedGateReservationHandleV1 } from "../gate.js";
 import { authoritySignatureDigest } from "../trust.js";
 import { verifyAuthoritySignature } from "../crypto.js";
 import type { KeyObject } from "node:crypto";
@@ -145,6 +146,7 @@ export function createDispatchCoordinator(ledger: AuthorityLedger, adapter: Disp
       return Object.freeze({ reservationId: state.reservation.reservationId, state: state.reservation.state, effectDigest: state.effectDigest, allocationId: state.reservation.intent.executionContext?.allocationId ?? null });
     },
     async dispatch(handle: ReservedDispatchHandle): Promise<DispatchOutcome> {
+      const revalidateGoverned = hasAcceptedGateReservationHandleRevalidatorV1(handle) ? () => revalidateAcceptedGateReservationHandleV1(handle) : undefined;
       const state = takeState(handle);
       if (!state.reservation || state.reservation.state !== "reserved") throw new TypeError("dispatch handle is not reserved");
       const reservationId = state.reservation.reservationId;
@@ -190,6 +192,7 @@ export function createDispatchCoordinator(ledger: AuthorityLedger, adapter: Disp
         const prepared = await measureLatency(certified?.latencyRecorder, "prepare", () => adapter.prepare!(state, call));
         const description: PreparedDispatchDescriptionV1 = prepared.description;
         if (routeAuthority && (description.routeDigest !== routeAuthority.routeDigest || description.materializedRequestDigest !== routeAuthority.expectedMaterializedRequestDigest)) throw new Error("prepared dispatch does not match durable route authority");
+        await revalidateGoverned?.();
         const revalidatePreparedAuthority = certified ? async (): Promise<void> => {
           certified.onPhase?.("authority-validation-after-prepare");
           const authorityAfter = await measureLatency(certified.latencyRecorder, "authority-validation-after-prepare", () => certified.revalidator.revalidate(state));
@@ -212,6 +215,7 @@ export function createDispatchCoordinator(ledger: AuthorityLedger, adapter: Disp
         const budgetClaim = budgetFor(state);
         if (budget && budgetClaim) await budget.consumeOnce(budgetClaim);
         await revalidatePreparedAuthority?.();
+        await revalidateGoverned?.();
         let lease: import("./prepared-dispatch.js").DispatchCommitLease;
         try { certified?.onPhase?.("dispatch-commit-cas"); lease = await measureLatency(certified?.latencyRecorder, "dispatch-commit-cas", () => ledger.commitPreparedDispatch!({ reservationId, allocationId: context?.allocationId ?? description.allocationId, expectedAuthorityGeneration: description.authorityGeneration, preparedDescription: description, absoluteDeadlineMs: description.absoluteDeadlineMs })); }
         catch (error) {
@@ -235,6 +239,7 @@ export function createDispatchCoordinator(ledger: AuthorityLedger, adapter: Disp
           catch (error) { throw new DispatchBoundaryFailure({ classification: "reservation-publication-unavailable", phase: "reservation-publication", providerEffectPossible: false, cause: error }); }
         }
         await revalidatePreparedAuthority?.();
+        await revalidateGoverned?.();
         authorizeCoordinatorCommittedLease(lease);
         let outcome: DispatchOutcome;
         try { certified?.onPhase?.("authority-send-boundary"); outcome = parseDispatchOutcomeV1(await measureLatency(certified?.latencyRecorder, "authority-send-boundary", () => consumePreparedDispatch(prepared, lease))); certified?.onPhase?.("send"); }
