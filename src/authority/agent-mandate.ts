@@ -234,8 +234,40 @@ export function parseAgentMandateV2(value: unknown): AgentMandateV2 {
 }
 export function digestAgentMandateV2(value: unknown): string { return authorityDigest(parseAgentMandateV2(value)); }
 export function parseAgentMandate(value: unknown): AgentMandate { if (!value || typeof value !== "object" || Array.isArray(value) || utilTypes.isProxy(value)) throw new TypeError("agent mandate version is invalid"); const descriptor = Object.getOwnPropertyDescriptor(value, "v"); if (!descriptor || !Object.hasOwn(descriptor, "value")) throw new TypeError("agent mandate version is invalid"); return descriptor.value === "reelier.agent-mandate/v1" ? parseAgentMandateV1(value) : parseAgentMandateV2(value); }
+
+const missionRequestV2Fields = ["mandate", "promptDigest", "outcomeKind", "harness", "binding", "requestedChildFanout", "requestedChangedFiles", "requestedChangedBytes", "now"] as const;
+function snapshotMissionRequestV2(value: unknown): Record<(typeof missionRequestV2Fields)[number], unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value) || utilTypes.isProxy(value)) throw new TypeError("mission request V2 must be inert plain data");
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) throw new TypeError("mission request V2 has an invalid prototype");
+  if (Object.getOwnPropertySymbols(value).length) throw new TypeError("mission request V2 cannot contain symbols");
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  const keys = Object.keys(descriptors);
+  if (keys.length !== missionRequestV2Fields.length || keys.some(key => !missionRequestV2Fields.includes(key as (typeof missionRequestV2Fields)[number]))) throw new TypeError("mission request V2 contains missing or unknown fields");
+  const result = Object.create(null) as Record<(typeof missionRequestV2Fields)[number], unknown>;
+  for (const field of missionRequestV2Fields) {
+    const descriptor = descriptors[field];
+    if (!descriptor || !descriptor.enumerable || !Object.hasOwn(descriptor, "value")) throw new TypeError("mission request V2 must contain enumerable data properties only");
+    result[field] = descriptor.value;
+  }
+  return result;
+}
+
 export function deriveMandatedMissionV2(input: Readonly<{ mandate: unknown; promptDigest: string; outcomeKind: string; harness: string; binding: Readonly<{ provider: string; account: string; destination: string }>; requestedChildFanout: number; requestedChangedFiles: number; requestedChangedBytes: number; now: Date }>): MandatedMissionV2 {
-  const mandate = parseAgentMandateV2(input.mandate); const now = Date.prototype.getTime.call(input.now); if (!Number.isFinite(now) || now < Date.parse(mandate.validFrom) || now >= Date.parse(mandate.validUntil)) throw new TypeError("agent mandate V2 is expired or not yet valid"); digest(input.promptDigest, "mission prompt digest"); const binding = record(input.binding, ["provider", "account", "destination"], "mission binding"); const parsedBinding = freeze({ provider: text(binding.provider, "mission provider"), account: text(binding.account, "mission account", accountPattern), destination: text(binding.destination, "mission destination") }); if (!mandate.harnesses.includes(input.harness) || !mandate.outcomeKinds.includes(input.outcomeKind) || !mandate.bindings.some(item => item.provider === parsedBinding.provider && item.account === parsedBinding.account && item.destinations.includes(parsedBinding.destination))) throw new TypeError("mission request is outside the active agent mandate V2"); return freeze({ v: "reelier.mandated-mission/v2" as const, agentId: mandate.agentId, mandateDigest: digestAgentMandateV2(mandate), promptDigest: input.promptDigest, outcomeKind: input.outcomeKind, harness: text(input.harness, "mission harness"), binding: parsedBinding, childFanout: integer(input.requestedChildFanout, "mission child fanout", 0, mandate.limits.maxChildFanout), maxChangedFiles: integer(input.requestedChangedFiles, "mission changed files", 0, mandate.limits.maxChangedFiles), maxChangedBytes: integer(input.requestedChangedBytes, "mission changed bytes", 0, mandate.limits.maxChangedBytes), humanConfirmation: "not-required" as const, exceptionBehavior: "stop-and-report" as const, issuedAt: new Date(now).toISOString() });
+  const request = snapshotMissionRequestV2(input);
+  const mandate = parseAgentMandateV2(request.mandate);
+  const now = Date.prototype.getTime.call(request.now);
+  const promptDigest = digest(request.promptDigest, "mission prompt digest");
+  const outcomeKind = text(request.outcomeKind, "mission outcome kind");
+  const harness = text(request.harness, "mission harness");
+  const binding = record(request.binding, ["provider", "account", "destination"], "mission binding");
+  const parsedBinding = freeze({ provider: text(binding.provider, "mission provider"), account: text(binding.account, "mission account", accountPattern), destination: text(binding.destination, "mission destination") });
+  const childFanout = integer(request.requestedChildFanout, "mission child fanout", 0, mandate.limits.maxChildFanout);
+  const maxChangedFiles = integer(request.requestedChangedFiles, "mission changed files", 0, mandate.limits.maxChangedFiles);
+  const maxChangedBytes = integer(request.requestedChangedBytes, "mission changed bytes", 0, mandate.limits.maxChangedBytes);
+  if (!Number.isFinite(now) || now < Date.parse(mandate.validFrom) || now >= Date.parse(mandate.validUntil)) throw new TypeError("agent mandate V2 is expired or not yet valid");
+  if (!mandate.harnesses.includes(harness) || !mandate.outcomeKinds.includes(outcomeKind) || !mandate.bindings.some(item => item.provider === parsedBinding.provider && item.account === parsedBinding.account && item.destinations.includes(parsedBinding.destination))) throw new TypeError("mission request is outside the active agent mandate V2");
+  return freeze({ v: "reelier.mandated-mission/v2" as const, agentId: mandate.agentId, mandateDigest: digestAgentMandateV2(mandate), promptDigest, outcomeKind, harness, binding: parsedBinding, childFanout, maxChangedFiles, maxChangedBytes, humanConfirmation: "not-required" as const, exceptionBehavior: "stop-and-report" as const, issuedAt: new Date(now).toISOString() });
 }
 
 export function parseMandateLockV1(value: unknown): MandateLockV1 {
