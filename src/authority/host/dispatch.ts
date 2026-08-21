@@ -15,7 +15,9 @@ import { isProxy } from "node:util/types";
 export interface DispatchRequestState { readonly reservation: { readonly reservationId: string; readonly state: LedgerState; readonly intent: Pick<StoredReservationIntent, "effectDigest" | "effectCanonicalBase64" | "executionContext" | "routeAuthority"> }; readonly effect: unknown; readonly effectCanonicalBase64: string; readonly effectDigest: string; readonly [key: string]: unknown; }
 export type ReconciliationStatus = "matched" | "not-applied" | "conflict" | "unavailable" | "not-attempted";
 export interface DispatchOutcome { readonly kind: "acknowledged" | "definitive-failure" | "ambiguous"; readonly resultDigest: string; readonly providerResultDigest?: string; readonly providerStatus?: number; readonly responseDigest?: string; /** Digest of the exact provider request bytes when confidential material was inserted inside the Authority Cell. */ readonly materializedRequestDigest?: string; readonly reconciliationStatus?: ReconciliationStatus; readonly normalizedProjectionDigest?: string | null; readonly receiptRef?: string; readonly evidenceDigest?: string; readonly priorReceiptDigest?: string; }
-export interface DispatchAdapter { dispatch(state: DispatchRequestState): Promise<DispatchOutcome>; prepare?(state: DispatchRequestState): Promise<PreparedDispatch>; reconcile?(state: DispatchRequestState, outcome: DispatchOutcome): Promise<DispatchOutcome>; }
+declare const coordinatorDispatchCallBrand: unique symbol;
+export type CoordinatorDispatchCallV1 = Readonly<{ readonly [coordinatorDispatchCallBrand]: true }>;
+export interface DispatchAdapter { dispatch(state: DispatchRequestState, call?: CoordinatorDispatchCallV1): Promise<DispatchOutcome>; prepare?(state: DispatchRequestState): Promise<PreparedDispatch>; reconcile?(state: DispatchRequestState, outcome: DispatchOutcome): Promise<DispatchOutcome>; }
 export interface DispatchEvidenceWriter { persist(input: Readonly<{ state: DispatchRequestState; outcome: DispatchOutcome; dispatchedRequestDigest: string; }>): Promise<void>; }
 export type DurableDispatchPublicationIdentityV1 = Readonly<{ v:"reelier.durable-dispatch-publication-identity/v1";reservationId:string;tenant:string;requestDigest:string;capabilityDigest:string;effectDigest:string;routeAuthorityDigest:string;expectedDispatchedRequestDigest:string;reservationIntentDigest:string }>;
 export type DurableDispatchPublicationQueryV1 = Readonly<{v:"reelier.durable-dispatch-publication-query/v1";identity:DurableDispatchPublicationIdentityV1;ledgerState:"dispatched"|"ambiguous";sendStarted:true}>;
@@ -73,6 +75,41 @@ export interface CertifiedIdentityVerifier { readonly purpose: "authority-eviden
 export interface CertifiedDispatchOptions { readonly identityProbe: () => Promise<AuthenticatedProviderIdentityV1>; readonly verifyIdentity?: CertifiedIdentityVerifier; readonly revalidator: DispatchAuthorityRevalidator; readonly latencyRecorder?: AuthorityLatencyRecorder; readonly onPhase?: (phase: "identity-probe" | "route-reread" | "authority-validation-before-prepare" | "prepare" | "authority-validation-after-prepare" | "dispatch-commit-cas" | "authority-send-boundary" | "send-started" | "send") => void; }
 
 const coordinatorPublicationCalls = new WeakMap<object, Readonly<{ phase: string; reservationId: string; effectDigest: string }>>();
+interface CoordinatorDispatchCallStateV1 { readonly call: object; readonly state: DispatchRequestState; readonly reservationId: string; readonly effectDigest: string; delegate: object | null }
+const coordinatorDispatchCalls = new WeakMap<object, CoordinatorDispatchCallStateV1>();
+const coordinatorDispatchDelegates = new WeakMap<object, CoordinatorDispatchCallStateV1>();
+
+/** @internal Binds one downstream host authority object to the exact live coordinator call. */
+export function bindCoordinatorDispatchCallDelegateV1(call: unknown, delegate: object, state: DispatchRequestState): boolean {
+  if (!call || typeof call !== "object" || !delegate || typeof delegate !== "object") return false;
+  const binding = coordinatorDispatchCalls.get(call as object);
+  if (!binding || binding.delegate !== null || binding.state !== state || binding.reservationId !== state.reservation?.reservationId || binding.effectDigest !== state.effectDigest) return false;
+  binding.delegate = delegate;
+  coordinatorDispatchDelegates.set(delegate, binding);
+  return true;
+}
+
+/** @internal Jointly consumes the downstream delegate and its exact live coordinator call. */
+export function consumeCoordinatorDispatchCallDelegateV1(delegate: unknown, expected: Readonly<{ reservationId: string; effectDigest: string }>): boolean {
+  if (!delegate || typeof delegate !== "object") return false;
+  const binding = coordinatorDispatchDelegates.get(delegate as object);
+  if (!binding || binding.delegate !== delegate) return false;
+  revokeCoordinatorDispatchCall(binding.call);
+  return binding.reservationId === expected.reservationId && binding.effectDigest === expected.effectDigest;
+}
+
+function createCoordinatorDispatchCall(state: DispatchRequestState): CoordinatorDispatchCallV1 {
+  const call = Object.freeze(Object.create(null)) as CoordinatorDispatchCallV1;
+  coordinatorDispatchCalls.set(call as object, { call: call as object, state, reservationId: state.reservation.reservationId, effectDigest: state.effectDigest, delegate: null });
+  return call;
+}
+
+function revokeCoordinatorDispatchCall(call: object): void {
+  const binding = coordinatorDispatchCalls.get(call);
+  coordinatorDispatchCalls.delete(call);
+  if (binding?.delegate) coordinatorDispatchDelegates.delete(binding.delegate);
+  if (binding) binding.delegate = null;
+}
 
 /** @internal Consumed by host-private publication wrappers; never exported from the package barrel. */
 export function consumeCoordinatorPublicationCall(input: object, expected: Readonly<{ phase: string; reservationId: string; effectDigest: string }>): void {
@@ -216,8 +253,10 @@ export function createDispatchCoordinator(ledger: AuthorityLedger, adapter: Disp
       const budgetClaim = budgetFor(state);
       if (budget && budgetClaim) await budget.consumeOnce(budgetClaim);
       let outcome: DispatchOutcome;
-      try { outcome = parseDispatchOutcomeV1(await adapter.dispatch(state)); }
+      const call = createCoordinatorDispatchCall(state);
+      try { outcome = parseDispatchOutcomeV1(await adapter.dispatch(state, call)); }
       catch { outcome = { kind: "ambiguous", resultDigest: authorityDigest({ v: "reelier.dispatch-result/v1", reservationId, status: "ambiguous" }) }; }
+      finally { revokeCoordinatorDispatchCall(call as object); }
       if (adapter.reconcile && outcome.kind !== "ambiguous") {
         try {
           outcome = parseDispatchOutcomeV1(await adapter.reconcile(state, outcome));

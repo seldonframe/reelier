@@ -2,7 +2,7 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 import { isProxy } from "node:util/types";
 import { digestToolEffectContractV1, parseToolEffectContractV1, type ToolEffectContractV1 } from "../tool-effect-contract.js";
 import { authorityCanonicalBytes, authorityDigest } from "../wire.js";
-import type { DispatchAdapter, DispatchOutcome, DispatchRequestState } from "./dispatch.js";
+import { bindCoordinatorDispatchCallDelegateV1, type CoordinatorDispatchCallV1, type DispatchAdapter, type DispatchOutcome, type DispatchRequestState } from "./dispatch.js";
 import { createTrustedObservationVerifier, type TrustedObservationVerifierV1 } from "./outcome-kernel.js";
 
 const SHA = /^sha256:[0-9a-f]{64}$/;
@@ -99,9 +99,11 @@ export function compileEffectTransportV1(input: Readonly<{ contract: ToolEffectC
     catch { throw new Error("effect transport host binding resolution failed"); }
   };
   const adapter: DispatchAdapter = Object.freeze({
-    async dispatch(state: DispatchRequestState): Promise<DispatchOutcome> {
+    async dispatch(state: DispatchRequestState, call?: CoordinatorDispatchCallV1): Promise<DispatchOutcome> {
       bindDispatchState(state, effect, contractDigest);
-      const response = await dispatch(binding, model, await hostBindings(), executor, executorAuthority(state, contractDigest, bindingDigest));
+      const authority = executorAuthority(state, contractDigest, bindingDigest);
+      if (call) bindCoordinatorDispatchCallDelegateV1(call, authority, state);
+      const response = await dispatch(binding, model, await hostBindings(), executor, authority);
       return dispatchOutcome(contract, bindingDigest, response);
     },
     async reconcile(state: DispatchRequestState, prior: DispatchOutcome): Promise<DispatchOutcome> {

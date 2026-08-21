@@ -484,11 +484,11 @@ test("host-authenticated predecessor policy requires an earlier verified Outcome
   assert.equal(counters.send, 2);
 });
 
-test("only the kernel transiently arms exact successor dispatch after durable predecessor verification", async () => {
+test("a transient predecessor arm alone cannot authorize a successor without an exact coordinator call", async () => {
   const predecessor = contract("armed_comment"), successor = contract("armed_status");
   const predecessorDigest = digestToolEffectContractV1(predecessor), successorDigest = digestToolEffectContractV1(successor);
   const policy = createTrustedOutcomePredecessorPolicyV1({ predecessorContractDigest: predecessorDigest, successorContractDigest: successorDigest });
-  const authority = Object.freeze({ reservationId: "armed-status", successorContractDigest: successorDigest });
+  const authority = Object.freeze({ reservationId: "armed-status", successorContractDigest: successorDigest, dispatchAuthority: Object.freeze(Object.create(null)) as object });
   assert.equal(consumeTrustedOutcomePredecessorAuthorizationV1(policy, authority), false);
 
   const store = durableFixture(), states = new Map([
@@ -496,12 +496,12 @@ test("only the kernel transiently arms exact successor dispatch after durable pr
     ["armed-status", reservation("armed-status", "reserved", successorDigest)],
   ]), counters = { send: 0, readback: 0 };
   const base = coordinator(states, counters);
-  let dispatches = 0;
+  let dispatches = 0, armOnlyRejected = false;
   const guarded = Object.freeze({
     ...base,
     async dispatch(handleValue: any) {
       dispatches += 1;
-      if (dispatches === 2 && !consumeTrustedOutcomePredecessorAuthorizationV1(policy, authority)) throw new Error("successor executor is unarmed");
+      if (dispatches === 2) armOnlyRejected = !consumeTrustedOutcomePredecessorAuthorizationV1(policy, authority);
       return base.dispatch(handleValue);
     },
   });
@@ -513,6 +513,7 @@ test("only the kernel transiently arms exact successor dispatch after durable pr
     { contract: successor, handle: handle("armed-status", successor), verifier: verifierFor(successor) },
   ] });
   assert.equal(completed.effects[1]!.status, "verified");
+  assert.equal(armOnlyRejected, true);
   assert.equal(consumeTrustedOutcomePredecessorAuthorizationV1(policy, authority), false);
 });
 

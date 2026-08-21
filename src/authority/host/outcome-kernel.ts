@@ -24,7 +24,7 @@ import {
   type ObservationV1,
   type ToolEffectContractV1,
 } from "../tool-effect-contract.js";
-import type { DispatchCoordinator, DispatchOutcome, DispatchReservationProjectionV1 } from "./dispatch.js";
+import { consumeCoordinatorDispatchCallDelegateV1, type DispatchCoordinator, type DispatchOutcome, type DispatchReservationProjectionV1 } from "./dispatch.js";
 import { constructGovernedReceiptV1 } from "./receipt-authority.js";
 
 const trustedVerifierStates = new WeakMap<object, Readonly<{ contractDigest: string; verify: (observation: ObservationV1) => boolean }>>();
@@ -53,13 +53,14 @@ export function createTrustedOutcomePredecessorPolicyV1(input: Readonly<{ predec
 }
 
 /** Host-executor check for the kernel's exact, one-dispatch transient authorization. */
-export function consumeTrustedOutcomePredecessorAuthorizationV1(policy: TrustedOutcomePredecessorPolicyV1, input: Readonly<{ reservationId: string; successorContractDigest: string }>): boolean {
+export function consumeTrustedOutcomePredecessorAuthorizationV1(policy: TrustedOutcomePredecessorPolicyV1, input: Readonly<{ reservationId: string; successorContractDigest: string; dispatchAuthority?: object }>): boolean {
   const state = policy && typeof policy === "object" ? trustedPredecessorPolicyStates.get(policy as object) : undefined;
   if (!state) return false;
   let parsed: Record<string, unknown>;
-  try { parsed = strictDataRecord(input, ["reservationId", "successorContractDigest"], "predecessor dispatch authorization"); }
+  try { parsed = strictDataRecord(input, ["reservationId", "successorContractDigest", "dispatchAuthority"], "predecessor dispatch authorization"); }
   catch { return false; }
   if (typeof parsed.reservationId !== "string" || parsed.reservationId.length === 0 || parsed.successorContractDigest !== state.successorContractDigest) return false;
+  if (!consumeCoordinatorDispatchCallDelegateV1(parsed.dispatchAuthority, { reservationId: parsed.reservationId, effectDigest: state.successorContractDigest })) return false;
   const key = predecessorArmKey(parsed.reservationId, state.successorContractDigest);
   if (!state.armed.has(key)) return false;
   state.armed.delete(key);

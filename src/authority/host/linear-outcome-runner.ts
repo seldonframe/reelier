@@ -49,7 +49,7 @@ export function createLinearOutcomeExecutorV1(input: Readonly<{ pack: GitHubLine
         const reviewed = pack.operations[tool.operation];
         if (request.authority.contractDigest !== reviewed.metadata.contractDigest || request.authority.bindingDigest !== authorityDigest(reviewed.binding)) throw new TypeError("Linear outcome compiler authority is invalid");
         providerInput = assertLinearOutcomeDispatchV1(pack, tool.operation, request.arguments.model, request.arguments.host);
-        if (!tool.readback && tool.operation === "linearStatusTransition" && !consumeTrustedOutcomePredecessorAuthorizationV1(predecessorPolicy, { reservationId: request.authority.reservationId, successorContractDigest: request.authority.contractDigest })) throw new TypeError("Linear status predecessor authorization is absent");
+        if (!tool.readback && tool.operation === "linearStatusTransition" && !consumeTrustedOutcomePredecessorAuthorizationV1(predecessorPolicy, { reservationId: request.authority.reservationId, successorContractDigest: request.authority.contractDigest, dispatchAuthority: request.authority })) throw new TypeError("Linear status predecessor authorization is absent");
       } catch { sink.success(JSON.stringify({ outcome: "refused", data: {} })); return; }
       let settled = false;
       const providerSink = Object.freeze({
