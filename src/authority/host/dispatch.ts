@@ -190,7 +190,7 @@ export function createDispatchCoordinator(ledger: AuthorityLedger, adapter: Disp
         const prepared = await measureLatency(certified?.latencyRecorder, "prepare", () => adapter.prepare!(state, call));
         const description: PreparedDispatchDescriptionV1 = prepared.description;
         if (routeAuthority && (description.routeDigest !== routeAuthority.routeDigest || description.materializedRequestDigest !== routeAuthority.expectedMaterializedRequestDigest)) throw new Error("prepared dispatch does not match durable route authority");
-        if (certified) {
+        const revalidatePreparedAuthority = certified ? async (): Promise<void> => {
           certified.onPhase?.("authority-validation-after-prepare");
           const authorityAfter = await measureLatency(certified.latencyRecorder, "authority-validation-after-prepare", () => certified.revalidator.revalidate(state));
           if (
@@ -207,9 +207,11 @@ export function createDispatchCoordinator(ledger: AuthorityLedger, adapter: Disp
             || authorityAfter.accountId !== undefined && authorityAfter.accountId !== routeAuthority!.accountId
             || authorityAfter.endpointId !== undefined && authorityAfter.endpointId !== routeAuthority!.endpointId
           ) throw new Error("dispatch authority changed during preparation");
-        }
+        } : undefined;
+        await revalidatePreparedAuthority?.();
         const budgetClaim = budgetFor(state);
         if (budget && budgetClaim) await budget.consumeOnce(budgetClaim);
+        await revalidatePreparedAuthority?.();
         let lease: import("./prepared-dispatch.js").DispatchCommitLease;
         try { certified?.onPhase?.("dispatch-commit-cas"); lease = await measureLatency(certified?.latencyRecorder, "dispatch-commit-cas", () => ledger.commitPreparedDispatch!({ reservationId, allocationId: context?.allocationId ?? description.allocationId, expectedAuthorityGeneration: description.authorityGeneration, preparedDescription: description, absoluteDeadlineMs: description.absoluteDeadlineMs })); }
         catch (error) {
@@ -232,6 +234,7 @@ export function createDispatchCoordinator(ledger: AuthorityLedger, adapter: Disp
           try { reservationRoot=await publication.publishReservation(coordinatorPublicationCall({phase:"reservation",identity,state:rootState,outcome:rootOutcome,dispatchedRequestDigest:null,priorReceiptDigest:null})); }
           catch (error) { throw new DispatchBoundaryFailure({ classification: "reservation-publication-unavailable", phase: "reservation-publication", providerEffectPossible: false, cause: error }); }
         }
+        await revalidatePreparedAuthority?.();
         authorizeCoordinatorCommittedLease(lease);
         let outcome: DispatchOutcome;
         try { certified?.onPhase?.("authority-send-boundary"); outcome = parseDispatchOutcomeV1(await measureLatency(certified?.latencyRecorder, "authority-send-boundary", () => consumePreparedDispatch(prepared, lease))); certified?.onPhase?.("send"); }
