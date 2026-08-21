@@ -86,33 +86,40 @@ test("effect contract rejects nested accessors without invoking them", () => {
 test("wire graph bounds refuse hostile shapes before descriptor materialization", () => {
   const hugeArray = new Array(65).fill("field");
   const hugeObject = Object.fromEntries(Array.from({ length: 65 }, (_, index) => [`field${index}`, index]));
+  const deepest: Record<string, unknown> = {};
+  let deep: Record<string, unknown> = deepest; for (let index = 0; index < 18; index++) deep = { child: deep };
+  const nodeLeaves = Array.from({ length: 20 }, () => Array.from({ length: 60 }, () => ({}))).flat();
+  const manyNodes = Array.from({ length: 20 }, (_, index) => nodeLeaves.slice(index * 60, index * 60 + 60));
+  const leafSet = new Set<object>(nodeLeaves);
+  const cycle: Record<string, unknown> = {}; cycle.self = cycle;
+  const shared = {};
   const original = Object.getOwnPropertyDescriptors;
   const descriptorCalls = new Map<object, number>();
   Object.getOwnPropertyDescriptors = ((value: object) => {
-    if (value === hugeArray || value === hugeObject) descriptorCalls.set(value, (descriptorCalls.get(value) ?? 0) + 1);
+    if (value === hugeArray || value === hugeObject || value === deepest || value === cycle || value === shared || leafSet.has(value)) descriptorCalls.set(value, (descriptorCalls.get(value) ?? 0) + 1);
     return original(value);
   }) as typeof Object.getOwnPropertyDescriptors;
   try {
     assert.throws(() => parseToolEffectContractV1({ ...contract, model: { fields: hugeArray, maxBytes: 1 } }));
     assert.throws(() => parseToolEffectContractV1({ ...contract, model: { fields: ["field"], maxBytes: 1, hugeObject } }));
+    assert.throws(() => parseToolEffectContractV1({ ...contract, deep }));
+    assert.throws(() => parseToolEffectContractV1({ ...contract, manyNodes }));
+    assert.throws(() => parseToolEffectContractV1({ ...contract, cycle }));
+    assert.throws(() => parseToolEffectContractV1({ ...contract, shared: { first: shared, second: shared } }));
   } finally {
     Object.getOwnPropertyDescriptors = original;
   }
   assert.equal(descriptorCalls.get(hugeArray) ?? 0, 0);
   assert.equal(descriptorCalls.get(hugeObject) ?? 0, 0);
+  assert.equal(descriptorCalls.get(deepest) ?? 0, 0);
+  assert.ok(nodeLeaves.reduce<number>((count, leaf) => count + (descriptorCalls.get(leaf) ?? 0), 0) < nodeLeaves.length);
+  assert.equal(descriptorCalls.get(cycle), 1);
+  assert.equal(descriptorCalls.get(shared), 1);
 
   const sparse = new Array(2); sparse[0] = "field";
-  let deep: Record<string, unknown> = {}; for (let index = 0; index < 18; index++) deep = { child: deep };
-  const manyNodes = Array.from({ length: 5 }, () => Array.from({ length: 60 }, () => ({})));
-  const cycle: Record<string, unknown> = {}; cycle.self = cycle;
-  const shared = {};
   for (const hostile of [
     { ...contract, provider: () => "calendar-like" },
     { ...contract, model: { fields: sparse, maxBytes: 1 } },
-    { ...contract, deep },
-    { ...contract, manyNodes },
-    { ...contract, cycle },
-    { ...contract, shared: { first: shared, second: shared } },
   ]) assert.throws(() => parseToolEffectContractV1(hostile));
 });
 
@@ -135,6 +142,7 @@ test("lifecycle standalone parsers close provider packs, mission claims, and rec
   for (const [parser, value] of [[parseProviderOutcomePackV1, pack], [parseMissionClaimV1, claim], [parseGovernedReceiptV1, receipt]] as const) {
     assert.throws(() => parser({ ...value, extra: true }));
   }
+  assert.throws(() => parseMissionClaimV1({ ...claim, contractDigests: [digest, digest] }));
 });
 
 test("attempt and observation parsers close provider-crossing evidence combinations", () => {
