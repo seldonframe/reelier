@@ -116,11 +116,16 @@ test("signed five-definition runtime recovers an exact Linear-only mission witho
     const interrupted = await crashing.agentTools.outcomeRequest(crashRequest, crashFixture.context) as any;
     assert.equal(interrupted.lifecycleState, "unavailable");
     const crashRestart = await makeCrashRuntime(false), adopted = await crashRestart.agentTools.outcomeRequest(crashRequest, crashFixture.context) as any;
-    assert.equal(adopted.lifecycleState, "pending", JSON.stringify(adopted));
+    assert.deepEqual({ lifecycleState: adopted.lifecycleState, verdict: adopted.verdict, reasonCode: adopted.reasonCode }, { lifecycleState: "cancelled", verdict: "refused", reasonCode: "accepted-reservation-cancelled-on-restart" }, JSON.stringify(adopted));
+    assert.match(adopted.receiptRef, /^sha256:[0-9a-f]{64}$/);
+    const exactRetry = await crashRestart.agentTools.outcomeRequest(crashRequest, crashFixture.context) as any;
+    assert.deepEqual(exactRetry, adopted, "exact retry adopts the same terminal cancellation receipt");
     assert.deepEqual({ linearWrites, linearReads }, beforeCrash, "accepted-before-index restart is readback-only and never sends");
     const crashLedger = await new FsAuthorityLedger(crashFixture.config.ledgerDir).recover();
     assert.equal(crashLedger.ok, true);
-    assert.deepEqual(crashLedger.ok ? crashLedger.reservations.map(item => item.intent.definitionAlias) : [], [governedOutcomeCompositionAliasesV1[3]], "restart adopts the one durable accepted reservation without reminting its successor");
+    assert.deepEqual(crashLedger.ok ? crashLedger.reservations.map(item => ({ alias: item.intent.definitionAlias, state: item.state, resultDigest: item.resultDigest })) : [], [{ alias: governedOutcomeCompositionAliasesV1[3], state: "cancelled", resultDigest: adopted.receiptRef }], "restart cancels the one durable accepted reservation without reminting its successor");
+    const crashJournal = await createSignedJournal({ rootDir: path.join(root, "accepted-before-index-journal"), journalId: "accepted-before-index", signerId: "accepted-before-index", privateKey: crashKeys.privateKey, publicKey: crashKeys.publicKey }), crashEvents = (await Promise.all((await crashJournal.listRequestIds()).map(id => crashJournal.load(id)))).flat();
+    assert.equal(crashEvents.filter(event => event.phase === "mission-plan" && (event.data.plan as any)?.lifecycleState === "cancelled").length, 1, "terminal non-success is signed once across exact retry");
   } finally { restorePlatform(); await Promise.all([rm(root, { recursive: true, force: true }), rm(release.root, { recursive: true, force: true })]); }
 });
 
