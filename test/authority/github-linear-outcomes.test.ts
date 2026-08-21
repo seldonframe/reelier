@@ -4,6 +4,7 @@ import { authorityDigest } from "../../src/authority/wire.js";
 import { compileEffectTransportV1 } from "../../src/authority/host/effect-transports.js";
 import { createOutcomeKernel, createTrustedObservationVerifier, type StoredEffectLifecycleV1 } from "../../src/authority/host/outcome-kernel.js";
 import { createLinearOutcomeExecutorV1 } from "../../src/authority/host/linear-outcome-runner.js";
+import { createReservedDispatchHandle } from "../../src/authority/gate.js";
 import {
   assertGitHubLinearProviderReadbackV1,
   createGitHubLinearOutcomePackV1,
@@ -141,26 +142,30 @@ test("a verified merge plus unresolved Linear effect remains honestly pending", 
   const pack = createGitHubLinearOutcomePackV1(reviewedInput()), contracts = [pack.operations.exactHeadMerge.contract, pack.operations.linearEvidenceComment.contract];
   const mission = { v: "reelier.mission-claim/v1" as const, missionId: "mission_partial_linear", mandateDigest: sha("1"), promptDigest: sha("2"), contractDigests: contracts.map(authorityDigest), claimedAt: "2026-08-21T12:00:00.000Z" };
   const lifecycle = new Map<string, StoredEffectLifecycleV1>();
-  for (const [index, contract] of contracts.entries()) {
-    const contractDigest = authorityDigest(contract), reservationId = `reservation_${index}`, semanticIdentity = contract.semanticIdentity;
-    const reservation = { v: "reelier.effect-reservation/v1" as const, reservationId, semanticIdentity, contractDigest, reservedAt: "2026-08-21T12:00:00.000Z" };
-    const verified = index === 0;
-    const attempt = { v: "reelier.attempt/v1" as const, attemptId: `attempt_${index}`, reservationId, semanticIdentity, dispatchedAt: "2026-08-21T12:00:01.000Z", crossedProviderBoundary: true, result: verified ? "acknowledged" as const : "ambiguous" as const };
-    const observation = verified ? { v: "reelier.observation/v1" as const, observationId: `observation_${index}`, reservationId, semanticIdentity, observedAt: "2026-08-21T12:00:02.000Z", authoritative: true, verdict: "matched" as const, projectionDigest: sha("8") } : { v: "reelier.observation/v1" as const, observationId: `observation_${index}`, reservationId, semanticIdentity, observedAt: "2026-08-21T12:00:02.000Z", authoritative: false, verdict: "unavailable" as const, projectionDigest: null };
-    const outcome = { v: "reelier.governed-outcome/v1" as const, outcomeId: `outcome_${index}`, contractDigest, semanticIdentity, reservation, attempts: [attempt], observation, status: verified ? "verified" as const : "pending" as const, completedAt: "2026-08-21T12:00:03.000Z" };
-    lifecycle.set(reservationId, { v: "reelier.stored-effect-lifecycle/v1", missionId: mission.missionId, missionDigest: authorityDigest(mission), contractDigest, reservation, attempt, observation, outcome, revision: 1 });
-  }
+  const mergeContract = contracts[0]!, mergeDigest = authorityDigest(mergeContract), mergeReservation = { v: "reelier.effect-reservation/v1" as const, reservationId: "reservation_0", semanticIdentity: mergeContract.semanticIdentity, contractDigest: mergeDigest, reservedAt: "2026-08-21T12:00:00.000Z" };
+  const mergeAttempt = { v: "reelier.attempt/v1" as const, attemptId: "attempt_0", reservationId: "reservation_0", semanticIdentity: mergeContract.semanticIdentity, dispatchedAt: "2026-08-21T12:00:01.000Z", crossedProviderBoundary: true, result: "acknowledged" as const };
+  const mergeObservation = { v: "reelier.observation/v1" as const, observationId: "observation_0", reservationId: "reservation_0", semanticIdentity: mergeContract.semanticIdentity, observedAt: "2026-08-21T12:00:02.000Z", authoritative: true, verdict: "matched" as const, projectionDigest: sha("8") };
+  const mergeOutcome = { v: "reelier.governed-outcome/v1" as const, outcomeId: "outcome_0", contractDigest: mergeDigest, semanticIdentity: mergeContract.semanticIdentity, reservation: mergeReservation, attempts: [mergeAttempt], observation: mergeObservation, status: "verified" as const, completedAt: "2026-08-21T12:00:03.000Z" };
+  lifecycle.set("reservation_0", { v: "reelier.stored-effect-lifecycle/v1", missionId: mission.missionId, missionDigest: authorityDigest(mission), contractDigest: mergeDigest, reservation: mergeReservation, attempt: mergeAttempt, observation: mergeObservation, outcome: mergeOutcome, revision: 1 });
   const receipts = new Map<string, { receiptId: string; receiptDigest: string; receiptRef: string }>();
-  const storage: any = { durable: true, async claimMission() { return { status: "claimed", claim: mission }; }, async loadMission() { return mission; }, async loadEffect(_missionId: string, reservationId: string) { return lifecycle.get(reservationId)!; }, async storeEffect() { throw new Error("stored terminal outcomes must be adopted"); }, async compareAndPublishReceipt(receipt: any, receiptDigest: string) { const head = { receiptId: receipt.receiptId, receiptDigest, receiptRef: authorityDigest({ receiptId: receipt.receiptId }) }; receipts.set(receipt.receiptId, head); return { status: "published", receiptDigest, receiptRef: head.receiptRef }; }, async loadReceipt(receiptId: string) { return receipts.get(receiptId) ?? null; } };
-  let providerCalls = 0;
-  const ledger: any = { async getReservation(reservationId: string) { const stored = lifecycle.get(reservationId)!; return { reservationId, state: "acknowledged", intent: { effectDigest: stored.contractDigest, issuedAt: stored.reservation.reservedAt } }; } };
-  const coordinator: any = { async dispatch() { providerCalls += 1; throw new Error("must not dispatch"); }, async reconcile() { providerCalls += 1; throw new Error("must not reconcile terminal projections"); }, async recover() { providerCalls += 1; } };
+  const storage: any = { durable: true, async claimMission() { return { status: "claimed", claim: mission }; }, async loadMission() { return mission; }, async loadEffect(_missionId: string, reservationId: string) { return lifecycle.get(reservationId) ?? null; }, async storeEffect(value: StoredEffectLifecycleV1, expectedRevision: number) { const stored = Object.freeze({ ...value, revision: expectedRevision + 1 }); lifecycle.set(value.reservation.reservationId, stored); return { status: "stored", value: stored }; }, async compareAndPublishReceipt(receipt: any, receiptDigest: string) { const head = { receiptId: receipt.receiptId, receiptDigest, receiptRef: authorityDigest({ receiptId: receipt.receiptId }) }; receipts.set(receipt.receiptId, head); return { status: "published", receiptDigest, receiptRef: head.receiptRef }; }, async loadReceipt(receiptId: string) { return receipts.get(receiptId) ?? null; } };
+  let linearWrites = 0, linearReads = 0, gitProviderCalls = 0;
+  const exactComment = { workspace: "workspace_01", team: "team_01", project: "project_01", issue: "REEL-TEST-1", commentMarker: "reelier:evidence:mission_01", evidenceUrl: reviewedInput().linear.evidenceUrl, evidenceContentDigest: sha("f"), commentId: "comment_01" };
+  const executor = createLinearOutcomeExecutorV1({ pack, provider: { comment(_input, sink): void { linearWrites += 1; sink.success(JSON.stringify({ outcome: "uncertain", data: {} })); }, readComment(_input, sink): void { linearReads += 1; sink.success(JSON.stringify(exactComment)); }, transitionStatus(): void {}, readStatus(): void {} } });
+  const commentOperation = pack.operations.linearEvidenceComment;
+  const compiled = compileEffectTransportV1({ contract: commentOperation.contract, binding: commentOperation.binding, modelInput: { evidenceUrl: reviewedInput().linear.evidenceUrl }, observationAuthKey: "d".repeat(64), resolveHostBindings: async () => ({ credential: "secret", account: "workspace_01", destination: "REEL-TEST-1", limit: pack.linearPolicyDigest }), executor });
+  const commentState: any = { reservationId: "reservation_1", state: "reserved", intent: { effectDigest: authorityDigest(commentOperation.contract), effectCanonicalBase64: Buffer.from(JSON.stringify(compiled.effect)).toString("base64"), executionContext: { allocationId: "linear-comment-allocation" } } };
+  const states = new Map([["reservation_0", { reservationId: "reservation_0", state: "acknowledged", intent: { effectDigest: mergeDigest } } as any], ["reservation_1", commentState]]);
+  const transportState = { reservation: commentState, effect: compiled.effect, effectDigest: authorityDigest(commentOperation.contract), effectCanonicalBase64: commentState.intent.effectCanonicalBase64 } as any;
+  const opaque = createReservedDispatchHandle({ reservation: commentState, effect: compiled.effect, effectDigest: transportState.effectDigest, effectCanonicalBase64: transportState.effectCanonicalBase64 });
+  const ledger: any = { async getReservation(reservationId: string) { return states.get(reservationId); } };
+  const coordinator: any = { describe() { return { reservationId: "reservation_1", state: commentState.state, effectDigest: transportState.effectDigest, allocationId: "linear-comment-allocation" }; }, async dispatch() { const result = await compiled.adapter.dispatch(transportState); commentState.state = result.kind === "ambiguous" ? "ambiguous" : "acknowledged"; return result; }, async reconcile() { linearReads += 1; throw new Error("first unresolved pass must not read back"); }, async recover() {} };
   const kernel = createOutcomeKernel({ ledger, coordinator, storage, now: () => Date.parse("2026-08-21T12:00:04.000Z"), authorization: async () => "active" });
   await kernel.claimMission(mission);
-  const outcome = await kernel.execute({ missionId: mission.missionId, effects: contracts.map((contract, index) => ({ contract, reservationId: `reservation_${index}`, verifier: createTrustedObservationVerifier({ contractDigest: authorityDigest(contract), verify: () => true }) })) });
+  const outcome = await kernel.execute({ missionId: mission.missionId, effects: [{ contract: mergeContract, reservationId: "reservation_0", verifier: createTrustedObservationVerifier({ contractDigest: mergeDigest, verify: () => true }) }, { contract: commentOperation.contract, handle: opaque, verifier: compiled.verifier }] });
   assert.equal(outcome.status, "pending");
   assert.deepEqual(outcome.effects.map(effect => effect.status), ["verified", "pending"]);
-  assert.equal(providerCalls, 0);
+  assert.deepEqual({ linearWrites, linearReads, gitProviderCalls }, { linearWrites: 1, linearReads: 0, gitProviderCalls: 0 });
 });
 
 test("composite and Linear-only plans have exact ordering and Linear-only carries no git operation", () => {
