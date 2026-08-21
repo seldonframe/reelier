@@ -18,7 +18,8 @@ Files changed
 Commits
 
 - `dd560c7d test(authority): specify governed effect contracts` (RED test)
-- pending: governed-effect implementation and generated adapter contract
+- `4c7061e0 feat(authority): add governed effect contracts`
+- `42e88337 docs(sdd): report governed effect contract task`
 
 What changed
 
