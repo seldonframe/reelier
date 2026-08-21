@@ -216,7 +216,7 @@ function closedCallbackRecord(value: unknown, required: readonly string[], optio
 }
 
 function callback<T extends (...args: never[]) => void>(value: unknown, label: string): T {
-  if (typeof value !== "function") throw new TypeError(`${label} must be a function returning void`);
+  if (typeof value !== "function" || isProxy(value)) throw new TypeError(`${label} must be an inert function returning void`);
   return value as T;
 }
 
