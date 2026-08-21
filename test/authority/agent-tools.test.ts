@@ -118,6 +118,9 @@ test("host agent tools translate only authenticated opaque references and never 
   const requested = await tools.outcomeRequest({ outcomeRef: ref, requestId: "request_1", sourceRefs: { issue: "issue_1" }, choices: {} }, context);
   const status = await tools.outcomeStatus({ requestId: "request_1" }, context);
   assert.deepEqual(agentStatus.outcomeRefs, [ref]);
+  assert.equal(agentStatus.capability.harnessId, null);
+  assert.equal(agentStatus.capability.harnessVersion, null);
+  assert.equal(agentStatus.capability.liveTested, false);
   assert.equal(proposal.outcomeRef, ref);
   assert.equal(requested.lifecycleState, "pending");
   assert.equal(status.receiptRef, "receipt_1");
