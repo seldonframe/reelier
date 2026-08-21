@@ -109,6 +109,7 @@ Modify:
 - `src/authority/host/outcome-kernel-fs-storage.ts`
 - `src/authority/host/github-linear-mission-runtime.ts`
 - `src/authority/host/github-release-runner.ts` only to preserve and forward the exact optional `CoordinatorDispatchCallV1` through its prepared fallback adapter
+- `src/authority/host/linear-outcome-runner.ts` only to require and consume the exact coordinator call capability for both reviewed Linear writes
 - `src/authority/host/index.ts`
 - `src/authority/host/receipts.ts` only if the existing publication-head resolver cannot express the exact governed query without change
 - `src/packs/github-release/manifest.ts`
@@ -125,6 +126,7 @@ Modify:
 - `test/authority/outcome-kernel-fs-storage.test.ts`
 - `test/authority/github-linear-mission-runtime.test.ts`
 - `test/authority/github-release-runner.test.ts` only to pin prepared fallback call-capability forwarding and existing GitHub behavior
+- `test/authority/github-linear-outcomes.test.ts` to pin genuine branded GitHub/Linear executor composition and exact coordinator-call consumption for comment and status
 - `test/authority/github-release-serve-fixture.ts` only to add an opt-in executable-candidate variant whose real file bytes and digests are signed by the existing fixture authority for the full governed composite test
 - `test/authority/local-multi-definition-jobs.test.ts`
 - `test/authority/receipts.test.ts` only if `receipts.ts` changes
@@ -135,6 +137,18 @@ Modify:
 - `.superpowers/sdd/2026-08-21-genuine-governed-outcome-composition/task-4c-report.md`
 
 Do not modify `src/authority/host/signed-journal.ts` unless a RED test proves its existing identity/lease semantics cannot support the index. Any such scope change requires a tracked amendment first.
+
+### Independent-review fix round
+
+Before Task 4C may ship, close these exact blockers without widening the architecture:
+
+- aggregate all five effect Outcomes; any failed, partial, pending, absent, missing publication, or missing predecessor prevents reconciled mission success;
+- revalidate the same signed gate authority after asynchronous prepare/host resolution and immediately before prepared CAS/send;
+- require the exact coordinator call capability in the three GitHub writes and both Linear writes, and construct the runtime only from the branded GitHub and Linear executors;
+- expose an opaque readback-only linkage for exact-existing accepted reservations so crash after gate acceptance/before mission indexing can recover without reminting a handle or resending;
+- bind the publication resolver object and exact query identity to the durable governed join, refusing duck-typed/cross-reservation/effect/head substitutions.
+
+Add deterministic RED tests for every blocker, including failure in candidate/PR/comment groups, revocation during prepare, direct/copy/replay call attempts for all five writes, crash at the accepted-before-index boundary, restart after verified comment before status, and publication resolver/query substitution.
 
 ## Required falsifiers
 
