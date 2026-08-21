@@ -243,6 +243,7 @@ export async function createGitHubReleaseRunner(input: Readonly<{ rootDir: strin
         if (request.authority.bindingDigest !== githubReleaseOutcomeBindingDigestV1(request.tool)) throw new TypeError("GitHub release pack compiler binding is invalid");
         const reviewedPackDigest = reviewedPack === null ? undefined : githubReviewedReleasePackDigestV1(reviewedPack);
         if (reviewedPack) assertGitHubReviewedReleasePackMemberV1(reviewedPack, request.tool, request.authority.contractDigest, request.authority.bindingDigest, request.arguments.host.limit);
+        if (typeof request.authority.requestId !== "string" || typeof request.authority.governedEffectDigest !== "string") throw new TypeError("GitHub release write requires authenticated governed authority");
         if (!selected.reconcile && !consumeCoordinatorDispatchCallDelegateV1(request.authority, { reservationId: request.authority.reservationId, effectDigest: request.authority.governedEffectDigest })) throw new TypeError("GitHub release write requires the exact coordinator call capability");
         const model = exactRecord(request.arguments.model, ["authorizationHandle", "requestId"], "GitHub release pack model input");
         if (model.requestId !== request.authority.requestId) throw new TypeError("GitHub release pack authenticated request binding is invalid");

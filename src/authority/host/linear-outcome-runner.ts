@@ -49,6 +49,7 @@ export function createLinearOutcomeExecutorV1(input: Readonly<{ pack: GitHubLine
         if (!tool) throw new TypeError("Linear outcome tool is not reviewed");
         const reviewed = pack.operations[tool.operation];
         if (request.authority.contractDigest !== reviewed.metadata.contractDigest || request.authority.bindingDigest !== authorityDigest(reviewed.binding)) throw new TypeError("Linear outcome compiler authority is invalid");
+        if (typeof request.authority.requestId !== "string" || typeof request.authority.governedEffectDigest !== "string") throw new TypeError("Linear outcome write requires authenticated governed authority");
         providerInput = assertLinearOutcomeDispatchV1(pack, tool.operation, request.arguments.model, request.arguments.host);
         if (!tool.readback && tool.operation === "linearEvidenceComment" && !consumeCoordinatorDispatchCallDelegateV1(request.authority, { reservationId: request.authority.reservationId, effectDigest: request.authority.governedEffectDigest })) throw new TypeError("Linear comment requires the exact coordinator call capability");
         if (!tool.readback && tool.operation === "linearStatusTransition" && !consumeTrustedOutcomePredecessorAuthorizationV1(predecessorPolicy, { reservationId: request.authority.reservationId, successorContractDigest: request.authority.contractDigest, dispatchAuthority: request.authority })) throw new TypeError("Linear status requires the exact coordinator call and predecessor authorization");
