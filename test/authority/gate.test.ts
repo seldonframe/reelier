@@ -15,7 +15,7 @@ import { createAuthorityStatePort, digestAuthorityState, type AuthorityStateBack
 import { FsAuthorityLedger } from "../../src/authority/host/fs-ledger.js";
 import { createFileGateDecisionSink } from "../../src/authority/decision.js";
 import {
-  bindAcceptedGateReservationAuthorityV1, createAuthorityGate, createReservedDispatchHandle, describeAcceptedGateReservationAuthorityV1, describeAcceptedGateReservationReadbackV1, recoverAcceptedGateReservationReadbackV1, revalidateAcceptedGateReservationAuthorityV1, selectEligibleAuthorityContract, takeAcceptedGateReservationHandleV1,
+  bindAcceptedGateReservationAuthorityV1, createAuthorityGate, createReservedDispatchHandle, describeAcceptedGateReservationAuthorityV1, describeAcceptedGateReservationReadbackV1, recoverAcceptedGateReservationReadbackV1, revalidateAcceptedGateReservationAuthorityV1, revalidateAcceptedGateReservationHandleV1, selectEligibleAuthorityContract, takeAcceptedGateReservationHandleV1,
   unwrapReservedDispatchHandle, type AuthorityGateDependencies, type GateResult,
 } from "../../src/authority/gate.js";
 import { AuthorityBoundaryError, type GateRefusalReason } from "../../src/authority/errors.js";
@@ -47,9 +47,13 @@ test("only a newly accepted genuine gate reservation carries send authority", as
     assert.throws(() => bindAcceptedGateReservationAuthorityV1(Object.freeze({ decide: f.gate.decide }), accepted), /genuine|gate|authority/i);
     assert.throws(() => describeAcceptedGateReservationAuthorityV1(structuredClone(authority) as never), /genuine|authority/i);
     await revalidateAcceptedGateReservationAuthorityV1(authority);
+    const handle = takeAcceptedGateReservationHandleV1(authority);
+    assert.equal(handle, accepted.handle, "the exact newly accepted handle crosses once");
+    await revalidateAcceptedGateReservationHandleV1(handle);
+    await assert.rejects(() => revalidateAcceptedGateReservationHandleV1(structuredClone(handle) as never), /genuine|handle|authority/i);
     (f.stateInput.snapshot.candidates[0]!.stateEvents as any[]).push({ index: 1, kind: "revoked", contractDigest: accepted.signedDecision.decisionContext.contractDigest, at: decisionAt });
-    await assert.rejects(() => revalidateAcceptedGateReservationAuthorityV1(authority), /changed|revoked|current|authority/i);
-    assert.equal(takeAcceptedGateReservationHandleV1(authority), accepted.handle, "the exact newly accepted handle crosses once");
+    await assert.rejects(() => revalidateAcceptedGateReservationHandleV1(handle), /changed|revoked|current|authority/i);
+    await assert.rejects(() => revalidateAcceptedGateReservationAuthorityV1(authority), /consumed|invalid|authority/i);
     assert.throws(() => takeAcceptedGateReservationHandleV1(authority), /consumed|authority/i);
 
     const existing = await f.gate.decide(f.request);
