@@ -226,6 +226,15 @@ test("closed reviewed authority refuses wrong identities and hostile DTO roots i
   Object.defineProperty(accessor.linear, "project", { enumerable: true, get() { getterCalls += 1; return "project_01"; } });
   assert.throws(() => createGitHubLinearOutcomePackV1(accessor), /inert|data|property/i);
   assert.equal(getterCalls, 0);
+  for (const unknown of ["hidden", Symbol("unknown-check")]) {
+    const arrayRoot = structuredClone(base) as any;
+    Object.defineProperty(arrayRoot.github.requiredChecks, unknown, { value: true });
+    assert.throws(() => createGitHubLinearOutcomePackV1(arrayRoot), /closed|unknown|array/i);
+  }
+  const accessorArray = structuredClone(base) as any;
+  Object.defineProperty(accessorArray.github.requiredChecks, "0", { enumerable: true, get() { getterCalls += 1; return "coverage"; } });
+  assert.throws(() => createGitHubLinearOutcomePackV1(accessorArray), /inert|data|array/i);
+  assert.equal(getterCalls, 0);
   let traps = 0;
   assert.throws(() => createGitHubLinearOutcomePackV1(new Proxy(base, { ownKeys() { traps += 1; return []; } }) as any), /inert|proxy/i);
   assert.equal(traps, 0);
