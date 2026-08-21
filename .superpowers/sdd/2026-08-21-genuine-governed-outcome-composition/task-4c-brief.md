@@ -9,3 +9,5 @@ Use the exact files, phases, falsifiers, compatibility gates, and no-external-wr
 Scope amendment: `src/packs/conformance.ts` is authorized only to extend its exact reviewed alias/source inventory for the two signed Linear definitions. The plan already required the matching conformance assertion but initially omitted this implementation file.
 
 Scope amendment: `src/authority/host/github-release-runner.ts` and `test/authority/github-release-runner.test.ts` are authorized only to forward and pin the exact optional coordinator call capability through the existing prepared fallback adapter. The wrapper must not otherwise change GitHub release behavior.
+
+Scope amendment: `test/authority/github-release-serve-fixture.ts` is authorized only to add an opt-in executable-candidate variant with real signed file bytes/digests for the full composite test. The existing startup/refusal fixture behavior must remain unchanged.

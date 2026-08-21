@@ -123,6 +123,7 @@ Modify:
 - `test/authority/outcome-kernel-fs-storage.test.ts`
 - `test/authority/github-linear-mission-runtime.test.ts`
 - `test/authority/github-release-runner.test.ts` only to pin prepared fallback call-capability forwarding and existing GitHub behavior
+- `test/authority/github-release-serve-fixture.ts` only to add an opt-in executable-candidate variant whose real file bytes and digests are signed by the existing fixture authority for the full governed composite test
 - `test/authority/local-multi-definition-jobs.test.ts`
 - `test/authority/receipts.test.ts` only if `receipts.ts` changes
 - `test/authority/package.test.ts`
