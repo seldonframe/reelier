@@ -44,12 +44,30 @@ test("MCP compilation closes model input before host injection and omits credent
   });
   assert.equal(outcome.kind, "acknowledged");
   assert.doesNotMatch(JSON.stringify({ effect: compiled.effect, evidence: compiled.evidence, outcome }), /credential-super-secret/);
+  assert.doesNotMatch(JSON.stringify({ effect: compiled.effect, evidence: compiled.evidence, outcome }), new RegExp(observationAuthKey));
 
   for (const invalid of [{ channel: "general", text: "hello", tenant: "model-owned" }, { channel: "general" }]) {
     let touchedHost = 0;
     assert.throws(() => compileEffectTransportV1({ contract: SLACK_LIKE_CONTRACT, binding: SLACK_LIKE_BINDING, modelInput: invalid, resolveHostBindings: async () => { touchedHost++; return host; }, ports: {} }), /model|field|closed/i);
     assert.equal(touchedHost, 0);
   }
+});
+
+test("observation authentication keys are exact inert host-only 256-bit values", () => {
+  const base = {
+    contract: SLACK_LIKE_CONTRACT,
+    binding: SLACK_LIKE_BINDING,
+    modelInput: { channel: "general", text: "hello" },
+    resolveHostBindings: async () => host,
+    ports: {},
+  };
+  for (const invalid of ["", "a".repeat(63), "a".repeat(65), "A".repeat(64)]) {
+    assert.throws(() => compileEffectTransportWithHostKeyV1({ ...base, observationAuthKey: invalid }), /authentication key|256 bits/i);
+  }
+  let traps = 0;
+  const hostileKey = new Proxy(Object.create(null), { get: () => { traps++; throw new Error("key trap"); } });
+  assert.throws(() => compileEffectTransportWithHostKeyV1({ ...base, observationAuthKey: hostileKey as never }), /authentication key|256 bits/i);
+  assert.equal(traps, 0);
 });
 
 test("reviewed HTTP compilation binds method, origin, path, schemas, and response projection", async () => {
@@ -63,17 +81,7 @@ test("reviewed HTTP compilation binds method, origin, path, schemas, and respons
     { method: "GET", url: "https://calendar.invalid/calendars/destination-1/events/event-9", body: null, credential: "credential-super-secret", requestSchemaDigest: sha("4") },
   ]);
   assert.equal(reconciled.reconciliationStatus, "matched");
-  assert.equal(reconciled.normalizedProjectionDigest, authorityDigest({
-    v: "reelier.effect-authoritative-match/v1",
-    contractDigest: digestToolEffectContractV1(CALENDAR_LIKE_CONTRACT),
-    bindingDigest: digestEffectTransportBindingV1(CALENDAR_LIKE_BINDING),
-    reservationId: "reservation-1",
-    semanticIdentity: CALENDAR_LIKE_CONTRACT.semanticIdentity,
-    modelDigest: authorityDigest({ eventId: "event-9", title: "Review" }),
-    readbackOperation: CALENDAR_LIKE_CONTRACT.readback!.operation,
-    projectionSchemaDigest: authorityDigest(CALENDAR_LIKE_CONTRACT.readback!.projection),
-    projectionDigest: authorityDigest({ "/eventId": "event-9", "/state": "visible" }),
-  }));
+  assert.equal(reconciled.normalizedProjectionDigest, "sha256:88d35e15a1e20a2daac2ffce572cb49b65fe8519ce5c24b35c9f54773df5eb6c");
 
   const changed = { ...CALENDAR_LIKE_BINDING, method: "PATCH" as const };
   assert.notEqual(digestEffectTransportBindingV1(changed), CALENDAR_LIKE_CONTRACT.operationDigest);
@@ -361,17 +369,7 @@ test("same-schema contradictory readback values produce distinct projection comm
   const visibleCommitment = visible.outcome.observation!.projectionDigest;
   const deletedCommitment = deleted.outcome.observation!.projectionDigest;
   assert.notEqual(visibleCommitment, deletedCommitment);
-  assert.equal(visibleCommitment, authorityDigest({
-    v: "reelier.effect-authoritative-match/v1",
-    contractDigest: digestToolEffectContractV1(CALENDAR_LIKE_CONTRACT),
-    bindingDigest: digestEffectTransportBindingV1(CALENDAR_LIKE_BINDING),
-    reservationId: "reservation-contradictory",
-    semanticIdentity: CALENDAR_LIKE_CONTRACT.semanticIdentity,
-    modelDigest: authorityDigest({ eventId: "event-9", title: "Review" }),
-    readbackOperation: CALENDAR_LIKE_CONTRACT.readback!.operation,
-    projectionSchemaDigest: authorityDigest(CALENDAR_LIKE_CONTRACT.readback!.projection),
-    projectionDigest: authorityDigest({ "/eventId": "event-9", "/state": "visible" }),
-  }));
+  assert.equal(visibleCommitment, "sha256:88d35e15a1e20a2daac2ffce572cb49b1933f744b4bae79a9a49e639b523c20b");
   assert.equal(visible.receipt.outcomeDigest, digestGovernedOutcomeV1(visible.outcome));
   assert.equal(deleted.receipt.outcomeDigest, digestGovernedOutcomeV1(deleted.outcome));
   assert.notEqual(visible.receipt.outcomeDigest, deleted.receipt.outcomeDigest);
@@ -478,13 +476,14 @@ test("a durable pending write resumes after restart through authoritative readba
     cancel: async () => { throw new Error("not used"); },
   };
   let now = 2_000;
-  const kernel = createOutcomeKernel({ storage, coordinator, ledger: { getReservation: async () => ledgerState } as any, now: () => now, authorization: async () => "active" });
+  let kernel = createOutcomeKernel({ storage, coordinator, ledger: { getReservation: async () => ledgerState } as any, now: () => now, authorization: async () => "active" });
   await kernel.claimMission(mission);
   const first = await kernel.execute({ missionId: mission.missionId, effects: [{ contract: SLIDES_LIKE_CONTRACT, handle: createReservedDispatchHandle(state), verifier: compiled.verifier }] });
   assert.equal(first.effects[0]!.status, "pending");
 
   compiled = compile();
   now = 3_000;
+  kernel = createOutcomeKernel({ storage, coordinator, ledger: { getReservation: async () => ledgerState } as any, now: () => now, authorization: async () => "active" });
   const resumed = await kernel.execute({ missionId: mission.missionId, effects: [{ contract: SLIDES_LIKE_CONTRACT, reservationId, verifier: compiled.verifier }] });
   assert.equal(resumed.effects[0]!.status, "verified");
   assert.deepEqual({ sends, reads }, { sends: 1, reads: 1 });
@@ -503,6 +502,7 @@ test("three unrelated adapters run through the same generic Outcome kernel with 
     assert.equal(result.effects[0]!.status, item.status, item.contract.provider);
     assert.equal(publishedReceipts.length, 1);
     assert.doesNotMatch(JSON.stringify(publishedReceipts[0]), /credential-super-secret/);
+    assert.doesNotMatch(JSON.stringify(publishedReceipts[0]), new RegExp(observationAuthKey));
   }
 });
 

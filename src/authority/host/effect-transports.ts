@@ -1,10 +1,12 @@
-import { isProxy } from "node:util/types";
+import { createHmac, timingSafeEqual } from "node:crypto";
+import { isPromise, isProxy } from "node:util/types";
 import { digestToolEffectContractV1, parseToolEffectContractV1, type ToolEffectContractV1 } from "../tool-effect-contract.js";
 import { authorityCanonicalBytes, authorityDigest } from "../wire.js";
 import type { DispatchAdapter, DispatchOutcome, DispatchRequestState } from "./dispatch.js";
 import { createTrustedObservationVerifier, type TrustedObservationVerifierV1 } from "./outcome-kernel.js";
 
 const SHA = /^sha256:[0-9a-f]{64}$/;
+const AUTH_KEY = /^[0-9a-f]{64}$/;
 const NAME = /^[A-Za-z0-9._:-]{1,256}$/;
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/;
 const HTTP_METHODS = new Set(["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"]);
@@ -46,26 +48,34 @@ export function parseEffectTransportBindingV1(value: unknown): EffectTransportBi
 
 export function digestEffectTransportBindingV1(value: unknown): string { return authorityDigest(parseEffectTransportBindingV1(value)); }
 
-export function compileEffectTransportV1(input: Readonly<{ contract: ToolEffectContractV1; binding: EffectTransportBindingV1; modelInput: unknown; resolveHostBindings: (references: ToolEffectContractV1["bindings"]) => Promise<EffectTransportHostBindingsV1>; ports: EffectTransportPortsV1; }>): CompiledEffectTransportV1 {
+export function compileEffectTransportV1(input: Readonly<{ contract: ToolEffectContractV1; binding: EffectTransportBindingV1; modelInput: unknown; observationAuthKey: string; resolveHostBindings: (references: ToolEffectContractV1["bindings"]) => Promise<EffectTransportHostBindingsV1>; ports: EffectTransportPortsV1; }>): CompiledEffectTransportV1 {
   if (!input || typeof input !== "object" || isProxy(input) || typeof input.resolveHostBindings !== "function" || !input.ports || typeof input.ports !== "object") throw new TypeError("effect transport compiler input is invalid");
   const contract = parseToolEffectContractV1(input.contract), binding = parseEffectTransportBindingV1(input.binding);
   const contractDigest = digestToolEffectContractV1(contract), bindingDigest = authorityDigest(binding);
+  const observationAuthKey = parseObservationAuthKey(input.observationAuthKey);
   bindContract(contract, binding, bindingDigest);
   const model = parseModelInput(input.modelInput, contract);
   validateTemplateValues(binding, model);
   const effect = deepFreeze({ v: "reelier.compiled-effect-input/v1" as const, contractDigest, bindingDigest, model });
   const evidence = deepFreeze({ v: "reelier.effect-transport-evidence/v1" as const, contractDigest, bindingDigest, model });
-  const matchedProjectionDigest = (reservationId: string, projectionDigest: string): string | null => contract.readback === null ? null : authorityDigest({
-    v: "reelier.effect-authoritative-match/v1",
+  const modelDigest = authorityDigest(model);
+  const projectionSchemaDigest = contract.readback === null ? null : authorityDigest(contract.readback.projection);
+  const provenance = (reservationId: string, projectionCommitment: string) => ({
+    v: "reelier.effect-authoritative-match-provenance/v1",
     contractDigest,
     bindingDigest,
     reservationId,
     semanticIdentity: contract.semanticIdentity,
-    modelDigest: authorityDigest(model),
-    readbackOperation: contract.readback.operation,
-    projectionSchemaDigest: authorityDigest(contract.readback.projection),
-    projectionDigest,
+    modelDigest,
+    readbackOperation: contract.readback!.operation,
+    projectionSchemaDigest,
+    projectionCommitment,
   });
+  const matchedProjectionDigest = (reservationId: string, projectionDigest: string): string | null => {
+    if (contract.readback === null || !SHA.test(projectionDigest)) return null;
+    const projectionCommitment = projectionDigest.slice(7, 39);
+    return `sha256:${projectionCommitment}${provenanceAuthenticator(observationAuthKey, provenance(reservationId, projectionCommitment))}`;
+  };
   const hostBindings = async (): Promise<EffectTransportHostBindingsV1> => {
     try { return parseHostBindings(await input.resolveHostBindings(contract.bindings)); }
     catch { throw new Error("effect transport host binding resolution failed"); }
@@ -94,7 +104,13 @@ export function compileEffectTransportV1(input: Readonly<{ contract: ToolEffectC
       return unavailableOutcome(bindingDigest, prior);
     },
   });
-  const verifier = createTrustedObservationVerifier({ contractDigest, verify: observation => observation.projectionDigest !== null && observation.authoritative && observation.verdict === "matched" && observation.semanticIdentity === contract.semanticIdentity && observation.observationId === `observation_${authorityDigest({ reservationId: observation.reservationId, verdict: "matched", projectionDigest: observation.projectionDigest }).slice(7, 31)}` });
+  const verifier = createTrustedObservationVerifier({ contractDigest, verify: observation => {
+    if (observation.projectionDigest === null || !observation.authoritative || observation.verdict !== "matched" || observation.semanticIdentity !== contract.semanticIdentity || observation.observationId !== `observation_${authorityDigest({ reservationId: observation.reservationId, verdict: "matched", projectionDigest: observation.projectionDigest }).slice(7, 31)}`) return false;
+    const packed = observation.projectionDigest.slice(7), projectionCommitment = packed.slice(0, 32), actualAuthenticator = packed.slice(32);
+    if (!/^[0-9a-f]{32}$/.test(projectionCommitment) || !/^[0-9a-f]{32}$/.test(actualAuthenticator)) return false;
+    const expectedAuthenticator = provenanceAuthenticator(observationAuthKey, provenance(observation.reservationId, projectionCommitment));
+    return timingSafeEqual(Buffer.from(actualAuthenticator, "hex"), Buffer.from(expectedAuthenticator, "hex"));
+  } });
   return Object.freeze({ effect, evidence, adapter, verifier });
 }
 
@@ -169,9 +185,14 @@ function serializedBoundary<T>(label: string, invoke: (sink: EffectTransportResu
     const failure = (): void => { if (settled) return; settled = true; reject(new Error(`${label} effect transport boundary failed`)); };
     const success = (serializedJson: string): void => { if (settled) return; settled = true; try { resolve(parse(serializedJson)); } catch { reject(new Error(`${label} effect transport boundary failed`)); } };
     const sink = Object.freeze(Object.assign(Object.create(null) as Record<string, unknown>, { success, failure })) as EffectTransportResultSinkV1;
-    try { invoke(sink); } catch { failure(); }
+    try {
+      const returned = invoke(sink);
+      if (isPromise(returned)) Promise.prototype.then.call(returned, undefined, failure);
+    } catch { failure(); }
   });
 }
+function parseObservationAuthKey(value: unknown): string { if (typeof value !== "string" || !AUTH_KEY.test(value)) throw new TypeError("effect transport observation authentication key must be exactly 256 bits"); return value; }
+function provenanceAuthenticator(key: string, value: unknown): string { return createHmac("sha256", Buffer.from(key, "hex")).update(authorityCanonicalBytes(value)).digest("hex").slice(0, 32); }
 function parseMcpSchemas(value: unknown): Readonly<{ serverSchemaDigest: string; toolSchemaDigest: string }> { const raw = closedRecord(parseSerializedJson(value, "MCP schema envelope", 4_096), ["serverSchemaDigest", "toolSchemaDigest"], [], "MCP schema envelope"); return deepFreeze({ serverSchemaDigest: digest(raw.serverSchemaDigest, "MCP runtime server schema"), toolSchemaDigest: digest(raw.toolSchemaDigest, "MCP runtime tool schema") }); }
 function parseProviderResponse(value: unknown): EffectTransportProviderResponseV1 { const detached = snapshotJson(parseSerializedJson(value, "provider response envelope", 1_048_576), "provider response", 1_048_576), raw = closedRecord(detached, ["outcome", "data"], [], "provider response"); return deepFreeze({ outcome: stringValue(raw.outcome, "provider outcome", 256), data: raw.data }); }
 function parseSerializedJson(value: unknown, label: string, maxBytes: number): unknown { if (typeof value !== "string" || Buffer.byteLength(value) > maxBytes) throw new TypeError(`${label} must be bounded serialized JSON`); try { return JSON.parse(value) as unknown; } catch { throw new TypeError(`${label} is invalid`); } }
