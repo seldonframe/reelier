@@ -102,9 +102,33 @@ git diff --check 4f7a06e1..HEAD
 
 Verbatim output: empty; exit `0`.
 
+### Full repository test suite
+
+Command:
+
+```text
+npm test
+```
+
+Verbatim summary:
+
+```text
+ℹ tests 3686
+ℹ suites 0
+ℹ pass 3636
+ℹ fail 29
+ℹ cancelled 0
+ℹ skipped 21
+ℹ todo 0
+ℹ duration_ms 485929.0117
+```
+
+Exit: `1`. All seven Task 3 transport tests passed inside this run. The 29 failures are outside Task 3's declared files and fall into existing environment/shared-branch groups: Windows refusing Linux-only Authority Cell hosting (`authority-runtime.test.js`, `host-server.test.js`); existing GitHub release-runner expectation failures; a certification lifecycle adapter-contract digest mismatch; absent `native/bootstrap-helper/manifest.json`; and the absent Eve fixture dependency (`node_modules/eve/bin/eve.js`). These failures were not changed because the Task 3 scope forbids editing their files.
+
 ## Open risks
 
 - These are hermetic transport ports and contracts. No real Slack, Calendar, Slides, MCP, HTTP, OpenAPI, or CLI provider was contacted or certified.
+- The full repository suite is not green in this Windows checkout: 29 unrelated failures remain as itemized above. Task 3's focused gates and its seven tests are green.
 - An origin or executable is trusted because it is part of the reviewed, signed binding digest; this task does not prove the host configured the intended endpoint or binary.
 - A provider response is evidence only to the maximum grade declared by its contract. Delayed Calendar-like evidence remains `partial`, and the Slack-like no-readback send remains `absent`.
 - Credentials are absent from compiled effects, evidence, Outcomes, receipts, and returned dispatch outcomes; transport port request objects necessarily contain credentials at the trusted execution boundary.
