@@ -280,12 +280,12 @@ function createGitHubReleaseDispatchAdapter(input: Readonly<{ runner: GitHubRele
     }
   };
   return Object.freeze({
-    ...(input.runner || input.fallback.prepare ? { async prepare(state: DispatchRequestState) {
+    ...(input.runner || input.fallback.prepare ? { async prepare(state: DispatchRequestState, call?: import("./dispatch.js").CoordinatorDispatchCallV1) {
       const endpointId = inertEndpointId(state.effect) ?? "";
       const alias = ENDPOINTS[endpointId];
       if (!alias) {
         if (!input.fallback.prepare) throw new TypeError("fallback prepared dispatch is unavailable");
-        return input.fallback.prepare(state);
+        return input.fallback.prepare(state, call);
       }
       const intent = state.reservation.intent as unknown as Record<string, unknown>;
       const execution = intent.executionContext as Readonly<{ allocationId?: unknown }> | undefined;

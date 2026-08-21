@@ -83,12 +83,12 @@ export async function createGitHubLinearMissionRuntimeV1(input: GenuineGitHubLin
         let stored: StoredJoin | undefined = plan.joins.find(item => item.alias === alias), gateAuthority: AcceptedGateReservationAuthorityV1 | undefined;
         if (!stored) {
           const effectRequestId = `effect_${authorityDigest({ semanticsDigest, alias }).slice(7, 39)}`;
-          const authenticated = authenticateOutcomeRequest({ tenant: raw.config.tenant, requester: executionContext.principalId, definitionAlias: alias, request: { requestId: effectRequestId, sourceRefs, choices }, executionContext });
+          const authenticated = authenticateOutcomeRequest({ tenant: raw.config.tenant, requester: executionContext.principalId, definitionAlias: alias, request: { v: "reelier.outcome-request/v1", requestId: effectRequestId, sourceRefs, choices }, executionContext });
           const decided = await components.gate.decide(authenticated);
           if (decided.kind === "accepted") {
             gateAuthority = bindAcceptedGateReservationAuthorityV1(components.gate, decided);
             const description = describeAcceptedGateReservationAuthorityV1(gateAuthority);
-            stored = Object.freeze({ alias, reservationId: description.reservationId, join: Object.freeze({ reservation: await components.ledger.getReservation(description.reservationId), pathCContract: description.pathCContract, source: description.source, choices: description.choices, connectorAccount: description.connectorAccount, toolEffectContract: operation.contract, transportBinding: operation.binding, operationKind: operation.contract.operation, reviewedPolicyDigest: operation.contract.policyDigest }) });
+            stored = Object.freeze({ alias, reservationId: description.reservationId, join: Object.freeze({ pathCContract: description.pathCContract, source: description.source, choices: description.choices, connectorAccount: description.connectorAccount, toolEffectContract: operation.contract, transportBinding: operation.binding, operationKind: operation.contract.operation, reviewedPolicyDigest: operation.contract.policyDigest }) });
             plan = Object.freeze({ ...plan, joins: Object.freeze([...plan.joins, stored]) });
             await appendPlan(raw.journal, key, plan);
           } else {
