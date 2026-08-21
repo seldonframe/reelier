@@ -4,8 +4,10 @@ import * as effectTransports from "../../src/authority/host/effect-transports.js
 import { createReservedDispatchHandle } from "../../src/authority/gate.js";
 import {
   compileEffectTransportV1 as compileEffectTransportWithHostKeyV1,
+  compileGovernedEffectTransportV1,
   digestEffectTransportBindingV1,
   parseEffectTransportBindingV1,
+  mintGovernedEffectTransportExecutorV1,
   type EffectTransportHostBindingsV1,
   type EffectTransportResultSinkV1,
   type TrustedEffectTransportExecutorCallbacksV1,
@@ -162,10 +164,16 @@ test("governed transport binds the original Path-C coordinator call before prepa
   const restorePlatform = __testSetAuthorityCellHostPlatform("linux");
   const pathEffect = { path: "joined" }, pathEffectDigest = authorityDigest(pathEffect);
   let hostResolutions = 0, providerCalls = 0, consumed = false, observedAuthority: unknown;
-  const compiled = compileEffectTransportV1({
-    contract: SLACK_LIKE_CONTRACT, binding: SLACK_LIKE_BINDING, modelInput: { channel: "general", text: "hello" }, resolveHostBindings: async () => { hostResolutions++; return host; },
-    ports: { mcp: { inspectSchemas: slackSchemas, call: (request, sink) => { providerCalls++; observedAuthority = request.authority; consumed = consumeCoordinatorDispatchCallDelegateV1(request.authority, { reservationId: "governed-reservation", effectDigest: pathEffectDigest }); succeed(sink, "ok", { messageId: "m-governed" }); } } },
+  const governedExecutor = mintGovernedEffectTransportExecutorV1({
+    mcp: { inspectSchemas: slackSchemas, call: (request: any, sink: EffectTransportResultSinkV1) => { providerCalls++; observedAuthority = request.authority; consumed = consumeCoordinatorDispatchCallDelegateV1(request.authority, { reservationId: "governed-reservation", effectDigest: pathEffectDigest }); succeed(sink, "ok", { messageId: "m-governed" }); } },
   });
+  const governedInput = {
+    contract: SLACK_LIKE_CONTRACT, binding: SLACK_LIKE_BINDING, modelInput: { channel: "general", text: "hello" }, resolveHostBindings: async () => { hostResolutions++; return host; },
+    observationAuthKey, executor: governedExecutor,
+  } as const;
+  assert.throws(() => compileEffectTransportWithHostKeyV1(governedInput as never), /trusted|governed|executor/i);
+  assert.throws(() => compileGovernedEffectTransportV1({ ...governedInput, executor: mintTrustedExecutor({ mcp: { inspectSchemas: slackSchemas, call() {} } }) } as never), /trusted|governed|executor/i);
+  const compiled = compileGovernedEffectTransportV1(governedInput);
   const requestDigest = authorityDigest({ v: "reelier.governed-effect-transport-request/v1", contractDigest: digestToolEffectContractV1(SLACK_LIKE_CONTRACT), bindingDigest: digestEffectTransportBindingV1(SLACK_LIKE_BINDING), model: { channel: "general", text: "hello" }, account: host.account, destination: host.destination, limit: host.limit });
   const projection = { v: "reelier.prepared-effect-projection/v1" as const, transport: "mcp", operationDigest: digestEffectTransportBindingV1(SLACK_LIKE_BINDING), requestDigest };
   const expectedMaterializedRequestDigest = preparedDispatchProjectionDigest(projection);
