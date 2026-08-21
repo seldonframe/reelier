@@ -196,3 +196,19 @@ test("public production export parses DecisionContext and its portable evidence 
   assert.deepEqual(program.getTypeChecker().getExportsOfModule(module).map(symbol => symbol.getName()).sort(), [...EXPECTED_AUTHORITY_DECLARATION_EXPORTS].sort(), "the public declaration export surface is an independently pinned exact allowlist");
   for (const kind of ["outcome-contract", "delegation-grant", "source-bundle", "decision-context", "gate-event", "authority-receipt", "authority-key-descriptor", "trust-event", "signed-certification-readiness"]) assert.ok(existsSync(path.join(process.cwd(), "dist", "authority", "schemas", `${kind}.schema.json`)));
 });
+
+test("public authority pack export includes only reviewed pack constructors and validators", async () => {
+  const pack = await import("reelier/authority/pack");
+  assert.deepEqual(Object.keys(pack).sort(), [
+    "GITHUB_RELEASE_OUTCOME_SERVER_SCHEMA_DIGEST_V1",
+    "assertGitHubLinearProviderReadbackV1",
+    "assertLinearStatusPredecessorV1",
+    "assertStaticFirstPartySourcesConform",
+    "createGitHubLinearOutcomePackV1",
+    "createStaticPackRegistry",
+    "definitionRegistrationDigest",
+    "githubReleaseOutcomeToolSchemaDigestV1",
+    "orderedGitHubLinearOperationsV1",
+  ]);
+  for (const forbidden of ["credential", "token", "oauth", "linearClient", "createGitHubReleaseOutcomeExecutorV1"]) assert.equal(forbidden in pack, false);
+});
