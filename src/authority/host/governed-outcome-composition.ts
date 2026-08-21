@@ -5,6 +5,7 @@ import { digestGovernedEffectCommitmentV1 } from "../governed-effect-commitment.
 import { parseToolEffectContractV1, type ToolEffectContractV1 } from "../tool-effect-contract.js";
 import { authorityCanonicalBytes, authorityDigest, parseCanonicalAuthorityJson } from "../wire.js";
 import { digestEffectTransportBindingV1, parseEffectTransportBindingV1, type EffectTransportBindingV1 } from "./effect-transports.js";
+import type { DispatchOutcome, DispatchPublication, DurableDispatchPublicationQueryV1 } from "./dispatch.js";
 
 export interface GovernedOutcomeEffectJoinInputV1 {
   readonly reservation: ReservationSnapshot;
@@ -25,6 +26,26 @@ export interface VerifiedGovernedOutcomeEffectJoinV1 {
   readonly pathCContractDigest: string;
   readonly toolEffectContractDigest: string;
   readonly transportBindingDigest: string;
+}
+
+export async function resolveGovernedCoordinatorPublicationV1(publication: DispatchPublication, input: Readonly<{ query: DurableDispatchPublicationQueryV1; outcome: DispatchOutcome }>): Promise<string | null> {
+  if (!publication?.loadDurableHead) return null;
+  try {
+    const query = picked(input.query, ["v", "identity", "ledgerState", "sendStarted"], "durable publication query");
+    if (query.v !== "reelier.durable-dispatch-publication-query/v1" || !["dispatched", "ambiguous"].includes(query.ledgerState as string) || query.sendStarted !== true) return null;
+    const identity = durableIdentity(query.identity);
+    const outcome = picked(input.outcome, ["kind", "receiptRef", "evidenceDigest", "priorReceiptDigest"], "dispatch outcome");
+    if (!outcome.receiptRef || !outcome.evidenceDigest || !outcome.priorReceiptDigest || ![outcome.receiptRef, outcome.evidenceDigest, outcome.priorReceiptDigest].every(value => typeof value === "string" && SHA.test(value))) return null;
+    const rawHead = await publication.loadDurableHead(input.query, "terminal");
+    if (!rawHead) return null;
+    const head = picked(rawHead, ["v", "identity", "receiptRef", "evidenceDigest", "reservationReceiptRef", "priorReceiptRef", "phase", "terminalKind"], "durable publication head");
+    if (head.v !== "reelier.durable-dispatch-publication-head/v1" || authorityDigest(durableIdentity(head.identity)) !== authorityDigest(identity) || head.receiptRef !== outcome.receiptRef || head.evidenceDigest !== outcome.evidenceDigest || head.reservationReceiptRef !== outcome.priorReceiptDigest || head.priorReceiptRef !== outcome.priorReceiptDigest) return null;
+    const reconciled = input.outcome.reconciliationStatus !== undefined && input.outcome.reconciliationStatus !== "not-attempted";
+    const expectedPhase = reconciled ? "reconcile" : input.outcome.kind === "ambiguous" ? "ambiguous" : "dispatch";
+    const expectedTerminal = reconciled ? "reconciled" : input.outcome.kind;
+    if (head.phase !== expectedPhase || head.terminalKind !== expectedTerminal) return null;
+    return outcome.receiptRef as string;
+  } catch { return null; }
 }
 
 const SHA = /^sha256:[0-9a-f]{64}$/;
@@ -78,6 +99,13 @@ function picked(value: unknown, fields: readonly string[], label: string): Recor
     result[field] = descriptor.value;
   }
   return result;
+}
+
+function durableIdentity(value: unknown): Record<string, unknown> {
+  const fields = ["v", "reservationId", "tenant", "requestDigest", "capabilityDigest", "effectDigest", "routeAuthorityDigest", "expectedDispatchedRequestDigest", "reservationIntentDigest"] as const;
+  const identity = picked(value, fields, "durable publication identity");
+  if (identity.v !== "reelier.durable-dispatch-publication-identity/v1" || typeof identity.reservationId !== "string" || identity.reservationId.length === 0 || typeof identity.tenant !== "string" || identity.tenant.length === 0 || fields.slice(3).some(field => typeof identity[field] !== "string" || !SHA.test(identity[field] as string))) throw new TypeError("durable publication identity is invalid");
+  return identity;
 }
 
 function assertInertTree(value: unknown, label: string, depth: number, seen: Set<object>): void {
