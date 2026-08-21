@@ -125,6 +125,65 @@ test("ambiguous writes use authoritative readback without resend and semantic co
   assert.deepEqual({ sends, reads }, { sends: 1, reads: 1 });
 });
 
+test("a durable pending write resumes after restart through authoritative readback without resend", async () => {
+  let sends = 0, reads = 0;
+  const storage = durableStorage();
+  const reservationId = "reservation-restart";
+  const effectDigest = digestToolEffectContractV1(SLIDES_LIKE_CONTRACT);
+  const mission: MissionClaimV1 = {
+    v: "reelier.mission-claim/v1",
+    missionId: "mission-restart",
+    mandateDigest: sha("7"),
+    promptDigest: sha("8"),
+    contractDigests: [effectDigest],
+    claimedAt: at(1_000),
+  };
+  const compile = () => compileEffectTransportV1({
+    contract: SLIDES_LIKE_CONTRACT,
+    binding: SLIDES_LIKE_BINDING,
+    modelInput: { title: "Q3" },
+    resolveHostBindings: async () => host,
+    ports: {
+      cli: {
+        spawn: async request => request.argv[0] === "update"
+          ? (sends++, { outcome: "unknown", data: null })
+          : (reads++, { outcome: "ok", data: { deckId: "quarterly", revision: 2 } }),
+      },
+    },
+  });
+  let compiled = compile();
+  const state = dispatchState(SLIDES_LIKE_CONTRACT, compiled.effect) as any;
+  state.reservation.reservationId = reservationId;
+  const ledgerState: any = { ...state.reservation, intent: { ...state.reservation.intent } };
+  const coordinator: any = {
+    describe: () => ({ reservationId, state: ledgerState.state, effectDigest, allocationId: null }),
+    dispatch: async () => {
+      ledgerState.state = "dispatched";
+      const result = await compiled.adapter.dispatch(state);
+      ledgerState.state = result.kind === "ambiguous" ? "ambiguous" : "acknowledged";
+      return result;
+    },
+    reconcile: async () => {
+      const result = await compiled.adapter.reconcile!(state, { kind: "ambiguous", resultDigest: sha("9") });
+      ledgerState.state = "reconciled";
+      return result;
+    },
+    recover: async () => [],
+    cancel: async () => { throw new Error("not used"); },
+  };
+  let now = 2_000;
+  const kernel = createOutcomeKernel({ storage, coordinator, ledger: { getReservation: async () => ledgerState } as any, now: () => now, authorization: async () => "active" });
+  await kernel.claimMission(mission);
+  const first = await kernel.execute({ missionId: mission.missionId, effects: [{ contract: SLIDES_LIKE_CONTRACT, handle: createReservedDispatchHandle(state), verifier: compiled.verifier }] });
+  assert.equal(first.effects[0]!.status, "pending");
+
+  compiled = compile();
+  now = 3_000;
+  const resumed = await kernel.execute({ missionId: mission.missionId, effects: [{ contract: SLIDES_LIKE_CONTRACT, reservationId, verifier: compiled.verifier }] });
+  assert.equal(resumed.effects[0]!.status, "verified");
+  assert.deepEqual({ sends, reads }, { sends: 1, reads: 1 });
+});
+
 test("three unrelated adapters run through the unchanged Outcome kernel with honest grades", async () => {
   const cases = [
     { contract: SLACK_LIKE_CONTRACT, binding: SLACK_LIKE_BINDING, model: { channel: "general", text: "hello" }, ports: { mcp: { call: async () => ({ outcome: "ok", data: { messageId: "m-1" } }) } }, status: "absent" },
