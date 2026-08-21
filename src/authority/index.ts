@@ -30,6 +30,7 @@ export {
   type AttemptV1,
   type ObservationV1,
   type GovernedOutcomeV1,
+  type GovernedOutcomeVerificationContextV1,
   type GovernedReceiptV1,
 } from "./tool-effect-contract.js";
 export {
