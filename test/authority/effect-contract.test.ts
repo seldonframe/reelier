@@ -44,6 +44,13 @@ test("effect contract rejects nested accessors without invoking them", () => {
   assert.equal(reads, 0);
 });
 
+test("lifecycle standalone parsers close provider packs, mission claims, and receipts", async () => {
+  const api = await import("../../src/authority/tool-effect-contract.js");
+  const receipt = { v: "reelier.governed-receipt/v1", receiptId: "receipt_1", outcomeDigest: digest, missionDigest: digest, issuedAt: "2026-08-20T12:00:00.000Z", status: "verified" };
+  assert.equal(api.parseGovernedReceiptV1(receipt).receiptId, "receipt_1");
+  assert.throws(() => api.parseGovernedReceiptV1({ ...receipt, extra: true }));
+});
+
 test("governed outcome transition refuses unverifiable chronology and verified masquerades", () => {
   const outcome = {
     v: "reelier.governed-outcome/v1", outcomeId: "outcome_1", contractDigest: digestToolEffectContractV1(contract), semanticIdentity: contract.semanticIdentity,
