@@ -2,6 +2,13 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { generateKeyPairSync } from "node:crypto";
 import { createDispatchCoordinator, preparedDispatchProjectionDigest } from "reelier/authority/host";
+import {
+  bindCoordinatorDispatchCallDelegateV1,
+  consumeCoordinatorDispatchCallDelegateV1,
+  createDispatchCoordinator as createSourceDispatchCoordinator,
+} from "../../src/authority/host/dispatch.js";
+import { createReservedDispatchHandle as createSourceReservedDispatchHandle } from "../../src/authority/gate.js";
+import { __testSetAuthorityCellHostPlatform as __testSetSourceAuthorityCellHostPlatform } from "../../src/authority/host/platform.js";
 import type {
   DurableDispatchPublicationHeadV1,
   DurableDispatchPublicationIdentityV1,
@@ -295,6 +302,43 @@ test("a stale colluding revalidator cannot cross credential, prepare, store, or 
   const state = { reservation: persisted, effect: {}, effectCanonicalBase64: "e30=", effectDigest: persisted.intent.effectDigest };
   await assert.rejects(() => coordinator.dispatch(createReservedDispatchHandle(state)), /generation|route authority|binding|stale/i);
   assert.deepEqual(effects, { credential: 0, prepare: 0, store: 0, provider: 0, commit: 0 });
+});
+
+test("exact coordinator dispatch delegates are single-use and revoked when the adapter call returns", async () => {
+  const expected = { reservationId: "r1", effectDigest: "sha256:" + "1".repeat(64) };
+  const firstLedger = ledger();
+  let firstDelegate: object | undefined;
+  const restoreFirst = __testSetSourceAuthorityCellHostPlatform("linux");
+  const firstCoordinator = createSourceDispatchCoordinator(firstLedger, {
+    async dispatch(state, call) {
+      firstDelegate = Object.freeze(Object.create(null)) as object;
+      const competing = Object.freeze(Object.create(null)) as object;
+      assert.equal(bindCoordinatorDispatchCallDelegateV1(call, firstDelegate, state), true);
+      assert.equal(bindCoordinatorDispatchCallDelegateV1(call, competing, state), false);
+      assert.equal(consumeCoordinatorDispatchCallDelegateV1(firstDelegate, expected), true);
+      assert.equal(consumeCoordinatorDispatchCallDelegateV1(firstDelegate, expected), false);
+      return { kind: "acknowledged", resultDigest: "sha256:" + "2".repeat(64) };
+    },
+  });
+  restoreFirst();
+  const firstHandle = createSourceReservedDispatchHandle({ reservation: firstLedger.get(), effect: { x: 1 }, effectCanonicalBase64: "e30=", effectDigest: expected.effectDigest });
+  await firstCoordinator.dispatch(firstHandle);
+  assert.equal(consumeCoordinatorDispatchCallDelegateV1(firstDelegate!, expected), false);
+
+  const secondLedger = ledger();
+  let lateDelegate: object | undefined;
+  const restoreSecond = __testSetSourceAuthorityCellHostPlatform("linux");
+  const secondCoordinator = createSourceDispatchCoordinator(secondLedger, {
+    async dispatch(state, call) {
+      lateDelegate = Object.freeze(Object.create(null)) as object;
+      assert.equal(bindCoordinatorDispatchCallDelegateV1(call, lateDelegate, state), true);
+      return { kind: "acknowledged", resultDigest: "sha256:" + "3".repeat(64) };
+    },
+  });
+  restoreSecond();
+  const secondHandle = createSourceReservedDispatchHandle({ reservation: secondLedger.get(), effect: { x: 1 }, effectCanonicalBase64: "e30=", effectDigest: expected.effectDigest });
+  await secondCoordinator.dispatch(secondHandle);
+  assert.equal(consumeCoordinatorDispatchCallDelegateV1(lateDelegate!, expected), false);
 });
 
 test("coordinator exposes a detached reservation projection without exposing the prepared send", async () => {
