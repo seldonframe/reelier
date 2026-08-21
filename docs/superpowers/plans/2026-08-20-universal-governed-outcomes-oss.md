@@ -60,6 +60,7 @@ Compose the existing `AuthorityLedger`, gate, prepared dispatch coordinator, and
 **Files:**
 
 - Create `src/authority/host/effect-transports.ts`.
+- Modify `src/authority/host/outcome-kernel.ts` only to make stored `pending` Outcomes in recoverable ledger states continue through authoritative reconciliation; terminal Outcome adoption remains unchanged.
 - Modify `src/authority/host/index.ts`.
 - Create `test/authority/effect-transports.test.ts`.
 - Create `test/authority/fixtures/tool-effect-contracts.ts`.
