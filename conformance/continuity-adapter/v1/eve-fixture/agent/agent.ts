@@ -66,7 +66,7 @@ export default defineAgent({
       const proposal = toolResults.filter(result => result.name === "reelier_outcome_proposal").at(-1);
       if (!proposal && outcomeRef) return { toolCalls: [{ name:"reelier_outcome_proposal",input:{outcomeRef} }] };
       const requested = toolResults.filter(result => result.name === "reelier_outcome_request").at(-1);
-      if (!requested && outcomeRef) return { toolCalls: [{name:"reelier_outcome_request",input:{outcomeRef,requestId,sourceRefs:{},choices:{}}}] };
+      if (!requested && outcomeRef) return { toolCalls: [{name:"reelier_outcome_request",input:{outcomeRef,requestId,sourceRefs:{authorization:process.env.REELIER_AUTHORIZATION_HANDLE},choices:{}}}] };
       return { text: JSON.stringify({v:"reelier.eve-governed-restart-boundary/v1",kind,requestId,lifecycleState:requested?cellString(requested.output,"lifecycleState"):null}) };
     }
     if (lastUserMessage === REMOTE_CELL_TASK) {
