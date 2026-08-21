@@ -40,6 +40,7 @@
 - `test/authority/linear-outcomes-pack.test.ts`
 - `test/authority/outcome-kernel-fs-storage.test.ts`
 - `test/authority/outcome-kernel.test.ts`
+- `test/authority/receipts.test.ts`
 - `test/packs/conformance.test.ts`
 - `test/packs/github-release.test.ts`
 - `.superpowers/sdd/2026-08-21-genuine-governed-outcome-composition/task-4c-report.md`
