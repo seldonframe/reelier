@@ -4,7 +4,7 @@ import {
   type OutcomeKernelStorage,
   type StoredEffectLifecycleV1,
 } from "reelier/authority/host";
-import { createOutcomeKernel, createTrustedObservationVerifier, createTrustedOutcomePredecessorPolicyV1 } from "../../src/authority/host/outcome-kernel.js";
+import { consumeTrustedOutcomePredecessorAuthorizationV1, createOutcomeKernel, createTrustedObservationVerifier, createTrustedOutcomePredecessorPolicyV1 } from "../../src/authority/host/outcome-kernel.js";
 // @ts-ignore compiled tests share the opaque handle brand with the built public host package.
 import { createReservedDispatchHandle } from "../../../dist/authority/gate.js";
 import { digestGovernedReceiptV1, digestMissionClaimV1, digestToolEffectContractV1, type GovernedReceiptV1, type MissionClaimV1, type ToolEffectContractV1 } from "reelier/authority";
@@ -482,4 +482,44 @@ test("host-authenticated predecessor policy requires an earlier verified Outcome
     { contract: successor, handle: handle("status-4", successor), verifier: verifierFor(successor) },
   ] }), /predecessor/i);
   assert.equal(counters.send, 2);
+});
+
+test("only the kernel transiently arms exact successor dispatch after durable predecessor verification", async () => {
+  const predecessor = contract("armed_comment"), successor = contract("armed_status");
+  const predecessorDigest = digestToolEffectContractV1(predecessor), successorDigest = digestToolEffectContractV1(successor);
+  const policy = createTrustedOutcomePredecessorPolicyV1({ predecessorContractDigest: predecessorDigest, successorContractDigest: successorDigest });
+  const authority = Object.freeze({ reservationId: "armed-status", successorContractDigest: successorDigest });
+  assert.equal(consumeTrustedOutcomePredecessorAuthorizationV1(policy, authority), false);
+
+  const store = durableFixture(), states = new Map([
+    ["armed-comment", reservation("armed-comment", "reserved", predecessorDigest)],
+    ["armed-status", reservation("armed-status", "reserved", successorDigest)],
+  ]), counters = { send: 0, readback: 0 };
+  const base = coordinator(states, counters);
+  const guarded = Object.freeze({
+    ...base,
+    async dispatch(handleValue: any) {
+      if (!consumeTrustedOutcomePredecessorAuthorizationV1(policy, authority)) throw new Error("successor executor is unarmed");
+      return base.dispatch(handleValue);
+    },
+  });
+  const kernel = createOutcomeKernel({ storage: store, coordinator: guarded, ledger: { getReservation: async (id: string) => states.get(id) } as any, now: () => 2_000, authorization: async () => "active", predecessorPolicy: policy });
+  await kernel.claimMission(mission("armed_mission", [predecessor, successor]));
+  await kernel.execute({ missionId: "armed_mission", effects: [{ contract: predecessor, handle: handle("armed-comment", predecessor), verifier: verifierFor(predecessor) }] });
+  const completed = await kernel.execute({ missionId: "armed_mission", effects: [
+    { contract: predecessor, reservationId: "armed-comment", verifier: verifierFor(predecessor) },
+    { contract: successor, handle: handle("armed-status", successor), verifier: verifierFor(successor) },
+  ] });
+  assert.equal(completed.effects[1]!.status, "verified");
+  assert.equal(consumeTrustedOutcomePredecessorAuthorizationV1(policy, authority), false);
+});
+
+test("predecessor policy input rejects hidden symbol and accessor fields without invoking getters", () => {
+  const valid = { predecessorContractDigest: sha("a"), successorContractDigest: sha("b") };
+  let getters = 0;
+  const hidden = Object.defineProperty({ ...valid }, "hidden", { value: "authority", enumerable: false });
+  const symbol = Object.assign({ ...valid }, { [Symbol("authority")]: true });
+  const accessor = Object.defineProperty({ successorContractDigest: valid.successorContractDigest }, "predecessorContractDigest", { enumerable: true, get() { getters++; return valid.predecessorContractDigest; } });
+  for (const value of [hidden, symbol, accessor]) assert.throws(() => createTrustedOutcomePredecessorPolicyV1(value as any), /policy|closed|data|inert/i);
+  assert.equal(getters, 0);
 });
