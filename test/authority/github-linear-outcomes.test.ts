@@ -9,6 +9,7 @@ import { createDispatchCoordinator } from "../../src/authority/host/dispatch.js"
 import { __testSetAuthorityCellHostPlatform } from "../../src/authority/host/platform.js";
 import {
   assertGitHubLinearProviderReadbackV1,
+  assertLinearOutcomeDispatchV1,
   allGovernedGitHubLinearOperationsV1,
   createGovernedOutcomeCompositionProfileV1,
   createGitHubLinearOutcomePackV1,
@@ -100,6 +101,11 @@ test("two reviewed Linear targets have distinct immutable authority and the mode
   assert.notEqual(pack.linearPolicyDigests.githubLinear,pack.linearPolicyDigests.linearOnly);
   for(const key of ["linearEvidenceComment","linearStatusTransition"] as const){const other=key==="linearEvidenceComment"?"linearOnlyEvidenceComment":"linearOnlyStatusTransition";assert.notEqual(authorityDigest(pack.operations[key].contract),authorityDigest(pack.operations[other].contract));assert.notEqual(pack.operations[key].contract.semanticIdentity,pack.operations[other].contract.semanticIdentity);assert.notEqual(pack.operations[key].contract.idempotencyKey,pack.operations[other].contract.idempotencyKey);}
   for(const operation of [pack.operations.linearEvidenceComment,pack.operations.linearStatusTransition,pack.operations.linearOnlyEvidenceComment,pack.operations.linearOnlyStatusTransition])assert.equal(operation.contract.model.fields.includes("issue"),false);
+  const compositeHost={account:"workspace_01",destination:"REEL-TEST-1",limit:pack.linearPolicyDigests.githubLinear},linearOnlyHost={account:"workspace_01",destination:"REEL-TEST-2",limit:pack.linearPolicyDigests.linearOnly};
+  assert.equal(assertLinearOutcomeDispatchV1(pack,"linearEvidenceComment",{evidenceUrl:"https://www.reelier.com/r/composite"},compositeHost).issue,"REEL-TEST-1");
+  assert.equal(assertLinearOutcomeDispatchV1(pack,"linearOnlyEvidenceComment",{evidenceUrl:"https://www.reelier.com/r/linear-only"},linearOnlyHost).issue,"REEL-TEST-2");
+  for(const injected of [{issue:"REEL-TEST-2"},{source:"linear-only"},{choice:"linear-only"}])assert.throws(()=>assertLinearOutcomeDispatchV1(pack,"linearEvidenceComment",{evidenceUrl:"https://www.reelier.com/r/composite",...injected},compositeHost),/closed|model/i);
+  assert.throws(()=>assertLinearOutcomeDispatchV1(pack,"linearEvidenceComment",{evidenceUrl:"https://www.reelier.com/r/composite"},linearOnlyHost),/binding|authority|reviewed/i);
 });
 
 test("the governed composition profile admits only one exact ordered five-operation scope", () => {
@@ -222,6 +228,18 @@ test("direct Linear comment invocation without the exact coordinator call reache
   const compiled = compileEffectTransportV1({ contract: operation.contract, binding: operation.binding, modelInput: { evidenceUrl: reviewedInput().linear.evidenceUrl }, observationAuthKey: "7".repeat(64), resolveHostBindings: async () => ({ credential: "secret", account: "workspace_01", destination: "REEL-TEST-1", limit: pack.linearPolicyDigest }), executor });
   const state = { reservation: { reservationId: "direct_comment", state: "dispatched", intent: { effectDigest: authorityDigest(operation.contract) } }, effect: compiled.effect, effectDigest: authorityDigest(operation.contract), effectCanonicalBase64: Buffer.from(JSON.stringify(compiled.effect)).toString("base64") } as any;
   assert.equal((await compiled.adapter.dispatch(state)).kind, "definitive-failure");
+  assert.equal(writes, 0);
+});
+
+test("a Linear-only executor refuses a crossed composite contract before provider access", async () => {
+  const pack = createGitHubLinearOutcomePackV1(twoTargetReviewedInput()), operation = pack.operations.linearEvidenceComment;
+  let writes = 0;
+  const predecessorPolicy = createTrustedOutcomePredecessorPolicyV1({ predecessorContractDigest: authorityDigest(pack.operations.linearOnlyEvidenceComment.contract), successorContractDigest: authorityDigest(pack.operations.linearOnlyStatusTransition.contract) });
+  const executor = createLinearOutcomeExecutorV1({ pack, mode: "linear-only", predecessorPolicy, provider: { comment(_input, sink): void { writes += 1; sink.success(JSON.stringify({ outcome: "applied", data: {} })); }, readComment(): void {}, transitionStatus(): void {}, readStatus(): void {} } });
+  const compiled = compileEffectTransportV1({ contract: operation.contract, binding: operation.binding, modelInput: { evidenceUrl: "https://www.reelier.com/r/composite" }, observationAuthKey: "8".repeat(64), resolveHostBindings: async () => ({ credential: "secret", account: "workspace_01", destination: "REEL-TEST-1", limit: pack.linearPolicyDigests.githubLinear }), executor });
+  const encoded = Buffer.from(JSON.stringify(compiled.effect)).toString("base64"), state = { reservation: { reservationId: "crossed_mode", state: "reserved", intent: { requestId: "crossed_mode", effectDigest: authorityDigest(operation.contract), effectCanonicalBase64: encoded } }, effect: compiled.effect, effectDigest: authorityDigest(operation.contract), effectCanonicalBase64: encoded } as any;
+  const dispatched = coordinatorFor(compiled, state, false);
+  assert.equal((await dispatched.coordinator.dispatch(dispatched.handle)).kind, "definitive-failure");
   assert.equal(writes, 0);
 });
 

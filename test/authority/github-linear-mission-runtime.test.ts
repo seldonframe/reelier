@@ -55,6 +55,7 @@ test("mission success requires all five verified Outcomes and exact coordinator 
     exact.map((item, index) => index === 1 ? { ...item, status: "partial" as const } : item),
     exact.map((item, index) => index === 3 ? { ...item, publicationReceiptRef: null } : item),
     exact.map((item, index) => index === 4 ? { ...item, predecessorReceiptRef: sha("0") } : item),
+    exact.map((item, index) => index === 6 ? { ...item, predecessorReceiptRef: sha("4") } : item),
   ]) assert.throws(() => requireVerifiedGovernedMissionSequenceV1(governedOutcomeCompositionAliasesV1, changed as never), /sequence|verified|publication|predecessor/i);
 });
 
