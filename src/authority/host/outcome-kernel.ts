@@ -228,8 +228,9 @@ export function createOutcomeKernel(options: OutcomeKernelOptions): OutcomeKerne
         const observedAt = canonicalNow(options.now);
         const attempt = stored.attempt ?? projectAttempt(stored.reservation, current.state, dispatchOutcome, observedAt);
         if (attempt && !stored.attempt) { stored = await persist(storage, { ...stored, attempt }, stored.revision); boundary("attempt"); }
-        const observation = stored.observation ?? projectObservation(stored.reservation, dispatchOutcome, observedAt);
-        if (observation && !stored.observation) { stored = await persist(storage, { ...stored, observation }, stored.revision); boundary("observation"); }
+        const projectedObservation = projectObservation(stored.reservation, dispatchOutcome, observedAt);
+        const observation = resumablePending && projectedObservation ? projectedObservation : stored.observation ?? projectedObservation;
+        if (observation && (!stored.observation || authorityDigest(observation) !== authorityDigest(stored.observation))) { stored = await persist(storage, { ...stored, observation }, stored.revision); boundary("observation"); }
         const observationVerified = observation?.verdict === "matched" ? verifier.verify(observation) === true : false;
         const publicationVerified = !governed || dispatchOutcome !== null && await resolveGovernedOutcomeKernelPublicationV1(requested.governedAuthority!, dispatchOutcome) !== null;
         const status = effectStatus(contract, attempt, observation, dispatchOutcome, observationVerified && publicationVerified, hermetic);

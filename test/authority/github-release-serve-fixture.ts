@@ -70,7 +70,7 @@ export interface ReleaseServeFixture {
 /** A real signed four-definition GitHub release deployment plus the operator-owned runner config
  * that `authority serve --release-runner-config` must construct and inject. Modeled on
  * `multiDefinitionFixture` in local-multi-definition-jobs.test.ts. */
-export async function releaseServeFixture(title = "Governed production release"): Promise<ReleaseServeFixture> {
+export async function releaseServeFixture(title = "Governed production release", options: Readonly<{ executableCandidate?: boolean }> = {}): Promise<ReleaseServeFixture> {
   const root = await mkdtemp(path.join(os.tmpdir(), "reelier-release-serve-"));
   const candidateRoot = path.join(root, "candidate");
   await mkdir(path.join(candidateRoot, "keys"), { recursive: true });
@@ -171,7 +171,8 @@ export async function releaseServeFixture(title = "Governed production release")
   const laneKeys = new Map(LANE_SIGNERS.map(([lane, laneSignerId]) => [lane, { signerId: laneSignerId, pair: generateKeyPairSync("ed25519") }]));
   const graphMakerKeys = generateKeyPairSync("ed25519");
   const foreignAuthorityKeys = generateKeyPairSync("ed25519");
-  const evidenceVerifierBindings = LANE_SIGNERS.map(([lane, laneSignerId]) => ({ lane, publicKeySpkiDigest: spkiDigest(laneKeys.get(lane)!.pair.publicKey), signerId: laneSignerId }));
+  const executableRunnerLanes = new Set<ReleaseEvidenceLaneV1>(["candidate-branch", "candidate-pull-request", "merge-exact-sha"]);
+  const evidenceVerifierBindings = LANE_SIGNERS.map(([lane, laneSignerId]) => options.executableCandidate && executableRunnerLanes.has(lane) ? ({ lane, publicKeySpkiDigest: spkiDigest(evidenceKeys.publicKey), signerId: "release-provider-verifier" }) : ({ lane, publicKeySpkiDigest: spkiDigest(laneKeys.get(lane)!.pair.publicKey), signerId: laneSignerId }));
   const receiptGraphMakerBinding = { publicKeySpkiDigest: spkiDigest(graphMakerKeys.publicKey), signerId: RELEASE_GRAPH_MAKER_SIGNER_ID };
 
   const laneEvidence = (lane: ReleaseEvidenceLaneV1, overrides: Partial<ReleaseVerifierEvidenceV1>) => {
@@ -188,7 +189,8 @@ export async function releaseServeFixture(title = "Governed production release")
 
   const authorizationBundle = (privateKey: KeyObject, repository: string = RELEASE_REPOSITORY): Record<string, unknown> => {
     const signer = { signerId: RELEASE_AUTHORITY_SIGNER_ID, privateKey };
-    const files = [
+    const executableContents = ["CHANGELOG.md", "src/cli.ts", "test/cli-subcommand-help.test.ts"].map((filePath, index) => ({ path: filePath, bytesBase64: Buffer.from(`fixture release file ${index}\n`, "utf8").toString("base64") }));
+    const files = options.executableCandidate ? executableContents.map(item => { const bytes = Buffer.from(item.bytesBase64, "base64"); return { blobSha: createHash("sha1").update(`blob ${bytes.length}\0`).update(bytes).digest("hex"), contentDigest: `sha256:${createHash("sha256").update(bytes).digest("hex")}`, mode: "100644" as const, path: item.path }; }) : [
       { blobSha: releaseCommit("b"), contentDigest: releaseDigest("b"), mode: "100644" as const, path: "CHANGELOG.md" },
       { blobSha: releaseCommit("c"), contentDigest: releaseDigest("c"), mode: "100644" as const, path: "src/cli.ts" },
       { blobSha: releaseCommit("d"), contentDigest: releaseDigest("d"), mode: "100644" as const, path: "test/cli-subcommand-help.test.ts" },
@@ -236,7 +238,7 @@ export async function releaseServeFixture(title = "Governed production release")
       laneEvidence("ci-full-tests", { candidateCommit: releaseCommit("a"), resultValue: 1, subjectDigest: quality.fullTestEvidenceDigest, workflowDigest: workflowCommitments[0]!.digest, workflowPath: workflowCommitments[0]!.path as ReleaseVerifierEvidenceV1["workflowPath"] }),
       laneEvidence("ci-mutation", { candidateCommit: releaseCommit("a"), resultValue: quality.mutationScoreBasisPoints, subjectDigest: quality.mutationEvidenceDigest, workflowDigest: workflowCommitments[0]!.digest, workflowPath: workflowCommitments[0]!.path as ReleaseVerifierEvidenceV1["workflowPath"] }),
     ];
-    return { authorization, candidateManifest, operationPlan, policy, evidence, fileContents: [] };
+    return { authorization, candidateManifest, operationPlan, policy, evidence, fileContents: options.executableCandidate ? executableContents : [] };
   };
 
   const writeAuthorizationBundle = async (handle: string, body: unknown): Promise<string> => {
