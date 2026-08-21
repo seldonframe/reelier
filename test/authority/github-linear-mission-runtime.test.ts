@@ -189,14 +189,14 @@ test("signed five-definition composite stops at ambiguous merge then recreates a
   } finally { restorePlatform(); await Promise.all([rm(root, { recursive: true, force: true }), rm(release.root, { recursive: true, force: true })]); }
 });
 
-test("signed composed runtime stops honestly at deterministic candidate, PR, and comment failures", async () => {
+test("signed composed runtime stops honestly at deterministic candidate, PR, comment, and authority-drift failures", async () => {
   const restorePlatform = __testSetAuthorityCellHostPlatform("linux"), release = await releaseServeFixture("Governed deterministic failures", { executableCandidate: true }), root = await mkdtemp(path.join(os.tmpdir(), "reelier-genuine-failure-runtime-"));
   const runnerConfig = parseGitHubReleaseRunnerOperatorConfig(release.runnerConfigBody as never), plan = (release.authorizationBundleBody.operationPlan as any).value;
   const reviewed = { ...reviewedAuthority(), github: { ...reviewedAuthority().github, baseBranch: plan.destinationBranch, baseSha: plan.baseCommit, headBranch: plan.candidateBranch, headSha: plan.expectedCommitSha, candidateDigest: plan.candidateTreeDigest, workflowPath: plan.workflowCommitments[0].path, workflowDigest: plan.workflowCommitments[0].digest, requiredChecks: plan.requiredChecks, postMergeTreeSha: plan.expectedTreeSha } };
   const pack = createGitHubLinearOutcomePackV1(reviewed), profile = createGovernedOutcomeCompositionProfileV1({ aliases: governedOutcomeCompositionAliasesV1, pack, operations: orderedGitHubLinearOperationsV1(pack, "github-linear") });
   const runnerPrivateKey = createPrivateKey(await readFile(runnerConfig.journalKeyFile)), evidencePrivateKey = createPrivateKey(await readFile(runnerConfig.evidenceKeyFile));
   try {
-    for (const failure of ["candidate", "pr", "comment"] as const) {
+    for (const failure of ["candidate", "pr", "comment", "authority-drift"] as const) {
       const scenarioRoot = path.join(root, failure), fixture = await fiveDefinitionDeployment(scenarioRoot, pack, release.authorizationHandle, reviewed), refs = new Map<string, string>([[`heads/${plan.destinationBranch}`, plan.baseCommit]]);
       const counts = { blobs: 0, trees: 0, commits: 0, refs: 0, prs: 0, ready: 0, merges: 0, comments: 0, statuses: 0 };
       let pullRequest: any = null;
@@ -215,13 +215,31 @@ test("signed composed runtime stops honestly at deterministic candidate, PR, and
       const commentReadback = { workspace: reviewed.linear.workspace, team: reviewed.linear.team, project: reviewed.linear.project, issue: reviewed.linear.issue, commentMarker: reviewed.linear.commentMarker, evidenceUrl: reviewed.linear.evidenceUrl, evidenceContentDigest: reviewed.linear.evidenceContentDigest, commentId: `comment_${failure}` };
       const linearProvider: any = { comment(_input: unknown, sink: any) { counts.comments += 1; sink.success(JSON.stringify(failure === "comment" ? { outcome: "refused", data: {} } : { outcome: "applied", data: commentReadback })); }, readComment(_input: unknown, sink: any) { sink.success(JSON.stringify(failure === "comment" ? {} : commentReadback)); }, transitionStatus(_input: unknown, sink: any) { counts.statuses += 1; sink.success(JSON.stringify({ outcome: "applied", data: {} })); }, readStatus(_input: unknown, sink: any) { sink.success(JSON.stringify({})); } };
       const journalKeys = generateKeyPairSync("ed25519"), missionJournal = await createSignedJournal({ rootDir: path.join(scenarioRoot, "mission-journal"), journalId: `failure-${failure}`, signerId: "mission-journal", privateKey: journalKeys.privateKey, publicKey: journalKeys.publicKey });
-      const runtime = await createGitHubLinearMissionRuntimeV1({ config: fixture.config, profile, githubReleaseRunner: await runner, linearProvider, resolveHostBindings: async references => references.accountRef === reviewed.github.accountRef ? { credential: "github-test-secret", account: reviewed.github.repository, destination: reviewed.github.headBranch, limit: pack.githubPolicyDigest } : { credential: "linear-test-secret", account: reviewed.linear.workspace, destination: reviewed.linear.issue, limit: pack.linearPolicyDigest }, journal: missionJournal, outcomeReceiptPublication: await createFileOutcomeKernelStorage({ rootDir: path.join(scenarioRoot, "outcomes") }), localOptions: fixture.localOptions, observationAuthKey: failure.charCodeAt(0).toString(16).padStart(2, "0").repeat(32), now: () => Date.now() });
+      let drifted = false;
+      const resolveHostBindings = async (references: any) => {
+        if (failure === "authority-drift" && !drifted) {
+          const manifest = JSON.parse(await readFile(fixture.config.deploymentPath!, "utf8")), candidateState = manifest.states.find((item: any) => item.definitionAlias === governedOutcomeCompositionAliasesV1[0]);
+          candidateState.stateVersion += 1;
+          candidateState.candidates[0].stateEvents.push({ index: candidateState.candidates[0].stateEvents.length, kind: "revoked", contractDigest: candidateState.candidates[0].contractEnvelope.advertisedDigest, at: new Date().toISOString() });
+          await writeFile(fixture.config.deploymentPath!, `${JSON.stringify(manifest)}\n`);
+          drifted = true;
+        }
+        return references.accountRef === reviewed.github.accountRef ? { credential: "github-test-secret", account: reviewed.github.repository, destination: reviewed.github.headBranch, limit: pack.githubPolicyDigest } : { credential: "linear-test-secret", account: reviewed.linear.workspace, destination: reviewed.linear.issue, limit: pack.linearPolicyDigest };
+      };
+      const runtime = await createGitHubLinearMissionRuntimeV1({ config: fixture.config, profile, githubReleaseRunner: await runner, linearProvider, resolveHostBindings, journal: missionJournal, outcomeReceiptPublication: await createFileOutcomeKernelStorage({ rootDir: path.join(scenarioRoot, "outcomes") }), localOptions: fixture.localOptions, observationAuthKey: failure.charCodeAt(0).toString(16).padStart(2, "0").repeat(32), now: () => Date.now() });
       const jobs = await runtime.agentTools.agentStatus({}, fixture.context) as any, result = await runtime.agentTools.outcomeRequest({ outcomeRef: jobs.outcomeRefs[0], requestId: `deterministic-${failure}`, sourceRefs: { authorization: release.authorizationHandle }, choices: {} }, fixture.context) as any;
-      assert.deepEqual({ verdict: result.verdict, lifecycleState: result.lifecycleState, reasonCode: result.reasonCode }, { verdict: "refused", lifecycleState: "failed", reasonCode: "governed-effect-failed" }, JSON.stringify({ failure, result, counts, evidence: await runtime.inspectEvidence() }));
-      const expectedAliases = failure === "candidate" ? governedOutcomeCompositionAliasesV1.slice(0, 1) : failure === "pr" ? governedOutcomeCompositionAliasesV1.slice(0, 2) : governedOutcomeCompositionAliasesV1.slice(0, 4);
+      const expectedResult = failure === "authority-drift" ? { verdict: "refused", lifecycleState: "unavailable", reasonCode: "outcome-request-unavailable" } : { verdict: "refused", lifecycleState: "failed", reasonCode: "governed-effect-failed" };
+      assert.deepEqual({ verdict: result.verdict, lifecycleState: result.lifecycleState, reasonCode: result.reasonCode }, expectedResult, JSON.stringify({ failure, result, counts, evidence: await runtime.inspectEvidence() }));
+      const expectedAliases = failure === "candidate" || failure === "authority-drift" ? governedOutcomeCompositionAliasesV1.slice(0, 1) : failure === "pr" ? governedOutcomeCompositionAliasesV1.slice(0, 2) : governedOutcomeCompositionAliasesV1.slice(0, 4);
       assert.deepEqual((await runtime.inspectEvidence()).requests[0]?.joins.map(item => item.alias), expectedAliases, `${failure} failure creates no later reservations`);
       assert.equal(counts.statuses, 0, `${failure} failure reaches no status write`);
       if (failure === "candidate") assert.deepEqual({ prs: counts.prs, merges: counts.merges, comments: counts.comments }, { prs: 0, merges: 0, comments: 0 });
+      if (failure === "authority-drift") {
+        assert.deepEqual(counts, { blobs: 0, trees: 0, commits: 0, refs: 0, prs: 0, ready: 0, merges: 0, comments: 0, statuses: 0 });
+        const recovered = await new FsAuthorityLedger(fixture.config.ledgerDir).recover({ deferTerminal: true });
+        assert.equal(recovered.ok, true);
+        assert.deepEqual(recovered.ok ? recovered.reservations.map(item => ({ state: item.state, sendStarted: item.sendStarted ?? false })) : [], [{ state: "reserved", sendStarted: false }], "authority drift refuses before prepared CAS and provider send");
+      }
       if (failure === "pr") assert.deepEqual({ merges: counts.merges, comments: counts.comments }, { merges: 0, comments: 0 });
       if (failure === "comment") assert.deepEqual({ merges: counts.merges, comments: counts.comments }, { merges: 1, comments: 1 });
     }
