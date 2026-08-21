@@ -85,7 +85,7 @@ test("provider DTOs are detached before reads and hostile accessors, proxies, ca
   let getters = 0;
   for (const response of [
     Object.defineProperty({}, "outcome", { enumerable: true, get() { getters++; return "ok"; } }),
-    new Proxy({ outcome: "ok", data: {} }, { get() { getters++; throw new Error("trap"); } }),
+    { outcome: "ok", data: new Proxy({}, { get() { getters++; throw new Error("trap"); } }) },
     { outcome: "ok", data: { callback() {} } },
     { outcome: "ok", data: "x".repeat(1_100_000) },
   ]) {
@@ -117,7 +117,7 @@ test("three unrelated adapters run through the unchanged Outcome kernel with hon
   const cases = [
     { contract: SLACK_LIKE_CONTRACT, binding: SLACK_LIKE_BINDING, model: { channel: "general", text: "hello" }, ports: { mcp: { call: async () => ({ outcome: "ok", data: { messageId: "m-1" } }) } }, status: "absent" },
     { contract: CALENDAR_LIKE_CONTRACT, binding: CALENDAR_LIKE_BINDING, model: { eventId: "event-9", title: "Review" }, ports: { http: { call: async () => ({ outcome: "ok", data: { eventId: "event-9", state: "visible" } }) } }, status: "partial" },
-    { contract: SLIDES_LIKE_CONTRACT, binding: SLIDES_LIKE_BINDING, model: { title: "Q3" }, ports: { cli: { spawn: async input => ({ outcome: "ok", data: input.argv[0] === "show" ? { deckId: "quarterly", revision: 2 } : { deckId: "quarterly", revision: 2 } }) } }, status: "verified" },
+    { contract: SLIDES_LIKE_CONTRACT, binding: SLIDES_LIKE_BINDING, model: { title: "Q3" }, ports: { cli: { spawn: async () => ({ outcome: "ok", data: { deckId: "quarterly", revision: 2 } }) } }, status: "verified" },
   ] as const;
   for (let index = 0; index < cases.length; index++) {
     const item = cases[index], compiled = compileEffectTransportV1({ contract: item.contract, binding: item.binding, modelInput: item.model, resolveHostBindings: async () => host, ports: item.ports });
@@ -145,7 +145,7 @@ async function runThroughKernel(contract: ToolEffectContractV1, compiled: Return
       ledgerState.state = result.kind === "ambiguous" ? "ambiguous" : result.reconciliationStatus && result.reconciliationStatus !== "not-attempted" ? "reconciled" : result.kind;
       return result;
     },
-    reconcile: async () => { const result = await compiled.adapter.reconcile(state, { kind: "ambiguous", resultDigest: sha("9") }); ledgerState.state = "reconciled"; return result; },
+    reconcile: async () => { const result = await compiled.adapter.reconcile!(state, { kind: "ambiguous", resultDigest: sha("9") }); ledgerState.state = "reconciled"; return result; },
     recover: async () => [], cancel: async () => { throw new Error("not used"); },
   };
   const kernel = createOutcomeKernel({ storage, coordinator, ledger: { getReservation: async () => ledgerState } as any, now: () => 2_000, authorization: async () => "active" });

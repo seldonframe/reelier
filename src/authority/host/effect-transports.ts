@@ -1,0 +1,193 @@
+import { isProxy } from "node:util/types";
+import { digestToolEffectContractV1, parseToolEffectContractV1, type ToolEffectContractV1 } from "../tool-effect-contract.js";
+import { authorityCanonicalBytes, authorityDigest } from "../wire.js";
+import type { DispatchAdapter, DispatchOutcome, DispatchRequestState } from "./dispatch.js";
+import { createTrustedObservationVerifier, type TrustedObservationVerifierV1 } from "./outcome-kernel.js";
+
+const SHA = /^sha256:[0-9a-f]{64}$/;
+const NAME = /^[A-Za-z0-9._:-]{1,256}$/;
+const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/;
+const HTTP_METHODS = new Set(["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"]);
+const HOST_TEMPLATE_FIELDS = new Set(["account", "destination", "limit"]);
+
+export interface McpEffectTransportBindingV1 { readonly v: "reelier.effect-transport-binding/v1"; readonly kind: "mcp"; readonly operation: string; readonly server: string; readonly tool: string; readonly serverSchemaDigest: string; readonly toolSchemaDigest: string; readonly readback: Readonly<{ operation: string; tool: string; toolSchemaDigest: string }> | null; }
+export interface HttpEffectTransportBindingV1 { readonly v: "reelier.effect-transport-binding/v1"; readonly kind: "http"; readonly operation: string; readonly method: string; readonly origin: string; readonly pathTemplate: string; readonly requestSchemaDigest: string; readonly responseProjection: readonly string[]; readonly readback: Readonly<{ operation: string; method: string; pathTemplate: string; requestSchemaDigest: string }> | null; }
+export interface CliEffectTransportBindingV1 { readonly v: "reelier.effect-transport-binding/v1"; readonly kind: "cli"; readonly operation: string; readonly executable: string; readonly argvTemplates: readonly string[]; readonly credentialEnv: string; readonly envNames: readonly string[]; readonly responseProjection: readonly string[]; readonly readback: Readonly<{ operation: string; argvTemplates: readonly string[] }> | null; }
+export type EffectTransportBindingV1 = McpEffectTransportBindingV1 | HttpEffectTransportBindingV1 | CliEffectTransportBindingV1;
+
+export interface EffectTransportHostBindingsV1 { readonly credential: string; readonly account: string; readonly destination: string; readonly limit: string; }
+export interface EffectTransportProviderResponseV1 { readonly outcome: string; readonly data: unknown }
+export interface EffectTransportPortsV1 {
+  readonly mcp?: Readonly<{ call(request: Readonly<{ server: string; tool: string; arguments: Readonly<{ model: Readonly<Record<string, unknown>>; host: Readonly<{ account: string; destination: string; limit: string }> }>; credential: string }>): Promise<EffectTransportProviderResponseV1> }>;
+  readonly http?: Readonly<{ call(request: Readonly<{ method: string; url: string; body: Readonly<{ model: Readonly<Record<string, unknown>>; host: Readonly<{ account: string; destination: string; limit: string }> }> | null; credential: string; requestSchemaDigest: string }>): Promise<EffectTransportProviderResponseV1> }>;
+  readonly cli?: Readonly<{ spawn(request: Readonly<{ executable: string; argv: readonly string[]; env: Readonly<Record<string, string>> }>): Promise<EffectTransportProviderResponseV1> }>;
+}
+
+export interface CompiledEffectTransportV1 {
+  readonly effect: Readonly<{ v: "reelier.compiled-effect-input/v1"; contractDigest: string; bindingDigest: string; model: Readonly<Record<string, unknown>> }>;
+  readonly evidence: Readonly<{ v: "reelier.effect-transport-evidence/v1"; contractDigest: string; bindingDigest: string; model: Readonly<Record<string, unknown>> }>;
+  readonly adapter: DispatchAdapter;
+  readonly verifier: TrustedObservationVerifierV1;
+}
+
+export function parseEffectTransportBindingV1(value: unknown): EffectTransportBindingV1 {
+  const head = closedRecord(value, ["v", "kind"], ["operation", "server", "tool", "serverSchemaDigest", "toolSchemaDigest", "method", "origin", "pathTemplate", "requestSchemaDigest", "responseProjection", "executable", "argvTemplates", "credentialEnv", "envNames", "readback"], "effect transport binding");
+  if (head.v !== "reelier.effect-transport-binding/v1") throw new TypeError("effect transport binding version is invalid");
+  if (head.kind === "mcp") return parseMcpBinding(value);
+  if (head.kind === "http") return parseHttpBinding(value);
+  if (head.kind === "cli") return parseCliBinding(value);
+  throw new TypeError("effect transport binding kind is invalid");
+}
+
+export function digestEffectTransportBindingV1(value: unknown): string { return authorityDigest(parseEffectTransportBindingV1(value)); }
+
+export function compileEffectTransportV1(input: Readonly<{ contract: ToolEffectContractV1; binding: EffectTransportBindingV1; modelInput: unknown; resolveHostBindings: (references: ToolEffectContractV1["bindings"]) => Promise<EffectTransportHostBindingsV1>; ports: EffectTransportPortsV1; }>): CompiledEffectTransportV1 {
+  if (!input || typeof input !== "object" || isProxy(input) || typeof input.resolveHostBindings !== "function" || !input.ports || typeof input.ports !== "object") throw new TypeError("effect transport compiler input is invalid");
+  const contract = parseToolEffectContractV1(input.contract), binding = parseEffectTransportBindingV1(input.binding);
+  const contractDigest = digestToolEffectContractV1(contract), bindingDigest = authorityDigest(binding);
+  bindContract(contract, binding, bindingDigest);
+  const model = parseModelInput(input.modelInput, contract);
+  const effect = deepFreeze({ v: "reelier.compiled-effect-input/v1" as const, contractDigest, bindingDigest, model });
+  const evidence = deepFreeze({ v: "reelier.effect-transport-evidence/v1" as const, contractDigest, bindingDigest, model });
+  const observedProjectionDigests = new Set<string>();
+  const hostBindings = async (): Promise<EffectTransportHostBindingsV1> => parseHostBindings(await input.resolveHostBindings(contract.bindings));
+  const adapter: DispatchAdapter = Object.freeze({
+    async dispatch(state: DispatchRequestState): Promise<DispatchOutcome> {
+      bindDispatchState(state, effect, contractDigest);
+      const response = await dispatch(binding, model, await hostBindings(), input.ports);
+      return dispatchOutcome(contract, bindingDigest, response);
+    },
+    async reconcile(state: DispatchRequestState, prior: DispatchOutcome): Promise<DispatchOutcome> {
+      bindDispatchState(state, effect, contractDigest);
+      if (!contract.readback || !binding.readback) return unavailableOutcome(bindingDigest, prior);
+      const response = await readback(binding, model, await hostBindings(), input.ports), category = resultCategory(contract, response.outcome);
+      if (category === "success") {
+        const projection = projectResponse(response.data, contract.readback.projection);
+        if (projection === null) return unavailableOutcome(bindingDigest, prior);
+        const normalizedProjectionDigest = authorityDigest(projection); observedProjectionDigests.add(normalizedProjectionDigest);
+        return Object.freeze({ kind: "acknowledged", resultDigest: responseDigest(bindingDigest, response), reconciliationStatus: "matched", normalizedProjectionDigest });
+      }
+      if (category === "conflict" || category === "definitive-failure") {
+        const projection = projectResponse(response.data, contract.readback.projection);
+        const normalizedProjectionDigest = projection === null ? authorityDigest({ v: category === "conflict" ? "reelier.effect-conflict/v1" : "reelier.effect-not-applied/v1", bindingDigest }) : authorityDigest(projection);
+        return Object.freeze({ kind: "acknowledged", resultDigest: responseDigest(bindingDigest, response), reconciliationStatus: category === "conflict" ? "conflict" : "not-applied", normalizedProjectionDigest });
+      }
+      return unavailableOutcome(bindingDigest, prior);
+    },
+  });
+  const verifier = createTrustedObservationVerifier({ contractDigest, verify: observation => observation.projectionDigest !== null && observedProjectionDigests.has(observation.projectionDigest) });
+  return Object.freeze({ effect, evidence, adapter, verifier });
+}
+
+function parseMcpBinding(value: unknown): McpEffectTransportBindingV1 {
+  const raw = closedRecord(value, ["v", "kind", "operation", "server", "tool", "serverSchemaDigest", "toolSchemaDigest", "readback"], [], "MCP effect transport binding");
+  if (raw.v !== "reelier.effect-transport-binding/v1" || raw.kind !== "mcp") throw new TypeError("MCP effect transport binding is invalid");
+  let readback: McpEffectTransportBindingV1["readback"] = null;
+  if (raw.readback !== null) { const parsed = closedRecord(raw.readback, ["operation", "tool", "toolSchemaDigest"], [], "MCP readback binding"); readback = deepFreeze({ operation: name(parsed.operation, "MCP readback operation"), tool: name(parsed.tool, "MCP readback tool"), toolSchemaDigest: digest(parsed.toolSchemaDigest, "MCP readback schema") }); }
+  return deepFreeze({ v: "reelier.effect-transport-binding/v1", kind: "mcp", operation: name(raw.operation, "MCP operation"), server: name(raw.server, "MCP server"), tool: name(raw.tool, "MCP tool"), serverSchemaDigest: digest(raw.serverSchemaDigest, "MCP server schema"), toolSchemaDigest: digest(raw.toolSchemaDigest, "MCP tool schema"), readback });
+}
+
+function parseHttpBinding(value: unknown): HttpEffectTransportBindingV1 {
+  const raw = closedRecord(value, ["v", "kind", "operation", "method", "origin", "pathTemplate", "requestSchemaDigest", "responseProjection", "readback"], [], "HTTP effect transport binding");
+  if (raw.v !== "reelier.effect-transport-binding/v1" || raw.kind !== "http") throw new TypeError("HTTP effect transport binding is invalid");
+  let readback: HttpEffectTransportBindingV1["readback"] = null;
+  if (raw.readback !== null) { const parsed = closedRecord(raw.readback, ["operation", "method", "pathTemplate", "requestSchemaDigest"], [], "HTTP readback binding"); readback = deepFreeze({ operation: name(parsed.operation, "HTTP readback operation"), method: httpMethod(parsed.method), pathTemplate: pathTemplate(parsed.pathTemplate), requestSchemaDigest: digest(parsed.requestSchemaDigest, "HTTP readback schema") }); }
+  return deepFreeze({ v: "reelier.effect-transport-binding/v1", kind: "http", operation: name(raw.operation, "HTTP operation"), method: httpMethod(raw.method), origin: httpOrigin(raw.origin), pathTemplate: pathTemplate(raw.pathTemplate), requestSchemaDigest: digest(raw.requestSchemaDigest, "HTTP request schema"), responseProjection: projectionList(raw.responseProjection), readback });
+}
+
+function parseCliBinding(value: unknown): CliEffectTransportBindingV1 {
+  const raw = closedRecord(value, ["v", "kind", "operation", "executable", "argvTemplates", "credentialEnv", "envNames", "responseProjection", "readback"], [], "CLI effect transport binding");
+  if (raw.v !== "reelier.effect-transport-binding/v1" || raw.kind !== "cli") throw new TypeError("CLI effect transport binding is invalid");
+  const envNames = stringList(raw.envNames, "CLI environment names", ENV_NAME), credentialEnv = stringValue(raw.credentialEnv, "CLI credential environment name", 128);
+  if (!ENV_NAME.test(credentialEnv) || !envNames.includes(credentialEnv)) throw new TypeError("CLI credential environment name is outside the allowlist");
+  let readback: CliEffectTransportBindingV1["readback"] = null;
+  if (raw.readback !== null) { const parsed = closedRecord(raw.readback, ["operation", "argvTemplates"], [], "CLI readback binding"); readback = deepFreeze({ operation: name(parsed.operation, "CLI readback operation"), argvTemplates: templateList(parsed.argvTemplates, "CLI readback argv") }); }
+  return deepFreeze({ v: "reelier.effect-transport-binding/v1", kind: "cli", operation: name(raw.operation, "CLI operation"), executable: stringValue(raw.executable, "CLI executable", 1_024), argvTemplates: templateList(raw.argvTemplates, "CLI argv"), credentialEnv, envNames, responseProjection: projectionList(raw.responseProjection), readback });
+}
+
+function bindContract(contract: ToolEffectContractV1, binding: EffectTransportBindingV1, bindingDigest: string): void {
+  if (contract.operation !== binding.operation || contract.operationDigest !== bindingDigest) throw new TypeError("effect transport binding digest does not match the signed contract");
+  if (binding.kind === "mcp" && contract.schemaDigest !== binding.toolSchemaDigest) throw new TypeError("MCP tool schema digest does not match the signed contract");
+  if (binding.kind === "http" && contract.schemaDigest !== binding.requestSchemaDigest) throw new TypeError("HTTP request schema digest does not match the signed contract");
+  if ((contract.readback === null) !== (binding.readback === null)) throw new TypeError("effect transport readback does not match the signed contract");
+  if (contract.readback && binding.readback && contract.readback.operation !== binding.readback.operation) throw new TypeError("effect transport readback operation does not match the signed contract");
+  if (contract.readback && (binding.kind === "http" || binding.kind === "cli") && authorityDigest(contract.readback.projection) !== authorityDigest(binding.responseProjection)) throw new TypeError("effect transport response projection does not match the signed contract");
+}
+
+function parseModelInput(value: unknown, contract: ToolEffectContractV1): Readonly<Record<string, unknown>> {
+  const raw = closedRecord(value, contract.model.fields, [], "model input"), model = snapshotJson(raw, "model input", contract.model.maxBytes);
+  if (!model || typeof model !== "object" || Array.isArray(model)) throw new TypeError("model input must be a closed object");
+  if (authorityCanonicalBytes(model).byteLength > contract.model.maxBytes) throw new TypeError("model input exceeds its signed byte bound");
+  return model as Readonly<Record<string, unknown>>;
+}
+
+function parseHostBindings(value: unknown): EffectTransportHostBindingsV1 { const raw = closedRecord(value, ["credential", "account", "destination", "limit"], [], "host bindings"); return deepFreeze({ credential: stringValue(raw.credential, "host credential", 65_536), account: stringValue(raw.account, "host account", 4_096), destination: stringValue(raw.destination, "host destination", 4_096), limit: stringValue(raw.limit, "host limit", 4_096) }); }
+
+async function dispatch(binding: EffectTransportBindingV1, model: Readonly<Record<string, unknown>>, host: EffectTransportHostBindingsV1, ports: EffectTransportPortsV1): Promise<EffectTransportProviderResponseV1> {
+  const publicHost = deepFreeze({ account: host.account, destination: host.destination, limit: host.limit });
+  if (binding.kind === "mcp") { if (!ports.mcp) throw new Error("MCP effect transport port is unavailable"); return parseProviderResponse(await ports.mcp.call(deepFreeze({ server: binding.server, tool: binding.tool, arguments: { model, host: publicHost }, credential: host.credential }))); }
+  if (binding.kind === "http") { if (!ports.http) throw new Error("HTTP effect transport port is unavailable"); return parseProviderResponse(await ports.http.call(deepFreeze({ method: binding.method, url: joinUrl(binding.origin, renderTemplate(binding.pathTemplate, model, publicHost, true)), body: { model, host: publicHost }, credential: host.credential, requestSchemaDigest: binding.requestSchemaDigest }))); }
+  if (!ports.cli) throw new Error("CLI effect transport port is unavailable");
+  return parseProviderResponse(await ports.cli.spawn(deepFreeze({ executable: binding.executable, argv: binding.argvTemplates.map(item => renderTemplate(item, model, publicHost, false)), env: { [binding.credentialEnv]: host.credential } })));
+}
+
+async function readback(binding: EffectTransportBindingV1, model: Readonly<Record<string, unknown>>, host: EffectTransportHostBindingsV1, ports: EffectTransportPortsV1): Promise<EffectTransportProviderResponseV1> {
+  const publicHost = deepFreeze({ account: host.account, destination: host.destination, limit: host.limit });
+  if (binding.kind === "mcp" && binding.readback) { if (!ports.mcp) throw new Error("MCP effect transport port is unavailable"); return parseProviderResponse(await ports.mcp.call(deepFreeze({ server: binding.server, tool: binding.readback.tool, arguments: { model, host: publicHost }, credential: host.credential }))); }
+  if (binding.kind === "http" && binding.readback) { if (!ports.http) throw new Error("HTTP effect transport port is unavailable"); return parseProviderResponse(await ports.http.call(deepFreeze({ method: binding.readback.method, url: joinUrl(binding.origin, renderTemplate(binding.readback.pathTemplate, model, publicHost, true)), body: null, credential: host.credential, requestSchemaDigest: binding.readback.requestSchemaDigest }))); }
+  if (binding.kind === "cli" && binding.readback) { if (!ports.cli) throw new Error("CLI effect transport port is unavailable"); return parseProviderResponse(await ports.cli.spawn(deepFreeze({ executable: binding.executable, argv: binding.readback.argvTemplates.map(item => renderTemplate(item, model, publicHost, false)), env: { [binding.credentialEnv]: host.credential } }))); }
+  throw new Error("effect transport readback is unavailable");
+}
+
+function parseProviderResponse(value: unknown): EffectTransportProviderResponseV1 { const detached = snapshotJson(value, "provider response", 1_048_576), raw = closedRecord(detached, ["outcome", "data"], [], "provider response"); return deepFreeze({ outcome: stringValue(raw.outcome, "provider outcome", 256), data: raw.data }); }
+function dispatchOutcome(contract: ToolEffectContractV1, bindingDigest: string, response: EffectTransportProviderResponseV1): DispatchOutcome { const category = resultCategory(contract, response.outcome), resultDigest = responseDigest(bindingDigest, response); if (category === "success") return Object.freeze({ kind: "acknowledged", resultDigest, reconciliationStatus: contract.readback ? "not-attempted" : "unavailable", normalizedProjectionDigest: null }); if (category === "definitive-failure" || category === "conflict") return Object.freeze({ kind: "definitive-failure", resultDigest }); return Object.freeze({ kind: "ambiguous", resultDigest, reconciliationStatus: "not-attempted", normalizedProjectionDigest: null }); }
+function resultCategory(contract: ToolEffectContractV1, outcome: string): "success" | "conflict" | "definitive-failure" | "ambiguity" { if (contract.result.success.includes(outcome)) return "success"; if (contract.result.conflict.includes(outcome)) return "conflict"; if (contract.result.definitiveFailure.includes(outcome)) return "definitive-failure"; return "ambiguity"; }
+function unavailableOutcome(bindingDigest: string, prior: DispatchOutcome): DispatchOutcome { return Object.freeze({ kind: prior.kind, resultDigest: authorityDigest({ v: "reelier.effect-readback-unavailable/v1", bindingDigest, priorResultDigest: prior.resultDigest }), reconciliationStatus: "unavailable", normalizedProjectionDigest: null }); }
+function responseDigest(bindingDigest: string, response: EffectTransportProviderResponseV1): string { return authorityDigest({ v: "reelier.effect-transport-result/v1", bindingDigest, outcome: response.outcome, data: response.data }); }
+function bindDispatchState(state: DispatchRequestState, effect: CompiledEffectTransportV1["effect"], contractDigest: string): void { if (!state || state.effectDigest !== contractDigest || authorityDigest(state.effect) !== authorityDigest(effect)) throw new TypeError("dispatch state does not bind the compiled effect contract and model input"); }
+
+function projectResponse(data: unknown, projections: readonly string[]): Readonly<Record<string, unknown>> | null {
+  const result: Record<string, unknown> = {};
+  for (const pointer of projections) { let current: unknown = data; for (const encoded of pointer.slice(1).split("/")) { const segment = encoded.replace(/~1/gu, "/").replace(/~0/gu, "~"); if (!current || typeof current !== "object" || Array.isArray(current) && !/^(?:0|[1-9][0-9]*)$/u.test(segment)) return null; const descriptor = Object.getOwnPropertyDescriptor(current, segment); if (!descriptor || !descriptor.enumerable || !Object.hasOwn(descriptor, "value")) return null; current = descriptor.value; } result[pointer] = current; }
+  return deepFreeze(result);
+}
+
+function renderTemplate(template: string, model: Readonly<Record<string, unknown>>, host: Readonly<{ account: string; destination: string; limit: string }>, urlEncode: boolean): string { return template.replace(/\{(model|host)\.([A-Za-z0-9._:-]+)\}/gu, (_match, scope: string, field: string) => { const value = scope === "model" ? model[field] : host[field as keyof typeof host]; if (typeof value !== "string" && typeof value !== "number" && typeof value !== "boolean") throw new TypeError("transport template field must be a scalar"); return urlEncode ? encodeURIComponent(String(value)) : String(value); }); }
+function joinUrl(origin: string, path: string): string { return `${origin}${path}`; }
+
+function closedRecord(value: unknown, required: readonly string[], optional: readonly string[], label: string): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value) || isProxy(value)) throw new TypeError(`${label} must be an inert closed object`);
+  const prototype = Object.getPrototypeOf(value); if (prototype !== Object.prototype && prototype !== null) throw new TypeError(`${label} has an unsupported prototype`);
+  const allowed = new Set([...required, ...optional]), keys = Reflect.ownKeys(value); if (keys.length > 64 || keys.some(key => typeof key !== "string" || !allowed.has(key))) throw new TypeError(`${label} has an unknown field or is too large`);
+  const result: Record<string, unknown> = {};
+  for (const key of required) { const descriptor = Object.getOwnPropertyDescriptor(value, key); if (!descriptor || !descriptor.enumerable || !Object.hasOwn(descriptor, "value")) throw new TypeError(`${label} has a missing, hidden, or accessor field`); result[key] = descriptor.value; }
+  for (const key of optional) { const descriptor = Object.getOwnPropertyDescriptor(value, key); if (!descriptor) continue; if (!descriptor.enumerable || !Object.hasOwn(descriptor, "value")) throw new TypeError(`${label} has a hidden or accessor field`); result[key] = descriptor.value; }
+  return result;
+}
+
+function snapshotJson(value: unknown, label: string, maxBytes: number, depth = 0, seen = new WeakSet<object>(), budget = { nodes: 0, bytes: 0 }): unknown {
+  if (depth > 24 || ++budget.nodes > 4_096) throw new TypeError(`${label} is not bounded`);
+  if (value === null || typeof value === "boolean") return value;
+  if (typeof value === "string") { budget.bytes += Buffer.byteLength(value); if (budget.bytes > maxBytes) throw new TypeError(`${label} is too large`); return value; }
+  if (typeof value === "number") { if (!Number.isFinite(value)) throw new TypeError(`${label} contains a non-finite number`); return value; }
+  if (!value || typeof value !== "object" || isProxy(value)) throw new TypeError(`${label} contains a proxy, callable, or non-JSON value`);
+  if (seen.has(value)) throw new TypeError(`${label} contains cyclic or shared identity`); seen.add(value);
+  const prototype = Object.getPrototypeOf(value), array = Array.isArray(value); if (prototype !== Object.prototype && prototype !== null && prototype !== Array.prototype) throw new TypeError(`${label} has an unsupported prototype`);
+  const keys = Reflect.ownKeys(value); if (keys.length > 256) throw new TypeError(`${label} is too large`);
+  if (array) { if (value.length > 256 || keys.some(key => key === "length" ? false : typeof key !== "string" || !/^(?:0|[1-9][0-9]*)$/u.test(key) || Number(key) >= value.length)) throw new TypeError(`${label} contains a sparse or named array property`); const result: unknown[] = []; for (let index = 0; index < value.length; index++) { const descriptor = Object.getOwnPropertyDescriptor(value, String(index)); if (!descriptor || !descriptor.enumerable || !Object.hasOwn(descriptor, "value")) throw new TypeError(`${label} contains an accessor or sparse array`); result.push(snapshotJson(descriptor.value, label, maxBytes, depth + 1, seen, budget)); } return Object.freeze(result); }
+  const result: Record<string, unknown> = {};
+  for (const key of keys) { if (typeof key !== "string") throw new TypeError(`${label} contains a symbol property`); const descriptor = Object.getOwnPropertyDescriptor(value, key); if (!descriptor || !descriptor.enumerable || !Object.hasOwn(descriptor, "value")) throw new TypeError(`${label} contains a hidden or accessor property`); budget.bytes += Buffer.byteLength(key); if (budget.bytes > maxBytes) throw new TypeError(`${label} is too large`); result[key] = snapshotJson(descriptor.value, label, maxBytes, depth + 1, seen, budget); }
+  return deepFreeze(result);
+}
+
+function templateList(value: unknown, label: string): readonly string[] { const items = stringList(value, label, /^.{1,4096}$/u); for (const item of items) validateTemplate(item, label); return items; }
+function validateTemplate(value: string, label: string): void { for (const match of value.matchAll(/\{([^{}]+)\}/gu)) { const [scope, field] = match[1]!.split("."); if (scope === "host" && HOST_TEMPLATE_FIELDS.has(field ?? "")) continue; if (scope === "model" && field && NAME.test(field)) continue; throw new TypeError(`${label} contains an invalid or secret template field`); } }
+function projectionList(value: unknown): readonly string[] { const values = stringList(value, "response projection", /^\/(?:[^~/]|~[01])+(?:\/(?:[^~/]|~[01])+)*$/u); if (values.length === 0) throw new TypeError("response projection cannot be empty"); return values; }
+function stringList(value: unknown, label: string, pattern: RegExp): readonly string[] { if (!Array.isArray(value) || isProxy(value) || value.length > 64) throw new TypeError(`${label} must be a bounded argv-style array`); const result: string[] = []; for (let index = 0; index < value.length; index++) { const descriptor = Object.getOwnPropertyDescriptor(value, String(index)); if (!descriptor || !descriptor.enumerable || !Object.hasOwn(descriptor, "value") || typeof descriptor.value !== "string" || !pattern.test(descriptor.value)) throw new TypeError(`${label} contains an invalid or accessor entry`); result.push(descriptor.value); } if (new Set(result).size !== result.length) throw new TypeError(`${label} must be unique`); return Object.freeze(result); }
+function pathTemplate(value: unknown): string { const result = stringValue(value, "HTTP path template", 4_096); if (!result.startsWith("/") || /[?#]/u.test(result)) throw new TypeError("HTTP path template is invalid"); validateTemplate(result, "HTTP path template"); return result; }
+function httpMethod(value: unknown): string { if (typeof value !== "string" || !HTTP_METHODS.has(value)) throw new TypeError("HTTP method is invalid"); return value; }
+function httpOrigin(value: unknown): string { const result = stringValue(value, "HTTP origin", 2_048); let parsed: URL; try { parsed = new URL(result); } catch { throw new TypeError("HTTP origin is invalid"); } if (!["http:", "https:"].includes(parsed.protocol) || parsed.username || parsed.password || parsed.origin !== result) throw new TypeError("HTTP origin must be an exact HTTP origin without credentials"); return result; }
+function name(value: unknown, label: string): string { if (typeof value !== "string" || !NAME.test(value)) throw new TypeError(`${label} is invalid`); return value; }
+function digest(value: unknown, label: string): string { if (typeof value !== "string" || !SHA.test(value)) throw new TypeError(`${label} must be an exact digest`); return value; }
+function stringValue(value: unknown, label: string, max: number): string { if (typeof value !== "string" || value.length === 0 || Buffer.byteLength(value) > max) throw new TypeError(`${label} is invalid or too large`); return value; }
+function deepFreeze<T>(value: T): T { if (value && typeof value === "object" && !Object.isFrozen(value)) { for (const key of Object.keys(value)) deepFreeze((value as Record<string, unknown>)[key]); Object.freeze(value); } return value; }
