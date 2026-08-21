@@ -4,7 +4,7 @@ import { createOutcomeKernel, createTrustedOutcomePredecessorPolicyV1 } from "./
 import { createSignedJournalOutcomeKernelStorage } from "./outcome-kernel-fs-storage.js";
 import type { SignedJournal } from "./signed-journal.js";
 import { authenticateOutcomeRequest } from "../keys.js";
-import { bindAcceptedGateReservationAuthorityV1, describeAcceptedGateReservationAuthorityV1, type AcceptedGateReservationAuthorityV1 } from "../gate.js";
+import { bindAcceptedGateReservationAuthorityV1, describeAcceptedGateReservationAuthorityV1, describeAcceptedGateReservationReadbackV1, recoverAcceptedGateReservationReadbackV1, type AcceptedGateReservationAuthorityV1 } from "../gate.js";
 import { authorityDigest } from "../wire.js";
 import { createAuthorityAgentTools, type AuthorityAgentToolsV1, type AuthorityAgentToolContextV1 } from "./agent-tools.js";
 import { createGenuineGovernedOutcomeLocalComponentsV1, type LocalAuthorityRuntimeOptions } from "./local.js";
@@ -108,7 +108,10 @@ export async function createGitHubLinearMissionRuntimeV1(input: GenuineGitHubLin
         }
         return { requestId, verdict: "accepted" as const, reasonCode: "reconciled", lifecycleState: "reconciled", receiptRef: plan.receiptRef };
       }
-      plan ??= Object.freeze({ requestId, semanticsDigest, missionId: `mission_${authorityDigest({ semanticsDigest }).slice(7)}`, claimedAt: new Date(raw.now()).toISOString(), mode, executionContext, sourceRefs, choices, joins: Object.freeze([]), lifecycleState: "claimed" });
+      if (!plan) {
+        plan = Object.freeze({ requestId, semanticsDigest, missionId: `mission_${authorityDigest({ semanticsDigest }).slice(7)}`, claimedAt: new Date(raw.now()).toISOString(), mode, executionContext, sourceRefs, choices, joins: Object.freeze([]), lifecycleState: "claimed" });
+        await appendPlan(raw.journal, key, plan);
+      }
       const aliases = mode === "linear-only" ? governedOutcomeCompositionAliasesV1.slice(3) : governedOutcomeCompositionAliasesV1;
       const requestedOperations = aliases.map(alias => operations.get(alias)!);
       await kernel.claimMission({ v: "reelier.mission-claim/v1", missionId: plan.missionId, mandateDigest: authorityDigest(profileState.scope), promptDigest: authorityDigest({ requestId, source: "prompt-redacted" }), contractDigests: requestedOperations.map(operation => authorityDigest(operation.contract)), claimedAt: plan.claimedAt });
@@ -129,6 +132,10 @@ export async function createGitHubLinearMissionRuntimeV1(input: GenuineGitHubLin
             await appendPlan(raw.journal, key, plan);
           } else {
             if (decided.kind !== "existing" || decided.status.verdict !== "accepted") return refusedIngress(requestId, decided.kind === "unavailable" ? decided.reason : decided.kind === "refused" ? decided.status.reasonCode : "existing-reservation-unindexed");
+            try {
+              const readback = await recoverAcceptedGateReservationReadbackV1(components.gate, authenticated), description = describeAcceptedGateReservationReadbackV1(readback);
+              if (description.definitionAlias !== alias || description.decisionContextDigest !== decided.status.decisionContextDigest) return refusedIngress(requestId, "existing-reservation-readback-conflict");
+            } catch { return refusedIngress(requestId, "existing-reservation-readback-unavailable"); }
             return pendingIngress(requestId);
           }
         }

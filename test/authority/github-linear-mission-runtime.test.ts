@@ -101,6 +101,26 @@ test("signed five-definition runtime recovers an exact Linear-only mission witho
     const reservedAliases = recoveredLedger.ok ? recoveredLedger.reservations.map(item => item.intent.definitionAlias) : [];
     assert.equal(governedOutcomeCompositionAliasesV1.slice(0, 3).some(alias => reservedAliases.includes(alias)), false, "Linear-only creates no GitHub reservation");
     assert.deepEqual(reservedAliases.sort(), [...governedOutcomeCompositionAliasesV1.slice(3)].sort(), "both Linear reservations are durable");
+
+    const crashFixture = await fiveDefinitionDeployment(path.join(root, "accepted-before-index"), pack, release.authorizationHandle), crashKeys = generateKeyPairSync("ed25519");
+    const makeCrashRuntime = async (failPlanAppend: boolean) => {
+      const base = await createSignedJournal({ rootDir: path.join(root, "accepted-before-index-journal"), journalId: "accepted-before-index", signerId: "accepted-before-index", privateKey: crashKeys.privateKey, publicKey: crashKeys.publicKey });
+      let missionPlanAppends = 0;
+      const journal = failPlanAppend ? Object.freeze({
+        append: async (id: string, semantics: string, phase: string, data: Readonly<Record<string, unknown>>) => { if (phase === "mission-plan" && ++missionPlanAppends === 2) throw new Error("accepted-before-index crash"); return base.append(id, semantics, phase, data); },
+        load: base.load.bind(base), listRequestIds: base.listRequestIds.bind(base), withLease: base.withLease.bind(base),
+      }) : base;
+      return createGitHubLinearMissionRuntimeV1({ config: crashFixture.config, profile, githubReleaseRunner: runner, linearProvider, resolveHostBindings: async () => ({ credential: "linear-test-secret", account: reviewed.linear.workspace, destination: reviewed.linear.issue, limit: pack.linearPolicyDigest }), journal, outcomeReceiptPublication: await createFileOutcomeKernelStorage({ rootDir: path.join(root, "accepted-before-index-outcomes") }), localOptions: crashFixture.localOptions, observationAuthKey: "c".repeat(64), now: () => Date.now() });
+    };
+    const beforeCrash = { linearWrites, linearReads }, crashing = await makeCrashRuntime(true), crashJobs = await crashing.agentTools.agentStatus({}, crashFixture.context) as any, crashRef = crashJobs.outcomeRefs[1], crashRequest = { outcomeRef: crashRef, requestId: "linear-accepted-before-index", sourceRefs: { authorization: release.authorizationHandle }, choices: {} };
+    const interrupted = await crashing.agentTools.outcomeRequest(crashRequest, crashFixture.context) as any;
+    assert.equal(interrupted.lifecycleState, "unavailable");
+    const crashRestart = await makeCrashRuntime(false), adopted = await crashRestart.agentTools.outcomeRequest(crashRequest, crashFixture.context) as any;
+    assert.equal(adopted.lifecycleState, "pending", JSON.stringify(adopted));
+    assert.deepEqual({ linearWrites, linearReads }, beforeCrash, "accepted-before-index restart is readback-only and never sends");
+    const crashLedger = await new FsAuthorityLedger(crashFixture.config.ledgerDir).recover();
+    assert.equal(crashLedger.ok, true);
+    assert.deepEqual(crashLedger.ok ? crashLedger.reservations.map(item => item.intent.definitionAlias) : [], [governedOutcomeCompositionAliasesV1[3]], "restart adopts the one durable accepted reservation without reminting its successor");
   } finally { restorePlatform(); await Promise.all([rm(root, { recursive: true, force: true }), rm(release.root, { recursive: true, force: true })]); }
 });
 
