@@ -121,6 +121,85 @@ test("provider DTOs are detached before reads and hostile accessors, proxies, ca
   assert.equal(resolverCalls, 0);
 });
 
+test("provider responses cross the asynchronous port boundary only as serialized inert data", async () => {
+  let traps = 0;
+  const forbiddenRootDto = new Proxy({ outcome: "ok", data: {} }, { get() { traps++; throw new Error("provider trap"); } });
+  void forbiddenRootDto;
+  const ports = {
+    mcp: {
+      inspectSchemas: async () => JSON.stringify({ serverSchemaDigest: SLACK_LIKE_BINDING.serverSchemaDigest, toolSchemaDigest: SLACK_LIKE_BINDING.toolSchemaDigest }),
+      call: async () => JSON.stringify({ outcome: "ok", data: { messageId: "m-1", then: "inert-data" } }),
+    },
+  } as any;
+  const compiled = compileEffectTransportV1({ contract: SLACK_LIKE_CONTRACT, binding: SLACK_LIKE_BINDING, modelInput: { channel: "general", text: "hello" }, resolveHostBindings: async () => host, ports });
+  const result = await compiled.adapter.dispatch(dispatchState(SLACK_LIKE_CONTRACT, compiled.effect));
+  assert.equal(result.kind, "acknowledged");
+  assert.equal(traps, 0);
+});
+
+test("provider and host boundary failures are replaced without leaking secret-bearing content", async () => {
+  const secret = host.credential;
+  const providerFailure = compileEffectTransportV1({
+    contract: CALENDAR_LIKE_CONTRACT,
+    binding: CALENDAR_LIKE_BINDING,
+    modelInput: { eventId: "event-9", title: "Review" },
+    resolveHostBindings: async () => host,
+    ports: { http: { call: async () => { throw new Error(`provider response included ${secret} and arbitrary-body`); } } },
+  });
+  await assert.rejects(() => providerFailure.adapter.dispatch(dispatchState(CALENDAR_LIKE_CONTRACT, providerFailure.effect)), error => {
+    const rendered = String(error);
+    assert.match(rendered, /effect transport boundary failed/i);
+    assert.doesNotMatch(rendered, new RegExp(`${secret}|arbitrary-body`));
+    return true;
+  });
+
+  const resolverFailure = compileEffectTransportV1({
+    contract: SLACK_LIKE_CONTRACT,
+    binding: SLACK_LIKE_BINDING,
+    modelInput: { channel: "general", text: "hello" },
+    resolveHostBindings: async () => { throw new Error(`vault failed for ${secret}`); },
+    ports: {},
+  });
+  await assert.rejects(() => resolverFailure.adapter.dispatch(dispatchState(SLACK_LIKE_CONTRACT, resolverFailure.effect)), error => {
+    const rendered = String(error);
+    assert.match(rendered, /host binding resolution failed/i);
+    assert.doesNotMatch(rendered, new RegExp(secret));
+    return true;
+  });
+});
+
+test("MCP runtime schema digests are checked and passed before the consequential call", async () => {
+  let inspections = 0, calls = 0, received: any;
+  const compile = (toolSchemaDigest: string) => compileEffectTransportV1({
+    contract: SLACK_LIKE_CONTRACT,
+    binding: SLACK_LIKE_BINDING,
+    modelInput: { channel: "general", text: "hello" },
+    resolveHostBindings: async () => host,
+    ports: {
+      mcp: {
+        inspectSchemas: async () => {
+          inspections++;
+          return JSON.stringify({ serverSchemaDigest: SLACK_LIKE_BINDING.serverSchemaDigest, toolSchemaDigest });
+        },
+        call: async (request: any) => {
+          calls++;
+          received = request;
+          return JSON.stringify({ outcome: "ok", data: { messageId: "m-1" } });
+        },
+      },
+    } as any,
+  });
+  const valid = compile(SLACK_LIKE_BINDING.toolSchemaDigest);
+  await valid.adapter.dispatch(dispatchState(SLACK_LIKE_CONTRACT, valid.effect));
+  assert.deepEqual({ inspections, calls }, { inspections: 1, calls: 1 });
+  assert.equal(received.serverSchemaDigest, SLACK_LIKE_BINDING.serverSchemaDigest);
+  assert.equal(received.toolSchemaDigest, SLACK_LIKE_BINDING.toolSchemaDigest);
+
+  const drifted = compile(sha("f"));
+  await assert.rejects(() => drifted.adapter.dispatch(dispatchState(SLACK_LIKE_CONTRACT, drifted.effect)), /MCP schema drift/i);
+  assert.deepEqual({ inspections, calls }, { inspections: 2, calls: 1 });
+});
+
 test("ambiguous writes use authoritative readback without resend and semantic conflicts are explicit", async () => {
   let sends = 0, reads = 0;
   const ports: EffectTransportPortsV1 = { http: { call: async request => request.method === "POST" ? (sends++, { outcome: "unknown", data: null }) : (reads++, { outcome: "conflict", data: { eventId: "event-9", state: "other" } }) } };
