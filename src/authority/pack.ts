@@ -120,6 +120,7 @@ const FORBIDDEN_SOURCE_PATTERNS: readonly [RegExp, string][] = [
 
 const STATIC_RUNTIME_SPECIFIER_ALLOWLIST: Readonly<Record<string, ReadonlySet<string>>> = Object.freeze({
   "src/authority/compile.ts": new Set(["node:crypto", "./types.js", "./wire.js", "./contract.js", "./source.js", "./pack.js", "./errors.js"]),
+  "src/authority/packs/github-linear-outcomes.ts": new Set(["node:util/types", "../tool-effect-contract.js", "../wire.js"]),
   "src/packs/github/manifest.ts": new Set(["../../authority/wire.js"]),
   "src/packs/github/source.ts": new Set(["../../authority/source.js", "../../authority/wire.js", "./manifest.js"]),
   "src/packs/github/compile.ts": new Set(["../../authority/wire.js", "./manifest.js"]),

@@ -56,7 +56,7 @@ test("reviewed pack binds exact GitHub and Linear authority while model fields c
   }
   assert.deepEqual(pack.operations.exactHeadMerge.contract.model.fields, ["authorizationHandle", "requestId", "semanticsDigest"]);
   assert.deepEqual(pack.operations.linearEvidenceComment.contract.model.fields, ["evidenceUrl"]);
-  assert.deepEqual(pack.operations.linearStatusTransition.contract.model.fields, []);
+  assert.deepEqual(pack.operations.linearStatusTransition.contract.model.fields, ["requestId"]);
   assert.equal(pack.operations.exactHeadMerge.contract.policyDigest, pack.githubPolicyDigest);
   assert.equal(pack.operations.linearStatusTransition.contract.policyDigest, pack.linearPolicyDigest);
 });
@@ -78,8 +78,6 @@ test("composite and Linear-only plans have exact ordering and Linear-only carrie
 test("closed reviewed authority refuses wrong identities and hostile DTO roots inertly", () => {
   const base = reviewedInput();
   for (const mutate of [
-    (value: any) => { value.github.workflowPath = ".github/workflows/other.yml"; },
-    (value: any) => { value.github.baseBranch = "develop"; },
     (value: any) => { value.github.headSha = git("f"); },
     (value: any) => { value.linear.project = "other_project"; },
     (value: any) => { value.linear.issue = "REEL-OTHER"; },
@@ -90,6 +88,8 @@ test("closed reviewed authority refuses wrong identities and hostile DTO roots i
     mutate(changed);
     assert.notEqual(createGitHubLinearOutcomePackV1(changed).authorityDigest, createGitHubLinearOutcomePackV1(base).authorityDigest);
   }
+  assert.throws(() => createGitHubLinearOutcomePackV1({ ...base, github: { ...base.github, workflowPath: ".github/workflows/other.yml" } }), /workflow/i);
+  assert.throws(() => createGitHubLinearOutcomePackV1({ ...base, github: { ...base.github, baseBranch: "develop" } }), /main/i);
   assert.throws(() => createGitHubLinearOutcomePackV1({ ...base, extra: true } as any), /closed|unknown/i);
   let traps = 0;
   assert.throws(() => createGitHubLinearOutcomePackV1(new Proxy(base, { ownKeys() { traps += 1; return []; } }) as any), /inert|proxy/i);
@@ -99,11 +99,10 @@ test("closed reviewed authority refuses wrong identities and hostile DTO roots i
 test("Linear status requires the exact verified comment receipt predecessor", () => {
   const pack = createGitHubLinearOutcomePackV1(reviewedInput());
   const comment = pack.operations.linearEvidenceComment.contract;
-  const reservation = { v: "reelier.effect-reservation/v1", reservationId: "reservation_comment", missionId: "mission_01", contractDigest: authorityDigest(comment), semanticIdentity: comment.semanticIdentity, idempotencyKey: comment.idempotencyKey, reservedAt: "2026-08-21T12:00:00.000Z" } as const;
-  const outcome = { v: "reelier.governed-outcome/v1", outcomeId: "outcome_comment", missionId: "mission_01", contractDigest: authorityDigest(comment), reservation, attempt: { v: "reelier.attempt/v1", attemptId: "attempt_comment", reservationId: reservation.reservationId, semanticIdentity: reservation.semanticIdentity, dispatchedAt: "2026-08-21T12:00:01.000Z", crossedProviderBoundary: true, result: "acknowledged" }, observation: { v: "reelier.observation/v1", observationId: "observation_comment", reservationId: reservation.reservationId, semanticIdentity: reservation.semanticIdentity, observedAt: "2026-08-21T12:00:02.000Z", authoritative: true, verdict: "matched", projectionDigest: sha("9") }, status: "verified", completedAt: "2026-08-21T12:00:03.000Z" } as const;
-  const receipt = { v: "reelier.governed-receipt/v1", receiptId: "receipt_comment", missionDigest: sha("1"), outcomeDigest: authorityDigest(outcome), mission: { v: "reelier.mission-claim/v1", missionId: "mission_01", mandateDigest: sha("2"), promptDigest: sha("3"), requestedOperations: [comment.operation], claimedAt: "2026-08-21T12:00:00.000Z", expiresAt: "2026-08-21T13:00:00.000Z" }, outcome, issuedAt: outcome.completedAt } as const;
-  assert.doesNotThrow(() => assertLinearStatusPredecessorV1(pack, receipt));
-  assert.throws(() => assertLinearStatusPredecessorV1(pack, { ...receipt, outcome: { ...outcome, status: "pending" } } as any), /verified/i);
-  assert.throws(() => assertLinearStatusPredecessorV1(createGitHubLinearOutcomePackV1({ ...reviewedInput(), linear: { ...reviewedInput().linear, issue: "REEL-TEST-2" } }), receipt), /exact.*comment|predecessor/i);
+  const reservation = { v: "reelier.effect-reservation/v1", reservationId: "reservation_comment", contractDigest: authorityDigest(comment), semanticIdentity: comment.semanticIdentity, reservedAt: "2026-08-21T12:00:00.000Z" } as const;
+  const outcome = { v: "reelier.governed-outcome/v1", outcomeId: "outcome_comment", contractDigest: authorityDigest(comment), semanticIdentity: comment.semanticIdentity, reservation, attempts: [{ v: "reelier.attempt/v1", attemptId: "attempt_comment", reservationId: reservation.reservationId, semanticIdentity: reservation.semanticIdentity, dispatchedAt: "2026-08-21T12:00:01.000Z", crossedProviderBoundary: true, result: "acknowledged" }], observation: { v: "reelier.observation/v1", observationId: "observation_comment", reservationId: reservation.reservationId, semanticIdentity: reservation.semanticIdentity, observedAt: "2026-08-21T12:00:02.000Z", authoritative: true, verdict: "matched", projectionDigest: sha("9") }, status: "verified", completedAt: "2026-08-21T12:00:03.000Z" } as const;
+  const receipt = { v: "reelier.governed-receipt/v1", receiptId: "receipt_comment", missionDigest: sha("1"), outcomeDigest: authorityDigest(outcome), status: "verified", issuedAt: outcome.completedAt } as const;
+  assert.doesNotThrow(() => assertLinearStatusPredecessorV1(pack, { receipt, outcome }));
+  assert.throws(() => assertLinearStatusPredecessorV1(pack, { receipt: { ...receipt, status: "pending" }, outcome: { ...outcome, status: "pending" } } as any), /verified/i);
+  assert.throws(() => assertLinearStatusPredecessorV1(createGitHubLinearOutcomePackV1({ ...reviewedInput(), linear: { ...reviewedInput().linear, issue: "REEL-TEST-2" } }), { receipt, outcome }), /exact.*comment|predecessor/i);
 });
-
