@@ -32,6 +32,14 @@ const createGitHubReleaseReceiptPublication = (input: any) => createGitHubReleas
 const governedRequests = new WeakMap<object, Map<string, { alias: any; allocationId: string; authorizationHandle: string; requestId: string; semanticsDigest: string }>>();
 const allLanes: ReleaseEvidenceLaneV1[] = ["ci-coverage", "ci-full-tests", "ci-mutation", "candidate-branch", "candidate-pull-request", "ghcr-immutable-manifest", "ghcr-tags", "human-authorization", "human-exceptions", "human-interruptions", "human-post-release-review", "installed-linux", "installed-windows", "mcp-registry-version", "merge-exact-sha", "npm-integrity", "npm-provenance", "tag-immutable-ref"];
 
+async function dispatchReviewedThroughCoordinator(compiled: ReturnType<typeof compileEffectTransportV1>, state: any) {
+  let reservation = { ...state.reservation, state: "reserved", intent: { ...state.reservation.intent, effectCanonicalBase64: state.effectCanonicalBase64 } };
+  const ledger: any = { async getReservation(id: string) { return id === reservation.reservationId ? reservation : null; }, async transition(id: string, expected: string, event: any) { if (id !== reservation.reservationId || reservation.state !== expected) return { ok: false, reason: "state-conflict" }; reservation = { ...reservation, state: event.to, ...(event.resultDigest ? { resultDigest: event.resultDigest } : {}) }; return { ok: true, status: "transitioned", reservation }; }, async recover() { return { ok: true, reservations: [reservation] }; } };
+  const restore = __testSetAuthorityCellHostPlatform("linux");
+  try { return await createDispatchCoordinator(ledger, compiled.adapter).dispatch(createReservedDispatchHandle({ ...state, reservation })); }
+  finally { restore(); }
+}
+
 test("release composition forwards the exact coordinator call through a prepared fallback", async () => {
   const restore = __testSetAuthorityCellHostPlatform("linux"), effect = Object.freeze({ endpointId: "linear.outcomes.evidence-comment" }), effectDigest = authorityDigest(effect);
   let reservation: any = { reservationId: digest("1"), state: "reserved", intent: { tenant: "tenant", requestDigest: digest("2"), capabilityDigest: digest("3"), effectDigest, effectCanonicalBase64: Buffer.from(JSON.stringify(effect)).toString("base64"), authorityStateDigest: digest("4"), executionContext: { allocationId: "allocation_1" } }, limitAssignments: [], sequence: 0, updatedAt: new Date().toISOString() };
@@ -91,16 +99,14 @@ test("generic reviewed pack delegates candidate publication into the existing br
     assert.deepEqual(Object.keys(executor), []);
     const compile = (requestId: string, policyDigest: string, contract = reviewed.contract) => compileEffectTransportV1({ contract, binding: reviewed.binding, modelInput: { authorizationHandle: "release_auth_1", requestId }, observationAuthKey: "a".repeat(64), resolveHostBindings: async () => ({ credential: "host-only-secret", account: "seldonframe/reelier", destination: plan.candidateBranch, limit: policyDigest }), executor });
     const wrong = compile("generic_candidate_wrong_policy", digest("0"));
-    const wrongOutcome = await wrong.adapter.dispatch({ reservation: { reservationId: "generic_candidate_wrong_policy", state: "dispatched", intent: { effectDigest: authorityDigest(reviewed.contract) } }, effect: wrong.effect, effectDigest: authorityDigest(reviewed.contract), effectCanonicalBase64: Buffer.from(JSON.stringify(wrong.effect)).toString("base64") } as any);
-    assert.equal(wrongOutcome.kind, "definitive-failure");
+    await assert.rejects(() => wrong.adapter.dispatch({ reservation: { reservationId: "generic_candidate_wrong_policy", state: "dispatched", intent: { effectDigest: authorityDigest(reviewed.contract) } }, effect: wrong.effect, effectDigest: authorityDigest(reviewed.contract), effectCanonicalBase64: Buffer.from(JSON.stringify(wrong.effect)).toString("base64") } as any), /boundary|failed/i);
     assert.equal(providerCalls, 0);
     const mismatchedContract = { ...reviewed.contract, contractId: "reviewed.github.candidate-publish.substituted.v1" };
     const mismatched = compile("generic_candidate_wrong_contract", reviewed.contract.policyDigest, mismatchedContract);
-    const mismatchedOutcome = await mismatched.adapter.dispatch({ reservation: { reservationId: "generic_candidate_wrong_contract", state: "dispatched", intent: { effectDigest: authorityDigest(mismatchedContract) } }, effect: mismatched.effect, effectDigest: authorityDigest(mismatchedContract), effectCanonicalBase64: Buffer.from(JSON.stringify(mismatched.effect)).toString("base64") } as any);
-    assert.equal(mismatchedOutcome.kind, "definitive-failure");
+    await assert.rejects(() => mismatched.adapter.dispatch({ reservation: { reservationId: "generic_candidate_wrong_contract", state: "dispatched", intent: { effectDigest: authorityDigest(mismatchedContract) } }, effect: mismatched.effect, effectDigest: authorityDigest(mismatchedContract), effectCanonicalBase64: Buffer.from(JSON.stringify(mismatched.effect)).toString("base64") } as any), /boundary|failed/i);
     assert.equal(providerCalls, 0);
     const compiled = compile("generic_candidate_publish", reviewed.contract.policyDigest);
-    const outcome = await compiled.adapter.dispatch({ reservation: { reservationId: "generic_candidate_publish", state: "dispatched", intent: { effectDigest: authorityDigest(reviewed.contract) } }, effect: compiled.effect, effectDigest: authorityDigest(reviewed.contract), effectCanonicalBase64: Buffer.from(JSON.stringify(compiled.effect)).toString("base64") } as any);
+    const outcome = await dispatchReviewedThroughCoordinator(compiled, { reservation: { reservationId: "generic_candidate_publish", state: "reserved", intent: { effectDigest: authorityDigest(reviewed.contract) } }, effect: compiled.effect, effectDigest: authorityDigest(reviewed.contract), effectCanonicalBase64: Buffer.from(JSON.stringify(compiled.effect)).toString("base64") } as any);
     assert.equal(outcome.kind, "acknowledged");
     assert.equal(JSON.stringify({ pack, compiled: compiled.evidence, outcome }).includes("host-only-secret"), false);
   } finally { await rm(root, { recursive: true, force: true }); }
@@ -118,7 +124,7 @@ test("generic reviewed executor refuses unsigned PR, merge, and unreviewed tag b
       const operation = fixture.reviewedPack.operations[name];
       const compiled = compileEffectTransportV1({ contract: operation.contract, binding: operation.binding, modelInput: { authorizationHandle: "release_auth_1", requestId }, observationAuthKey: "f".repeat(64), resolveHostBindings: async () => ({ credential: "secret", account: plan.repository, destination: plan.candidateBranch, limit: fixture.reviewedPack.githubPolicyDigest }), executor });
       const state = { reservation: { reservationId: requestId, state: "dispatched", intent: { effectDigest: authorityDigest(operation.contract) } }, effect: compiled.effect, effectDigest: authorityDigest(operation.contract), effectCanonicalBase64: Buffer.from(JSON.stringify(compiled.effect)).toString("base64") } as any;
-      assert.equal((await compiled.adapter.dispatch(state)).kind, "definitive-failure");
+      await assert.rejects(() => compiled.adapter.dispatch(state), /boundary|failed/i);
       assert.equal(providerCalls, 0);
     }
 
@@ -164,8 +170,8 @@ test("signed reviewed PR and exact-head merge execute through the generic adapte
 
       const operation = fixture.reviewedPack.operations[name], requestId = `${name}_reviewed`;
       const compiled = compileEffectTransportV1({ contract: operation.contract, binding: operation.binding, modelInput: { authorizationHandle: "release_auth_1", requestId }, observationAuthKey: "7".repeat(64), resolveHostBindings: async () => ({ credential: "secret", account: plan.repository, destination: plan.candidateBranch, limit: fixture.reviewedPack.githubPolicyDigest }), executor: createGitHubReleaseOutcomeExecutorV1(runner) });
-      const state = { reservation: { reservationId: requestId, state: "dispatched", intent: { effectDigest: authorityDigest(operation.contract) } }, effect: compiled.effect, effectDigest: authorityDigest(operation.contract), effectCanonicalBase64: Buffer.from(JSON.stringify(compiled.effect)).toString("base64") } as any;
-      assert.equal((await compiled.adapter.dispatch(state)).kind, "acknowledged");
+      const state = { reservation: { reservationId: requestId, state: "reserved", intent: { effectDigest: authorityDigest(operation.contract) } }, effect: compiled.effect, effectDigest: authorityDigest(operation.contract), effectCanonicalBase64: Buffer.from(JSON.stringify(compiled.effect)).toString("base64") } as any;
+      assert.equal((await dispatchReviewedThroughCoordinator(compiled, state)).kind, "acknowledged");
       assert.deepEqual(counters, name === "pullRequestEnsure"
         ? { find: 4, create: 1, ready: 1, read: 3, checks: 0, merge: 0, commit: 0 }
         : { find: 1, create: 0, ready: 0, read: 3, checks: 3, merge: 1, commit: 1 });

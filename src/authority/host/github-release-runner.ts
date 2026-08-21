@@ -5,7 +5,7 @@ import path from "node:path";
 import { isProxy } from "node:util/types";
 import { authorityDigest } from "../wire.js";
 import { assertVerifiedReleaseAuthorizationV1, type ReleaseContractSignerV1, type ReleaseProviderEffectV1, type VerifiedReleaseAuthorizationV1 } from "../release-contracts.js";
-import { consumeCoordinatorPublicationCall, type DispatchAdapter, type DispatchOutcome, type DispatchPublication, type DispatchRequestState, type DurableDispatchPublicationHeadV1, type DurableDispatchPublicationQueryV1 } from "./dispatch.js";
+import { consumeCoordinatorDispatchCallDelegateV1, consumeCoordinatorPublicationCall, type DispatchAdapter, type DispatchOutcome, type DispatchPublication, type DispatchRequestState, type DurableDispatchPublicationHeadV1, type DurableDispatchPublicationQueryV1 } from "./dispatch.js";
 import { consumeCoordinatorReconciliation, createPreparedDispatch } from "./prepared-dispatch.js";
 import { materializedHttpRequestDigest } from "./http-response-semantics.js";
 import { normalizeReservationPublicationId } from "./reservation-identity.js";
@@ -219,6 +219,7 @@ export async function createGitHubReleaseRunner(input: Readonly<{ rootDir: strin
         selected = tools[request.tool as keyof typeof tools];
         if (!selected) throw new TypeError("GitHub release pack tool is not reviewed");
         if (request.authority.bindingDigest !== githubReleaseOutcomeBindingDigestV1(request.tool)) throw new TypeError("GitHub release pack compiler binding is invalid");
+        if (!selected.reconcile && !consumeCoordinatorDispatchCallDelegateV1(request.authority, { reservationId: request.authority.reservationId, effectDigest: request.authority.contractDigest })) throw new TypeError("GitHub release write requires the exact coordinator call capability");
         const model = exactRecord(request.arguments.model, ["authorizationHandle", "requestId"], "GitHub release pack model input");
         if (model.requestId !== request.authority.reservationId) throw new TypeError("GitHub release pack reservation binding is invalid");
         invocation = Object.freeze({ alias: selected.alias, authorizationHandle: String(model.authorizationHandle), requestId: String(model.requestId), semanticsDigest: request.authority.contractDigest, reviewedHost: request.arguments.host });
