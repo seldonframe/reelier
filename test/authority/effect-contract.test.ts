@@ -123,6 +123,47 @@ test("wire graph bounds refuse hostile shapes before descriptor materialization"
   ]) assert.throws(() => parseToolEffectContractV1(hostile));
 });
 
+test("million-property objects and short arrays stop before bulk own-key materialization", () => {
+  const million = 1_000_000;
+  const hugeObject: Record<string, unknown> = { ...contract };
+  for (let index = 0; index < million; index++) hugeObject[`extra${index}`] = index;
+  const shortArray = ["summary"] as unknown as unknown[] & Record<string, unknown>;
+  for (let index = 0; index < million; index++) shortArray[`extra${index}`] = index;
+
+  const original = Object.getOwnPropertyDescriptors;
+  let bulkDescriptorCalls = 0;
+  Object.getOwnPropertyDescriptors = (() => { bulkDescriptorCalls++; throw new Error("bulk descriptor materialization reached"); }) as typeof Object.getOwnPropertyDescriptors;
+  try {
+    assert.throws(() => parseToolEffectContractV1(hugeObject));
+    assert.throws(() => parseToolEffectContractV1({ ...contract, model: { fields: shortArray, maxBytes: 1 } }));
+  } finally {
+    Object.getOwnPropertyDescriptors = original;
+  }
+  assert.equal(bulkDescriptorCalls, 0);
+});
+
+test("hidden and symbol extras are inert out-of-band data while expected descriptors stay strict", () => {
+  let getterReads = 0;
+  const decorated = { ...contract, model: { fields: [...contract.model.fields], maxBytes: contract.model.maxBytes } };
+  Object.defineProperty(decorated, "hidden", { get() { getterReads++; return "ignored"; } });
+  Object.defineProperty(decorated, Symbol("hidden"), { get() { getterReads++; return "ignored"; } });
+  Object.defineProperty(decorated.model, "hidden", { get() { getterReads++; return "ignored"; } });
+  Object.defineProperty(decorated.model.fields, Symbol("hidden"), { get() { getterReads++; return "ignored"; } });
+  const parsed = parseToolEffectContractV1(decorated);
+  assert.equal(getterReads, 0);
+  assert.deepEqual(parsed, parseToolEffectContractV1(contract));
+  assert.equal(digestToolEffectContractV1(decorated), digestToolEffectContractV1(contract));
+
+  const hiddenExpected = { ...contract };
+  Object.defineProperty(hiddenExpected, "provider", { enumerable: false, value: contract.provider });
+  assert.throws(() => parseToolEffectContractV1(hiddenExpected));
+  let expectedReads = 0;
+  const accessorExpected = { ...contract };
+  Object.defineProperty(accessorExpected, "provider", { enumerable: true, get() { expectedReads++; return contract.provider; } });
+  assert.throws(() => parseToolEffectContractV1(accessorExpected));
+  assert.equal(expectedReads, 0);
+});
+
 test("lifecycle standalone parsers close provider packs, mission claims, and receipts", async () => {
   const pack = { v: "reelier.provider-outcome-pack/v1", packId: "pack_1", provider: "calendar-like", contractDigest: digest, preflightOperation: "events.preflight", dispatchOperation: "events.create", readbackOperation: "events.get" } as const;
   const claim = { v: "reelier.mission-claim/v1", missionId: "mission_1", mandateDigest: digest, promptDigest: digest, contractDigests: [digest], claimedAt: "2026-08-20T11:59:59.000Z" } as const;
@@ -191,6 +232,12 @@ test("governed outcome transition refuses unverifiable chronology and verified m
   assert.equal(verifierCalls, 1);
   assert.equal(Object.isFrozen(verified), true);
   assert.equal(typeof digestGovernedOutcomeV1(outcome), "string");
+  let contextExtraReads = 0;
+  const decoratedContext = { ...context };
+  Object.defineProperty(decoratedContext, "hidden", { get() { contextExtraReads++; return "ignored"; } });
+  Object.defineProperty(decoratedContext, Symbol("hidden"), { get() { contextExtraReads++; return "ignored"; } });
+  assert.equal(verifyGovernedOutcomeTransitionV1(outcome, decoratedContext).status, "verified");
+  assert.equal(contextExtraReads, 0);
   assert.throws(() => parseGovernedOutcomeV1({ ...outcome, observation: { ...outcome.observation, authoritative: false } }));
   assert.equal(parseGovernedOutcomeV1({ ...outcome, status: "partial" }).status, "partial");
   assert.throws(() => parseGovernedOutcomeV1({ ...outcome, completedAt: "2026-08-20T11:00:00.000Z" }));
