@@ -8,6 +8,7 @@ import {
   createDispatchCoordinator as createSourceDispatchCoordinator,
 } from "../../src/authority/host/dispatch.js";
 import { createReservedDispatchHandle as createSourceReservedDispatchHandle } from "../../src/authority/gate.js";
+import { createDispatchCommitLease as createSourceDispatchCommitLease, createPreparedDispatch as createSourcePreparedDispatch } from "../../src/authority/host/prepared-dispatch.js";
 import { __testSetAuthorityCellHostPlatform as __testSetSourceAuthorityCellHostPlatform } from "../../src/authority/host/platform.js";
 import type {
   DurableDispatchPublicationHeadV1,
@@ -302,6 +303,35 @@ test("a stale colluding revalidator cannot cross credential, prepare, store, or 
   const state = { reservation: persisted, effect: {}, effectCanonicalBase64: "e30=", effectDigest: persisted.intent.effectDigest };
   await assert.rejects(() => coordinator.dispatch(createReservedDispatchHandle(state)), /generation|route authority|binding|stale/i);
   assert.deepEqual(effects, { credential: 0, prepare: 0, store: 0, provider: 0, commit: 0 });
+});
+
+test("prepared dispatch carries the exact one-call coordinator capability through commit and finally revokes it", async () => {
+  const expected = { reservationId: "prepared_r1", effectDigest: sha("3") };
+  let persisted: any = { reservationId: expected.reservationId, state: "reserved", intent: { effectDigest: expected.effectDigest, effectCanonicalBase64: "e30=", executionContext: { allocationId: "allocation_1" } } };
+  const testLedger = {
+    async getReservation() { return persisted; },
+    async commitPreparedDispatch(input: any) { persisted = { ...persisted, state: "dispatched", sendStarted: true }; return createSourceDispatchCommitLease({ reservationId: input.reservationId, allocationId: input.allocationId, preparedDigest: input.preparedDescription.materializedRequestDigest, authorityGeneration: input.expectedAuthorityGeneration, authorityExpiresAt: input.preparedDescription.authorityExpiresAt, absoluteDeadlineMs: input.absoluteDeadlineMs, commitGeneration: "commit_1" }); },
+    async transition(_id: string, state: string, event: any) { if (persisted.state !== state) return { ok: false, reason: "state-conflict" }; persisted = { ...persisted, state: event.to }; return { ok: true, status: "transitioned", reservation: persisted }; },
+    async recover() { return { ok: true, reservations: [persisted], highWaterMark: null, topology: { directorySync: "verified" } }; },
+  } as any;
+  let delegate: object | undefined;
+  const restore = __testSetSourceAuthorityCellHostPlatform("linux");
+  const coordinator = createSourceDispatchCoordinator(testLedger, {
+    async prepare(state: import("../../src/authority/host/dispatch.js").DispatchRequestState, call: import("../../src/authority/host/dispatch.js").CoordinatorDispatchCallV1) {
+      delegate = Object.freeze(Object.create(null));
+      assert.equal(bindCoordinatorDispatchCallDelegateV1(call, delegate!, state), true);
+      return createSourcePreparedDispatch({ description: { v: "reelier.prepared-dispatch-description/v1", routeDigest: sha("4"), materializedRequestDigest: sha("5"), projection: { v: "reelier.prepared-effect-projection/v1", transport: "fixed-cli", operationDigest: sha("6"), requestDigest: sha("7") }, authorityGeneration: "generation_1", authorityExpiresAt: new Date(Date.now() + 60_000).toISOString(), absoluteDeadlineMs: performance.now() + 60_000, reservationId: expected.reservationId, allocationId: "allocation_1" }, send: async () => {
+        assert.equal(consumeCoordinatorDispatchCallDelegateV1(delegate!, expected), true);
+        return { kind: "acknowledged", resultDigest: sha("8") };
+      } });
+    },
+    async dispatch() { throw new Error("non-prepared path must not run"); },
+  });
+  restore();
+  const state = { reservation: persisted, effect: {}, effectCanonicalBase64: "e30=", effectDigest: expected.effectDigest };
+  const outcome = await coordinator.dispatch(createSourceReservedDispatchHandle(state));
+  assert.equal(outcome.kind, "acknowledged");
+  assert.equal(consumeCoordinatorDispatchCallDelegateV1(delegate!, expected), false, "the prepared call cannot survive finally");
 });
 
 test("exact coordinator dispatch delegates are single-use and revoked when the adapter call returns", async () => {
