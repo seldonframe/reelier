@@ -142,7 +142,7 @@ function parseHostBindings(value: unknown): EffectTransportHostBindingsV1 { cons
 async function dispatch(binding: EffectTransportBindingV1, model: Readonly<Record<string, unknown>>, host: EffectTransportHostBindingsV1, ports: EffectTransportPortsV1): Promise<EffectTransportProviderResponseV1> {
   const publicHost = deepFreeze({ account: host.account, destination: host.destination, limit: host.limit });
   if (binding.kind === "mcp") { if (!ports.mcp) throw new Error("MCP effect transport port is unavailable"); await assertMcpSchemas(ports.mcp, binding.server, binding.tool, binding.serverSchemaDigest, binding.toolSchemaDigest); return providerBoundary("MCP", () => ports.mcp!.call(deepFreeze({ server: binding.server, tool: binding.tool, serverSchemaDigest: binding.serverSchemaDigest, toolSchemaDigest: binding.toolSchemaDigest, arguments: { model, host: publicHost }, credential: host.credential }))); }
-  if (binding.kind === "http") { if (!ports.http) throw new Error("HTTP effect transport port is unavailable"); return providerBoundary("HTTP", () => ports.http!.call(deepFreeze({ method: binding.method, url: joinUrl(binding.origin, renderTemplate(binding.pathTemplate, model, publicHost, true)), body: { model, host: publicHost }, credential: host.credential, requestSchemaDigest: binding.requestSchemaDigest }))); }
+  if (binding.kind === "http") { if (!ports.http) throw new Error("HTTP effect transport port is unavailable"); const url = joinUrl(binding.origin, renderTemplate(binding.pathTemplate, model, publicHost, true)); return providerBoundary("HTTP", () => ports.http!.call(deepFreeze({ method: binding.method, url, body: { model, host: publicHost }, credential: host.credential, requestSchemaDigest: binding.requestSchemaDigest }))); }
   if (!ports.cli) throw new Error("CLI effect transport port is unavailable");
   return providerBoundary("CLI", () => ports.cli!.spawn(deepFreeze({ executable: binding.executable, argv: binding.argvTemplates.map(item => renderTemplate(item, model, publicHost, false)), env: { [binding.credentialEnv]: host.credential } })));
 }
@@ -150,7 +150,7 @@ async function dispatch(binding: EffectTransportBindingV1, model: Readonly<Recor
 async function readback(binding: EffectTransportBindingV1, model: Readonly<Record<string, unknown>>, host: EffectTransportHostBindingsV1, ports: EffectTransportPortsV1): Promise<EffectTransportProviderResponseV1> {
   const publicHost = deepFreeze({ account: host.account, destination: host.destination, limit: host.limit });
   if (binding.kind === "mcp" && binding.readback) { if (!ports.mcp) throw new Error("MCP effect transport port is unavailable"); await assertMcpSchemas(ports.mcp, binding.server, binding.readback.tool, binding.serverSchemaDigest, binding.readback.toolSchemaDigest); return providerBoundary("MCP readback", () => ports.mcp!.call(deepFreeze({ server: binding.server, tool: binding.readback!.tool, serverSchemaDigest: binding.serverSchemaDigest, toolSchemaDigest: binding.readback!.toolSchemaDigest, arguments: { model, host: publicHost }, credential: host.credential }))); }
-  if (binding.kind === "http" && binding.readback) { if (!ports.http) throw new Error("HTTP effect transport port is unavailable"); return providerBoundary("HTTP readback", () => ports.http!.call(deepFreeze({ method: binding.readback!.method, url: joinUrl(binding.origin, renderTemplate(binding.readback!.pathTemplate, model, publicHost, true)), body: null, credential: host.credential, requestSchemaDigest: binding.readback!.requestSchemaDigest }))); }
+  if (binding.kind === "http" && binding.readback) { if (!ports.http) throw new Error("HTTP effect transport port is unavailable"); const url = joinUrl(binding.origin, renderTemplate(binding.readback.pathTemplate, model, publicHost, true)); return providerBoundary("HTTP readback", () => ports.http!.call(deepFreeze({ method: binding.readback!.method, url, body: null, credential: host.credential, requestSchemaDigest: binding.readback!.requestSchemaDigest }))); }
   if (binding.kind === "cli" && binding.readback) { if (!ports.cli) throw new Error("CLI effect transport port is unavailable"); return providerBoundary("CLI readback", () => ports.cli!.spawn(deepFreeze({ executable: binding.executable, argv: binding.readback!.argvTemplates.map(item => renderTemplate(item, model, publicHost, false)), env: { [binding.credentialEnv]: host.credential } }))); }
   throw new Error("effect transport readback is unavailable");
 }
@@ -178,7 +178,12 @@ function projectResponse(data: unknown, projections: readonly string[]): Readonl
 }
 
 function renderTemplate(template: string, model: Readonly<Record<string, unknown>>, host: Readonly<{ account: string; destination: string; limit: string }>, urlEncode: boolean): string { return template.replace(/\{(model|host)\.([A-Za-z0-9._:-]+)\}/gu, (_match, scope: string, field: string) => { const value = scope === "model" ? model[field] : host[field as keyof typeof host]; if (typeof value !== "string" && typeof value !== "number" && typeof value !== "boolean") throw new TypeError("transport template field must be a scalar"); return urlEncode ? encodeURIComponent(String(value)) : String(value); }); }
-function joinUrl(origin: string, path: string): string { return `${origin}${path}`; }
+function joinUrl(origin: string, path: string): string {
+  validateHttpPath(path);
+  const result = new URL(path, origin);
+  if (result.origin !== origin || result.search || result.hash || result.pathname !== path) throw new TypeError("HTTP resolved path does not exactly match the reviewed path");
+  return `${origin}${path}`;
+}
 
 function validateTemplateValues(binding: EffectTransportBindingV1, model: Readonly<Record<string, unknown>>): void {
   const templates = binding.kind === "http"
@@ -223,7 +228,19 @@ function templateList(value: unknown, label: string): readonly string[] { const 
 function validateTemplate(value: string, label: string): void { for (const match of value.matchAll(/\{([^{}]+)\}/gu)) { const [scope, field] = match[1]!.split("."); if (scope === "host" && HOST_TEMPLATE_FIELDS.has(field ?? "")) continue; if (scope === "model" && field && NAME.test(field)) continue; throw new TypeError(`${label} contains an invalid or secret template field`); } }
 function projectionList(value: unknown): readonly string[] { const values = stringList(value, "response projection", /^\/(?:[^~/]|~[01])+(?:\/(?:[^~/]|~[01])+)*$/u); if (values.length === 0) throw new TypeError("response projection cannot be empty"); return values; }
 function stringList(value: unknown, label: string, pattern: RegExp): readonly string[] { if (!Array.isArray(value) || isProxy(value) || value.length > 64) throw new TypeError(`${label} must be a bounded argv-style array`); const result: string[] = []; for (let index = 0; index < value.length; index++) { const descriptor = Object.getOwnPropertyDescriptor(value, String(index)); if (!descriptor || !descriptor.enumerable || !Object.hasOwn(descriptor, "value") || typeof descriptor.value !== "string" || !pattern.test(descriptor.value)) throw new TypeError(`${label} contains an invalid or accessor entry`); result.push(descriptor.value); } if (new Set(result).size !== result.length) throw new TypeError(`${label} must be unique`); return Object.freeze(result); }
-function pathTemplate(value: unknown): string { const result = stringValue(value, "HTTP path template", 4_096); if (!result.startsWith("/") || /[?#]/u.test(result)) throw new TypeError("HTTP path template is invalid"); validateTemplate(result, "HTTP path template"); return result; }
+function pathTemplate(value: unknown): string { const result = stringValue(value, "HTTP path template", 4_096); validateHttpPath(result); validateTemplate(result, "HTTP path template"); return result; }
+function validateHttpPath(value: string): void {
+  if (!value.startsWith("/")) throw new TypeError("HTTP path must be absolute");
+  let decoded = value;
+  for (let depth = 0; depth < 8; depth++) {
+    if (/[?#\\\u2044\u2215\u2216\u29f8\uff0f\uff3c]/u.test(decoded) || /%(?:2f|5c)/iu.test(decoded) || decoded.split("/").some(segment => segment === "." || segment === "..")) throw new TypeError("HTTP path contains a forbidden separator, query, fragment, or dot segment");
+    let next: string;
+    try { next = decodeURIComponent(decoded); } catch { throw new TypeError("HTTP path contains invalid encoding"); }
+    if (next === decoded) return;
+    decoded = next;
+  }
+  throw new TypeError("HTTP path encoding is too deeply nested");
+}
 function httpMethod(value: unknown): string { if (typeof value !== "string" || !HTTP_METHODS.has(value)) throw new TypeError("HTTP method is invalid"); return value; }
 function httpOrigin(value: unknown): string { const result = stringValue(value, "HTTP origin", 2_048); let parsed: URL; try { parsed = new URL(result); } catch { throw new TypeError("HTTP origin is invalid"); } if (!["http:", "https:"].includes(parsed.protocol) || parsed.username || parsed.password || parsed.origin !== result) throw new TypeError("HTTP origin must be an exact HTTP origin without credentials"); return result; }
 function name(value: unknown, label: string): string { if (typeof value !== "string" || !NAME.test(value)) throw new TypeError(`${label} is invalid`); return value; }
