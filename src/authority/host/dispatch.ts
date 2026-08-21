@@ -1,5 +1,5 @@
 import { authorityDigest } from "../wire.js";
-import { hasAcceptedGateReservationHandleRevalidatorV1, revalidateAcceptedGateReservationHandleV1 } from "../gate.js";
+import { describeAcceptedGateReservationReadbackV1, hasAcceptedGateReservationHandleRevalidatorV1, revalidateAcceptedGateReservationHandleV1, type AcceptedGateReservationReadbackV1 } from "../gate.js";
 import { authoritySignatureDigest } from "../trust.js";
 import { verifyAuthoritySignature } from "../crypto.js";
 import type { KeyObject } from "node:crypto";
@@ -38,7 +38,7 @@ export interface DispatchPublication {
   loadDurableHead?(query:DurableDispatchPublicationQueryV1,expect?:"terminal"|"root-or-terminal"):Promise<DurableDispatchPublicationHeadV1|null>;
 }
 export interface DispatchReservationProjectionV1 { readonly reservationId: string; readonly state: LedgerState; readonly effectDigest: string; readonly allocationId: string | null; }
-export interface DispatchCoordinator { describe?(handle: ReservedDispatchHandle): DispatchReservationProjectionV1; dispatch(handle: ReservedDispatchHandle): Promise<DispatchOutcome>; cancel(handle: ReservedDispatchHandle, reason?: string): Promise<DispatchOutcome>; reconcile(reservationId: string): Promise<DispatchOutcome>; recover(): Promise<readonly string[]>; }
+export interface DispatchCoordinator { describe?(handle: ReservedDispatchHandle): DispatchReservationProjectionV1; dispatch(handle: ReservedDispatchHandle): Promise<DispatchOutcome>; cancel(handle: ReservedDispatchHandle, reason?: string): Promise<DispatchOutcome>; reconcile(reservationId: string): Promise<DispatchOutcome>; recoverAccepted?(readback: AcceptedGateReservationReadbackV1): Promise<DispatchOutcome>; recover(): Promise<readonly string[]>; }
 
 /** Closes and detaches the provider-returned result before coordinator logic observes it. */
 export function parseDispatchOutcomeV1(value: unknown): DispatchOutcome {
@@ -137,6 +137,18 @@ export function createDispatchCoordinator(ledger: AuthorityLedger, adapter: Disp
   const budgetFor = (state: DispatchRequestState): { allocationId: string; reservationId: string; effects: number } | undefined => {
     const context = state.reservation.intent.executionContext;
     return context ? { allocationId: context.allocationId, reservationId: state.reservation.reservationId, effects: 1 } : undefined;
+  };
+  const cancelRecoveredReservation = async (reservation: import("../ledger.js").ReservationSnapshot): Promise<DispatchOutcome> => {
+    if (reservation.state !== "reserved") throw new TypeError("accepted recovery reservation is not reserved");
+    const resultDigest = authorityDigest({ v: "reelier.cancelled-result/v1", reservationId: reservation.reservationId, reason: "restart" });
+    const state = recoveredState(reservation), budgetClaim = budgetFor(state);
+    if (budget && budgetClaim) await budget.returnOnce(budgetClaim);
+    const outcome = Object.freeze({ kind: "definitive-failure" as const, resultDigest });
+    const published = publication ? await publication.publish(coordinatorPublicationCall({ phase: "cancelled", state, outcome, dispatchedRequestDigest: null })) : undefined;
+    const terminalDigest = published?.receiptRef ?? resultDigest;
+    const transitioned = await ledger.transition(reservation.reservationId, "reserved", { to: "cancelled", resultDigest: terminalDigest });
+    if (!transitioned.ok) throw new Error(`cancellation recovery transition refused: ${transitioned.reason}`);
+    return Object.freeze({ ...outcome, ...(published ? { providerResultDigest: outcome.resultDigest, receiptRef: published.receiptRef, evidenceDigest: published.evidenceDigest } : {}), resultDigest: transitioned.reservation.resultDigest ?? terminalDigest });
   };
   return Object.freeze({
     describe(handle: ReservedDispatchHandle): DispatchReservationProjectionV1 {
@@ -355,20 +367,20 @@ export function createDispatchCoordinator(ledger: AuthorityLedger, adapter: Disp
       if (!terminal.ok) throw new Error(`reconciliation transition refused: ${terminal.reason}`);
       return Object.freeze({ ...outcome, resultDigest, ...(published ? { receiptRef: published.receiptRef, evidenceDigest: published.evidenceDigest } : {}), ...(priorReceiptDigest ? { priorReceiptDigest } : {}) });
     },
+    async recoverAccepted(readback: AcceptedGateReservationReadbackV1): Promise<DispatchOutcome> {
+      const description = describeAcceptedGateReservationReadbackV1(readback);
+      if (description.lifecycleState !== "reserved") throw new TypeError("accepted recovery readback is not reserved");
+      const reservation = await ledger.getReservation(description.reservationId);
+      if (!reservation || reservation.state !== "reserved" || reservation.intent.definitionAlias !== description.definitionAlias || reservation.intent.contractDigest !== description.contractDigest || reservation.intent.effectDigest !== description.effectDigest || reservation.intent.capabilityDigest !== description.capabilityDigest || reservation.intent.decisionContextDigest !== description.decisionContextDigest) throw new TypeError("accepted recovery readback no longer binds the exact reservation");
+      return cancelRecoveredReservation(reservation);
+    },
     async recover(): Promise<readonly string[]> {
       const recovered = await ledger.recover({ deferTerminal: true });
       if (!recovered.ok) throw new Error(`authority recovery failed: ${recovered.reason}`);
       const ambiguous: string[] = [];
       for (const reservation of recovered.reservations) {
         if (reservation.state === "reserved") {
-          const resultDigest = authorityDigest({ v: "reelier.cancelled-result/v1", reservationId: reservation.reservationId, reason: "restart" });
-          const state = recoveredState(reservation);
-          const budgetClaim = budgetFor(state);
-          if (budget && budgetClaim) await budget.returnOnce(budgetClaim);
-          const outcome = Object.freeze({ kind: "definitive-failure" as const, resultDigest });
-          const published = publication ? await publication.publish(coordinatorPublicationCall({ phase: "cancelled", state, outcome, dispatchedRequestDigest: null })) : undefined;
-          const transitioned = await ledger.transition(reservation.reservationId, "reserved", { to: "cancelled", resultDigest: published?.receiptRef ?? resultDigest });
-          if (!transitioned.ok) throw new Error(`cancellation recovery transition refused: ${transitioned.reason}`);
+          await cancelRecoveredReservation(reservation);
           continue;
         }
         if (reservation.state === "dispatched") {

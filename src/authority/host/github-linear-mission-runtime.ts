@@ -134,7 +134,10 @@ export async function createGitHubLinearMissionRuntimeV1(input: GenuineGitHubLin
             try {
               const readback = await recoverAcceptedGateReservationReadbackV1(components.gate, authenticated), description = describeAcceptedGateReservationReadbackV1(readback);
               if (description.definitionAlias !== alias || description.decisionContextDigest !== decided.status.decisionContextDigest) return refusedIngress(requestId, "existing-reservation-readback-conflict");
-              if (description.lifecycleState === "reserved") await components.coordinator.recover();
+              if (description.lifecycleState === "reserved") {
+                if (!components.coordinator.recoverAccepted) throw new TypeError("genuine coordinator targeted recovery is unavailable");
+                await components.coordinator.recoverAccepted(readback);
+              }
               const recovered = await components.ledger.getReservation(description.reservationId);
               if (!recovered || recovered.state !== "cancelled" || typeof recovered.resultDigest !== "string") return refusedIngress(requestId, "existing-reservation-readback-unavailable");
               plan = Object.freeze({ ...plan, lifecycleState: "cancelled", receiptRef: recovered.resultDigest });
