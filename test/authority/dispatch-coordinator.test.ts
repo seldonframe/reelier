@@ -11,7 +11,7 @@ import { sha } from "./profile-governance-fixture.js";
 import { authorityDigest } from "../../src/authority/wire.js";
 import { signAuthorityDigest } from "../../src/authority/crypto.js";
 // @ts-ignore built imports share opaque capability brands with the public package under test.
-import { createDispatchCommitLease, createPreparedDispatch } from "../../../dist/authority/host/prepared-dispatch.js";
+import { createDispatchCommitLease, createPreparedDispatch, describePreparedDispatch } from "../../../dist/authority/host/prepared-dispatch.js";
 // @ts-ignore built helper shares the public package's projection contract.
 import { materializedHttpRequestDigest } from "../../../dist/authority/host/http-response-semantics.js";
 // @ts-ignore test-only import uses the built module so the opaque WeakMap brand is shared.
@@ -313,12 +313,21 @@ test("coordinator exposes a detached reservation projection without exposing the
 });
 
 test("prepared dispatch accepts a closed credential-free non-HTTP projection", () => {
-  const projection = Object.freeze({ v: "reelier.prepared-effect-projection/v1" as const, transport: "fixed-cli", operationDigest: sha("1"), requestDigest: sha("2") });
+  const projection = Object.freeze(Object.defineProperty({ v: "reelier.prepared-effect-projection/v1" as const, transport: "fixed-cli", operationDigest: sha("1"), requestDigest: sha("2") }, "credential", { value: "must-not-survive", enumerable: false }));
   const digest = preparedDispatchProjectionDigest(projection);
   const prepared = createPreparedDispatch({
     description: { v: "reelier.prepared-dispatch-description/v1", routeDigest: sha("3"), materializedRequestDigest: digest, projection, authorityGeneration: "generation_1", authorityExpiresAt: new Date(Date.now() + 60_000).toISOString(), absoluteDeadlineMs: performance.now() + 60_000, reservationId: "r1", allocationId: "allocation_1" },
     send: async () => ({ kind: "acknowledged", resultDigest: sha("4") }),
   });
+  const produced = describePreparedDispatch(prepared).projection;
   assert.equal(prepared.description.v, "reelier.prepared-dispatch-description/v1");
-  assert.equal("credential" in projection, false);
+  assert.equal("credential" in produced, false);
+  assert.equal(JSON.stringify(produced).includes("must-not-survive"), false);
+});
+
+test("prepared projections and provider results reject accessors without executing them", async () => {
+  let getters = 0;
+  const hostile = Object.defineProperty({ v: "reelier.prepared-effect-projection/v1", transport: "fixed-cli", operationDigest: sha("1") }, "requestDigest", { enumerable: true, get() { getters++; return sha("2"); } });
+  assert.throws(() => preparedDispatchProjectionDigest(hostile as any), /data|accessor|closed|inert/i);
+  assert.equal(getters, 0);
 });
