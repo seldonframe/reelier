@@ -78,7 +78,8 @@ test("trusted executor minting rejects functions, accessors, and proxies without
   let traps = 0;
   const accessor = Object.defineProperty(Object.create(null), "http", { enumerable: true, get() { traps++; return { call() {} }; } });
   const proxy = new Proxy(Object.create(null), { get() { traps++; throw new Error("executor trap"); }, ownKeys() { traps++; throw new Error("executor trap"); } });
-  for (const invalid of [() => undefined, accessor, proxy]) {
+  const callbackProxy = new Proxy(() => undefined, { get() { traps++; throw new Error("callback trap"); }, apply() { traps++; throw new Error("callback trap"); } });
+  for (const invalid of [() => undefined, accessor, proxy, { http: { call: callbackProxy } }]) {
     assert.throws(() => mintTrustedExecutor(invalid), /trusted.*executor|callback|closed|data/i);
   }
   assert.equal(traps, 0);
