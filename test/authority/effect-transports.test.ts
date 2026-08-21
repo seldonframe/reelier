@@ -34,6 +34,7 @@ const compileEffectTransportV1 = (input: CompileEffectTransportInput, key = obse
 
 const mintTrustedExecutor = (callbacks: unknown): unknown =>
   (effectTransports as unknown as { mintTrustedEffectTransportExecutorV1(callbacks: unknown): unknown }).mintTrustedEffectTransportExecutorV1(callbacks);
+const executorAuthority = (contract: ToolEffectContractV1, binding: unknown) => ({ contractDigest: digestToolEffectContractV1(contract), bindingDigest: digestEffectTransportBindingV1(binding), reservationId: "reservation-1" });
 
 test("raw executor objects refuse before host binding resolution or provider execution", () => {
   let resolutions = 0, calls = 0;
@@ -71,6 +72,7 @@ test("minting creates a blank opaque capability and trusted callback execution s
     body: { model: { eventId: "event-9", title: "Review" }, host: { account: "account-1", destination: "destination-1", limit: "limit-1" } },
     credential: "credential-super-secret",
     requestSchemaDigest: sha("3"),
+    authority: executorAuthority(CALENDAR_LIKE_CONTRACT, CALENDAR_LIKE_BINDING),
   });
 });
 
@@ -141,6 +143,7 @@ test("MCP compilation closes model input before host injection and omits credent
     server: "hermetic-slack", tool: "send_message", serverSchemaDigest: sha("1"), toolSchemaDigest: sha("2"),
     arguments: { model: { channel: "general", text: "hello" }, host: { account: "account-1", destination: "destination-1", limit: "limit-1" } },
     credential: "credential-super-secret",
+    authority: executorAuthority(SLACK_LIKE_CONTRACT, SLACK_LIKE_BINDING),
   });
   assert.equal(outcome.kind, "acknowledged");
   assert.doesNotMatch(JSON.stringify({ effect: compiled.effect, evidence: compiled.evidence, outcome }), /credential-super-secret/);
@@ -177,8 +180,8 @@ test("reviewed HTTP compilation binds method, origin, path, schemas, and respons
   const dispatched = await compiled.adapter.dispatch(dispatchState(CALENDAR_LIKE_CONTRACT, compiled.effect));
   const reconciled = await compiled.adapter.reconcile!(dispatchState(CALENDAR_LIKE_CONTRACT, compiled.effect), dispatched);
   assert.deepEqual(calls, [
-    { method: "POST", url: "https://calendar.invalid/calendars/destination-1/events", body: { model: { eventId: "event-9", title: "Review" }, host: { account: "account-1", destination: "destination-1", limit: "limit-1" } }, credential: "credential-super-secret", requestSchemaDigest: sha("3") },
-    { method: "GET", url: "https://calendar.invalid/calendars/destination-1/events/event-9", body: null, credential: "credential-super-secret", requestSchemaDigest: sha("4") },
+    { method: "POST", url: "https://calendar.invalid/calendars/destination-1/events", body: { model: { eventId: "event-9", title: "Review" }, host: { account: "account-1", destination: "destination-1", limit: "limit-1" } }, credential: "credential-super-secret", requestSchemaDigest: sha("3"), authority: executorAuthority(CALENDAR_LIKE_CONTRACT, CALENDAR_LIKE_BINDING) },
+    { method: "GET", url: "https://calendar.invalid/calendars/destination-1/events/event-9", body: null, credential: "credential-super-secret", requestSchemaDigest: sha("4"), authority: executorAuthority(CALENDAR_LIKE_CONTRACT, CALENDAR_LIKE_BINDING) },
   ]);
   assert.equal(reconciled.reconciliationStatus, "matched");
   assert.equal(reconciled.normalizedProjectionDigest, "sha256:88d35e15a1e20a2daac2ffce572cb49b65fe8519ce5c24b35c9f54773df5eb6c");
@@ -232,6 +235,7 @@ test("CLI uses a fixed executable, argv array, and exact environment-name allowl
     executable: "C:/reviewed/bin/slides-tool.exe",
     argv: ["update", "--deck", "destination-1", "--title", "Q3; Remove-Item C:/"],
     env: { SLIDES_TOKEN: "credential-super-secret" },
+    authority: executorAuthority(SLIDES_LIKE_CONTRACT, SLIDES_LIKE_BINDING),
   });
   assert.throws(() => compileEffectTransportV1({ contract: SLIDES_LIKE_CONTRACT, binding: { ...SLIDES_LIKE_BINDING, shell: true } as never, modelInput: { title: "Q3" }, resolveHostBindings: async () => host, ports: {} }), /closed|field|binding/i);
   assert.throws(() => compileEffectTransportV1({ contract: SLIDES_LIKE_CONTRACT, binding: { ...SLIDES_LIKE_BINDING, argvTemplates: "update --all" } as never, modelInput: { title: "Q3" }, resolveHostBindings: async () => host, ports: {} }), /argv|binding/i);

@@ -21,13 +21,14 @@ export interface EffectTransportHostBindingsV1 { readonly credential: string; re
 export interface EffectTransportProviderResponseV1 { readonly outcome: string; readonly data: unknown }
 export type EffectTransportProviderEnvelopeV1 = string;
 export interface EffectTransportResultSinkV1 { readonly success: (serializedJson: string) => void; readonly failure: () => void; }
+export interface EffectTransportExecutorAuthorityV1 { readonly contractDigest: string; readonly bindingDigest: string; readonly reservationId: string }
 export interface TrustedEffectTransportExecutorCallbacksV1 {
   readonly mcp?: Readonly<{
     inspectSchemas(request: Readonly<{ server: string; tool: string }>, sink: EffectTransportResultSinkV1): void;
-    call(request: Readonly<{ server: string; tool: string; serverSchemaDigest: string; toolSchemaDigest: string; arguments: Readonly<{ model: Readonly<Record<string, unknown>>; host: Readonly<{ account: string; destination: string; limit: string }> }>; credential: string }>, sink: EffectTransportResultSinkV1): void;
+    call(request: Readonly<{ server: string; tool: string; serverSchemaDigest: string; toolSchemaDigest: string; arguments: Readonly<{ model: Readonly<Record<string, unknown>>; host: Readonly<{ account: string; destination: string; limit: string }> }>; credential: string; authority: EffectTransportExecutorAuthorityV1 }>, sink: EffectTransportResultSinkV1): void;
   }>;
-  readonly http?: Readonly<{ call(request: Readonly<{ method: string; url: string; body: Readonly<{ model: Readonly<Record<string, unknown>>; host: Readonly<{ account: string; destination: string; limit: string }> }> | null; credential: string; requestSchemaDigest: string }>, sink: EffectTransportResultSinkV1): void }>;
-  readonly cli?: Readonly<{ spawn(request: Readonly<{ executable: string; argv: readonly string[]; env: Readonly<Record<string, string>> }>, sink: EffectTransportResultSinkV1): void }>;
+  readonly http?: Readonly<{ call(request: Readonly<{ method: string; url: string; body: Readonly<{ model: Readonly<Record<string, unknown>>; host: Readonly<{ account: string; destination: string; limit: string }> }> | null; credential: string; requestSchemaDigest: string; authority: EffectTransportExecutorAuthorityV1 }>, sink: EffectTransportResultSinkV1): void }>;
+  readonly cli?: Readonly<{ spawn(request: Readonly<{ executable: string; argv: readonly string[]; env: Readonly<Record<string, string>>; authority: EffectTransportExecutorAuthorityV1 }>, sink: EffectTransportResultSinkV1): void }>;
 }
 declare const trustedEffectTransportExecutorBrand: unique symbol;
 export interface TrustedEffectTransportExecutorV1 { readonly [trustedEffectTransportExecutorBrand]: true; }
@@ -100,13 +101,13 @@ export function compileEffectTransportV1(input: Readonly<{ contract: ToolEffectC
   const adapter: DispatchAdapter = Object.freeze({
     async dispatch(state: DispatchRequestState): Promise<DispatchOutcome> {
       bindDispatchState(state, effect, contractDigest);
-      const response = await dispatch(binding, model, await hostBindings(), executor);
+      const response = await dispatch(binding, model, await hostBindings(), executor, executorAuthority(state, contractDigest, bindingDigest));
       return dispatchOutcome(contract, bindingDigest, response);
     },
     async reconcile(state: DispatchRequestState, prior: DispatchOutcome): Promise<DispatchOutcome> {
       bindDispatchState(state, effect, contractDigest);
       if (!contract.readback || !binding.readback) return unavailableOutcome(bindingDigest, prior);
-      const response = await readback(binding, model, await hostBindings(), executor), category = resultCategory(contract, response.outcome);
+      const response = await readback(binding, model, await hostBindings(), executor, executorAuthority(state, contractDigest, bindingDigest)), category = resultCategory(contract, response.outcome);
       if (category === "success") {
         const projection = projectResponse(response.data, contract.readback.projection);
         if (projection === null) return unavailableOutcome(bindingDigest, prior);
@@ -220,20 +221,24 @@ function callback<T extends (...args: never[]) => void>(value: unknown, label: s
   return value as T;
 }
 
-async function dispatch(binding: EffectTransportBindingV1, model: Readonly<Record<string, unknown>>, host: EffectTransportHostBindingsV1, executor: TrustedEffectTransportExecutorCallbacksV1): Promise<EffectTransportProviderResponseV1> {
+async function dispatch(binding: EffectTransportBindingV1, model: Readonly<Record<string, unknown>>, host: EffectTransportHostBindingsV1, executor: TrustedEffectTransportExecutorCallbacksV1, authority: EffectTransportExecutorAuthorityV1): Promise<EffectTransportProviderResponseV1> {
   const publicHost = deepFreeze({ account: host.account, destination: host.destination, limit: host.limit });
-  if (binding.kind === "mcp") { if (!executor.mcp) throw new Error("MCP effect transport executor is unavailable"); await assertMcpSchemas(executor.mcp, binding.server, binding.tool, binding.serverSchemaDigest, binding.toolSchemaDigest); return providerBoundary("MCP", sink => executor.mcp!.call(deepFreeze({ server: binding.server, tool: binding.tool, serverSchemaDigest: binding.serverSchemaDigest, toolSchemaDigest: binding.toolSchemaDigest, arguments: { model, host: publicHost }, credential: host.credential }), sink)); }
-  if (binding.kind === "http") { if (!executor.http) throw new Error("HTTP effect transport executor is unavailable"); const url = joinUrl(binding.origin, renderTemplate(binding.pathTemplate, model, publicHost, true)); return providerBoundary("HTTP", sink => executor.http!.call(deepFreeze({ method: binding.method, url, body: { model, host: publicHost }, credential: host.credential, requestSchemaDigest: binding.requestSchemaDigest }), sink)); }
+  if (binding.kind === "mcp") { if (!executor.mcp) throw new Error("MCP effect transport executor is unavailable"); await assertMcpSchemas(executor.mcp, binding.server, binding.tool, binding.serverSchemaDigest, binding.toolSchemaDigest); return providerBoundary("MCP", sink => executor.mcp!.call(deepFreeze({ server: binding.server, tool: binding.tool, serverSchemaDigest: binding.serverSchemaDigest, toolSchemaDigest: binding.toolSchemaDigest, arguments: { model, host: publicHost }, credential: host.credential, authority }), sink)); }
+  if (binding.kind === "http") { if (!executor.http) throw new Error("HTTP effect transport executor is unavailable"); const url = joinUrl(binding.origin, renderTemplate(binding.pathTemplate, model, publicHost, true)); return providerBoundary("HTTP", sink => executor.http!.call(deepFreeze({ method: binding.method, url, body: { model, host: publicHost }, credential: host.credential, requestSchemaDigest: binding.requestSchemaDigest, authority }), sink)); }
   if (!executor.cli) throw new Error("CLI effect transport executor is unavailable");
-  return providerBoundary("CLI", sink => executor.cli!.spawn(deepFreeze({ executable: binding.executable, argv: binding.argvTemplates.map(item => renderTemplate(item, model, publicHost, false)), env: { [binding.credentialEnv]: host.credential } }), sink));
+  return providerBoundary("CLI", sink => executor.cli!.spawn(deepFreeze({ executable: binding.executable, argv: binding.argvTemplates.map(item => renderTemplate(item, model, publicHost, false)), env: { [binding.credentialEnv]: host.credential }, authority }), sink));
 }
 
-async function readback(binding: EffectTransportBindingV1, model: Readonly<Record<string, unknown>>, host: EffectTransportHostBindingsV1, executor: TrustedEffectTransportExecutorCallbacksV1): Promise<EffectTransportProviderResponseV1> {
+async function readback(binding: EffectTransportBindingV1, model: Readonly<Record<string, unknown>>, host: EffectTransportHostBindingsV1, executor: TrustedEffectTransportExecutorCallbacksV1, authority: EffectTransportExecutorAuthorityV1): Promise<EffectTransportProviderResponseV1> {
   const publicHost = deepFreeze({ account: host.account, destination: host.destination, limit: host.limit });
-  if (binding.kind === "mcp" && binding.readback) { if (!executor.mcp) throw new Error("MCP effect transport executor is unavailable"); await assertMcpSchemas(executor.mcp, binding.server, binding.readback.tool, binding.serverSchemaDigest, binding.readback.toolSchemaDigest); return providerBoundary("MCP readback", sink => executor.mcp!.call(deepFreeze({ server: binding.server, tool: binding.readback!.tool, serverSchemaDigest: binding.serverSchemaDigest, toolSchemaDigest: binding.readback!.toolSchemaDigest, arguments: { model, host: publicHost }, credential: host.credential }), sink)); }
-  if (binding.kind === "http" && binding.readback) { if (!executor.http) throw new Error("HTTP effect transport executor is unavailable"); const url = joinUrl(binding.origin, renderTemplate(binding.readback.pathTemplate, model, publicHost, true)); return providerBoundary("HTTP readback", sink => executor.http!.call(deepFreeze({ method: binding.readback!.method, url, body: null, credential: host.credential, requestSchemaDigest: binding.readback!.requestSchemaDigest }), sink)); }
-  if (binding.kind === "cli" && binding.readback) { if (!executor.cli) throw new Error("CLI effect transport executor is unavailable"); return providerBoundary("CLI readback", sink => executor.cli!.spawn(deepFreeze({ executable: binding.executable, argv: binding.readback!.argvTemplates.map(item => renderTemplate(item, model, publicHost, false)), env: { [binding.credentialEnv]: host.credential } }), sink)); }
+  if (binding.kind === "mcp" && binding.readback) { if (!executor.mcp) throw new Error("MCP effect transport executor is unavailable"); await assertMcpSchemas(executor.mcp, binding.server, binding.readback.tool, binding.serverSchemaDigest, binding.readback.toolSchemaDigest); return providerBoundary("MCP readback", sink => executor.mcp!.call(deepFreeze({ server: binding.server, tool: binding.readback!.tool, serverSchemaDigest: binding.serverSchemaDigest, toolSchemaDigest: binding.readback!.toolSchemaDigest, arguments: { model, host: publicHost }, credential: host.credential, authority }), sink)); }
+  if (binding.kind === "http" && binding.readback) { if (!executor.http) throw new Error("HTTP effect transport executor is unavailable"); const url = joinUrl(binding.origin, renderTemplate(binding.readback.pathTemplate, model, publicHost, true)); return providerBoundary("HTTP readback", sink => executor.http!.call(deepFreeze({ method: binding.readback!.method, url, body: null, credential: host.credential, requestSchemaDigest: binding.readback!.requestSchemaDigest, authority }), sink)); }
+  if (binding.kind === "cli" && binding.readback) { if (!executor.cli) throw new Error("CLI effect transport executor is unavailable"); return providerBoundary("CLI readback", sink => executor.cli!.spawn(deepFreeze({ executable: binding.executable, argv: binding.readback!.argvTemplates.map(item => renderTemplate(item, model, publicHost, false)), env: { [binding.credentialEnv]: host.credential }, authority }), sink)); }
   throw new Error("effect transport readback is unavailable");
+}
+
+function executorAuthority(state: DispatchRequestState, contractDigest: string, bindingDigest: string): EffectTransportExecutorAuthorityV1 {
+  return deepFreeze({ contractDigest, bindingDigest, reservationId: state.reservation.reservationId });
 }
 
 function providerBoundary(label: string, invoke: (sink: EffectTransportResultSinkV1) => void): Promise<EffectTransportProviderResponseV1> { return serializedBoundary(label, invoke, parseProviderResponse); }
