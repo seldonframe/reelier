@@ -37,7 +37,6 @@ export function buildAuthorityMcpServer(definitions: readonly AuthorityMcpDefini
     { name: "reelier_task_status", description: "Read the redacted authority graph for a task.", inputSchema: { type: "object", additionalProperties: false, required: ["taskId"], properties: { taskId: { type: "string" } } } },
     { name: "reelier_outcome_invoke", description: "Invoke a loaded bounded Outcome on hosts without dynamic tool lists.", inputSchema: { type: "object", additionalProperties: false, required: ["jobRef", "requestId", "sourceRefs", "choices"], properties: { jobRef: { type: "string" }, requestId: { type: "string" }, sourceRefs: { type: "object", additionalProperties: { type: "string" } }, choices: { type: "object", additionalProperties: false } } } },
     ...definitions.map(definition => ({ name: `reelier_outcome_${definition.alias}`, description: definition.description ?? `Request governed outcome ${definition.alias}`, inputSchema: { type: "object", additionalProperties: false, required: ["requestId", "sourceRefs", "choices"], properties: { requestId: { type: "string" }, sourceRefs: { type: "object", additionalProperties: { type: "string" } }, choices: { type: "object", additionalProperties: false } } } })),
-    { name: "reelier_outcome_status", description: "Read the redacted lifecycle of a governed outcome.", inputSchema: { type: "object", additionalProperties: false, required: ["requestId"], properties: { requestId: { type: "string" } } } },
     ...(artifactStage ? [{ name: "reelier_artifact_stage", description: "Stage text for a reviewed outcome; returns an opaque commitment only.", inputSchema: { type: "object", additionalProperties: false, required: ["requestId", "text", "mediaType"], properties: { requestId: { type: "string" }, text: { type: "string", maxLength: 262144 }, mediaType: { type: "string", const: "text/plain" }, sourceBinding: { type: "string" } } } }] : []),
   ] }));
   server.setRequestHandler(CallToolRequestSchema, async request => {
@@ -55,7 +54,6 @@ export function buildAuthorityMcpServer(definitions: readonly AuthorityMcpDefini
         : name === "reelier_delegation_status" && handler.delegationStatus ? await handler.delegationStatus(args, context)
         : name === "reelier_task_status" && handler.taskStatus ? await handler.taskStatus(args, context)
         : name === "reelier_outcome_invoke" && handler.invoke ? await handler.invoke(args, context)
-        : name === "reelier_outcome_status" ? await handler.status(args, context)
         : name === "reelier_artifact_stage" && artifactStage ? await artifactStage(args, context)
         : name.startsWith("reelier_outcome_") && directOutcomeAliases.has(name.slice("reelier_outcome_".length)) ? await handler.outcome(name.slice("reelier_outcome_".length), args, context) : undefined;
       if (!value) throw new Error("unknown authority tool");
