@@ -583,3 +583,20 @@ test("every frozen wire kind has a valid, deterministic golden vector", () => {
   assert.deepEqual(vectors["transport-effect"].compiledRequest, { target: "/v1/messages?account=tenant_1&mode=send", bodyUtf8: "{}" });
   assert.throws(() => parseCanonicalAuthorityJson("outcome-request", JSON.stringify(request)), /not RFC 8785\/JCS canonical/);
 });
+
+test("additive governed-effect vectors do not rewrite pinned V1 wire digests", () => {
+  const vectors = JSON.parse(readFileSync(path.join(process.cwd(), "contract/authority/v1/golden-vectors.json"), "utf8")) as Record<string, { digest: string }>;
+  assert.deepEqual({
+    "outcome-request": vectors["outcome-request"]?.digest,
+    "transport-effect": vectors["transport-effect"]?.digest,
+    "outcome-contract": vectors["outcome-contract"]?.digest,
+    "delegation-grant": vectors["delegation-grant"]?.digest,
+    "source-bundle": vectors["source-bundle"]?.digest,
+  }, {
+    "outcome-request": "sha256:b0627231c94f6e288b46bae793b7c64e90429f7e3fc27bc3e870ec23ee0b4245",
+    "transport-effect": "sha256:12b647a5503c40338d70f65d4a9b04e023430d238360d1f94c2f6f7aae8a7c9c",
+    "outcome-contract": "sha256:afea61809ed1682f977c9632d717a312b1424d600de2268cb4d677571da10cf5",
+    "delegation-grant": "sha256:0c76d6ea15e3c438a1b63b208f317fb7952499ac1c1476b26986267cec5073b1",
+    "source-bundle": "sha256:97109ac617f56ac15b5443a5efe703dcd225da14826a51fe092541cdda5016e2",
+  });
+});
