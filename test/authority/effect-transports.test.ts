@@ -15,6 +15,8 @@ import { CALENDAR_LIKE_BINDING, CALENDAR_LIKE_CONTRACT, SLACK_LIKE_BINDING, SLAC
 const sha = (digit: string): string => `sha256:${digit.repeat(64)}`;
 const at = (milliseconds: number): string => new Date(milliseconds).toISOString();
 const host: EffectTransportHostBindingsV1 = Object.freeze({ credential: "credential-super-secret", account: "account-1", destination: "destination-1", limit: "limit-1" });
+const wire = (outcome: string, data: unknown): string => JSON.stringify({ outcome, data });
+const slackSchemas = async (): Promise<string> => JSON.stringify({ serverSchemaDigest: SLACK_LIKE_BINDING.serverSchemaDigest, toolSchemaDigest: SLACK_LIKE_BINDING.toolSchemaDigest });
 
 test("MCP compilation closes model input before host injection and omits credentials from evidence", async () => {
   let resolved = 0;
@@ -24,13 +26,13 @@ test("MCP compilation closes model input before host injection and omits credent
     binding: SLACK_LIKE_BINDING,
     modelInput: { channel: "general", text: "hello" },
     resolveHostBindings: async refs => { resolved++; assert.deepEqual(refs, SLACK_LIKE_CONTRACT.bindings); return host; },
-    ports: { mcp: { call: async request => { received = request; return { outcome: "ok", data: { messageId: "m-1" } }; } } },
+    ports: { mcp: { inspectSchemas: slackSchemas, call: async request => { received = request; return wire("ok", { messageId: "m-1" }); } } },
   });
   assert.equal(resolved, 0);
   const outcome = await compiled.adapter.dispatch(dispatchState(SLACK_LIKE_CONTRACT, compiled.effect));
   assert.equal(resolved, 1);
   assert.deepEqual(received, {
-    server: "hermetic-slack", tool: "send_message",
+    server: "hermetic-slack", tool: "send_message", serverSchemaDigest: sha("1"), toolSchemaDigest: sha("2"),
     arguments: { model: { channel: "general", text: "hello" }, host: { account: "account-1", destination: "destination-1", limit: "limit-1" } },
     credential: "credential-super-secret",
   });
@@ -46,7 +48,7 @@ test("MCP compilation closes model input before host injection and omits credent
 
 test("reviewed HTTP compilation binds method, origin, path, schemas, and response projection", async () => {
   const calls: unknown[] = [];
-  const ports: EffectTransportPortsV1 = { http: { call: async request => { calls.push(request); return calls.length === 1 ? { outcome: "ok", data: { eventId: "event-9", state: "accepted", ignored: "outside projection" } } : { outcome: "ok", data: { eventId: "event-9", state: "visible", ignored: "outside projection" } }; } } };
+  const ports: EffectTransportPortsV1 = { http: { call: async request => { calls.push(request); return calls.length === 1 ? wire("ok", { eventId: "event-9", state: "accepted", ignored: "outside projection" }) : wire("ok", { eventId: "event-9", state: "visible", ignored: "outside projection" }); } } };
   const compiled = compileEffectTransportV1({ contract: CALENDAR_LIKE_CONTRACT, binding: CALENDAR_LIKE_BINDING, modelInput: { eventId: "event-9", title: "Review" }, resolveHostBindings: async () => host, ports });
   const dispatched = await compiled.adapter.dispatch(dispatchState(CALENDAR_LIKE_CONTRACT, compiled.effect));
   const reconciled = await compiled.adapter.reconcile!(dispatchState(CALENDAR_LIKE_CONTRACT, compiled.effect), dispatched);
@@ -77,7 +79,7 @@ test("CLI uses a fixed executable, argv array, and exact environment-name allowl
     binding: SLIDES_LIKE_BINDING,
     modelInput: { title: "Q3; Remove-Item C:/" },
     resolveHostBindings: async () => host,
-    ports: { cli: { spawn: async input => { request = input; return { outcome: "ok", data: { deckId: "quarterly", revision: 2 } }; } } },
+    ports: { cli: { spawn: async input => { request = input; return wire("ok", { deckId: "quarterly", revision: 2 }); } } },
   });
   await compiled.adapter.dispatch(dispatchState(SLIDES_LIKE_CONTRACT, compiled.effect));
   assert.deepEqual(request, {
@@ -96,7 +98,7 @@ test("template value validation completes before any host secret resolution", as
     binding: SLIDES_LIKE_BINDING,
     modelInput: { title: { nested: "not-an-argv-scalar" } },
     resolveHostBindings: async () => { resolutions++; return host; },
-    ports: { cli: { spawn: async () => ({ outcome: "ok", data: {} }) } },
+    ports: { cli: { spawn: async () => wire("ok", {}) } },
   }), /template|scalar|model/i);
   assert.equal(resolutions, 0);
 });
@@ -109,8 +111,8 @@ test("provider DTOs are detached before reads and hostile accessors, proxies, ca
     { outcome: "ok", data: { callback() {} } },
     { outcome: "ok", data: "x".repeat(1_100_000) },
   ]) {
-    const compiled = compileEffectTransportV1({ contract: SLACK_LIKE_CONTRACT, binding: SLACK_LIKE_BINDING, modelInput: { channel: "general", text: "hello" }, resolveHostBindings: async () => host, ports: { mcp: { call: async () => response as never } } });
-    await assert.rejects(() => compiled.adapter.dispatch(dispatchState(SLACK_LIKE_CONTRACT, compiled.effect)), /provider|data|accessor|proxy|callable|large|bounded|inert/i);
+    const compiled = compileEffectTransportV1({ contract: SLACK_LIKE_CONTRACT, binding: SLACK_LIKE_BINDING, modelInput: { channel: "general", text: "hello" }, resolveHostBindings: async () => host, ports: { mcp: { inspectSchemas: slackSchemas, call: async () => response as never } } });
+    await assert.rejects(() => compiled.adapter.dispatch(dispatchState(SLACK_LIKE_CONTRACT, compiled.effect)), /transport boundary failed/i);
   }
   assert.equal(getters, 0);
 
@@ -202,7 +204,7 @@ test("MCP runtime schema digests are checked and passed before the consequential
 
 test("ambiguous writes use authoritative readback without resend and semantic conflicts are explicit", async () => {
   let sends = 0, reads = 0;
-  const ports: EffectTransportPortsV1 = { http: { call: async request => request.method === "POST" ? (sends++, { outcome: "unknown", data: null }) : (reads++, { outcome: "conflict", data: { eventId: "event-9", state: "other" } }) } };
+  const ports: EffectTransportPortsV1 = { http: { call: async request => request.method === "POST" ? (sends++, wire("unknown", null)) : (reads++, wire("conflict", { eventId: "event-9", state: "other" })) } };
   const compiled = compileEffectTransportV1({ contract: CALENDAR_LIKE_CONTRACT, binding: CALENDAR_LIKE_BINDING, modelInput: { eventId: "event-9", title: "Review" }, resolveHostBindings: async () => host, ports });
   const state = dispatchState(CALENDAR_LIKE_CONTRACT, compiled.effect);
   const ambiguous = await compiled.adapter.dispatch(state);
@@ -233,8 +235,8 @@ test("a durable pending write resumes after restart through authoritative readba
     ports: {
       cli: {
         spawn: async request => request.argv[0] === "update"
-          ? (sends++, { outcome: "unknown", data: null })
-          : (reads++, { outcome: "ok", data: { deckId: "quarterly", revision: 2 } }),
+          ? (sends++, wire("unknown", null))
+          : (reads++, wire("ok", { deckId: "quarterly", revision: 2 })),
       },
     },
   });
@@ -273,9 +275,9 @@ test("a durable pending write resumes after restart through authoritative readba
 
 test("three unrelated adapters run through the unchanged Outcome kernel with honest grades", async () => {
   const cases = [
-    { contract: SLACK_LIKE_CONTRACT, binding: SLACK_LIKE_BINDING, model: { channel: "general", text: "hello" }, ports: { mcp: { call: async () => ({ outcome: "ok", data: { messageId: "m-1" } }) } }, status: "absent" },
-    { contract: CALENDAR_LIKE_CONTRACT, binding: CALENDAR_LIKE_BINDING, model: { eventId: "event-9", title: "Review" }, ports: { http: { call: async () => ({ outcome: "ok", data: { eventId: "event-9", state: "visible" } }) } }, status: "partial" },
-    { contract: SLIDES_LIKE_CONTRACT, binding: SLIDES_LIKE_BINDING, model: { title: "Q3" }, ports: { cli: { spawn: async () => ({ outcome: "ok", data: { deckId: "quarterly", revision: 2 } }) } }, status: "verified" },
+    { contract: SLACK_LIKE_CONTRACT, binding: SLACK_LIKE_BINDING, model: { channel: "general", text: "hello" }, ports: { mcp: { inspectSchemas: slackSchemas, call: async () => wire("ok", { messageId: "m-1" }) } }, status: "absent" },
+    { contract: CALENDAR_LIKE_CONTRACT, binding: CALENDAR_LIKE_BINDING, model: { eventId: "event-9", title: "Review" }, ports: { http: { call: async () => wire("ok", { eventId: "event-9", state: "visible" }) } }, status: "partial" },
+    { contract: SLIDES_LIKE_CONTRACT, binding: SLIDES_LIKE_BINDING, model: { title: "Q3" }, ports: { cli: { spawn: async () => wire("ok", { deckId: "quarterly", revision: 2 }) } }, status: "verified" },
   ] as const;
   for (let index = 0; index < cases.length; index++) {
     const item = cases[index], compiled = compileEffectTransportV1({ contract: item.contract, binding: item.binding, modelInput: item.model, resolveHostBindings: async () => host, ports: item.ports });
