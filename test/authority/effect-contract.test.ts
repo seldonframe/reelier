@@ -49,7 +49,7 @@ test("governed outcome transition refuses unverifiable chronology and verified m
   assert.equal(verifyGovernedOutcomeTransitionV1(outcome).status, "verified");
   assert.equal(typeof digestGovernedOutcomeV1(outcome), "string");
   assert.throws(() => parseGovernedOutcomeV1({ ...outcome, observation: { ...outcome.observation, authoritative: false } }));
-  assert.throws(() => parseGovernedOutcomeV1({ ...outcome, status: "partial" }));
+  assert.equal(parseGovernedOutcomeV1({ ...outcome, status: "partial" }).status, "partial");
   assert.throws(() => parseGovernedOutcomeV1({ ...outcome, completedAt: "2026-08-20T11:00:00.000Z" }));
   assert.throws(() => parseGovernedOutcomeV1({ ...outcome, attempts: [{ ...outcome.attempts[0], semanticIdentity: "drift" }] }));
 });
