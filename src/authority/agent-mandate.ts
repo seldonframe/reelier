@@ -4,6 +4,9 @@ import { authorityDigest } from "./wire.js";
 
 export type AgentHarnessV1 = "eve" | "codex" | "claude-code" | "cursor" | "grok-bot" | "grok-build" | "hermes";
 export type AgentDestinationV1 = "github" | "npm" | "mcp-registry" | "ghcr";
+/** Neutral references deliberately avoid provider enums; V1 remains byte-compatible. */
+export interface AgentMandateV2 { readonly v: "reelier.agent-mandate/v2"; readonly agentId: string; readonly revision: number; readonly providerRefs: readonly string[]; readonly accountRefs: readonly string[]; readonly destinationRefs: readonly string[]; }
+export type AgentMandate = AgentMandateV1 | AgentMandateV2;
 export type ReconciledOutcomeStatusV1 = "verified" | "failed" | "unchecked" | "absent";
 
 export interface AgentMandateV1 {

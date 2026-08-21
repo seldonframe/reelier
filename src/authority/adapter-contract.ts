@@ -89,7 +89,7 @@ export const AUTHORITY_ADAPTER_CONTRACT_V1: AuthorityAdapterContractV1 = freezeA
     },
     {
       "path": "golden-vectors.json",
-      "digest": "sha256:4bc81059ec0e66a47a25f1746fff9616cf79ec1d38fd84fa220e1b12438e76aa"
+      "digest": "sha256:2401f4043ae09f93ac0eb28c0440c9641e3321100a6a147899edb51fe2328c9e"
     },
     {
       "path": "observation-envelope.schema.json",
@@ -132,6 +132,10 @@ export const AUTHORITY_ADAPTER_CONTRACT_V1: AuthorityAdapterContractV1 = freezeA
       "digest": "sha256:3019d8ff8b69e18c102773cbc6bf2746c6c94206ff90ae229c4ca37b033e6f8e"
     },
     {
+      "path": "tool-effect-contract.schema.json",
+      "digest": "sha256:13969cc3c14a3cb28798779f1aea0588724bcdb5c69a111c925386c8d29561f8"
+    },
+    {
       "path": "transport-effect.schema.json",
       "digest": "sha256:799e8adf9c5c6faa06fc3d09a818d855eb854b16b50f41d55378529290136d93"
     },
@@ -140,8 +144,8 @@ export const AUTHORITY_ADAPTER_CONTRACT_V1: AuthorityAdapterContractV1 = freezeA
       "digest": "sha256:bb307191df1057c0e721b5c97246b39af442062f6277851ebe7e26ffbfc73066"
     }
   ],
-  "goldenVectorsDigest": "sha256:4bc81059ec0e66a47a25f1746fff9616cf79ec1d38fd84fa220e1b12438e76aa",
-  "digest": "sha256:7f46242b26d9c921f4e1ec9de6418ac5fc8c03d70c4415c25e799ae0e73a1512"
+  "goldenVectorsDigest": "sha256:2401f4043ae09f93ac0eb28c0440c9641e3321100a6a147899edb51fe2328c9e",
+  "digest": "sha256:4da6eeca1ae0b05196231788b063e340add9a5b8bc9b954f17ccffef68a7c125"
 });
 export const AUTHORITY_ADAPTER_CONTRACT_V1_DIGEST = AUTHORITY_ADAPTER_CONTRACT_V1.digest;
 

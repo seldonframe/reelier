@@ -4,6 +4,23 @@ export { authorityCanonicalBytes, authorityDigest, parseAuthorityWire, parseCano
 export { AUTHORITY_ADAPTER_CONTRACT_V1, AUTHORITY_ADAPTER_CONTRACT_V1_DIGEST, verifyAuthorityAdapterContractV1, type AuthorityAdapterContractV1 } from "./adapter-contract.js";
 export { signAuthorityDigest, verifyAuthoritySignature } from "./crypto.js";
 export {
+  parseToolEffectContractV1,
+  digestToolEffectContractV1,
+  parseGovernedOutcomeV1,
+  digestGovernedOutcomeV1,
+  verifyGovernedOutcomeTransitionV1,
+  type EvidenceGradeV1,
+  type GovernedEffectClassV1,
+  type ToolEffectContractV1,
+  type ProviderOutcomePackV1,
+  type MissionClaimV1,
+  type EffectReservationV1,
+  type AttemptV1,
+  type ObservationV1,
+  type GovernedOutcomeV1,
+  type GovernedReceiptV1,
+} from "./tool-effect-contract.js";
+export {
   AGENT_MANDATE_CONTRACT_V1,
   AGENT_MANDATE_CONTRACT_V1_DIGEST,
   parseAgentMandateV1,

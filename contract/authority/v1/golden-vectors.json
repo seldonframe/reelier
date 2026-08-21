@@ -201,6 +201,57 @@
       "bodyUtf8": "{}"
     }
   },
+  "tool-effect-contract": {
+    "canonical": "{\"bindings\":{\"accountRef\":\"account_1\",\"credentialRef\":\"credential_1\",\"destinationRef\":\"destination_1\",\"limitRef\":\"limit_1\"},\"contractId\":\"contract_1\",\"effectClass\":\"idempotent-write\",\"idempotencyKey\":\"idem_1\",\"maximumEvidenceGrade\":\"verified\",\"model\":{\"fields\":[\"title\"],\"maxBytes\":1024},\"operation\":\"records.create\",\"operationDigest\":\"sha256:9999999999999999999999999999999999999999999999999999999999999999\",\"policyDigest\":\"sha256:9999999999999999999999999999999999999999999999999999999999999999\",\"provider\":\"provider-neutral\",\"readback\":{\"operation\":\"records.get\",\"projection\":[\"/id\"]},\"result\":{\"ambiguity\":[\"timeout\"],\"conflict\":[],\"definitiveFailure\":[\"forbidden\"],\"success\":[\"created\"]},\"schemaDigest\":\"sha256:9999999999999999999999999999999999999999999999999999999999999999\",\"semanticIdentity\":\"record:1\",\"v\":\"reelier.tool-effect-contract/v1\"}",
+    "digest": "sha256:a44ec440a49d4377d30406d27d14a3b66632ae43e0e4e1dc5517e1cd1cb80a8e",
+    "signature": {
+      "alg": "ed25519",
+      "sig": "ItI61VcNAE0Sw1SaD8p0CK15MVn4GAShOkkdXfl7XhfJyWgm3cBGlzJTCXvZ1lYDa1FWUhDYtV2G/re+N4pFCw=="
+    },
+    "value": {
+      "v": "reelier.tool-effect-contract/v1",
+      "contractId": "contract_1",
+      "provider": "provider-neutral",
+      "operation": "records.create",
+      "operationDigest": "sha256:9999999999999999999999999999999999999999999999999999999999999999",
+      "schemaDigest": "sha256:9999999999999999999999999999999999999999999999999999999999999999",
+      "policyDigest": "sha256:9999999999999999999999999999999999999999999999999999999999999999",
+      "effectClass": "idempotent-write",
+      "model": {
+        "fields": [
+          "title"
+        ],
+        "maxBytes": 1024
+      },
+      "bindings": {
+        "credentialRef": "credential_1",
+        "accountRef": "account_1",
+        "destinationRef": "destination_1",
+        "limitRef": "limit_1"
+      },
+      "semanticIdentity": "record:1",
+      "idempotencyKey": "idem_1",
+      "readback": {
+        "operation": "records.get",
+        "projection": [
+          "/id"
+        ]
+      },
+      "result": {
+        "success": [
+          "created"
+        ],
+        "conflict": [],
+        "definitiveFailure": [
+          "forbidden"
+        ],
+        "ambiguity": [
+          "timeout"
+        ]
+      },
+      "maximumEvidenceGrade": "verified"
+    }
+  },
   "compiled-capability": {
     "canonical": "{\"authorityStateDigest\":\"sha256:9999999999999999999999999999999999999999999999999999999999999999\",\"capabilityId\":\"capability_1\",\"contractDigest\":\"sha256:9999999999999999999999999999999999999999999999999999999999999999\",\"definitionAlias\":\"definition_1\",\"effectDigest\":\"sha256:9999999999999999999999999999999999999999999999999999999999999999\",\"expiresAt\":\"2026-01-01T00:01:00.000Z\",\"issuedAt\":\"2026-01-01T00:00:00.000Z\",\"limits\":{\"maxBodyBytes\":4096,\"maxEffectsPerSourceTrigger\":1,\"maxEffectsPerWindow\":10,\"windowSeconds\":3600},\"limitsDigest\":\"sha256:601c0a811003d90c5b98c21de8c1a17743f63740978e61efbb5d1ad36a94c1ea\",\"outcomeKey\":\"sha256:9999999999999999999999999999999999999999999999999999999999999999\",\"requestDigest\":\"sha256:9999999999999999999999999999999999999999999999999999999999999999\",\"requestKey\":\"sha256:9999999999999999999999999999999999999999999999999999999999999999\",\"requester\":\"requester_1\",\"sourceBundleDigest\":\"sha256:9999999999999999999999999999999999999999999999999999999999999999\",\"sourceSnapshotDigest\":\"sha256:9999999999999999999999999999999999999999999999999999999999999999\",\"tenant\":\"tenant_1\",\"v\":\"reelier.compiled-capability/v1\"}",
     "digest": "sha256:07958e88be4eab8f7cdca46361f58ef73c86d4c4bc3025a0519f86e64dc6c398",

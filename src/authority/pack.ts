@@ -1,4 +1,8 @@
 import type { OutcomeContract, SourceBundle, TransportEffect } from "./types.js";
+import type { ProviderOutcomePackV1 } from "./tool-effect-contract.js";
+
+/** Metadata-only neutral pack seam. Existing static packs continue to emit TransportEffect unchanged. */
+export type ProviderOutcomePackMetadata = ProviderOutcomePackV1;
 import type { RegisteredDefinitionDigests } from "./contract.js";
 import { authorityDigest } from "./wire.js";
 import * as utilTypes from "node:util/types";
