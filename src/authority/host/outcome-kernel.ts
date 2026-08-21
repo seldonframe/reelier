@@ -384,7 +384,8 @@ async function publishAndAdoptReceipt(storage: OutcomeKernelStorage, receipt: Go
   const status = dataRecord(raw, ["status", "receiptDigest", "receiptRef"], [], "atomic receipt publication result");
   if ((status.status !== "published" && status.status !== "exact-existing") || status.receiptDigest !== receiptDigest || typeof status.receiptRef !== "string" || !SHA.test(status.receiptRef)) throw new TypeError("atomic receipt publication result does not bind the exact receipt");
   const head = parseReceiptHead(await storage.loadReceipt(receipt.receiptId));
-  if (!head || head.receiptRef !== status.receiptRef) { markNotDurable(); return; }
+  if (!head) { markNotDurable(); return; }
+  if (head.receiptRef !== status.receiptRef) throw new Error("atomic receipt publication ref does not match the durable head");
   refs.push(head.receiptRef);
 }
 
