@@ -15,7 +15,7 @@ import { createAuthorityStatePort, digestAuthorityState, type AuthorityStateBack
 import { FsAuthorityLedger } from "../../src/authority/host/fs-ledger.js";
 import { createFileGateDecisionSink } from "../../src/authority/decision.js";
 import {
-  bindAcceptedGateReservationAuthorityV1, createAuthorityGate, createReservedDispatchHandle, describeAcceptedGateReservationAuthorityV1, revalidateAcceptedGateReservationAuthorityV1, selectEligibleAuthorityContract, takeAcceptedGateReservationHandleV1,
+  bindAcceptedGateReservationAuthorityV1, createAuthorityGate, createReservedDispatchHandle, describeAcceptedGateReservationAuthorityV1, describeAcceptedGateReservationReadbackV1, recoverAcceptedGateReservationReadbackV1, revalidateAcceptedGateReservationAuthorityV1, selectEligibleAuthorityContract, takeAcceptedGateReservationHandleV1,
   unwrapReservedDispatchHandle, type AuthorityGateDependencies, type GateResult,
 } from "../../src/authority/gate.js";
 import { AuthorityBoundaryError, type GateRefusalReason } from "../../src/authority/errors.js";
@@ -55,6 +55,21 @@ test("only a newly accepted genuine gate reservation carries send authority", as
     const existing = await f.gate.decide(f.request);
     assert.equal(existing.kind, "existing");
     assert.throws(() => bindAcceptedGateReservationAuthorityV1(f.gate, existing), /newly accepted|authority/i);
+  } finally { await f.cleanup(); }
+});
+
+test("accepted exact-existing recovery exposes only an opaque durable readback linkage", async () => {
+  const f = await fixture();
+  try {
+    const accepted = await f.gate.decide(f.request);
+    assert.equal(accepted.kind, "accepted");
+    const recovered = await recoverAcceptedGateReservationReadbackV1(f.gate, f.request);
+    const description = describeAcceptedGateReservationReadbackV1(recovered);
+    assert.deepEqual({ reservationId: description.reservationId, contractDigest: description.contractDigest, effectDigest: description.effectDigest }, { reservationId: accepted.kind === "accepted" ? accepted.signedDecision.reservationId : null, contractDigest: accepted.kind === "accepted" ? accepted.signedDecision.decisionContext.contractDigest : null, effectDigest: accepted.kind === "accepted" ? accepted.signedDecision.decisionContext.effectDigest : null });
+    assert.equal(Object.keys(recovered).length, 0);
+    assert.equal(JSON.stringify(recovered), "{}");
+    assert.throws(() => describeAcceptedGateReservationReadbackV1(structuredClone(recovered) as never), /genuine|readback|authority/i);
+    assert.throws(() => takeAcceptedGateReservationHandleV1(recovered as never), /invalid|consumed|authority/i);
   } finally { await f.cleanup(); }
 });
 const planAt="2026-01-15T00:00:29.000Z",decisionAt="2026-01-15T00:00:30.000Z";
