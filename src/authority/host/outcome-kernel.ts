@@ -34,7 +34,7 @@ import {
 import { constructGovernedReceiptV1 } from "./receipt-authority.js";
 
 const trustedVerifierStates = new WeakMap<object, Readonly<{ contractDigest: string; verify: (observation: ObservationV1) => boolean }>>();
-interface TrustedPredecessorPolicyStateV1 { readonly predecessorContractDigest: string; readonly successorContractDigest: string; readonly armed: Set<string> }
+interface TrustedPredecessorPolicyStateV1 { readonly predecessorContractDigest: string; readonly successorContractDigest: string; readonly armed: Map<string, string> }
 const trustedPredecessorPolicyStates = new WeakMap<object, TrustedPredecessorPolicyStateV1>();
 declare const trustedVerifierBrand: unique symbol;
 export type TrustedObservationVerifierV1 = Readonly<{ readonly [trustedVerifierBrand]: true }>;
@@ -54,7 +54,7 @@ export function createTrustedOutcomePredecessorPolicyV1(input: Readonly<{ predec
   const parsed = closedPolicyRecord(input);
   if (typeof parsed.predecessorContractDigest !== "string" || !SHA.test(parsed.predecessorContractDigest) || typeof parsed.successorContractDigest !== "string" || !SHA.test(parsed.successorContractDigest) || parsed.predecessorContractDigest === parsed.successorContractDigest) throw new TypeError("trusted Outcome predecessor policy is invalid");
   const capability = Object.freeze(Object.create(null)) as TrustedOutcomePredecessorPolicyV1;
-  trustedPredecessorPolicyStates.set(capability as object, { predecessorContractDigest: parsed.predecessorContractDigest, successorContractDigest: parsed.successorContractDigest, armed: new Set() });
+  trustedPredecessorPolicyStates.set(capability as object, { predecessorContractDigest: parsed.predecessorContractDigest, successorContractDigest: parsed.successorContractDigest, armed: new Map() });
   return capability;
 }
 
@@ -66,9 +66,9 @@ export function consumeTrustedOutcomePredecessorAuthorizationV1(policy: TrustedO
   try { parsed = strictDataRecord(input, ["reservationId", "successorContractDigest", "dispatchAuthority"], "predecessor dispatch authorization"); }
   catch { return false; }
   if (typeof parsed.reservationId !== "string" || parsed.reservationId.length === 0 || parsed.successorContractDigest !== state.successorContractDigest) return false;
-  if (!consumeCoordinatorDispatchCallDelegateV1(parsed.dispatchAuthority, { reservationId: parsed.reservationId, effectDigest: state.successorContractDigest })) return false;
   const key = predecessorArmKey(parsed.reservationId, state.successorContractDigest);
-  if (!state.armed.has(key)) return false;
+  const effectDigest = state.armed.get(key);
+  if (!effectDigest || !consumeCoordinatorDispatchCallDelegateV1(parsed.dispatchAuthority, { reservationId: parsed.reservationId, effectDigest })) return false;
   state.armed.delete(key);
   return true;
 }
@@ -213,7 +213,7 @@ export function createOutcomeKernel(options: OutcomeKernelOptions): OutcomeKerne
             if (authorization !== "active") throw new Error(`effect authority is ${authorization}`);
           }
           const dispatchHandle = governed ? await takeGovernedOutcomeKernelHandleV1(requested.governedAuthority!) : requested.handle!;
-          dispatchOutcome = parseDispatchOutcome(await dispatchWithPredecessorArm(predecessorPolicy, current.reservationId, contractDigest, () => options.coordinator.dispatch(dispatchHandle)));
+          dispatchOutcome = parseDispatchOutcome(await dispatchWithPredecessorArm(predecessorPolicy, current.reservationId, contractDigest, current.effectDigest, () => options.coordinator.dispatch(dispatchHandle)));
           boundary("provider-response");
           }
         } else if (state === "ambiguous") {
@@ -249,11 +249,11 @@ export function createOutcomeKernel(options: OutcomeKernelOptions): OutcomeKerne
   });
 }
 
-async function dispatchWithPredecessorArm(policy: TrustedPredecessorPolicyStateV1 | undefined, reservationId: string, contractDigest: string, dispatch: () => Promise<DispatchOutcome>): Promise<DispatchOutcome> {
+async function dispatchWithPredecessorArm(policy: TrustedPredecessorPolicyStateV1 | undefined, reservationId: string, contractDigest: string, effectDigest: string, dispatch: () => Promise<DispatchOutcome>): Promise<DispatchOutcome> {
   if (!policy || policy.successorContractDigest !== contractDigest) return dispatch();
   const key = predecessorArmKey(reservationId, contractDigest);
   if (policy.armed.has(key)) throw new Error("successor predecessor authorization is already active");
-  policy.armed.add(key);
+  policy.armed.set(key, effectDigest);
   try { return await dispatch(); }
   finally { policy.armed.delete(key); }
 }
