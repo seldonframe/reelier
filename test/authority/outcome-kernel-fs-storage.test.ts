@@ -1,9 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
+import { generateKeyPairSync } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
-import { createFileOutcomeKernelStorage } from "../../src/authority/host/index.js";
+import { createFileOutcomeKernelStorage, createSignedJournalOutcomeKernelStorage } from "../../src/authority/host/index.js";
+import { createSignedJournal } from "../../src/authority/host/signed-journal.js";
 import { authorityDigest } from "../../src/authority/wire.js";
 import type { GovernedReceiptV1, MissionClaimV1 } from "../../src/authority/tool-effect-contract.js";
 
@@ -29,5 +31,31 @@ test("file Outcome kernel storage converges claims and receipt heads across reop
     assert.equal(head?.receiptDigest, receiptDigest);
     assert.equal((await reopened.compareAndPublishReceipt(receipt, receiptDigest)).status, "exact-existing");
     assert.equal((await reopened.compareAndPublishReceipt({ ...receipt, outcomeDigest: sha("f") }, authorityDigest({ ...receipt, outcomeDigest: sha("f") }))).status, "conflict");
+  } finally { await rm(rootDir, { recursive: true, force: true }); }
+});
+
+test("signed journal storage indexes lifecycle but delegates durable receipt authority", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "reelier-outcome-journal-"));
+  try {
+    const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+    const journal = await createSignedJournal({ rootDir, journalId: "outcome_kernel", signerId: "outcome-journal-signer", privateKey, publicKey });
+    const receipts = new Map<string, { receiptId: string; receiptDigest: string; receiptRef: string }>();
+    let publications = 0;
+    const receiptPublication = {
+      async compareAndPublishReceipt(receipt: GovernedReceiptV1, receiptDigest: string) { publications += 1; const prior = receipts.get(receipt.receiptId); if (prior) return prior.receiptDigest === receiptDigest ? { status: "exact-existing" as const, receiptDigest, receiptRef: prior.receiptRef } : { status: "conflict" as const }; const head = { receiptId: receipt.receiptId, receiptDigest, receiptRef: sha("9") }; receipts.set(receipt.receiptId, head); return { status: "published" as const, receiptDigest, receiptRef: head.receiptRef }; },
+      async loadReceipt(receiptId: string) { return receipts.get(receiptId) ?? null; },
+    };
+    const storage = await createSignedJournalOutcomeKernelStorage({ journal, receiptPublication });
+    const claim = mission(), digest = authorityDigest(claim);
+    assert.equal((await storage.claimMission(claim, digest)).status, "claimed");
+    assert.equal((await storage.claimMission(claim, digest)).status, "exact-existing");
+    assert.deepEqual(await storage.loadMission(claim.missionId), claim);
+
+    const receipt: GovernedReceiptV1 = { v: "reelier.governed-receipt/v1", receiptId: "receipt_1", outcomeDigest: sha("e"), missionDigest: digest, issuedAt: "2026-08-21T00:00:01.000Z", status: "verified" };
+    const receiptDigest = authorityDigest(receipt);
+    assert.equal((await storage.compareAndPublishReceipt(receipt, receiptDigest)).status, "published");
+    assert.equal((await storage.loadReceipt(receipt.receiptId))?.receiptRef, sha("9"));
+    assert.equal(publications, 1, "journal indexing never substitutes for the receipt publisher");
+    assert.ok((await journal.listRequestIds()).every(id => !id.includes(":") && !id.startsWith("sha256")));
   } finally { await rm(rootDir, { recursive: true, force: true }); }
 });
