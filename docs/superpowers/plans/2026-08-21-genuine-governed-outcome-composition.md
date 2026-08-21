@@ -150,6 +150,8 @@ Before Task 4C may ship, close these exact blockers without widening the archite
 
 Add deterministic RED tests for every blocker, including failure in candidate/PR/comment groups, revocation during prepare, direct/copy/replay call attempts for all five writes, crash at the accepted-before-index boundary, restart after verified comment before status, and publication resolver/query substitution.
 
+The signed GitHub release authorization must bind one canonical digest of the exact reviewed candidate/PR/merge operation pack, not a digest derived from whichever operation is active. The branded GitHub executor must prove that each active alias, Task-4 contract, transport binding, and reviewed policy is an exact member of that immutable three-operation pack before provider access. Per-reservation effect identity and authenticated request identity remain independently exact; tag and any fourth/substituted operation are not members.
+
 ## Required falsifiers
 
 - Every commitment field substitution refuses before host binding/provider calls.
