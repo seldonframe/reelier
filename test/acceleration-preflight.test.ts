@@ -35,7 +35,7 @@ test("built pack index contains twelve unique manifests and only the closed GitH
   const release = index.packs.find(pack => pack.packId === "github_release");
   assert.deepEqual(release?.definitions, ["github_release_candidate_publish_v1", "github_release_pr_ensure_v1", "github_release_pr_merge_v1", "github_release_tag_create_v1"]);
   const linear = index.packs.find(pack => pack.packId === "linear_outcomes");
-  assert.deepEqual(linear?.definitions, ["linear_evidence_comment_v1", "linear_status_transition_v1"]);
+  assert.deepEqual(linear?.definitions, ["linear_evidence_comment_v1", "linear_status_transition_v1", "linear_only_evidence_comment_v1", "linear_only_status_transition_v1"]);
   assert.equal(index.packs.filter(pack => !["github_release", "linear_outcomes"].includes(pack.packId)).every(pack => pack.definitions.length === 1), true);
 });
 
