@@ -187,7 +187,8 @@ function inertRecord(value: unknown, required: readonly string[], optional: read
 }
 
 function inertDispatchOutcome(value: unknown): DispatchOutcome {
-  const raw = inertRecord(value, ["kind", "resultDigest"], ["providerResultDigest", "providerStatus", "responseDigest", "materializedRequestDigest", "reconciliationStatus", "normalizedProjectionDigest", "receiptRef", "evidenceDigest", "priorReceiptDigest"], "prepared dispatch result");
+  const raw = inertRecord(value, ["kind", "resultDigest"], ["providerResultDigest", "providerStatus", "responseDigest", "materializedRequestDigest", "reconciliationStatus", "normalizedProjectionDigest", "receiptRef", "evidenceDigest", "priorReceiptDigest", "reason"], "prepared dispatch result");
   if (!["acknowledged", "definitive-failure", "ambiguous"].includes(raw.kind as string) || typeof raw.resultDigest !== "string" || !/^sha256:[0-9a-f]{64}$/.test(raw.resultDigest)) throw new TypeError("prepared dispatch result is invalid");
+  if (raw.reason !== undefined && (typeof raw.reason !== "string" || raw.reason.length === 0 || raw.reason.length > 4096)) throw new TypeError("prepared dispatch result reason is invalid");
   return Object.freeze(Object.fromEntries(Object.keys(raw).map(key => [key, raw[key]])) as unknown as DispatchOutcome);
 }

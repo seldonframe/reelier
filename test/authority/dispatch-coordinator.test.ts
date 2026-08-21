@@ -9,7 +9,7 @@ import {
   parseDispatchOutcomeV1,
 } from "../../src/authority/host/dispatch.js";
 import { createReservedDispatchHandle as createSourceReservedDispatchHandle } from "../../src/authority/gate.js";
-import { createDispatchCommitLease as createSourceDispatchCommitLease, createPreparedDispatch as createSourcePreparedDispatch } from "../../src/authority/host/prepared-dispatch.js";
+import { authorizeCoordinatorCommittedLease, consumePreparedDispatch as consumeSourcePreparedDispatch, createDispatchCommitLease as createSourceDispatchCommitLease, createPreparedDispatch as createSourcePreparedDispatch } from "../../src/authority/host/prepared-dispatch.js";
 import { __testSetAuthorityCellHostPlatform as __testSetSourceAuthorityCellHostPlatform } from "../../src/authority/host/platform.js";
 import type {
   DurableDispatchPublicationHeadV1,
@@ -309,6 +309,15 @@ test("a stale colluding revalidator cannot cross credential, prepare, store, or 
 test("closed deterministic refusal preserves its inert diagnostic reason", () => {
   const outcome = parseDispatchOutcomeV1({ kind: "definitive-failure", resultDigest: sha("1"), reconciliationStatus: "conflict", normalizedProjectionDigest: null, reason: "base branch drift" });
   assert.deepEqual(outcome, { kind: "definitive-failure", resultDigest: sha("1"), reconciliationStatus: "conflict", normalizedProjectionDigest: null, reason: "base branch drift" });
+  assert.throws(() => parseDispatchOutcomeV1({ kind: "definitive-failure", resultDigest: sha("1"), reason: "x".repeat(4097) }), /reason/i);
+});
+
+test("prepared deterministic refusal preserves the same bounded inert reason", async () => {
+  const projection = { v: "reelier.prepared-effect-projection/v1" as const, transport: "fixed-cli", operationDigest: sha("2"), requestDigest: sha("3") }, materializedRequestDigest = preparedDispatchProjectionDigest(projection), expiresAt = new Date(Date.now() + 60_000).toISOString(), deadline = performance.now() + 60_000;
+  const prepared = createSourcePreparedDispatch({ description: { v: "reelier.prepared-dispatch-description/v1", routeDigest: sha("4"), materializedRequestDigest, projection, authorityGeneration: "generation_1", authorityExpiresAt: expiresAt, absoluteDeadlineMs: deadline, reservationId: "prepared_refusal", allocationId: "allocation_1" }, send: async () => ({ kind: "definitive-failure", resultDigest: sha("5"), reconciliationStatus: "conflict", normalizedProjectionDigest: null, reason: "base branch drift" }), requireCoordinatorCommit: true });
+  const lease = createSourceDispatchCommitLease({ reservationId: "prepared_refusal", allocationId: "allocation_1", preparedDigest: materializedRequestDigest, authorityGeneration: "generation_1", authorityExpiresAt: expiresAt, absoluteDeadlineMs: deadline, commitGeneration: "commit_1" });
+  authorizeCoordinatorCommittedLease(lease);
+  assert.deepEqual(await consumeSourcePreparedDispatch(prepared, lease), { kind: "definitive-failure", resultDigest: sha("5"), reconciliationStatus: "conflict", normalizedProjectionDigest: null, reason: "base branch drift" });
 });
 
 test("prepared dispatch carries the exact one-call coordinator capability through commit and finally revokes it", async () => {

@@ -14,7 +14,7 @@ import { isProxy } from "node:util/types";
 
 export interface DispatchRequestState { readonly reservation: { readonly reservationId: string; readonly state: LedgerState; readonly intent: Pick<StoredReservationIntent, "effectDigest" | "effectCanonicalBase64" | "executionContext" | "routeAuthority"> }; readonly effect: unknown; readonly effectCanonicalBase64: string; readonly effectDigest: string; readonly [key: string]: unknown; }
 export type ReconciliationStatus = "matched" | "not-applied" | "conflict" | "unavailable" | "not-attempted";
-export interface DispatchOutcome { readonly kind: "acknowledged" | "definitive-failure" | "ambiguous"; readonly resultDigest: string; readonly providerResultDigest?: string; readonly providerStatus?: number; readonly responseDigest?: string; /** Digest of the exact provider request bytes when confidential material was inserted inside the Authority Cell. */ readonly materializedRequestDigest?: string; readonly reconciliationStatus?: ReconciliationStatus; readonly normalizedProjectionDigest?: string | null; readonly receiptRef?: string; readonly evidenceDigest?: string; readonly priorReceiptDigest?: string; }
+export interface DispatchOutcome { readonly kind: "acknowledged" | "definitive-failure" | "ambiguous"; readonly resultDigest: string; readonly providerResultDigest?: string; readonly providerStatus?: number; readonly responseDigest?: string; /** Digest of the exact provider request bytes when confidential material was inserted inside the Authority Cell. */ readonly materializedRequestDigest?: string; readonly reconciliationStatus?: ReconciliationStatus; readonly normalizedProjectionDigest?: string | null; readonly receiptRef?: string; readonly evidenceDigest?: string; readonly priorReceiptDigest?: string; readonly reason?: string; }
 declare const coordinatorDispatchCallBrand: unique symbol;
 export type CoordinatorDispatchCallV1 = Readonly<{ readonly [coordinatorDispatchCallBrand]: true }>;
 export interface DispatchAdapter { dispatch(state: DispatchRequestState, call?: CoordinatorDispatchCallV1): Promise<DispatchOutcome>; prepare?(state: DispatchRequestState, call?: CoordinatorDispatchCallV1): Promise<PreparedDispatch>; reconcile?(state: DispatchRequestState, outcome: DispatchOutcome): Promise<DispatchOutcome>; }
@@ -42,7 +42,7 @@ export interface DispatchCoordinator { describe?(handle: ReservedDispatchHandle)
 /** Closes and detaches the provider-returned result before coordinator logic observes it. */
 export function parseDispatchOutcomeV1(value: unknown): DispatchOutcome {
   const required = ["kind", "resultDigest"] as const;
-  const optional = ["providerResultDigest", "providerStatus", "responseDigest", "materializedRequestDigest", "reconciliationStatus", "normalizedProjectionDigest", "receiptRef", "evidenceDigest", "priorReceiptDigest"] as const;
+  const optional = ["providerResultDigest", "providerStatus", "responseDigest", "materializedRequestDigest", "reconciliationStatus", "normalizedProjectionDigest", "receiptRef", "evidenceDigest", "priorReceiptDigest", "reason"] as const;
   if (!value || typeof value !== "object" || Array.isArray(value) || isProxy(value) || Object.getPrototypeOf(value) !== Object.prototype) throw new TypeError("dispatch outcome must be inert provider data");
   const permitted = new Set<string>([...required, ...optional]), raw: Record<string, unknown> = Object.create(null);
   let count = 0; for (const key in value) { if (!Object.hasOwn(value, key)) continue; if (++count > 32 || !permitted.has(key)) throw new TypeError("dispatch outcome is not closed"); }
@@ -53,6 +53,7 @@ export function parseDispatchOutcomeV1(value: unknown): DispatchOutcome {
   if (raw.providerStatus !== undefined && (!Number.isSafeInteger(raw.providerStatus) || (raw.providerStatus as number) < 100 || (raw.providerStatus as number) > 599)) throw new TypeError("dispatch outcome provider status is invalid");
   if (raw.reconciliationStatus !== undefined && !["matched", "not-applied", "conflict", "unavailable", "not-attempted"].includes(raw.reconciliationStatus as string)) throw new TypeError("dispatch outcome reconciliation status is invalid");
   if (raw.normalizedProjectionDigest !== undefined && raw.normalizedProjectionDigest !== null && (typeof raw.normalizedProjectionDigest !== "string" || !/^sha256:[0-9a-f]{64}$/.test(raw.normalizedProjectionDigest))) throw new TypeError("dispatch outcome projection digest is invalid");
+  if (raw.reason !== undefined && (typeof raw.reason !== "string" || raw.reason.length === 0 || raw.reason.length > 4096)) throw new TypeError("dispatch outcome reason is invalid");
   return Object.freeze(Object.fromEntries(Object.keys(raw).map(key => [key, raw[key]])) as unknown as DispatchOutcome);
 }
 export class DispatchBoundaryFailure extends Error {
