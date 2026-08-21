@@ -339,6 +339,70 @@ test("exact coordinator dispatch delegates are single-use and revoked when the a
   const secondHandle = createSourceReservedDispatchHandle({ reservation: secondLedger.get(), effect: { x: 1 }, effectCanonicalBase64: "e30=", effectDigest: expected.effectDigest });
   await secondCoordinator.dispatch(secondHandle);
   assert.equal(consumeCoordinatorDispatchCallDelegateV1(lateDelegate!, expected), false);
+
+  const throwingLedger = ledger();
+  let throwingDelegate: object | undefined;
+  const restoreThrowing = __testSetSourceAuthorityCellHostPlatform("linux");
+  const throwingCoordinator = createSourceDispatchCoordinator(throwingLedger, {
+    async dispatch(state, call) {
+      throwingDelegate = Object.freeze(Object.create(null)) as object;
+      assert.equal(bindCoordinatorDispatchCallDelegateV1(call, throwingDelegate, state), true);
+      throw new Error("adapter failed");
+    },
+  });
+  restoreThrowing();
+  const throwingOutcome = await throwingCoordinator.dispatch(createSourceReservedDispatchHandle({ reservation: throwingLedger.get(), effect: { x: 1 }, effectCanonicalBase64: "e30=", effectDigest: expected.effectDigest }));
+  assert.equal(throwingOutcome.kind, "ambiguous");
+  assert.equal(consumeCoordinatorDispatchCallDelegateV1(throwingDelegate!, expected), false);
+});
+
+test("coordinator dispatch call and delegate identities refuse copies, serialization, proxies, and crossed state", async () => {
+  const expected = { reservationId: "identity_exact", effectDigest: "sha256:" + "8".repeat(64) };
+  const identityLedger = ledger(expected.reservationId, expected.effectDigest);
+  const restoreIdentityPlatform = __testSetSourceAuthorityCellHostPlatform("linux");
+  const coordinator = createSourceDispatchCoordinator(identityLedger, {
+    async dispatch(state, call) {
+      const delegate = Object.freeze(Object.create(null)) as object;
+      const fakeCall = Object.freeze(Object.create(null));
+      const copiedCall = Object.freeze({ ...(call as object) });
+      const serializedCall = JSON.parse(JSON.stringify(call));
+      const proxiedCall = new Proxy(call as object, {});
+      for (const candidate of [fakeCall, copiedCall, serializedCall, proxiedCall]) {
+        assert.equal(bindCoordinatorDispatchCallDelegateV1(candidate, delegate, state), false);
+      }
+      assert.equal(bindCoordinatorDispatchCallDelegateV1(call, delegate, { ...state }), false);
+      assert.equal(bindCoordinatorDispatchCallDelegateV1(call, delegate, { ...state, reservation: { ...state.reservation, reservationId: "identity_crossed" } }), false);
+      assert.equal(bindCoordinatorDispatchCallDelegateV1(call, delegate, { ...state, effectDigest: "sha256:" + "9".repeat(64) }), false);
+      assert.equal(bindCoordinatorDispatchCallDelegateV1(call, delegate, { ...state, reservation: { ...state.reservation, state: "acknowledged" } }), false);
+      assert.equal(bindCoordinatorDispatchCallDelegateV1(call, delegate, state), true);
+      const copiedDelegate = Object.freeze({ ...delegate });
+      const serializedDelegate = JSON.parse(JSON.stringify(delegate));
+      const proxiedDelegate = new Proxy(delegate, {});
+      for (const candidate of [Object.freeze(Object.create(null)), copiedDelegate, serializedDelegate, proxiedDelegate]) {
+        assert.equal(consumeCoordinatorDispatchCallDelegateV1(candidate, expected), false);
+      }
+      assert.equal(consumeCoordinatorDispatchCallDelegateV1(delegate, expected), true);
+      assert.equal(consumeCoordinatorDispatchCallDelegateV1(delegate, expected), false);
+      return { kind: "acknowledged", resultDigest: "sha256:" + "a".repeat(64) };
+    },
+  });
+  restoreIdentityPlatform();
+  const outcome = await coordinator.dispatch(createSourceReservedDispatchHandle({ reservation: identityLedger.get(), effect: { x: 1 }, effectCanonicalBase64: "e30=", effectDigest: expected.effectDigest }));
+  assert.equal(outcome.kind, "acknowledged");
+});
+
+test("coordinator remains compatible with a one-argument dispatch adapter", async () => {
+  const oneArgumentLedger = ledger("one_argument", "sha256:" + "b".repeat(64));
+  const restoreOneArgumentPlatform = __testSetSourceAuthorityCellHostPlatform("linux");
+  const coordinator = createSourceDispatchCoordinator(oneArgumentLedger, {
+    async dispatch(state) {
+      assert.equal(state.reservation.reservationId, "one_argument");
+      return { kind: "acknowledged", resultDigest: "sha256:" + "c".repeat(64) };
+    },
+  });
+  restoreOneArgumentPlatform();
+  const outcome = await coordinator.dispatch(createSourceReservedDispatchHandle({ reservation: oneArgumentLedger.get(), effect: { x: 1 }, effectCanonicalBase64: "e30=", effectDigest: "sha256:" + "b".repeat(64) }));
+  assert.equal(outcome.kind, "acknowledged");
 });
 
 test("one delegate cannot be bound to two live coordinator calls", async () => {

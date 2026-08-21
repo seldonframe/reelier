@@ -83,7 +83,7 @@ const coordinatorDispatchDelegates = new WeakMap<object, CoordinatorDispatchCall
 export function bindCoordinatorDispatchCallDelegateV1(call: unknown, delegate: object, state: DispatchRequestState): boolean {
   if (!call || typeof call !== "object" || !delegate || typeof delegate !== "object") return false;
   const binding = coordinatorDispatchCalls.get(call as object);
-  if (!binding || binding.delegate !== null || binding.state !== state || binding.reservationId !== state.reservation?.reservationId || binding.effectDigest !== state.effectDigest) return false;
+  if (!binding || binding.delegate !== null || coordinatorDispatchDelegates.has(delegate) || binding.state !== state || binding.reservationId !== state.reservation?.reservationId || binding.effectDigest !== state.effectDigest) return false;
   binding.delegate = delegate;
   coordinatorDispatchDelegates.set(delegate, binding);
   return true;
@@ -107,7 +107,7 @@ function createCoordinatorDispatchCall(state: DispatchRequestState): Coordinator
 function revokeCoordinatorDispatchCall(call: object): void {
   const binding = coordinatorDispatchCalls.get(call);
   coordinatorDispatchCalls.delete(call);
-  if (binding?.delegate) coordinatorDispatchDelegates.delete(binding.delegate);
+  if (binding?.delegate && coordinatorDispatchDelegates.get(binding.delegate) === binding) coordinatorDispatchDelegates.delete(binding.delegate);
   if (binding) binding.delegate = null;
 }
 
