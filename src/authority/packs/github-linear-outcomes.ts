@@ -200,11 +200,11 @@ export function assertGitHubLinearProviderReadbackV1(pack: GitHubLinearOutcomePa
     raw = inertRecord(value, ["repository", "baseSha", "headSha", "mergeCommitSha", "treeSha"], "merge readback");
     expected = { repository: authority.github.repository, baseSha: authority.github.baseSha, headSha: authority.github.headSha, treeSha: authority.github.postMergeTreeSha };
     if (typeof raw.mergeCommitSha !== "string" || !GIT_SHA.test(raw.mergeCommitSha)) throw new TypeError("merge readback conflicts with exact reviewed authority");
-  } else if (operationName === "linearEvidenceComment") {
+  } else if (operationName.endsWith("EvidenceComment")) {
     raw = inertRecord(value, ["workspace", "team", "project", "issue", "commentMarker", "evidenceUrl", "evidenceContentDigest", "commentId"], "Linear comment readback");
     expected = { workspace: target.workspace, team: target.team, project: target.project, issue: target.issue, commentMarker: target.commentMarker, evidenceUrl: target.evidenceUrl, evidenceContentDigest: target.evidenceContentDigest };
     text(raw.commentId, "Linear comment ID");
-  } else if (operationName === "linearStatusTransition") {
+  } else if (operationName.endsWith("StatusTransition")) {
     raw = inertRecord(value, ["workspace", "team", "project", "issue", "preStatus", "targetStatus", "status"], "Linear status readback");
     expected = { workspace: target.workspace, team: target.team, project: target.project, issue: target.issue, preStatus: target.preStatus, targetStatus: target.targetStatus, status: target.targetStatus };
   } else throw new TypeError("reviewed outcome operation is invalid");

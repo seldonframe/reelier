@@ -27,8 +27,7 @@ export type GovernedMissionSequenceEntryV1 = Readonly<{ alias: string; status: s
 export function requireVerifiedGovernedMissionSequenceV1(expectedAliases: readonly string[], entries: readonly GovernedMissionSequenceEntryV1[]): void {
   if (entries.length !== expectedAliases.length || expectedAliases.some((alias, index) => entries[index]?.alias !== alias)) throw new TypeError("governed mission requires its exact ordered effect sequence");
   if (entries.some(entry => entry.status !== "verified" || typeof entry.publicationReceiptRef !== "string" || !/^sha256:[0-9a-f]{64}$/.test(entry.publicationReceiptRef))) throw new TypeError("every governed mission Outcome and coordinator publication must be verified");
-  const linearOnly = expectedAliases.includes("linear_only_status_transition_v1"), commentIndex = expectedAliases.indexOf(linearOnly ? "linear_only_evidence_comment_v1" : "linear_evidence_comment_v1"), statusIndex = expectedAliases.indexOf(linearOnly ? "linear_only_status_transition_v1" : "linear_status_transition_v1");
-  if (statusIndex >= 0 && (commentIndex < 0 || entries[statusIndex]!.predecessorReceiptRef !== entries[commentIndex]!.publicationReceiptRef)) throw new TypeError("Linear status requires the exact verified comment coordinator predecessor");
+  for (const [commentAlias,statusAlias] of [["linear_evidence_comment_v1","linear_status_transition_v1"],["linear_only_evidence_comment_v1","linear_only_status_transition_v1"]] as const) { const commentIndex=expectedAliases.indexOf(commentAlias),statusIndex=expectedAliases.indexOf(statusAlias); if(statusIndex>=0&&(commentIndex<0||entries[statusIndex]!.predecessorReceiptRef!==entries[commentIndex]!.publicationReceiptRef))throw new TypeError("Linear status requires the exact verified comment coordinator predecessor"); }
 }
 
 export interface GenuineGitHubLinearMissionRuntimeInputV1 {
@@ -160,7 +159,7 @@ export async function createGitHubLinearMissionRuntimeV1(input: GenuineGitHubLin
         const compiledEffect = compileFor(alias, reservation.reservationId, authenticatedRequestId, sourceRefs);
         const governedAuthority = createGovernedOutcomeKernelAuthorityV1(components.governedAuthorityFactory, { join: { ...stored.join, reservation } as never, ...(gateAuthority ? { gateAuthority } : {}) });
         const effectRequest = { contract: operation.contract, verifier: compiledEffect.verifier, governedAuthority };
-        if (alias === "linear_status_transition_v1" && verifiedCommentRequest) effectRequests.push(verifiedCommentRequest);
+        if (alias.endsWith("status_transition_v1") && verifiedCommentRequest) effectRequests.push(verifiedCommentRequest);
         effectRequests.push(effectRequest);
         const groupBoundary = true;
         if (groupBoundary) {
@@ -178,7 +177,7 @@ export async function createGitHubLinearMissionRuntimeV1(input: GenuineGitHubLin
             await appendPlan(raw.journal, key, next);
             return pendingIngress(requestId);
           }
-          if (alias === "linear_evidence_comment_v1") verifiedCommentRequest = effectRequest;
+          if (alias.endsWith("evidence_comment_v1")) verifiedCommentRequest = effectRequest;
         }
       }
       if (!outcome) throw new TypeError("genuine governed mission has no composed effects");
@@ -188,8 +187,8 @@ export async function createGitHubLinearMissionRuntimeV1(input: GenuineGitHubLin
         const reservation = await components.ledger.getReservation(stored.reservationId), indexed = await storage.loadEffect(plan.missionId, stored.reservationId);
         if (!reservation) throw new TypeError("governed mission reservation is absent");
         const authority = createGovernedOutcomeKernelAuthorityV1(components.governedAuthorityFactory, { join: { ...stored.join, reservation } as never }), publicationReceiptRef = await revalidateGovernedOutcomeKernelTerminalV1(authority, reservation.resultDigest ?? null) ? reservation.resultDigest ?? null : null;
-        if (stored.alias === "linear_evidence_comment_v1") commentPublicationRef = publicationReceiptRef;
-        sequence.push(Object.freeze({ alias: stored.alias, status: indexed?.outcome?.status ?? "absent", publicationReceiptRef, predecessorReceiptRef: stored.alias === "linear_status_transition_v1" ? commentPublicationRef : null }));
+        if (stored.alias.endsWith("evidence_comment_v1")) commentPublicationRef = publicationReceiptRef;
+        sequence.push(Object.freeze({ alias: stored.alias, status: indexed?.outcome?.status ?? "absent", publicationReceiptRef, predecessorReceiptRef: stored.alias.endsWith("status_transition_v1") ? commentPublicationRef : null }));
       }
       let reconciled = outcome.status === "verified";
       try { requireVerifiedGovernedMissionSequenceV1(aliases, sequence); } catch { reconciled = false; }
