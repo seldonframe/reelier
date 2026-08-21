@@ -55,7 +55,15 @@ test("reviewed HTTP compilation binds method, origin, path, schemas, and respons
     { method: "GET", url: "https://calendar.invalid/calendars/destination-1/events/event-9", body: null, credential: "credential-super-secret", requestSchemaDigest: sha("4") },
   ]);
   assert.equal(reconciled.reconciliationStatus, "matched");
-  assert.equal(reconciled.normalizedProjectionDigest, authorityDigest({ "/eventId": "event-9", "/state": "visible" }));
+  assert.equal(reconciled.normalizedProjectionDigest, authorityDigest({
+    v: "reelier.effect-authoritative-match/v1",
+    contractDigest: digestToolEffectContractV1(CALENDAR_LIKE_CONTRACT),
+    bindingDigest: digestEffectTransportBindingV1(CALENDAR_LIKE_BINDING),
+    semanticIdentity: CALENDAR_LIKE_CONTRACT.semanticIdentity,
+    modelDigest: authorityDigest({ eventId: "event-9", title: "Review" }),
+    readbackOperation: CALENDAR_LIKE_CONTRACT.readback!.operation,
+    projectionSchemaDigest: authorityDigest(CALENDAR_LIKE_CONTRACT.readback!.projection),
+  }));
 
   const changed = { ...CALENDAR_LIKE_BINDING, method: "PATCH" as const };
   assert.notEqual(digestEffectTransportBindingV1(changed), CALENDAR_LIKE_CONTRACT.operationDigest);

@@ -134,7 +134,8 @@ export function createOutcomeKernel(options: OutcomeKernelOptions): OutcomeKerne
           boundary("reservation");
         }
 
-        if (stored.outcome) {
+        const resumablePending = stored.outcome?.status === "pending" && (current.state === "ambiguous" || current.state === "dispatched");
+        if (stored.outcome && !resumablePending) {
           const adopted = stored.outcome;
           effects.push(adopted);
           const receipt = receiptFor(parsedMission, missionDigest, adopted);

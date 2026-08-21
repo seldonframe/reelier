@@ -50,7 +50,15 @@ export function compileEffectTransportV1(input: Readonly<{ contract: ToolEffectC
   validateTemplateValues(binding, model);
   const effect = deepFreeze({ v: "reelier.compiled-effect-input/v1" as const, contractDigest, bindingDigest, model });
   const evidence = deepFreeze({ v: "reelier.effect-transport-evidence/v1" as const, contractDigest, bindingDigest, model });
-  const observedProjectionDigests = new Set<string>();
+  const matchedProjectionDigest = contract.readback === null ? null : authorityDigest({
+    v: "reelier.effect-authoritative-match/v1",
+    contractDigest,
+    bindingDigest,
+    semanticIdentity: contract.semanticIdentity,
+    modelDigest: authorityDigest(model),
+    readbackOperation: contract.readback.operation,
+    projectionSchemaDigest: authorityDigest(contract.readback.projection),
+  });
   const hostBindings = async (): Promise<EffectTransportHostBindingsV1> => parseHostBindings(await input.resolveHostBindings(contract.bindings));
   const adapter: DispatchAdapter = Object.freeze({
     async dispatch(state: DispatchRequestState): Promise<DispatchOutcome> {
@@ -65,7 +73,7 @@ export function compileEffectTransportV1(input: Readonly<{ contract: ToolEffectC
       if (category === "success") {
         const projection = projectResponse(response.data, contract.readback.projection);
         if (projection === null) return unavailableOutcome(bindingDigest, prior);
-        const normalizedProjectionDigest = authorityDigest(projection); observedProjectionDigests.add(normalizedProjectionDigest);
+        const normalizedProjectionDigest = matchedProjectionDigest!;
         return Object.freeze({ kind: "acknowledged", resultDigest: responseDigest(bindingDigest, response), reconciliationStatus: "matched", normalizedProjectionDigest });
       }
       if (category === "conflict" || category === "definitive-failure") {
@@ -76,7 +84,7 @@ export function compileEffectTransportV1(input: Readonly<{ contract: ToolEffectC
       return unavailableOutcome(bindingDigest, prior);
     },
   });
-  const verifier = createTrustedObservationVerifier({ contractDigest, verify: observation => observation.projectionDigest !== null && observedProjectionDigests.has(observation.projectionDigest) });
+  const verifier = createTrustedObservationVerifier({ contractDigest, verify: observation => matchedProjectionDigest !== null && observation.projectionDigest === matchedProjectionDigest });
   return Object.freeze({ effect, evidence, adapter, verifier });
 }
 
