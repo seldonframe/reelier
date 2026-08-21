@@ -28,14 +28,26 @@ import type { DispatchCoordinator, DispatchOutcome, DispatchReservationProjectio
 import { constructGovernedReceiptV1 } from "./receipt-authority.js";
 
 const trustedVerifierStates = new WeakMap<object, Readonly<{ contractDigest: string; verify: (observation: ObservationV1) => boolean }>>();
+const trustedPredecessorPolicyStates = new WeakMap<object, Readonly<{ predecessorContractDigest: string; successorContractDigest: string }>>();
 declare const trustedVerifierBrand: unique symbol;
 export type TrustedObservationVerifierV1 = Readonly<{ readonly [trustedVerifierBrand]: true }>;
+declare const trustedPredecessorPolicyBrand: unique symbol;
+export type TrustedOutcomePredecessorPolicyV1 = Readonly<{ readonly [trustedPredecessorPolicyBrand]: true }>;
 
 /** Host-minted capability. The verifier is never copied into mission or effect input. */
 export function createTrustedObservationVerifier(input: Readonly<{ contractDigest: string; verify: (observation: ObservationV1) => boolean }>): TrustedObservationVerifierV1 {
   if (!/^sha256:[0-9a-f]{64}$/.test(input?.contractDigest) || typeof input.verify !== "function") throw new TypeError("trusted observation verifier is invalid");
   const capability = Object.freeze(Object.create(null)) as TrustedObservationVerifierV1;
   trustedVerifierStates.set(capability as object, Object.freeze({ contractDigest: input.contractDigest, verify: input.verify }));
+  return capability;
+}
+
+/** Host-minted policy. Caller DTOs cannot manufacture or inspect the predecessor binding. */
+export function createTrustedOutcomePredecessorPolicyV1(input: Readonly<{ predecessorContractDigest: string; successorContractDigest: string }>): TrustedOutcomePredecessorPolicyV1 {
+  const parsed = dataRecord(input, ["predecessorContractDigest", "successorContractDigest"], [], "trusted Outcome predecessor policy");
+  if (typeof parsed.predecessorContractDigest !== "string" || !SHA.test(parsed.predecessorContractDigest) || typeof parsed.successorContractDigest !== "string" || !SHA.test(parsed.successorContractDigest) || parsed.predecessorContractDigest === parsed.successorContractDigest) throw new TypeError("trusted Outcome predecessor policy is invalid");
+  const capability = Object.freeze(Object.create(null)) as TrustedOutcomePredecessorPolicyV1;
+  trustedPredecessorPolicyStates.set(capability as object, Object.freeze({ predecessorContractDigest: parsed.predecessorContractDigest, successorContractDigest: parsed.successorContractDigest }));
   return capability;
 }
 
@@ -83,6 +95,7 @@ export interface OutcomeKernelOptions {
   readonly mode?: "durable" | "hermetic";
   readonly now: () => number;
   readonly authorization: (input: Readonly<{ mission: MissionClaimV1; contract: ToolEffectContractV1; reservation: DispatchReservationProjectionV1 }>) => Promise<"active" | "revoked" | "expired">;
+  readonly predecessorPolicy?: TrustedOutcomePredecessorPolicyV1;
   readonly onBoundary?: (boundary: "mission-claim" | "reservation" | "provider-response" | "attempt" | "observation" | "outcome" | "receipt") => void;
 }
 
@@ -91,6 +104,8 @@ export function createOutcomeKernel(options: OutcomeKernelOptions): OutcomeKerne
   const hermetic = options.mode === "hermetic";
   const storage = options.storage ?? (hermetic ? createHermeticStorage() : undefined);
   if (!storage || (!storage.durable && !hermetic)) throw new TypeError("durable storage is required outside explicit hermetic mode");
+  const predecessorPolicy = options.predecessorPolicy === undefined ? undefined : trustedPredecessorPolicyStates.get(options.predecessorPolicy as object);
+  if (options.predecessorPolicy !== undefined && !predecessorPolicy) throw new TypeError("trusted Outcome predecessor policy capability is invalid");
   const boundary = (name: Parameters<NonNullable<OutcomeKernelOptions["onBoundary"]>>[0]) => options.onBoundary?.(name);
 
   return Object.freeze({
@@ -133,6 +148,8 @@ export function createOutcomeKernel(options: OutcomeKernelOptions): OutcomeKerne
           stored = await persist(storage, Object.freeze({ v: "reelier.stored-effect-lifecycle/v1", missionId: parsedMission.missionId, missionDigest, contractDigest, reservation, attempt: null, observation: null, outcome: null, revision: 0 }), 0);
           boundary("reservation");
         }
+
+        if (predecessorPolicy?.successorContractDigest === contractDigest) await requireVerifiedPredecessor(storage, parsedMission, missionDigest, effects, predecessorPolicy.predecessorContractDigest);
 
         const resumablePending = stored.outcome?.status === "pending" && (current.state === "ambiguous" || current.state === "dispatched");
         if (stored.outcome && !resumablePending) {
@@ -191,6 +208,15 @@ export function createOutcomeKernel(options: OutcomeKernelOptions): OutcomeKerne
       return Object.freeze({ v: "reelier.mission-outcome/v1", missionId: parsedMission.missionId, effects: Object.freeze(effects), status, receiptsDurable: receiptsDurable && receiptRefs.length === effects.length, receiptRefs: Object.freeze(receiptRefs) });
     },
   });
+}
+
+async function requireVerifiedPredecessor(storage: OutcomeKernelStorage, mission: MissionClaimV1, missionDigest: string, priorEffects: readonly GovernedOutcomeV1[], predecessorContractDigest: string): Promise<void> {
+  if (!storage.durable) throw new Error("verified predecessor requires durable receipt storage");
+  const predecessor = [...priorEffects].reverse().find(effect => effect.contractDigest === predecessorContractDigest);
+  if (!predecessor || predecessor.status !== "verified") throw new Error("successor effect requires an earlier verified predecessor Outcome");
+  const receipt = receiptFor(mission, missionDigest, predecessor);
+  const head = parseReceiptHead(await storage.loadReceipt(receipt.receiptId), receipt);
+  if (!head) throw new Error("successor effect requires the exact durable predecessor receipt head");
 }
 
 async function persist(storage: OutcomeKernelStorage, value: Omit<StoredEffectLifecycleV1, "revision"> & { revision: number }, expectedRevision: number): Promise<StoredEffectLifecycleV1> {

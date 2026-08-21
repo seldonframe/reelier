@@ -1,12 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  createOutcomeKernel,
-  createTrustedObservationVerifier,
   type OutcomeKernelStorage,
   type StoredEffectLifecycleV1,
 } from "reelier/authority/host";
-import { createTrustedOutcomePredecessorPolicyV1 } from "../../src/authority/host/outcome-kernel.js";
+import { createOutcomeKernel, createTrustedObservationVerifier, createTrustedOutcomePredecessorPolicyV1 } from "../../src/authority/host/outcome-kernel.js";
 // @ts-ignore compiled tests share the opaque handle brand with the built public host package.
 import { createReservedDispatchHandle } from "../../../dist/authority/gate.js";
 import { digestGovernedReceiptV1, digestMissionClaimV1, digestToolEffectContractV1, type GovernedReceiptV1, type MissionClaimV1, type ToolEffectContractV1 } from "reelier/authority";
