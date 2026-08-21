@@ -9,7 +9,10 @@ import { createDispatchCoordinator } from "../../src/authority/host/dispatch.js"
 import { __testSetAuthorityCellHostPlatform } from "../../src/authority/host/platform.js";
 import {
   assertGitHubLinearProviderReadbackV1,
+  createGovernedOutcomeCompositionProfileV1,
   createGitHubLinearOutcomePackV1,
+  describeGovernedOutcomeCompositionProfileV1,
+  governedOutcomeCompositionAliasesV1,
   orderedGitHubLinearOperationsV1,
 } from "../../src/authority/packs/github-linear-outcomes.js";
 
@@ -71,6 +74,30 @@ test("reviewed pack binds exact GitHub and Linear authority while model fields c
   assert.deepEqual(pack.operations.linearStatusTransition.contract.model.fields, ["requestId"]);
   assert.equal(pack.operations.exactHeadMerge.contract.policyDigest, pack.githubPolicyDigest);
   assert.equal(pack.operations.linearStatusTransition.contract.policyDigest, pack.linearPolicyDigest);
+});
+
+test("the governed composition profile admits only one exact ordered five-operation scope", () => {
+  const pack = createGitHubLinearOutcomePackV1(reviewedInput());
+  const operations = orderedGitHubLinearOperationsV1(pack, "github-linear");
+  const profile = createGovernedOutcomeCompositionProfileV1({ aliases: governedOutcomeCompositionAliasesV1, pack, operations });
+  assert.deepEqual(Reflect.ownKeys(profile), []);
+  assert.deepEqual(describeGovernedOutcomeCompositionProfileV1(profile), {
+    aliases: governedOutcomeCompositionAliasesV1,
+    repository: "seldonframe/reelier",
+    workspace: "workspace_01",
+    project: "project_01",
+    issue: "REEL-TEST-1",
+    contractDigests: operations.map(item => authorityDigest(item.contract)),
+  });
+
+  const other = createGitHubLinearOutcomePackV1({ ...reviewedInput(), linear: { ...reviewedInput().linear, project: "other_project" } });
+  for (const changed of [
+    { aliases: governedOutcomeCompositionAliasesV1.slice(0, -1), pack, operations },
+    { aliases: [...governedOutcomeCompositionAliasesV1, "github_release_tag_create_v1"], pack, operations },
+    { aliases: [governedOutcomeCompositionAliasesV1[1], governedOutcomeCompositionAliasesV1[0], ...governedOutcomeCompositionAliasesV1.slice(2)], pack, operations },
+    { aliases: governedOutcomeCompositionAliasesV1, pack, operations: [operations[0], operations[1], operations[2], operations[4], operations[3]] },
+    { aliases: governedOutcomeCompositionAliasesV1, pack, operations: [...operations.slice(0, 4), other.operations.linearStatusTransition] },
+  ]) assert.throws(() => createGovernedOutcomeCompositionProfileV1(changed as never), /exact|profile|scope|operation/i);
 });
 
 test("Linear readback binds exact project, issue, marker, and status without accepting credentials", () => {
