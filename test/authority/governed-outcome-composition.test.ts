@@ -1,8 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import os from "node:os";
+import path from "node:path";
+import { mkdtemp, rm } from "node:fs/promises";
 import { authorityCanonicalBytes, authorityDigest } from "../../src/authority/wire.js";
 import { digestGovernedEffectCommitmentV1 } from "../../src/authority/governed-effect-commitment.js";
 import { createGovernedOutcomeKernelAuthorityV1, describeGovernedOutcomeKernelAuthorityV1, resolveGovernedCoordinatorPublicationV1, resolveGovernedOutcomeKernelPublicationV1, takeGovernedOutcomeKernelHandleV1, verifyGovernedOutcomeEffectJoinV1 } from "../../src/authority/host/governed-outcome-composition.js";
+import { bindFileReceiptPublicationReadbackV1, createFileReceiptPublication } from "../../src/authority/host/receipts.js";
+import { __testSetAuthorityCellHostPlatform } from "../../src/authority/host/platform.js";
 
 const sha = (character: string) => `sha256:${character.repeat(64)}`;
 const alias = "github_release_candidate_publish_v1";
@@ -24,7 +29,7 @@ function fixture() {
   };
   const effect = Object.freeze({ v: "reelier.transport-effect/v1", endpointId: "github.release.candidate-branch", method: "POST", path: "/internal/github-release", query: "", headers: { "Content-Type": "application/json" }, bodyBase64: Buffer.from("{}").toString("base64"), riskClass: "github_release", idempotency: "reconcile-only", preconditions: [{ kind: "release-allocation-candidate-branch", digest: sha("c") }, { kind: "governed-effect-commitment-v1", digest: digestGovernedEffectCommitmentV1(commitment) }], reconciliation: { recipeId: "github_release_authoritative_readback_v1" } });
   const effectDigest = authorityDigest(effect);
-  const reservation = Object.freeze({ reservationId: "reservation_1", state: "reserved", intent: { definitionAlias: alias, contractDigest: authorityDigest(pathCContract), effectDigest, effectCanonicalBase64: authorityCanonicalBytes(effect).toString("base64") } });
+  const reservation = Object.freeze({ reservationId: "reservation_1", state: "reserved", intent: { tenant: "tenant_1", requestDigest: sha("1"), capabilityDigest: sha("2"), definitionAlias: alias, contractDigest: authorityDigest(pathCContract), effectDigest, effectCanonicalBase64: authorityCanonicalBytes(effect).toString("base64"), routeAuthority: { expectedMaterializedRequestDigest: sha("5") } } });
   return { commitment, effect, reservation, input: { reservation, pathCContract, source, choices, connectorAccount, toolEffectContract, transportBinding, operationKind: "github.candidate-publish", reviewedPolicyDigest } };
 }
 
@@ -86,4 +91,15 @@ test("a restarted governed authority is opaque and readback-only", async () => {
   assert.deepEqual(describeGovernedOutcomeKernelAuthorityV1(authority, authorityDigest(toolEffectContract)), { reservationId: "reservation_1", effectDigest: joined.reservation.intent.effectDigest, hasLiveHandle: false });
   await assert.rejects(() => takeGovernedOutcomeKernelHandleV1(authority), /readback-only/i);
   assert.equal(await resolveGovernedOutcomeKernelPublicationV1(authority, outcome), outcome.receiptRef);
+});
+
+test("governed publication readback refuses duck-typed resolver and query substitution", async () => {
+  const restore = __testSetAuthorityCellHostPlatform("linux"), root = await mkdtemp(path.join(os.tmpdir(), "reelier-governed-publication-binding-"));
+  try {
+    const joined = fixture(), publication = createFileReceiptPublication({ rootDir: root }), readback = bindFileReceiptPublicationReadbackV1(publication, joined.reservation as never);
+    const authority = createGovernedOutcomeKernelAuthorityV1({ join: joined.input as never, publicationReadback: readback });
+    assert.deepEqual(describeGovernedOutcomeKernelAuthorityV1(authority, authorityDigest(toolEffectContract)), { reservationId: "reservation_1", effectDigest: joined.reservation.intent.effectDigest, hasLiveHandle: false });
+    assert.throws(() => createGovernedOutcomeKernelAuthorityV1({ join: joined.input as never, publicationReadback: {} as never }), /genuine|publication|readback/i);
+    assert.throws(() => createGovernedOutcomeKernelAuthorityV1({ join: joined.input as never, publicationReadback: structuredClone(readback) as never }), /genuine|publication|readback/i);
+  } finally { restore(); await rm(root, { recursive: true, force: true }); }
 });
