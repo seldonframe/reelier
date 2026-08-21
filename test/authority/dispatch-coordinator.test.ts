@@ -337,3 +337,26 @@ test("prepared projections and provider results reject accessors without executi
   assert.equal(result.kind, "ambiguous");
   assert.equal(resultGetters, 0);
 });
+
+test("HTTP and neutral prepared projections validate primitives without coercion and detach produced data", () => {
+  let coercions = 0;
+  const disguised = { toString() { coercions++; return "fixed-cli"; } };
+  assert.throws(() => preparedDispatchProjectionDigest({ v: "reelier.prepared-effect-projection/v1", transport: disguised, operationDigest: sha("1"), requestDigest: sha("2") } as any), /projection|transport|invalid/i);
+  assert.equal(coercions, 0);
+
+  for (const invalid of [
+    { method: "GET" },
+    { bodyDigest: "not-a-digest" },
+    { normalizedQuery: 7 },
+    { reviewedHeaders: { accept: 7 } },
+  ]) {
+    const projection = { v: "reelier.materialized-http-request/v1" as const, method: "POST" as const, origin: "https://provider.example", normalizedPath: "/write", normalizedQuery: "", reviewedHeaders: {}, bodyDigest: sha("3"), ...invalid };
+    assert.throws(() => preparedDispatchProjectionDigest(projection as any), /projection|request|header|digest|method|query|invalid/i);
+  }
+
+  const source: any = { v: "reelier.materialized-http-request/v1", method: "POST", origin: "https://provider.example", normalizedPath: "/write", normalizedQuery: "", reviewedHeaders: { accept: "application/json" }, bodyDigest: sha("3") };
+  const materializedRequestDigest = preparedDispatchProjectionDigest(source);
+  const prepared = createPreparedDispatch({ description: { v: "reelier.prepared-dispatch-description/v1", routeDigest: sha("4"), materializedRequestDigest, projection: source, authorityGeneration: "generation_1", authorityExpiresAt: new Date(Date.now() + 60_000).toISOString(), absoluteDeadlineMs: performance.now() + 60_000, reservationId: "r1", allocationId: "allocation_1" }, send: async () => ({ kind: "acknowledged", resultDigest: sha("5") }) });
+  source.reviewedHeaders.accept = "mutated"; source.normalizedPath = "/mutated";
+  assert.deepEqual(describePreparedDispatch(prepared).projection, { v: "reelier.materialized-http-request/v1", method: "POST", origin: "https://provider.example", normalizedPath: "/write", normalizedQuery: "", reviewedHeaders: { accept: "application/json" }, bodyDigest: sha("3") });
+});
