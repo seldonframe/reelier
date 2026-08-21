@@ -88,7 +88,8 @@ test("compiler passes exact internal contract binding and reservation authority 
     resolveHostBindings: async () => host,
     ports: { http: { call: (request, sink) => { calls.push(request); succeed(sink, "ok", { eventId: "event-9", state: "accepted" }); } } },
   });
-  const state = dispatchState(CALENDAR_LIKE_CONTRACT, compiled.effect);
+  const state = dispatchState(CALENDAR_LIKE_CONTRACT, compiled.effect) as any;
+  state.reservation = { ...state.reservation, intent: { ...state.reservation.intent, requestId: "incidental-legacy-request-id" } };
   const dispatched = await compiled.adapter.dispatch(state);
   await compiled.adapter.reconcile!(state, dispatched);
   const expectedAuthority = {
