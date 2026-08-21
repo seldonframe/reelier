@@ -185,6 +185,19 @@ test("direct status adapter invocation is unarmed and reaches no Linear write", 
   assert.equal(writes, 0);
 });
 
+test("direct Linear comment invocation without the exact coordinator call reaches no write", async () => {
+  const pack = createGitHubLinearOutcomePackV1(reviewedInput()), operation = pack.operations.linearEvidenceComment;
+  let writes = 0;
+  const executor = createLinearOutcomeExecutorV1({ pack, predecessorPolicy: predecessorPolicyFor(pack), provider: {
+    comment(_input, sink): void { writes += 1; sink.success(JSON.stringify({ outcome: "applied", data: {} })); },
+    readComment(): void {}, transitionStatus(): void {}, readStatus(): void {},
+  } });
+  const compiled = compileEffectTransportV1({ contract: operation.contract, binding: operation.binding, modelInput: { evidenceUrl: reviewedInput().linear.evidenceUrl }, observationAuthKey: "7".repeat(64), resolveHostBindings: async () => ({ credential: "secret", account: "workspace_01", destination: "REEL-TEST-1", limit: pack.linearPolicyDigest }), executor });
+  const state = { reservation: { reservationId: "direct_comment", state: "dispatched", intent: { effectDigest: authorityDigest(operation.contract) } }, effect: compiled.effect, effectDigest: authorityDigest(operation.contract), effectCanonicalBase64: Buffer.from(JSON.stringify(compiled.effect)).toString("base64") } as any;
+  assert.equal((await compiled.adapter.dispatch(state)).kind, "definitive-failure");
+  assert.equal(writes, 0);
+});
+
 test("a verified merge plus unresolved Linear effect stays pending before Linear-only completion with zero GitHub calls", async () => {
   const pack = createGitHubLinearOutcomePackV1(reviewedInput()), contracts = [pack.operations.exactHeadMerge.contract, pack.operations.linearEvidenceComment.contract, pack.operations.linearStatusTransition.contract];
   const mission = { v: "reelier.mission-claim/v1" as const, missionId: "mission_partial_linear", mandateDigest: sha("1"), promptDigest: sha("2"), contractDigests: contracts.map(authorityDigest), claimedAt: "2026-08-21T12:00:00.000Z" };
