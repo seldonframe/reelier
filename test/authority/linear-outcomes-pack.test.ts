@@ -8,6 +8,10 @@ import {
   linearOutcomeManifest,
   linearStatusTransitionAlias,
   linearStatusTransitionDefinition,
+  linearOnlyEvidenceCommentAlias,
+  linearOnlyEvidenceCommentDefinition,
+  linearOnlyStatusTransitionAlias,
+  linearOnlyStatusTransitionDefinition,
 } from "../../src/packs/linear-outcomes/index.js";
 import { governedOutcomeCompositionAliasesV1 } from "../../src/authority/packs/github-linear-outcomes.js";
 
@@ -20,10 +24,17 @@ function policy(effect: "evidence-comment" | "status-transition") {
   return effect === "status-transition" ? { ...common, predecessorAlias: linearEvidenceCommentAlias, predecessorContractDigest: sha("b"), predecessorReceiptRequired: true } : common;
 }
 
-test("Linear is a signed two-definition Path-C pack and the governed profile has exactly five canonical aliases", () => {
-  assert.deepEqual(linearOutcomeManifest.definitions, [linearEvidenceCommentAlias, linearStatusTransitionAlias]);
-  assert.deepEqual(linearOutcomeAliases, [linearEvidenceCommentAlias, linearStatusTransitionAlias]);
-  assert.deepEqual(governedOutcomeCompositionAliasesV1, ["github_release_candidate_publish_v1", "github_release_pr_ensure_v1", "github_release_pr_merge_v1", linearEvidenceCommentAlias, linearStatusTransitionAlias]);
+test("Linear is a signed four-definition Path-C pack and the governed profile has exactly seven internal aliases", () => {
+  assert.deepEqual(linearOutcomeManifest.definitions, [linearEvidenceCommentAlias, linearStatusTransitionAlias, linearOnlyEvidenceCommentAlias, linearOnlyStatusTransitionAlias]);
+  assert.deepEqual(linearOutcomeAliases, linearOutcomeManifest.definitions);
+  assert.deepEqual(governedOutcomeCompositionAliasesV1, ["github_release_candidate_publish_v1", "github_release_pr_ensure_v1", "github_release_pr_merge_v1", ...linearOutcomeAliases]);
+});
+
+test("each Linear target has its own exact comment and status predecessor pair", () => {
+  for (const [comment, status] of [[linearEvidenceCommentDefinition, linearStatusTransitionDefinition], [linearOnlyEvidenceCommentDefinition, linearOnlyStatusTransitionDefinition]] as const) {
+    const parsed = status.parsePolicy({ ...policy("status-transition"), predecessorAlias: comment.alias });
+    assert.equal((parsed as any).predecessorAlias, comment.alias);
+  }
 });
 
 test("both Linear definitions emit an exact durable governed commitment and status binds its comment predecessor", () => {
