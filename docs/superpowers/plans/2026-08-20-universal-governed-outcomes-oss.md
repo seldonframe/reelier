@@ -139,6 +139,22 @@ Task 4 stopped after three fix loops because the same delegate could be bound to
 - Create `test/continuity/eve-governed-outcomes.test.ts`.
 - Create `.superpowers/sdd/2026-08-20-universal-governed-outcomes-oss/task-5-report.md`.
 
+#### Task 5 review-fix scope amendment
+
+The first independent review showed that an in-memory rehearsal and a process boot cannot prove the required mission. Authorize these additional files so Task 5 can exercise the production kernel and reviewed packs through durable local state while keeping every provider effect hermetic:
+
+- Create `src/authority/host/outcome-kernel-fs-storage.ts`.
+- Create `src/authority/host/github-linear-mission-runtime.ts`.
+- Create `test/authority/outcome-kernel-fs-storage.test.ts`.
+- Create `test/authority/github-linear-mission-runtime.test.ts`.
+- Create `conformance/continuity-adapter/v1/eve-fixture/agent/lib/agent-tool-schema.ts`.
+- Create `conformance/continuity-adapter/v1/eve-fixture/scripts/eve-governed-outcomes.mjs`.
+- Modify `conformance/continuity-adapter/v1/eve-fixture/package.json`.
+- Modify `conformance/continuity-adapter/v1/eve-fixture/tests/cell.test.ts`.
+- Modify `conformance/continuity-adapter/v1/eve-fixture/tests/runtime.test.ts`.
+
+All four Eve quartet tool files are explicitly in scope. The real-process proof must send both prompts through Eve 0.39, exercise the canonical remote Cell quartet, restart Eve and the Cell/runtime over the same durable root at ambiguity, and derive no-resend, identity, activation, Outcome, receipt, and review counts from durable artifacts. A deterministic local provider is permitted; it proves process and recovery compatibility, not live GitHub, Linear, or provider certification. Capability status remains `liveTested: false` unless an independently verifiable fixture-evidence artifact is bound.
+
 **Requirements:**
 
 Define agent status, Outcome proposal, Outcome request, and Outcome status once and project the same schema to MCP, HTTP/OpenAPI, and Eve. Keep legacy job tools compatible until a deliberate public removal; the new adapter exposes only the new quartet. Opaque references remain task/session/Cell-bound, and raw aliases never become callable. Keep tenant, account, destination, provider status IDs, merge policy, credentials, and signing keys host-owned. Add an adapter capability descriptor so Eve, Codex, Claude Code, Cursor, Grok, and Hermes can be certified against the same request/response ABI without altering provider packs. Update the Eve 0.39.0 deterministic mock fixture to execute one composite GitHub+Linear mission and one Linear-only mission with fresh mission/grant/allocation/session IDs, process restarts, and ambiguity injection. Tests must prove one activation, zero routine approvals, two reconciled Outcomes, no credentials/model prompt persistence, and two Outcomes per one review. If the Eve dependency or native helper is absent, the real-process test may skip only with an explicit prerequisite reason; hermetic behavior tests must still pass.
