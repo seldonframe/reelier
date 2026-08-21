@@ -1,0 +1,7 @@
+# Task 4C brief — genuine governed Outcome composition
+
+Task 5 is paused because its runtime fabricated authority. Implement the tracked plan at `docs/superpowers/plans/2026-08-21-genuine-governed-outcome-composition.md` exactly.
+
+The canonical ledger `TransportEffect` must durably commit the Task-4 contract/binding/compiled-input join. A WeakMap is live-call protection only. Existing reservations are readback-only and never receive a new handle. Prepared dispatch must carry the exact coordinator call capability and retain the real durable publication head. Current signed authority is revalidated immediately before dispatch. Journals index lifecycle but never mint authority or substitute for coordinator publication.
+
+Use the exact files, phases, falsifiers, compatibility gates, and no-external-write rule in the tracked plan. Read FOUNDATION and BUILDING-COMPASS before edits. Use strict RED/GREEN TDD and `apply_patch`; commit logical units; stop for any required out-of-scope file rather than editing it. Do not spawn subagents. Write the required report and leave the worktree clean.
