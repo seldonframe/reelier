@@ -63,11 +63,13 @@ test("accepted exact-existing recovery exposes only an opaque durable readback l
   try {
     const accepted = await f.gate.decide(f.request);
     assert.equal(accepted.kind, "accepted");
+    const beforeRecovery = f.counts();
     const recovered = await recoverAcceptedGateReservationReadbackV1(f.gate, f.request);
     const description = describeAcceptedGateReservationReadbackV1(recovered);
     assert.deepEqual({ reservationId: description.reservationId, contractDigest: description.contractDigest, effectDigest: description.effectDigest }, { reservationId: accepted.kind === "accepted" ? accepted.signedDecision.reservationId : null, contractDigest: accepted.kind === "accepted" ? accepted.signedDecision.decisionContext.contractDigest : null, effectDigest: accepted.kind === "accepted" ? accepted.signedDecision.decisionContext.effectDigest : null });
     assert.equal(Object.keys(recovered).length, 0);
     assert.equal(JSON.stringify(recovered), "{}");
+    assert.deepEqual({ events: f.counts().events, capabilities: f.counts().capabilities, signatures: f.counts().signatures, reads: f.counts().reads, providerWrites: f.counts().providerWrites }, { events: beforeRecovery.events, capabilities: beforeRecovery.capabilities, signatures: beforeRecovery.signatures, reads: beforeRecovery.reads, providerWrites: 0 });
     assert.throws(() => describeAcceptedGateReservationReadbackV1(structuredClone(recovered) as never), /genuine|readback|authority/i);
     assert.throws(() => takeAcceptedGateReservationHandleV1(recovered as never), /invalid|consumed|authority/i);
   } finally { await f.cleanup(); }
