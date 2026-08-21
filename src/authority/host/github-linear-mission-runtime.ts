@@ -95,6 +95,7 @@ export async function createGitHubLinearMissionRuntimeV1(input: GenuineGitHubLin
       let plan = await loadPlan(raw.journal, requestId);
       if (plan && plan.semanticsDigest !== semanticsDigest) return refusedIngress(requestId, "request-semantics-conflict");
       if (plan?.lifecycleState === "cancelled" && plan.receiptRef) return terminalRefusedIngress(requestId, "accepted-reservation-cancelled-on-restart", plan.receiptRef);
+      if (plan?.lifecycleState === "failed" && plan.receiptRef) return failedIngress(requestId, plan.receiptRef);
       if (plan?.lifecycleState === "reconciled" && plan.receiptRef) {
         const aliases = mode === "linear-only" ? governedOutcomeCompositionAliasesV1.slice(3) : governedOutcomeCompositionAliasesV1;
         if (plan.joins.length !== aliases.length || aliases.some((alias, index) => plan!.joins[index]?.alias !== alias)) return refusedIngress(requestId, "reconciled-index-conflict");
@@ -153,12 +154,18 @@ export async function createGitHubLinearMissionRuntimeV1(input: GenuineGitHubLin
         const compiledEffect = compileFor(alias, reservation.reservationId, authenticatedRequestId, sourceRefs);
         const governedAuthority = createGovernedOutcomeKernelAuthorityV1(components.governedAuthorityFactory, { join: { ...stored.join, reservation } as never, ...(gateAuthority ? { gateAuthority } : {}) });
         effectRequests.push({ contract: operation.contract, verifier: compiledEffect.verifier, governedAuthority });
-        const groupBoundary = mode === "linear-only" ? index === aliases.length - 1 : index === 2 || index === aliases.length - 1;
+        const groupBoundary = true;
         if (groupBoundary) {
           const expectedGroupEffects = effectRequests.length;
           outcome = await kernel.execute({ missionId: plan.missionId, effects: effectRequests });
           effectRequests.length = 0;
           if (outcome.effects.length !== expectedGroupEffects || outcome.effects.some(effect => effect.status !== "verified")) {
+            if (outcome.effects.some(effect => effect.status === "failed") && outcome.receiptRefs.length > 0) {
+              const receiptRef = outcome.receiptRefs.at(-1)!;
+              const next = Object.freeze({ ...plan, lifecycleState: "failed", receiptRef });
+              await appendPlan(raw.journal, key, next);
+              return failedIngress(requestId, receiptRef);
+            }
             const next = Object.freeze({ ...plan, lifecycleState: "pending" });
             await appendPlan(raw.journal, key, next);
             return pendingIngress(requestId);
@@ -195,10 +202,11 @@ function opaqueRef(context: AuthorityExecutionContextV1, mode: Mode): string { r
 function resolveRef(context: AuthorityExecutionContextV1, ref: string): Mode | null { for (const mode of ["github-linear", "linear-only"] as const) if (opaqueRef(context, mode) === ref) return mode; return null; }
 function planKey(requestId: string): string { return `request_${authorityDigest({ requestId }).slice(7)}`; }
 async function loadPlan(journal: SignedJournal, requestId: string): Promise<RequestPlan | null> { return foldPlans(await journal.load(planKey(requestId))); }
-function foldPlans(events: readonly import("./signed-journal.js").SignedJournalEventV1[]): RequestPlan | null { let prior: RequestPlan | null = null; const rank: Record<string, number> = { claimed: 0, pending: 1, cancelled: 2, reconciled: 2 }; for (const event of events) { const plan = event.phase === "mission-plan" && event.data.plan && typeof event.data.plan === "object" ? event.data.plan as RequestPlan : null; if (!plan || typeof plan.claimedAt !== "string" || !Number.isFinite(Date.parse(plan.claimedAt)) || new Date(Date.parse(plan.claimedAt)).toISOString() !== plan.claimedAt || plan.semanticsDigest !== event.semanticsDigest || authorityDigest({ requestId: plan.requestId }).slice(7) !== event.requestId.slice("request_".length) || !(plan.lifecycleState in rank) || prior && (plan.requestId !== prior.requestId || plan.missionId !== prior.missionId || plan.claimedAt !== prior.claimedAt || plan.mode !== prior.mode || plan.semanticsDigest !== prior.semanticsDigest || rank[plan.lifecycleState]! < rank[prior.lifecycleState]! || ["cancelled", "reconciled"].includes(prior.lifecycleState) && plan.lifecycleState !== prior.lifecycleState || plan.joins.length < prior.joins.length || prior.joins.some((join, index) => authorityDigest(join) !== authorityDigest(plan.joins[index])))) throw new TypeError("signed mission lifecycle index conflicts or regresses"); prior = plan; } return prior; }
+function foldPlans(events: readonly import("./signed-journal.js").SignedJournalEventV1[]): RequestPlan | null { let prior: RequestPlan | null = null; const rank: Record<string, number> = { claimed: 0, pending: 1, cancelled: 2, failed: 2, reconciled: 2 }; for (const event of events) { const plan = event.phase === "mission-plan" && event.data.plan && typeof event.data.plan === "object" ? event.data.plan as RequestPlan : null; if (!plan || typeof plan.claimedAt !== "string" || !Number.isFinite(Date.parse(plan.claimedAt)) || new Date(Date.parse(plan.claimedAt)).toISOString() !== plan.claimedAt || plan.semanticsDigest !== event.semanticsDigest || authorityDigest({ requestId: plan.requestId }).slice(7) !== event.requestId.slice("request_".length) || !(plan.lifecycleState in rank) || prior && (plan.requestId !== prior.requestId || plan.missionId !== prior.missionId || plan.claimedAt !== prior.claimedAt || plan.mode !== prior.mode || plan.semanticsDigest !== prior.semanticsDigest || rank[plan.lifecycleState]! < rank[prior.lifecycleState]! || ["cancelled", "failed", "reconciled"].includes(prior.lifecycleState) && plan.lifecycleState !== prior.lifecycleState || plan.joins.length < prior.joins.length || prior.joins.some((join, index) => authorityDigest(join) !== authorityDigest(plan.joins[index])))) throw new TypeError("signed mission lifecycle index conflicts or regresses"); prior = plan; } return prior; }
 async function appendPlan(journal: SignedJournal, key: string, plan: RequestPlan): Promise<void> { await journal.append(key, plan.semanticsDigest, "mission-plan", Object.freeze({ plan })); }
 function readString(value: unknown, field: string): string { const record = value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {}; return typeof record[field] === "string" ? record[field] as string : ""; }
 function readRecord(value: unknown, field: string): Readonly<Record<string, any>> { const record = value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {}, item = record[field]; return item && typeof item === "object" && !Array.isArray(item) ? Object.freeze({ ...(item as Record<string, unknown>) }) : Object.freeze({}); }
 function refusedIngress(requestId: string, reasonCode: string) { return Object.freeze({ requestId, verdict: "refused" as const, reasonCode, lifecycleState: "refused" }); }
 function terminalRefusedIngress(requestId: string, reasonCode: string, receiptRef: string) { return Object.freeze({ requestId, verdict: "refused" as const, reasonCode, lifecycleState: "cancelled", receiptRef }); }
+function failedIngress(requestId: string, receiptRef: string) { return Object.freeze({ requestId, verdict: "refused" as const, reasonCode: "governed-effect-failed", lifecycleState: "failed", receiptRef }); }
 function pendingIngress(requestId: string) { return Object.freeze({ requestId, verdict: "accepted" as const, reasonCode: "pending", lifecycleState: "pending" }); }

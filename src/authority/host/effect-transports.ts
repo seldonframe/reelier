@@ -153,7 +153,7 @@ function compileEffectTransport(input: EffectTransportCompileInputV1<object>, ex
       if (category === "conflict" || category === "definitive-failure") {
         const projection = projectResponse(response.data, contract.readback.projection);
         const normalizedProjectionDigest = projection === null ? authorityDigest({ v: category === "conflict" ? "reelier.effect-conflict/v1" : "reelier.effect-not-applied/v1", bindingDigest }) : authorityDigest(projection);
-        return Object.freeze({ kind: "acknowledged", resultDigest: responseDigest(bindingDigest, response), reconciliationStatus: category === "conflict" ? "conflict" : "not-applied", normalizedProjectionDigest });
+        return Object.freeze({ kind: "definitive-failure", resultDigest: responseDigest(bindingDigest, response), reconciliationStatus: category === "conflict" ? "conflict" : "not-applied", normalizedProjectionDigest });
       }
       return unavailableOutcome(bindingDigest, prior);
     },
