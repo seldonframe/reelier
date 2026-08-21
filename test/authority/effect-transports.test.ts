@@ -11,7 +11,9 @@ import {
   type TrustedEffectTransportExecutorCallbacksV1,
   type TrustedEffectTransportExecutorV1,
 } from "../../src/authority/host/effect-transports.js";
+import { consumeCoordinatorDispatchCallDelegateV1, createDispatchCoordinator, type CoordinatorDispatchCallV1 } from "../../src/authority/host/dispatch.js";
 import { createOutcomeKernel, type OutcomeKernelStorage, type StoredEffectLifecycleV1 } from "../../src/authority/host/outcome-kernel.js";
+import { __testSetAuthorityCellHostPlatform } from "../../src/authority/host/platform.js";
 import { digestGovernedOutcomeV1, digestMissionClaimV1, digestToolEffectContractV1, type GovernedReceiptV1, type MissionClaimV1, type ToolEffectContractV1 } from "../../src/authority/tool-effect-contract.js";
 import { authorityDigest } from "../../src/authority/wire.js";
 import { CALENDAR_LIKE_BINDING, CALENDAR_LIKE_CONTRACT, SLACK_LIKE_BINDING, SLACK_LIKE_CONTRACT, SLIDES_LIKE_BINDING, SLIDES_LIKE_CONTRACT } from "./fixtures/tool-effect-contracts.js";
@@ -96,6 +98,62 @@ test("compiler passes exact internal contract binding and reservation authority 
   assert.deepEqual((calls[0] as { authority?: unknown }).authority, expectedAuthority);
   assert.deepEqual((calls[1] as { authority?: unknown }).authority, expectedAuthority);
   assert.equal(Object.isFrozen((calls[0] as { authority: object }).authority), true);
+});
+
+test("a refused coordinator delegate bind stops before host resolution and provider execution", async () => {
+  const restorePlatform = __testSetAuthorityCellHostPlatform("linux");
+  let reservation: any = { reservationId: "reservation-bind-collision", state: "reserved", intent: { effectDigest: digestToolEffectContractV1(SLACK_LIKE_CONTRACT) } };
+  const ledger: any = {
+    getReservation: async () => reservation,
+    transition: async (reservationId: string, expected: string, event: { to: string; resultDigest?: string }) => {
+      if (reservationId !== reservation.reservationId || reservation.state !== expected) return { ok: false, reason: "state-conflict" };
+      reservation = { ...reservation, state: event.to, ...(event.resultDigest ? { resultDigest: event.resultDigest } : {}) };
+      return { ok: true, status: "transitioned", reservation };
+    },
+    recover: async () => ({ ok: true, reservations: [reservation], highWaterMark: null, topology: { directorySync: "verified" } }),
+  };
+  let hostResolutions = 0, providerCalls = 0;
+  let stateForReentry: ReturnType<typeof dispatchState> | undefined;
+  let liveCall: CoordinatorDispatchCallV1 | undefined;
+  let secondDispatch: Promise<Awaited<ReturnType<ReturnType<typeof compileEffectTransportV1>["adapter"]["dispatch"]>>> | undefined;
+  const compiled = compileEffectTransportV1({
+    contract: SLACK_LIKE_CONTRACT,
+    binding: SLACK_LIKE_BINDING,
+    modelInput: { channel: "general", text: "hello" },
+    resolveHostBindings: async () => { hostResolutions++; return host; },
+    ports: { mcp: {
+      inspectSchemas: slackSchemas,
+      call: (request, sink) => {
+        providerCalls++;
+        if (providerCalls === 1) {
+          secondDispatch = compiled.adapter.dispatch(stateForReentry!, liveCall);
+          const expected = { reservationId: stateForReentry!.reservation.reservationId, effectDigest: stateForReentry!.effectDigest };
+          assert.equal(consumeCoordinatorDispatchCallDelegateV1(request.authority, expected), true);
+          assert.equal(consumeCoordinatorDispatchCallDelegateV1(request.authority, expected), false);
+        }
+        succeed(sink, "ok", { messageId: `m-${providerCalls}` });
+      },
+    } },
+  });
+  const coordinator = createDispatchCoordinator(ledger, {
+    dispatch: (state, call) => {
+      stateForReentry = state as ReturnType<typeof dispatchState>;
+      liveCall = call;
+      return compiled.adapter.dispatch(state, call);
+    },
+  });
+  const state = dispatchState(SLACK_LIKE_CONTRACT, compiled.effect) as any;
+  state.reservation = reservation;
+  try {
+    const first = await coordinator.dispatch(createReservedDispatchHandle(state));
+    const second = await secondDispatch!;
+    assert.deepEqual(
+      { first: first.kind, second: second.kind, hostResolutions, providerCalls },
+      { first: "acknowledged", second: "definitive-failure", hostResolutions: 1, providerCalls: 1 },
+    );
+  } finally {
+    restorePlatform();
+  }
 });
 
 test("trusted executor minting rejects functions, accessors, and proxies without executing traps", () => {
