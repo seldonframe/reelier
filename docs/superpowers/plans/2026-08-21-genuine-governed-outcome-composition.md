@@ -130,6 +130,7 @@ Modify:
 - `test/authority/receipts.test.ts` only if `receipts.ts` changes
 - `test/authority/package.test.ts`
 - `test/packs/conformance.test.ts`
+- `test/acceleration-preflight.test.ts` only to update the exact generated first-party manifest count from eleven to twelve while retaining uniqueness and the closed GitHub-release multi-definition exception
 - the focused GitHub-release pack tests that pin its closed policy/effect commitment
 - `.superpowers/sdd/2026-08-21-genuine-governed-outcome-composition/task-4c-report.md`
 
