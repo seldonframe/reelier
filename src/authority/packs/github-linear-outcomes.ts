@@ -54,6 +54,32 @@ interface GitHubReviewedOutcomePolicyV1 {
 }
 
 const packAuthorities = new WeakMap<object, GitHubLinearReviewedAuthorityV1>();
+declare const governedOutcomeCompositionProfileBrand: unique symbol;
+export interface GovernedOutcomeCompositionProfileV1 { readonly [governedOutcomeCompositionProfileBrand]: true }
+type GovernedOutcomeCompositionScopeV1 = Readonly<{ aliases: typeof governedOutcomeCompositionAliasesV1; repository: string; workspace: string; project: string; issue: string; contractDigests: readonly string[] }>;
+const governedOutcomeProfiles = new WeakMap<object, GovernedOutcomeCompositionScopeV1>();
+
+/** Reviewed five-operation profile. It is an admission proof, never dispatch authority. */
+export function createGovernedOutcomeCompositionProfileV1(input: Readonly<{ aliases: readonly string[]; pack: GitHubLinearOutcomePackV1; operations: readonly ReviewedOutcomeOperationV1[] }>): GovernedOutcomeCompositionProfileV1 {
+  const raw = inertRecord(input, ["aliases", "pack", "operations"], "governed Outcome composition profile");
+  const pack = raw.pack as GitHubLinearOutcomePackV1, authority = packAuthorities.get(pack as object);
+  if (!authority) throw new TypeError("governed Outcome composition profile requires one reviewed pack scope");
+  const aliases = exactArray(raw.aliases, "governed Outcome aliases");
+  if (aliases.length !== governedOutcomeCompositionAliasesV1.length || aliases.some((alias, index) => alias !== governedOutcomeCompositionAliasesV1[index])) throw new TypeError("governed Outcome profile requires the exact canonical five aliases");
+  const operations = exactObjectArray(raw.operations, "governed Outcome operations");
+  const expected = [pack.operations.candidatePublish, pack.operations.pullRequestEnsure, pack.operations.exactHeadMerge, pack.operations.linearEvidenceComment, pack.operations.linearStatusTransition] as const;
+  if (operations.length !== expected.length || operations.some((operation, index) => operation !== expected[index])) throw new TypeError("governed Outcome profile operations do not share one exact reviewed scope");
+  const scope = Object.freeze({ aliases: governedOutcomeCompositionAliasesV1, repository: authority.github.repository, workspace: authority.linear.workspace, project: authority.linear.project, issue: authority.linear.issue, contractDigests: Object.freeze(expected.map(operation => digestToolEffectContractV1(operation.contract))) });
+  const profile = Object.freeze(Object.create(null)) as GovernedOutcomeCompositionProfileV1;
+  governedOutcomeProfiles.set(profile as object, scope);
+  return profile;
+}
+
+export function describeGovernedOutcomeCompositionProfileV1(profile: GovernedOutcomeCompositionProfileV1): GovernedOutcomeCompositionScopeV1 {
+  const scope = governedOutcomeProfiles.get(profile as object);
+  if (!scope) throw new TypeError("governed Outcome composition profile capability is invalid");
+  return scope;
+}
 
 export function createGitHubLinearOutcomePackV1(value: GitHubLinearReviewedAuthorityV1): GitHubLinearOutcomePackV1 {
   const authority = parseAuthority(value);
@@ -217,4 +243,6 @@ function text(value: unknown, label: string): string { if (typeof value !== "str
 function digest(value: unknown, label: string): string { if (typeof value !== "string" || !SHA.test(value)) throw new TypeError(`${label} is invalid`); return value; }
 function stringArray(value: unknown, label: string): readonly string[] { if (!Array.isArray(value) || isProxy(value)) throw new TypeError(`${label} is invalid`); const length = Object.getOwnPropertyDescriptor(value, "length")?.value; if (!Number.isSafeInteger(length) || length < 1 || length > 16) throw new TypeError(`${label} is invalid`); const keys = Reflect.ownKeys(value); if (keys.length !== length + 1 || keys.some(key => key !== "length" && (typeof key !== "string" || !/^(?:0|[1-9][0-9]*)$/u.test(key) || Number(key) >= length))) throw new TypeError(`${label} must be a closed array`); const result: string[] = []; for (let index = 0; index < length; index++) { const descriptor = Object.getOwnPropertyDescriptor(value, String(index)); if (!descriptor?.enumerable || !Object.hasOwn(descriptor, "value")) throw new TypeError(`${label} must be a dense inert array`); result.push(text(descriptor.value, label)); } if (new Set(result).size !== result.length) throw new TypeError(`${label} contains duplicates`); return Object.freeze(result); }
 function inertRecord(value: unknown, keys: readonly string[], label: string): Record<string, unknown> { if (!value || typeof value !== "object" || Array.isArray(value) || isProxy(value)) throw new TypeError(`${label} must be an inert closed record`); const prototype = Object.getPrototypeOf(value); if (prototype !== Object.prototype && prototype !== null) throw new TypeError(`${label} must be an inert closed record`); const ownKeys = Reflect.ownKeys(value); if (ownKeys.length !== keys.length || ownKeys.some(key => typeof key !== "string" || !keys.includes(key))) throw new TypeError(`${label} contains an unknown field or is not closed`); const result: Record<string, unknown> = Object.create(null); for (const key of keys) { const descriptor = Object.getOwnPropertyDescriptor(value, key); if (!descriptor?.enumerable || !Object.hasOwn(descriptor, "value")) throw new TypeError(`${label} requires inert data properties`); result[key] = descriptor.value; } return result; }
+function exactArray(value: unknown, label: string): readonly string[] { if (!Array.isArray(value) || isProxy(value)) throw new TypeError(`${label} must be an exact array`); const length = Object.getOwnPropertyDescriptor(value, "length")?.value; if (!Number.isSafeInteger(length) || Reflect.ownKeys(value).length !== length + 1) throw new TypeError(`${label} must be an exact array`); const result: string[] = []; for (let index = 0; index < length; index++) { const descriptor = Object.getOwnPropertyDescriptor(value, String(index)); if (!descriptor?.enumerable || !Object.hasOwn(descriptor, "value") || typeof descriptor.value !== "string") throw new TypeError(`${label} must be an exact string array`); result.push(descriptor.value); } return Object.freeze(result); }
+function exactObjectArray(value: unknown, label: string): readonly object[] { if (!Array.isArray(value) || isProxy(value)) throw new TypeError(`${label} must be an exact array`); const length = Object.getOwnPropertyDescriptor(value, "length")?.value; if (!Number.isSafeInteger(length) || Reflect.ownKeys(value).length !== length + 1) throw new TypeError(`${label} must be an exact array`); const result: object[] = []; for (let index = 0; index < length; index++) { const descriptor = Object.getOwnPropertyDescriptor(value, String(index)); if (!descriptor?.enumerable || !Object.hasOwn(descriptor, "value") || !descriptor.value || typeof descriptor.value !== "object") throw new TypeError(`${label} must contain exact reviewed operations`); result.push(descriptor.value); } return Object.freeze(result); }
 function deepFreeze<T>(value: T): T { if (value && typeof value === "object") { for (const child of Object.values(value as Record<string, unknown>)) deepFreeze(child); Object.freeze(value); } return value; }
