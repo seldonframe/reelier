@@ -75,9 +75,25 @@ git diff --check
 {"v":"reelier.continuity-adapter-conformance-report/v1","status":"passed","maturity":"reproduced","adapterId":"core","harnessId":"core","harnessVersion":"1.0.0","reelierCommit":"44d512263b3e77a301b4d875ab03217712b17c37","authorityAdapterContractDigest":"sha256:cd092558b6963e9f414445fe2235c30530f17684bad71f1bfcfa487178ec00d7","checks":[{"id":"host-identity","status":"passed","detail":"identity is host-bound"},{"id":"identity-isolation-refuses","status":"passed","detail":"cross-identity operations refuse without ledger mutation"},{"id":"replacement-projection","status":"passed","detail":"replacement adapter preserves the resume projection"},{"id":"resume-is-read-only","status":"passed","detail":"repeated open is read-only"},{"id":"cursor-contention","status":"passed","detail":"stale cursor refuses"},{"id":"ambiguity-blocks-resend","status":"passed","detail":"ambiguity requires reconciliation without authority effects"},{"id":"status-does-not-dispatch","status":"passed","detail":"status is read-only"},{"id":"semantic-retry-is-idempotent","status":"passed","detail":"exact retry is idempotent and new ID dispatches"},{"id":"request-id-conflict-refuses","status":"passed","detail":"conflicting request ID refuses without effects"},{"id":"uncertainty-is-honest","status":"passed","detail":"unverified lifecycle states remain exact and uncertain"}],"nonClaims":{"contentCorrectness":"not-proved","productionReadiness":"not-proved","safety":"not-proved","topology":"not-proved","trafficCompleteness":"not-proved"}}
 ```
 
+An additional full-suite `npm test` run completed with exit code 1. Its exact summary was:
+
+```text
+ℹ tests 3665
+ℹ suites 0
+ℹ pass 3636
+ℹ fail 8
+ℹ cancelled 0
+ℹ skipped 21
+ℹ todo 0
+ℹ duration_ms 493707.6483
+```
+
+The eight failures were five Linux-required authority runtime/server tests on Windows, one missing native bootstrap-helper manifest, one missing Eve fixture installation, and one pre-existing Adapter Contract digest assertion mismatch. The digest source and assertion are unchanged from the reviewed base (`git diff --exit-code 7fc38015 -- src/authority/adapter-contract.ts test/authority/certification-lifecycle-authority.test.ts` returned exit code 0): the assertion expects `sha256:7f46242b...`, while the reviewed base contract exports `sha256:cd092558...`.
+
 Open risks
 
 - `OutcomeKernelStorage` is a host port, not a new bundled filesystem/SQL implementation. A production host must supply true atomic claim/CAS and durable receipt-head semantics; the kernel refuses a non-durable port unless explicitly hermetic.
 - The kernel can resume an already claimed effect by reservation ID after process death. A still-reserved restart is closed by coordinator recovery rather than recreating send authority from an opaque consumed handle.
 - The six skipped focused tests are existing platform-gated prepared-commit/N100 cases in the selected Windows run; they are reported as skipped, not passing.
 - The Continuity conformance candidate reports its pinned historical `reelierCommit` by fixture design; this Task did not rewrite that existing fixture.
+- The repository-wide suite is not green in this Windows checkout for the eight unrelated baseline/environment failures recorded above. No out-of-scope fixture, generated contract, platform gate, or native dependency file was changed to mask them.
