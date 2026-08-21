@@ -5,6 +5,8 @@ import { compileEffectTransportV1 } from "../../src/authority/host/effect-transp
 import { createOutcomeKernel, createTrustedObservationVerifier, createTrustedOutcomePredecessorPolicyV1, type StoredEffectLifecycleV1 } from "../../src/authority/host/outcome-kernel.js";
 import { createLinearOutcomeExecutorV1 } from "../../src/authority/host/linear-outcome-runner.js";
 import { createReservedDispatchHandle } from "../../src/authority/gate.js";
+import { createDispatchCoordinator } from "../../src/authority/host/dispatch.js";
+import { __testSetAuthorityCellHostPlatform } from "../../src/authority/host/platform.js";
 import {
   assertGitHubLinearProviderReadbackV1,
   createGitHubLinearOutcomePackV1,
@@ -185,8 +187,19 @@ test("a verified merge plus unresolved Linear effect stays pending before Linear
   const statusOpaque = createReservedDispatchHandle({ reservation: statusState, effect: compiledStatus.effect, effectDigest: statusTransportState.effectDigest, effectCanonicalBase64: statusTransportState.effectCanonicalBase64 });
   const handleIds = new WeakMap<object, string>([[opaque as object, "reservation_1"], [statusOpaque as object, "reservation_2"]]);
   const compiledById: any = { reservation_1: { compiled, state: transportState }, reservation_2: { compiled: compiledStatus, state: statusTransportState } }, priors = new Map<string, any>();
-  const ledger: any = { async getReservation(reservationId: string) { return states.get(reservationId); } };
-  const coordinator: any = { describe(handle: object) { const id = handleIds.get(handle)!; const state = states.get(id)!; return { reservationId: id, state: state.state, effectDigest: state.intent.effectDigest, allocationId: state.intent.executionContext.allocationId }; }, async dispatch(handle: object) { const id = handleIds.get(handle)!, item = compiledById[id], result = await item.compiled.adapter.dispatch(item.state); states.get(id)!.state = result.kind === "ambiguous" ? "ambiguous" : "acknowledged"; priors.set(id, result); return result; }, async reconcile(id: string) { const item = compiledById[id], result = await item.compiled.adapter.reconcile(item.state, priors.get(id)); states.get(id)!.state = "reconciled"; return result; }, async recover() {} };
+  let releaseStatus!: () => void, statusAdapterEntered!: () => void;
+  const statusRelease = new Promise<void>(resolve => { releaseStatus = resolve; }), statusEntered = new Promise<void>(resolve => { statusAdapterEntered = resolve; });
+  const ledger: any = {
+    async getReservation(reservationId: string) { return states.get(reservationId); },
+    async transition(reservationId: string, expected: string, event: { to: string; resultDigest?: string }) { const state = states.get(reservationId); if (!state || state.state !== expected) return { ok: false, reason: "state-conflict" }; state.state = event.to; if (event.resultDigest) state.resultDigest = event.resultDigest; return { ok: true, status: "transitioned", reservation: state }; },
+    async recover() { return { ok: true, reservations: [...states.values()], highWaterMark: null, topology: { directorySync: "verified" } }; },
+  };
+  const restorePlatform = __testSetAuthorityCellHostPlatform("linux");
+  const statusCoordinator = createDispatchCoordinator(ledger, {
+    async dispatch(state: any, call: any) { statusAdapterEntered(); await statusRelease; return (compiledStatus.adapter.dispatch as any)(state, call); },
+  } as any);
+  restorePlatform();
+  const coordinator: any = { describe(handle: object) { const id = handleIds.get(handle)!; const state = states.get(id)!; return { reservationId: id, state: state.state, effectDigest: state.intent.effectDigest, allocationId: state.intent.executionContext.allocationId }; }, async dispatch(handle: object) { const id = handleIds.get(handle)!; if (id === "reservation_2") return statusCoordinator.dispatch(handle as any); const item = compiledById[id], result = await item.compiled.adapter.dispatch(item.state); states.get(id)!.state = result.kind === "ambiguous" ? "ambiguous" : "acknowledged"; priors.set(id, result); return result; }, async reconcile(id: string) { const item = compiledById[id], result = await item.compiled.adapter.reconcile(item.state, priors.get(id)); states.get(id)!.state = "reconciled"; return result; }, async recover() {} };
   const kernel = createOutcomeKernel({ ledger, coordinator, storage, predecessorPolicy, now: () => Date.parse("2026-08-21T12:00:04.000Z"), authorization: async () => "active" });
   await kernel.claimMission(mission);
   const outcome = await kernel.execute({ missionId: mission.missionId, effects: [{ contract: mergeContract, reservationId: "reservation_0", verifier: createTrustedObservationVerifier({ contractDigest: mergeDigest, verify: () => true }) }, { contract: commentOperation.contract, handle: opaque, verifier: compiled.verifier }] });
@@ -195,7 +208,12 @@ test("a verified merge plus unresolved Linear effect stays pending before Linear
   assert.deepEqual({ linearWrites, linearReads, gitProviderCalls }, { linearWrites: 1, linearReads: 0, gitProviderCalls: 0 });
   const commentVerified = await kernel.execute({ missionId: mission.missionId, effects: [{ contract: mergeContract, reservationId: "reservation_0", verifier: createTrustedObservationVerifier({ contractDigest: mergeDigest, verify: () => true }) }, { contract: commentOperation.contract, reservationId: "reservation_1", verifier: compiled.verifier }] });
   assert.deepEqual(commentVerified.effects.map(effect => effect.status), ["verified", "verified"]);
-  const statusPending = await kernel.execute({ missionId: mission.missionId, effects: [{ contract: commentOperation.contract, reservationId: "reservation_1", verifier: compiled.verifier }, { contract: statusOperation.contract, handle: statusOpaque, verifier: compiledStatus.verifier }] });
+  const pendingStatus = kernel.execute({ missionId: mission.missionId, effects: [{ contract: commentOperation.contract, reservationId: "reservation_1", verifier: compiled.verifier }, { contract: statusOperation.contract, handle: statusOpaque, verifier: compiledStatus.verifier }] });
+  await statusEntered;
+  const directDuringAuthorizedWindow = await compiledStatus.adapter.dispatch(statusTransportState);
+  releaseStatus();
+  const statusPending = await pendingStatus;
+  assert.equal(directDuringAuthorizedWindow.kind, "definitive-failure");
   assert.deepEqual(statusPending.effects.map(effect => effect.status), ["verified", "pending"]);
   const linearOnly = await kernel.execute({ missionId: mission.missionId, effects: [{ contract: commentOperation.contract, reservationId: "reservation_1", verifier: compiled.verifier }, { contract: statusOperation.contract, reservationId: "reservation_2", verifier: compiledStatus.verifier }] });
   assert.equal(linearOnly.status, "verified");
