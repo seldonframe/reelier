@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { generateKeyPairSync } from "node:crypto";
-import { createDispatchCoordinator } from "reelier/authority/host";
+import { createDispatchCoordinator, preparedDispatchProjectionDigest } from "reelier/authority/host";
 import type {
   DurableDispatchPublicationHeadV1,
   DurableDispatchPublicationIdentityV1,
@@ -301,7 +301,7 @@ test("coordinator exposes a detached reservation projection without exposing the
   const l = ledger();
   const coordinator = createDispatchCoordinator(l, { async dispatch() { throw new Error("must not dispatch"); } });
   const handle = createReservedDispatchHandle({ reservation: l.get(), effect: { secret: "not projected" }, effectCanonicalBase64: "e30=", effectDigest: sha("1") });
-  const projection = coordinator.describe(handle);
+  const projection = coordinator.describe!(handle);
   assert.deepEqual(projection, {
     reservationId: "r1",
     state: "reserved",
@@ -310,4 +310,15 @@ test("coordinator exposes a detached reservation projection without exposing the
   });
   assert.equal(Object.isFrozen(projection), true);
   assert.equal("effect" in projection, false);
+});
+
+test("prepared dispatch accepts a closed credential-free non-HTTP projection", () => {
+  const projection = Object.freeze({ v: "reelier.prepared-effect-projection/v1" as const, transport: "fixed-cli", operationDigest: sha("1"), requestDigest: sha("2") });
+  const digest = preparedDispatchProjectionDigest(projection);
+  const prepared = createPreparedDispatch({
+    description: { v: "reelier.prepared-dispatch-description/v1", routeDigest: sha("3"), materializedRequestDigest: digest, projection, authorityGeneration: "generation_1", authorityExpiresAt: new Date(Date.now() + 60_000).toISOString(), absoluteDeadlineMs: performance.now() + 60_000, reservationId: "r1", allocationId: "allocation_1" },
+    send: async () => ({ kind: "acknowledged", resultDigest: sha("4") }),
+  });
+  assert.equal(prepared.description.v, "reelier.prepared-dispatch-description/v1");
+  assert.equal("credential" in projection, false);
 });

@@ -6,7 +6,8 @@ import {
   type OutcomeKernelStorage,
   type StoredEffectLifecycleV1,
 } from "reelier/authority/host";
-import { createReservedDispatchHandle } from "../../src/authority/gate.js";
+// @ts-ignore compiled tests share the opaque handle brand with the built public host package.
+import { createReservedDispatchHandle } from "../../../dist/authority/gate.js";
 import { digestToolEffectContractV1, type MissionClaimV1, type ToolEffectContractV1 } from "reelier/authority";
 
 const sha = (c: string) => `sha256:${c.repeat(64)}`;
@@ -23,8 +24,8 @@ function contract(identity: string, maximumEvidenceGrade: ToolEffectContractV1["
   };
 }
 
-function mission(id = "mission_1"): MissionClaimV1 {
-  return { v: "reelier.mission-claim/v1", missionId: id, mandateDigest: sha("4"), promptDigest: sha("5"), contractDigests: [sha("6")], claimedAt: at(1_000) };
+function mission(id = "mission_1", contracts: readonly ToolEffectContractV1[] = [contract("identity_1")]): MissionClaimV1 {
+  return { v: "reelier.mission-claim/v1", missionId: id, mandateDigest: sha("4"), promptDigest: sha("5"), contractDigests: contracts.map(digestToolEffectContractV1), claimedAt: at(1_000) };
 }
 
 function reservation(id: string, state = "reserved") {
@@ -42,6 +43,7 @@ function durableFixture(): OutcomeKernelStorage & { effects: Map<string, StoredE
       if (!prior) { missions.set(claim.missionId, { claim, digest }); return { status: "claimed" as const, claim }; }
       return prior.digest === digest ? { status: "exact-existing" as const, claim: prior.claim } : { status: "conflict" as const };
     },
+    async loadMission(missionId) { return missions.get(missionId)?.claim ?? null; },
     async loadEffect(_missionId, reservationId) { return effects.get(reservationId) ?? null; },
     async storeEffect(value, expectedRevision) {
       const prior = effects.get(value.reservation.reservationId);
@@ -58,7 +60,7 @@ function coordinator(states: Map<string, any>, counters: { send: number; readbac
     describe(handle: any) { const state = states.get(handleIds.get(handle)!); return Object.freeze({ reservationId: state.reservationId, state: state.state, effectDigest: sha("7"), allocationId: null }); },
     async dispatch(handle: any) { counters.send++; const state = states.get(handleIds.get(handle)!); state.state = "acknowledged"; return { kind: "acknowledged" as const, resultDigest: sha("a"), reconciliationStatus: "matched" as const, normalizedProjectionDigest: sha("b") }; },
     async reconcile(reservationId: string) { counters.readback++; const state = states.get(reservationId); state.state = "reconciled"; return { kind: "acknowledged" as const, resultDigest: sha("c"), reconciliationStatus: "matched" as const, normalizedProjectionDigest: sha("b") }; },
-    async cancel() { throw new Error("not used"); }, async recover() { return []; },
+    async cancel() { throw new Error("not used"); }, async recover() { for (const state of states.values()) { if (state.state === "reserved") state.state = "cancelled"; else if (state.state === "dispatched") state.state = "ambiguous"; } return []; },
   } as any;
 }
 
@@ -96,17 +98,38 @@ test("crash after provider response restarts from the ledger without resending",
   await assert.rejects(() => first.execute({ missionId: "mission_1", effects: [{ contract: reviewed, handle: handle("r1"), verifier: verifierFor(reviewed) }] }), /crash/);
   crash = false;
   const restarted = createOutcomeKernel(options);
-  const outcome = await restarted.execute({ missionId: "mission_1", effects: [{ contract: reviewed, handle: handle("r1"), verifier: verifierFor(reviewed) }] });
+  const outcome = await restarted.execute({ missionId: "mission_1", effects: [{ contract: reviewed, reservationId: "r1", verifier: verifierFor(reviewed) }] });
   assert.equal(counters.send, 1);
   assert.notEqual(outcome.status, "verified");
+});
+
+test("every durable lifecycle boundary restarts without a second provider write", async () => {
+  for (const crashBoundary of ["reservation", "provider-response", "attempt", "observation", "outcome", "receipt"] as const) {
+    const store = durableFixture(), states = new Map([["r1", reservation("r1")]]), counters = { send: 0, readback: 0 };
+    let inject = true;
+    const common = { storage: store, coordinator: coordinator(states, counters), ledger: { getReservation: async () => states.get("r1") } as any, now: () => 2_000, authorization: async () => "active" as const, onBoundary: (name: string) => { if (inject && name === crashBoundary) throw new Error(`crash:${name}`); } };
+    const reviewed = contract("identity_1"), first = createOutcomeKernel(common); await first.claimMission(mission());
+    await assert.rejects(() => first.execute({ missionId: "mission_1", effects: [{ contract: reviewed, handle: handle("r1"), verifier: verifierFor(reviewed) }] }), new RegExp(`crash:${crashBoundary}`));
+    inject = false;
+    await createOutcomeKernel(common).execute({ missionId: "mission_1", effects: [{ contract: reviewed, reservationId: "r1", verifier: verifierFor(reviewed) }] });
+    assert.equal(counters.send, crashBoundary === "reservation" ? 0 : 1, crashBoundary);
+  }
+});
+
+test("a crash after the atomic mission claim converges to the exact prior semantics", async () => {
+  const store = durableFixture(); let inject = true;
+  const kernel = createOutcomeKernel({ storage: store, coordinator: {} as any, ledger: {} as any, now: () => 2_000, authorization: async () => "active", onBoundary(name) { if (inject && name === "mission-claim") throw new Error("crash:mission-claim"); } });
+  await assert.rejects(() => kernel.claimMission(mission()), /crash:mission-claim/);
+  inject = false;
+  assert.equal((await createOutcomeKernel({ storage: store, coordinator: {} as any, ledger: {} as any, now: () => 2_000, authorization: async () => "active" }).claimMission(mission())).status, "exact-existing");
 });
 
 test("ambiguous restart is readback-only and a lost receipt head prevents verified aggregation", async () => {
   const store = durableFixture(), states = new Map([["r1", reservation("r1", "ambiguous")], ["r2", reservation("r2")]]), counters = { send: 0, readback: 0 };
   store.loseHead = true;
   const kernel = createOutcomeKernel({ storage: store, coordinator: coordinator(states, counters), ledger: { getReservation: async (id: string) => states.get(id) } as any, now: () => 2_000, authorization: async () => "active" });
-  await kernel.claimMission(mission());
   const first = contract("identity_1"), second = contract("identity_2", "pending");
+  await kernel.claimMission(mission("mission_1", [first, second]));
   const outcome = await kernel.execute({ missionId: "mission_1", effects: [
     { contract: first, handle: handle("r1"), verifier: verifierFor(first) },
     { contract: second, handle: handle("r2"), verifier: verifierFor(second, false) },
@@ -118,13 +141,28 @@ test("ambiguous restart is readback-only and a lost receipt head prevents verifi
   assert.equal(outcome.receiptsDurable, false);
 });
 
+test("trusted observation verification is contract-bound and invoked exactly once", async () => {
+  const store = durableFixture(), states = new Map([["r1", reservation("r1")]]), counters = { send: 0, readback: 0 }, reviewed = contract("identity_1");
+  let verifies = 0;
+  const kernel = createOutcomeKernel({ storage: store, coordinator: coordinator(states, counters), ledger: { getReservation: async () => states.get("r1") } as any, now: () => 2_000, authorization: async () => "active" });
+  await kernel.claimMission(mission());
+  await kernel.execute({ missionId: "mission_1", effects: [{ contract: reviewed, handle: handle("r1"), verifier: createTrustedObservationVerifier({ contractDigest: digestToolEffectContractV1(reviewed), verify: () => { verifies++; return true; } }) }] });
+  assert.equal(verifies, 1);
+
+  const wrong = contract("identity_wrong"), secondStore = durableFixture(), secondStates = new Map([["r2", reservation("r2")]]);
+  const secondKernel = createOutcomeKernel({ storage: secondStore, coordinator: coordinator(secondStates, counters), ledger: { getReservation: async () => secondStates.get("r2") } as any, now: () => 2_000, authorization: async () => "active" });
+  await secondKernel.claimMission(mission("mission_2", [reviewed]));
+  await assert.rejects(() => secondKernel.execute({ missionId: "mission_2", effects: [{ contract: reviewed, handle: handle("r2"), verifier: verifierFor(wrong) }] }), /binding mismatch/);
+});
+
 test("missing durable storage refuses and hermetic ambiguity cannot become verified", async () => {
   assert.throws(() => createOutcomeKernel({ coordinator: {} as any, ledger: {} as any, now: () => 2_000, authorization: async () => "active" }), /durable storage/i);
-  const states = new Map([["r1", reservation("r1")]]), counters = { send: 0, readback: 0 };
+  const states = new Map([["r1", reservation("r1", "ambiguous")]]), counters = { send: 0, readback: 0 };
   const kernel = createOutcomeKernel({ mode: "hermetic", coordinator: coordinator(states, counters), ledger: { getReservation: async () => states.get("r1") } as any, now: () => 2_000, authorization: async () => "active" });
   await kernel.claimMission(mission());
   const reviewed = contract("identity_1");
   const outcome = await kernel.execute({ missionId: "mission_1", effects: [{ contract: reviewed, handle: handle("r1"), verifier: verifierFor(reviewed) }] });
   assert.notEqual(outcome.status, "verified");
   assert.equal(outcome.receiptsDurable, false);
+  assert.deepEqual(counters, { send: 0, readback: 1 });
 });

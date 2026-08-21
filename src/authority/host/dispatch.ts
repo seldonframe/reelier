@@ -33,7 +33,8 @@ export interface DispatchPublication {
    * window: recovery of a pre-terminal crash, and the root publication's own readback. */
   loadDurableHead?(query:DurableDispatchPublicationQueryV1,expect?:"terminal"|"root-or-terminal"):Promise<DurableDispatchPublicationHeadV1|null>;
 }
-export interface DispatchCoordinator { dispatch(handle: ReservedDispatchHandle): Promise<DispatchOutcome>; cancel(handle: ReservedDispatchHandle, reason?: string): Promise<DispatchOutcome>; reconcile(reservationId: string): Promise<DispatchOutcome>; recover(): Promise<readonly string[]>; }
+export interface DispatchReservationProjectionV1 { readonly reservationId: string; readonly state: LedgerState; readonly effectDigest: string; readonly allocationId: string | null; }
+export interface DispatchCoordinator { describe?(handle: ReservedDispatchHandle): DispatchReservationProjectionV1; dispatch(handle: ReservedDispatchHandle): Promise<DispatchOutcome>; cancel(handle: ReservedDispatchHandle, reason?: string): Promise<DispatchOutcome>; reconcile(reservationId: string): Promise<DispatchOutcome>; recover(): Promise<readonly string[]>; }
 export class DispatchBoundaryFailure extends Error {
   readonly classification: string;
   readonly phase: string;
@@ -70,13 +71,25 @@ function coordinatorPublicationCall<T extends Readonly<{ phase: string; state: D
 export function createDispatchCoordinator(ledger: AuthorityLedger, adapter: DispatchAdapter, evidence?: DispatchEvidenceWriter, publication?: DispatchPublication, budget?: DispatchBudget, certified?: CertifiedDispatchOptions): DispatchCoordinator {
   assertLinuxAuthorityCellHost();
   if(publication&&Boolean(publication.publishReservation)!==Boolean(publication.loadDurableHead))throw new TypeError("durable dispatch publication methods must be configured as a pair");
+  const describedStates = new WeakMap<object, DispatchRequestState>();
+  const takeState = (handle: ReservedDispatchHandle): DispatchRequestState => {
+    const described = describedStates.get(handle as object);
+    if (described) { describedStates.delete(handle as object); return described; }
+    return unwrapReservedDispatchHandle(handle) as DispatchRequestState;
+  };
   const budgetFor = (state: DispatchRequestState): { allocationId: string; reservationId: string; effects: number } | undefined => {
     const context = state.reservation.intent.executionContext;
     return context ? { allocationId: context.allocationId, reservationId: state.reservation.reservationId, effects: 1 } : undefined;
   };
   return Object.freeze({
+    describe(handle: ReservedDispatchHandle): DispatchReservationProjectionV1 {
+      let state = describedStates.get(handle as object);
+      if (!state) { state = unwrapReservedDispatchHandle(handle) as DispatchRequestState; describedStates.set(handle as object, state); }
+      if (!state.reservation?.reservationId || !state.effectDigest) throw new TypeError("dispatch handle has no reservation projection");
+      return Object.freeze({ reservationId: state.reservation.reservationId, state: state.reservation.state, effectDigest: state.effectDigest, allocationId: state.reservation.intent.executionContext?.allocationId ?? null });
+    },
     async dispatch(handle: ReservedDispatchHandle): Promise<DispatchOutcome> {
-      const state = unwrapReservedDispatchHandle(handle) as DispatchRequestState;
+      const state = takeState(handle);
       if (!state.reservation || state.reservation.state !== "reserved") throw new TypeError("dispatch handle is not reserved");
       const reservationId = state.reservation.reservationId;
       const routeAuthority = state.reservation.intent.routeAuthority;
@@ -214,7 +227,7 @@ export function createDispatchCoordinator(ledger: AuthorityLedger, adapter: Disp
       return Object.freeze(outcome);
     },
     async cancel(handle: ReservedDispatchHandle, reason = "cancelled-before-dispatch"): Promise<DispatchOutcome> {
-      const state = unwrapReservedDispatchHandle(handle) as DispatchRequestState;
+      const state = takeState(handle);
       if (!state.reservation || state.reservation.state !== "reserved") throw new TypeError("dispatch handle is not reserved");
       const resultDigest = authorityDigest({ v: "reelier.cancelled-result/v1", reservationId: state.reservation.reservationId, reason });
       const budgetClaim = budgetFor(state);

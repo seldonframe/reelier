@@ -1,7 +1,17 @@
 import type { DispatchOutcome } from "./dispatch.js";
 import { materializedHttpRequestDigest, type MaterializedHttpRequestProjectionV1 } from "./http-response-semantics.js";
+import { authorityDigest } from "../wire.js";
 
 export type { MaterializedHttpRequestProjectionV1 };
+
+/** Credential-free commitment for prepared effects that are not HTTP requests. */
+export interface PreparedEffectProjectionV1 {
+  readonly v: "reelier.prepared-effect-projection/v1";
+  readonly transport: string;
+  readonly operationDigest: string;
+  readonly requestDigest: string;
+}
+export type PreparedDispatchProjectionV1 = MaterializedHttpRequestProjectionV1 | PreparedEffectProjectionV1;
 
 const DIGEST = /^sha256:(?!0{64}$)[0-9a-f]{64}$/;
 const preparedBrand = Symbol("reelier.prepared-dispatch");
@@ -11,7 +21,7 @@ export interface PreparedDispatchDescriptionV1 {
   readonly v: "reelier.prepared-dispatch-description/v1";
   readonly routeDigest: string;
   readonly materializedRequestDigest: string;
-  readonly projection: MaterializedHttpRequestProjectionV1;
+  readonly projection: PreparedDispatchProjectionV1;
   readonly authorityGeneration: string;
   readonly authorityExpiresAt: string;
   readonly absoluteDeadlineMs: number;
@@ -127,15 +137,30 @@ export async function consumePreparedDispatch(prepared: PreparedDispatch, commit
   coordinatorCommittedLeases.delete(commitLease as object);
   if (lease.commit) await lease.commit(description);
   try { return Object.freeze(await state.send()); }
-  catch { return Object.freeze({ kind: "ambiguous" as const, resultDigest: materializedHttpRequestDigest({ ...description.projection, v: "reelier.materialized-http-request/v1" }) }); }
+  catch { return Object.freeze({ kind: "ambiguous" as const, resultDigest: preparedDispatchProjectionDigest(description.projection) }); }
 }
 
 function validateDescription(value: PreparedDispatchDescriptionV1): PreparedDispatchDescriptionV1 {
   if (!value || typeof value !== "object" || value.v !== "reelier.prepared-dispatch-description/v1") throw new TypeError("prepared dispatch description is invalid");
   if (!DIGEST.test(value.routeDigest) || !DIGEST.test(value.materializedRequestDigest) || !value.reservationId || !value.allocationId || !value.authorityGeneration || !Number.isFinite(value.absoluteDeadlineMs)) throw new TypeError("prepared dispatch description is invalid");
   if (value.behaviorDigest !== undefined && !DIGEST.test(value.behaviorDigest)) throw new TypeError("prepared dispatch behavior digest is invalid");
-  const projection = Object.freeze({ ...value.projection, reviewedHeaders: Object.freeze({ ...value.projection.reviewedHeaders }) });
-  if (materializedHttpRequestDigest(projection) !== value.materializedRequestDigest) throw new TypeError("prepared request digest does not match projection");
+  const projection = validateProjection(value.projection);
+  if (preparedDispatchProjectionDigest(projection) !== value.materializedRequestDigest) throw new TypeError("prepared request digest does not match projection");
   if (!Number.isFinite(Date.parse(value.authorityExpiresAt))) throw new TypeError("prepared dispatch expiry is invalid");
   return Object.freeze({ ...value, projection });
+}
+
+export function preparedDispatchProjectionDigest(value: PreparedDispatchProjectionV1): string {
+  return value.v === "reelier.materialized-http-request/v1" ? materializedHttpRequestDigest(value) : authorityDigest(validateNeutralProjection(value));
+}
+
+function validateProjection(value: PreparedDispatchProjectionV1): PreparedDispatchProjectionV1 {
+  if (value?.v === "reelier.materialized-http-request/v1") return Object.freeze({ ...value, reviewedHeaders: Object.freeze({ ...value.reviewedHeaders }) });
+  return validateNeutralProjection(value);
+}
+
+function validateNeutralProjection(value: PreparedDispatchProjectionV1): PreparedEffectProjectionV1 {
+  if (!value || value.v !== "reelier.prepared-effect-projection/v1" || typeof value.transport !== "string" || value.transport.length === 0 || !DIGEST.test(value.operationDigest) || !DIGEST.test(value.requestDigest)) throw new TypeError("prepared effect projection is invalid");
+  if (Object.keys(value).length !== 4 || !["v", "transport", "operationDigest", "requestDigest"].every(key => Object.hasOwn(value, key))) throw new TypeError("prepared effect projection is not closed");
+  return Object.freeze({ v: value.v, transport: value.transport, operationDigest: value.operationDigest, requestDigest: value.requestDigest });
 }

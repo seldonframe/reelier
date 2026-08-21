@@ -3,6 +3,8 @@ import type { AuthoritySignature, AuthorityReceipt, AuthorityReceiptBundle, Auth
 import { authorityDigest, parseAuthorityWire } from "../wire.js";
 import { signAuthorityDigest, verifyAuthoritySignature } from "../crypto.js";
 import { createAuthorityEvidence, createAuthorityReceipt, createAuthorityReceiptBundle } from "../evidence.js";
+import { createGovernedReceiptV1 } from "../evidence.js";
+import { digestGovernedOutcomeV1, digestMissionClaimV1, parseGovernedOutcomeV1, parseMissionClaimV1, type GovernedOutcomeV1, type GovernedReceiptV1, type MissionClaimV1 } from "../tool-effect-contract.js";
 import type { DispatchOutcome, DispatchRequestState } from "./dispatch.js";
 import { createCurrentAuthorityTrustView, currentAuthorityTrustViewState, type CurrentAuthorityTrustViewV1 } from "../trust.js";
 import type { JobCardTrustPinV1 } from "./deployment.js";
@@ -45,6 +47,12 @@ export async function refreshLifecycleAuthorityReceiptSigningAuthority(material:
 
 export interface AuthorityReceiptFoundationsV1{readonly contract:SignedAuthorityArtifact<"outcome-contract">;readonly delegation:readonly SignedAuthorityArtifact<"delegation-grant">[];readonly gateEvent:SignedAuthorityArtifact<"gate-event">;readonly packManifest:AuthorityWireByKind["pack-manifest"]}
 export interface AuthorityReceiptBundleConstructionInputV1{readonly phase:"reservation"|"dispatch"|"cancelled"|"ambiguous"|"reconcile";readonly state:DispatchRequestState;readonly outcome:DispatchOutcome;readonly observedAt:string;readonly foundations:AuthorityReceiptFoundationsV1;readonly signingAuthority:ValidatedAuthorityReceiptSigningAuthorityV1;readonly priorReceipt?:AuthorityReceipt;readonly recovered?:AuthorityReceiptBundle}
+
+/** Neutral receipt projection. Signing and durable head publication are deliberately separate ports. */
+export function constructGovernedReceiptV1(input: Readonly<{ receiptId: string; mission: MissionClaimV1; outcome: GovernedOutcomeV1; issuedAt: string }>): GovernedReceiptV1 {
+  const mission = parseMissionClaimV1(input.mission), outcome = parseGovernedOutcomeV1(input.outcome);
+  return createGovernedReceiptV1({ receiptId: input.receiptId, missionDigest: digestMissionClaimV1(mission), outcomeDigest: digestGovernedOutcomeV1(outcome), issuedAt: input.issuedAt, status: outcome.status });
+}
 
 export async function constructAuthorityReceiptBundle(input:AuthorityReceiptBundleConstructionInputV1):Promise<AuthorityReceiptBundle>{
   const validated=validatedStates.get(input?.signingAuthority as object);if(!validated)throw new TypeError("validated signing authority is required");
