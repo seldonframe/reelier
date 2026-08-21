@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createReservedDispatchHandle } from "../../src/authority/gate.js";
 import {
-  compileEffectTransportV1,
+  compileEffectTransportV1 as compileEffectTransportWithHostKeyV1,
   digestEffectTransportBindingV1,
   parseEffectTransportBindingV1,
   type EffectTransportHostBindingsV1,
@@ -15,11 +15,14 @@ import { authorityDigest } from "../../src/authority/wire.js";
 import { CALENDAR_LIKE_BINDING, CALENDAR_LIKE_CONTRACT, SLACK_LIKE_BINDING, SLACK_LIKE_CONTRACT, SLIDES_LIKE_BINDING, SLIDES_LIKE_CONTRACT } from "./fixtures/tool-effect-contracts.js";
 
 const sha = (digit: string): string => `sha256:${digit.repeat(64)}`;
+const observationAuthKey = "0123456789abcdef".repeat(4);
 const at = (milliseconds: number): string => new Date(milliseconds).toISOString();
 const host: EffectTransportHostBindingsV1 = Object.freeze({ credential: "credential-super-secret", account: "account-1", destination: "destination-1", limit: "limit-1" });
 const wire = (outcome: string, data: unknown): string => JSON.stringify({ outcome, data });
 const succeed = (sink: EffectTransportResultSinkV1, outcome: string, data: unknown): void => sink.success(wire(outcome, data));
 const slackSchemas = (_request: unknown, sink: EffectTransportResultSinkV1): void => sink.success(JSON.stringify({ serverSchemaDigest: SLACK_LIKE_BINDING.serverSchemaDigest, toolSchemaDigest: SLACK_LIKE_BINDING.toolSchemaDigest }));
+const compileEffectTransportV1 = (input: Omit<Parameters<typeof compileEffectTransportWithHostKeyV1>[0], "observationAuthKey">, key = observationAuthKey) =>
+  compileEffectTransportWithHostKeyV1({ ...input, observationAuthKey: key } as Parameters<typeof compileEffectTransportWithHostKeyV1>[0] & { observationAuthKey: string });
 
 test("MCP compilation closes model input before host injection and omits credentials from evidence", async () => {
   let resolved = 0;
@@ -171,6 +174,35 @@ test("a caller-controlled port return root is ignored without thenable assimilat
   await assert.rejects(() => compiled.adapter.dispatch(dispatchState(SLACK_LIKE_CONTRACT, compiled.effect)), /effect transport boundary failed/i);
   assert.equal(calls, 1);
   assert.equal(traps, 0);
+});
+
+test("a rejected native port Promise becomes a sanitized boundary failure without an unhandled rejection", async () => {
+  const secret = "async-provider-secret";
+  const unhandled: unknown[] = [];
+  const onUnhandled = (reason: unknown): void => { unhandled.push(reason); };
+  process.on("unhandledRejection", onUnhandled);
+  try {
+    const compiled = compileEffectTransportV1({
+      contract: CALENDAR_LIKE_CONTRACT,
+      binding: CALENDAR_LIKE_BINDING,
+      modelInput: { eventId: "event-9", title: "Review" },
+      resolveHostBindings: async () => host,
+      ports: { http: { call: () => Promise.reject(new Error(secret)) } },
+    });
+    const bounded = Promise.race([
+      compiled.adapter.dispatch(dispatchState(CALENDAR_LIKE_CONTRACT, compiled.effect)),
+      new Promise<never>((_resolve, reject) => setTimeout(() => reject(new Error("native rejection was not observed")), 50)),
+    ]);
+    await assert.rejects(bounded, error => {
+      assert.doesNotMatch(String(error), new RegExp(secret));
+      assert.match(String(error), /HTTP effect transport boundary failed/);
+      return true;
+    });
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.deepEqual(unhandled, []);
+  } finally {
+    process.off("unhandledRejection", onUnhandled);
+  }
 });
 
 test("provider and host boundary failures are replaced without leaking secret-bearing content", async () => {
@@ -343,6 +375,60 @@ test("same-schema contradictory readback values produce distinct projection comm
   assert.equal(visible.receipt.outcomeDigest, digestGovernedOutcomeV1(visible.outcome));
   assert.equal(deleted.receipt.outcomeDigest, digestGovernedOutcomeV1(deleted.outcome));
   assert.notEqual(visible.receipt.outcomeDigest, deleted.receipt.outcomeDigest);
+});
+
+test("forged matched projection evidence has no adapter provenance and never reaches a provider port", async () => {
+  let portCalls = 0;
+  const compiled = compileEffectTransportV1({
+    contract: SLIDES_LIKE_CONTRACT,
+    binding: SLIDES_LIKE_BINDING,
+    modelInput: { title: "Q3" },
+    resolveHostBindings: async () => host,
+    ports: { cli: { spawn: () => { portCalls++; throw new Error("provider must stay unreachable"); } } },
+  });
+  const forged = Object.freeze({
+    ...compiled,
+    adapter: Object.freeze({
+      async dispatch() {
+        return Object.freeze({ kind: "acknowledged" as const, resultDigest: sha("b"), reconciliationStatus: "matched" as const, normalizedProjectionDigest: sha("a") });
+      },
+    }),
+  });
+  const result = await runThroughKernel(SLIDES_LIKE_CONTRACT, forged, "reservation-forged");
+  assert.equal(result.effects[0]!.status, "partial");
+  assert.equal(portCalls, 0);
+});
+
+test("projection provenance survives recompilation with the same host key and refuses a different key", async () => {
+  const reservationId = "reservation-key-restart";
+  const producer = compileEffectTransportV1({
+    contract: SLIDES_LIKE_CONTRACT,
+    binding: SLIDES_LIKE_BINDING,
+    modelInput: { title: "Q3" },
+    resolveHostBindings: async () => host,
+    ports: { cli: { spawn: (_request, sink) => succeed(sink, "ok", { deckId: "quarterly", revision: 2 }) } },
+  });
+  const state = dispatchState(SLIDES_LIKE_CONTRACT, producer.effect) as any;
+  state.reservation.reservationId = reservationId;
+  const authenticated = await producer.adapter.reconcile!(state, { kind: "ambiguous", resultDigest: sha("9") });
+
+  const evaluate = async (key: string) => {
+    let portCalls = 0;
+    const restarted = compileEffectTransportV1({
+      contract: SLIDES_LIKE_CONTRACT,
+      binding: SLIDES_LIKE_BINDING,
+      modelInput: { title: "Q3" },
+      resolveHostBindings: async () => host,
+      ports: { cli: { spawn: () => { portCalls++; throw new Error("restart verifier must not call provider"); } } },
+    }, key);
+    const replay = Object.freeze({ ...restarted, adapter: Object.freeze({ async dispatch() { return authenticated; } }) });
+    const result = await runThroughKernel(SLIDES_LIKE_CONTRACT, replay, reservationId);
+    assert.equal(portCalls, 0);
+    return result.effects[0]!.status;
+  };
+
+  assert.equal(await evaluate(observationAuthKey), "verified");
+  assert.equal(await evaluate("fedcba9876543210".repeat(4)), "partial");
 });
 
 test("a durable pending write resumes after restart through authoritative readback without resend", async () => {
