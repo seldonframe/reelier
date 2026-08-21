@@ -116,6 +116,7 @@ export async function createGitHubLinearMissionRuntimeV1(input: GenuineGitHubLin
       const requestedOperations = aliases.map(alias => operations.get(alias)!);
       await kernel.claimMission({ v: "reelier.mission-claim/v1", missionId: plan.missionId, mandateDigest: authorityDigest(profileState.scope), promptDigest: authorityDigest({ requestId, source: "prompt-redacted" }), contractDigests: requestedOperations.map(operation => authorityDigest(operation.contract)), claimedAt: plan.claimedAt });
       const effectRequests: any[] = [];
+      let verifiedCommentRequest: any | undefined;
       let outcome: Awaited<ReturnType<typeof kernel.execute>> | undefined;
       for (let index = 0; index < aliases.length; index += 1) {
         const alias = aliases[index]!, operation = requestedOperations[index]!;
@@ -153,7 +154,9 @@ export async function createGitHubLinearMissionRuntimeV1(input: GenuineGitHubLin
         if (typeof authenticatedRequestId !== "string" || authenticatedRequestId !== `effect_${authorityDigest({ semanticsDigest, alias }).slice(7, 39)}`) return refusedIngress(requestId, "authenticated-effect-request-conflict");
         const compiledEffect = compileFor(alias, reservation.reservationId, authenticatedRequestId, sourceRefs);
         const governedAuthority = createGovernedOutcomeKernelAuthorityV1(components.governedAuthorityFactory, { join: { ...stored.join, reservation } as never, ...(gateAuthority ? { gateAuthority } : {}) });
-        effectRequests.push({ contract: operation.contract, verifier: compiledEffect.verifier, governedAuthority });
+        const effectRequest = { contract: operation.contract, verifier: compiledEffect.verifier, governedAuthority };
+        if (alias === "linear_status_transition_v1" && verifiedCommentRequest) effectRequests.push(verifiedCommentRequest);
+        effectRequests.push(effectRequest);
         const groupBoundary = true;
         if (groupBoundary) {
           const expectedGroupEffects = effectRequests.length;
@@ -170,6 +173,7 @@ export async function createGitHubLinearMissionRuntimeV1(input: GenuineGitHubLin
             await appendPlan(raw.journal, key, next);
             return pendingIngress(requestId);
           }
+          if (alias === "linear_evidence_comment_v1") verifiedCommentRequest = effectRequest;
         }
       }
       if (!outcome) throw new TypeError("genuine governed mission has no composed effects");

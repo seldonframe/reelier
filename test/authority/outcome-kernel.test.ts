@@ -456,10 +456,11 @@ test("host-authenticated predecessor policy requires an earlier verified Outcome
 
   const restarted = createOutcomeKernel(options);
   const completed = await restarted.execute({ missionId: "linear_mission", effects: [
-    { contract: predecessor, reservationId: "comment", verifier: verifierFor(predecessor) },
+    { contract: predecessor, reservationId: "comment", verifier: createTrustedObservationVerifier({ contractDigest: predecessorDigest, verify: () => { throw new Error("verified predecessor adoption must not rerun its verifier"); } }) },
     { contract: successor, handle: handle("status", successor), verifier: verifierFor(successor) },
   ] });
   assert.deepEqual(completed.effects.map(effect => effect.status), ["verified", "verified"]);
+  assert.equal(completed.receiptRefs[0], comment.receiptRefs[0], "verified predecessor adoption preserves the exact receipt identity");
   assert.equal(counters.send, 2);
 
   for (const status of ["pending", "partial", "failed"] as const) {
