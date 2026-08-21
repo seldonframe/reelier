@@ -29,9 +29,9 @@ import { __testSetAuthorityCellHostPlatform } from "../../../dist/authority/host
 const restorePlatform = __testSetAuthorityCellHostPlatform("linux");
 test.after(() => restorePlatform());
 
-function ledger() {
-  let state: any = { reservationId: "r1", state: "reserved", intent: { effectDigest: "sha256:" + "1".repeat(64) } };
-  return { get: () => state, getReservation: async () => state, transition: async (id: string, expected: string, event: any) => { if (id !== "r1" || state.state !== expected) return { ok: false, reason: "state-conflict" as const }; if (event.to === "ambiguous" && "resultDigest" in event) return { ok: false, reason: "corruption" as const }; state = { ...state, state: event.to, resultDigest: event.resultDigest }; return { ok: true, status: "transitioned" as const, reservation: state }; }, recover: async () => ({ ok: true as const, reservations: [state], highWaterMark: null, topology: { directorySync: "verified" as const } }) } as any;
+function ledger(reservationId = "r1", effectDigest = "sha256:" + "1".repeat(64)) {
+  let state: any = { reservationId, state: "reserved", intent: { effectDigest } };
+  return { get: () => state, getReservation: async () => state, transition: async (id: string, expected: string, event: any) => { if (id !== reservationId || state.state !== expected) return { ok: false, reason: "state-conflict" as const }; if (event.to === "ambiguous" && "resultDigest" in event) return { ok: false, reason: "corruption" as const }; state = { ...state, state: event.to, resultDigest: event.resultDigest }; return { ok: true, status: "transitioned" as const, reservation: state }; }, recover: async () => ({ ok: true as const, reservations: [state], highWaterMark: null, topology: { directorySync: "verified" as const } }) } as any;
 }
 
 test("dispatch consumes an opaque handle once and records ambiguity on restart", async () => {
@@ -339,6 +339,55 @@ test("exact coordinator dispatch delegates are single-use and revoked when the a
   const secondHandle = createSourceReservedDispatchHandle({ reservation: secondLedger.get(), effect: { x: 1 }, effectCanonicalBase64: "e30=", effectDigest: expected.effectDigest });
   await secondCoordinator.dispatch(secondHandle);
   assert.equal(consumeCoordinatorDispatchCallDelegateV1(lateDelegate!, expected), false);
+});
+
+test("one delegate cannot be bound to two live coordinator calls", async () => {
+  const firstExpected = { reservationId: "collision_first", effectDigest: "sha256:" + "4".repeat(64) };
+  const secondExpected = { reservationId: "collision_second", effectDigest: "sha256:" + "5".repeat(64) };
+  const firstLedger = ledger(firstExpected.reservationId, firstExpected.effectDigest);
+  const secondLedger = ledger(secondExpected.reservationId, secondExpected.effectDigest);
+  const delegate = Object.freeze(Object.create(null)) as object;
+  let releaseFirst!: () => void;
+  let releaseSecond!: () => void;
+  let firstEntered!: () => void;
+  let secondEntered!: () => void;
+  const firstRelease = new Promise<void>(resolve => { releaseFirst = resolve; });
+  const secondRelease = new Promise<void>(resolve => { releaseSecond = resolve; });
+  const firstReady = new Promise<void>(resolve => { firstEntered = resolve; });
+  const secondReady = new Promise<void>(resolve => { secondEntered = resolve; });
+  let firstBound = false;
+  let secondBound = false;
+  const restoreCollisionPlatform = __testSetSourceAuthorityCellHostPlatform("linux");
+  const firstCoordinator = createSourceDispatchCoordinator(firstLedger, {
+    async dispatch(state, call) {
+      firstBound = bindCoordinatorDispatchCallDelegateV1(call, delegate, state);
+      firstEntered();
+      await firstRelease;
+      return { kind: "acknowledged", resultDigest: "sha256:" + "6".repeat(64) };
+    },
+  });
+  const secondCoordinator = createSourceDispatchCoordinator(secondLedger, {
+    async dispatch(state, call) {
+      secondBound = bindCoordinatorDispatchCallDelegateV1(call, delegate, state);
+      secondEntered();
+      await secondRelease;
+      return { kind: "acknowledged", resultDigest: "sha256:" + "7".repeat(64) };
+    },
+  });
+  restoreCollisionPlatform();
+  const firstDispatch = firstCoordinator.dispatch(createSourceReservedDispatchHandle({ reservation: firstLedger.get(), effect: { x: 1 }, effectCanonicalBase64: "e30=", effectDigest: firstExpected.effectDigest }));
+  await firstReady;
+  const secondDispatch = secondCoordinator.dispatch(createSourceReservedDispatchHandle({ reservation: secondLedger.get(), effect: { x: 2 }, effectCanonicalBase64: "e30=", effectDigest: secondExpected.effectDigest }));
+  await secondReady;
+  const firstConsumed = consumeCoordinatorDispatchCallDelegateV1(delegate, firstExpected);
+  const firstConsumedAgain = consumeCoordinatorDispatchCallDelegateV1(delegate, firstExpected);
+  releaseFirst();
+  releaseSecond();
+  await Promise.all([firstDispatch, secondDispatch]);
+  assert.deepEqual(
+    { firstBound, secondBound, firstConsumed, firstConsumedAgain },
+    { firstBound: true, secondBound: false, firstConsumed: true, firstConsumedAgain: false },
+  );
 });
 
 test("coordinator exposes a detached reservation projection without exposing the prepared send", async () => {
