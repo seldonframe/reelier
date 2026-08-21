@@ -250,9 +250,18 @@ test("a verified merge plus unresolved Linear effect stays pending before Linear
     async recover() { return { ok: true, reservations: [...states.values()], highWaterMark: null, topology: { directorySync: "verified" } }; },
   };
   const restorePlatform = __testSetAuthorityCellHostPlatform("linux");
-  const commentCoordinator = createDispatchCoordinator(ledger, compiled.adapter);
+  const assertCallRefusal = async (operation: Promise<any>, label: string) => assert.equal((await operation).kind, "definitive-failure", label);
+  const commentCoordinator = createDispatchCoordinator(ledger, {
+    async dispatch(state: any, call: any) {
+      await assertCallRefusal(compiled.adapter.dispatch(state, Object.freeze({ ...call }) as any), "copied Linear comment call refuses");
+      const authorized = await compiled.adapter.dispatch(state, call);
+      await assertCallRefusal(compiled.adapter.dispatch(state, call), "replayed Linear comment call refuses");
+      return authorized;
+    },
+    async reconcile(state: any, prior: any) { return compiled.adapter.reconcile!(state, prior); },
+  } as any);
   const statusCoordinator = createDispatchCoordinator(ledger, {
-    async dispatch(state: any, call: any) { statusAdapterEntered(); await statusRelease; return (compiledStatus.adapter.dispatch as any)(state, call); },
+    async dispatch(state: any, call: any) { statusAdapterEntered(); await statusRelease; await assertCallRefusal(compiledStatus.adapter.dispatch(state, Object.freeze({ ...call }) as any), "copied Linear status call refuses"); const authorized = await compiledStatus.adapter.dispatch(state, call); await assertCallRefusal(compiledStatus.adapter.dispatch(state, call), "replayed Linear status call refuses"); return authorized; },
     async reconcile(state: any, prior: any) { return compiledStatus.adapter.reconcile!(state, prior); },
   } as any);
   restorePlatform();

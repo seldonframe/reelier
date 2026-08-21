@@ -33,10 +33,24 @@ const governedRequests = new WeakMap<object, Map<string, { alias: any; allocatio
 const allLanes: ReleaseEvidenceLaneV1[] = ["ci-coverage", "ci-full-tests", "ci-mutation", "candidate-branch", "candidate-pull-request", "ghcr-immutable-manifest", "ghcr-tags", "human-authorization", "human-exceptions", "human-interruptions", "human-post-release-review", "installed-linux", "installed-windows", "mcp-registry-version", "merge-exact-sha", "npm-integrity", "npm-provenance", "tag-immutable-ref"];
 
 async function dispatchReviewedThroughCoordinator(compiled: ReturnType<typeof compileEffectTransportV1>, state: any) {
+  const refuses = async (operation: Promise<any>, label: string) => {
+    try { assert.equal((await operation).kind, "definitive-failure", label); }
+    catch (error) { assert.match(String(error), /boundary|refus|authority/i, label); }
+  };
+  await refuses(compiled.adapter.dispatch(state), "direct branded GitHub invocation is unarmed");
   let reservation = { ...state.reservation, state: "reserved", intent: { ...state.reservation.intent, effectCanonicalBase64: state.effectCanonicalBase64 } };
   const ledger: any = { async getReservation(id: string) { return id === reservation.reservationId ? reservation : null; }, async transition(id: string, expected: string, event: any) { if (id !== reservation.reservationId || reservation.state !== expected) return { ok: false, reason: "state-conflict" }; reservation = { ...reservation, state: event.to, ...(event.resultDigest ? { resultDigest: event.resultDigest } : {}) }; return { ok: true, status: "transitioned", reservation }; }, async recover() { return { ok: true, reservations: [reservation] }; } };
+  const adversarial = {
+    async dispatch(current: any, call: any) {
+      await refuses(compiled.adapter.dispatch(current, Object.freeze({ ...call }) as any), "copied coordinator call is unarmed");
+      const authorized = await compiled.adapter.dispatch(current, call);
+      await refuses(compiled.adapter.dispatch(current, call), "consumed coordinator call cannot be replayed");
+      return authorized;
+    },
+    reconcile: compiled.adapter.reconcile,
+  };
   const restore = __testSetAuthorityCellHostPlatform("linux");
-  try { return await createDispatchCoordinator(ledger, compiled.adapter).dispatch(createReservedDispatchHandle({ ...state, reservation })); }
+  try { return await createDispatchCoordinator(ledger, adversarial).dispatch(createReservedDispatchHandle({ ...state, reservation })); }
   finally { restore(); }
 }
 
