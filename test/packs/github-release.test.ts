@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { authorityDigest } from "../../src/authority/wire.js";
+import { digestGovernedEffectCommitmentV1 } from "../../src/authority/governed-effect-commitment.js";
 import {
   githubReleaseCandidatePublishAlias,
   githubReleaseCandidatePublishDefinition,
@@ -84,4 +85,42 @@ test("GitHub release choices reject proxies without invoking traps", () => {
   });
   assert.throws(() => githubReleaseCandidatePublishDefinition.validateChoices(choices), /closed|inert|choices/i);
   assert.equal(traps, 0);
+});
+
+test("GitHub release emits the exact governed Task-4 digest join from signed inputs", () => {
+  const definition = githubReleaseCandidatePublishDefinition;
+  const contract = { alias: githubReleaseCandidatePublishAlias, packDigest: definition.packDigest, definitionDigest: definition.definitionDigest } as never;
+  const source = { projection: { authorizationHandle: "release_auth_1" }, sourceIdentity: "source_1", triggerIdentity: "trigger_1" };
+  const choices = {};
+  const governed = Object.freeze({
+    toolEffectContractDigest: authorityDigest({ tool: "candidate" }),
+    transportBindingDigest: authorityDigest({ binding: "candidate" }),
+    operationKind: "github.candidate-publish",
+    reviewedPolicyDigest: authorityDigest({ policy: "reviewed" }),
+  });
+  const policy = definition.parsePolicy({
+    allocationDigest: authorityDigest({ allocation: 1 }),
+    allocationId: "release-candidate-branch-01",
+    authorizationHandleDigest: authorityDigest({ handle: "release_auth_1" }),
+    effect: "candidate-branch",
+    maxEffects: 1,
+    governed,
+  });
+  const compiled = definition.compile({ contract, source: source as never, choices, policy, now: new Date(0), connectorAccount: { connectorId: "github", accountId: "host" } }) as { preconditions: readonly { kind: string; digest: string }[] };
+  const precondition = compiled.preconditions.find(item => item.kind === "governed-effect-commitment-v1");
+  assert.ok(precondition);
+  assert.equal(precondition.digest, digestGovernedEffectCommitmentV1({
+    v: "reelier.governed-effect-commitment/v1",
+    definitionAlias: githubReleaseCandidatePublishAlias,
+    pathCContractDigest: authorityDigest(contract),
+    toolEffectContractDigest: governed.toolEffectContractDigest,
+    transportBindingDigest: governed.transportBindingDigest,
+    compiledEffectInputDigest: authorityDigest({ v: "reelier.compiled-effect-input/v1", definitionAlias: githubReleaseCandidatePublishAlias, source, choices, connectorAccount: { connectorId: "github", accountId: "host" } }),
+    requestCommitmentDigest: authorityDigest({ v: "reelier.effect-request-commitment/v1", definitionAlias: githubReleaseCandidatePublishAlias, projection: source.projection, choices }),
+    operationKind: governed.operationKind,
+    reviewedPolicyDigest: governed.reviewedPolicyDigest,
+    packDigest: definition.packDigest,
+    definitionDigest: definition.definitionDigest,
+  }));
+  assert.throws(() => definition.parsePolicy({ ...(policy as object), commitmentDigest: authorityDigest({ attacker: true }) }), /closed|policy/i);
 });
