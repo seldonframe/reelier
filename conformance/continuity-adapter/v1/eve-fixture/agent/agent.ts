@@ -43,22 +43,27 @@ function cellJobRefs(output: unknown): string[] {
   });
 }
 
+function cellOutcomeRefs(output: unknown): string[] {
+  const outcomeRefs = cellRecord(output)?.outcomeRefs;
+  return Array.isArray(outcomeRefs) ? outcomeRefs.filter((value): value is string => typeof value === "string") : [];
+}
+
 export default defineAgent({
   modelContextWindowTokens: 128_000,
   model: mockModel(({ lastUserMessage, messages, toolResults }) => {
     if (lastUserMessage === REMOTE_CELL_TASK) {
-      const searched = toolResults.filter((result) => result.name === "reelier_jobs_search").at(-1);
-      if (!searched) return { toolCalls: [{ name: "reelier_jobs_search", input: { query: "" } }] };
-      const loaded = toolResults.filter((result) => result.name === "reelier_job_load").at(-1);
-      const jobRefs = searched.isError ? [] : cellJobRefs(searched.output);
-      if (!loaded && jobRefs.length > 0) return { toolCalls: [{ name: "reelier_job_load", input: { jobRef: jobRefs[0] } }] };
+      const searched = toolResults.filter((result) => result.name === "reelier_agent_status").at(-1);
+      if (!searched) return { toolCalls: [{ name: "reelier_agent_status", input: {} }] };
+      const loaded = toolResults.filter((result) => result.name === "reelier_outcome_proposal").at(-1);
+      const jobRefs = searched.isError ? [] : cellOutcomeRefs(searched.output);
+      if (!loaded && jobRefs.length > 0) return { toolCalls: [{ name: "reelier_outcome_proposal", input: { outcomeRef: jobRefs[0] } }] };
       return {
         text: JSON.stringify({
           v: "reelier.eve-remote-cell-smoke/v1",
           jobRefCount: jobRefs.length,
           searchVerdict: searched.isError ? null : cellString(searched.output, "verdict"),
-          loadedJobRef: loaded && !loaded.isError ? cellString(loaded.output, "jobRef") : null,
-          loadedAlias: loaded && !loaded.isError ? cellString(loaded.output, "alias") : null,
+          loadedJobRef: loaded && !loaded.isError ? cellString(loaded.output, "outcomeRef") : null,
+          loadedAlias: null,
           loadVerdict: loaded && !loaded.isError ? cellString(loaded.output, "verdict") : null,
           toolError: searched.isError ? "reelier_jobs_search" : loaded?.isError ? "reelier_job_load" : null,
         }),
