@@ -15,7 +15,7 @@ import { createAuthorityStatePort, digestAuthorityState, type AuthorityStateBack
 import { FsAuthorityLedger } from "../../src/authority/host/fs-ledger.js";
 import { createFileGateDecisionSink } from "../../src/authority/decision.js";
 import {
-  createAuthorityGate, createReservedDispatchHandle, selectEligibleAuthorityContract,
+  bindAcceptedGateReservationAuthorityV1, createAuthorityGate, createReservedDispatchHandle, describeAcceptedGateReservationAuthorityV1, selectEligibleAuthorityContract, takeAcceptedGateReservationHandleV1,
   unwrapReservedDispatchHandle, type AuthorityGateDependencies, type GateResult,
 } from "../../src/authority/gate.js";
 import { AuthorityBoundaryError, type GateRefusalReason } from "../../src/authority/errors.js";
@@ -30,6 +30,29 @@ test("the shared eligible-contract selector is closed and cannot be caller-direc
   const hostile = Object.defineProperty({}, "snapshot", { enumerable: true, get() { getters += 1; throw new Error("getter invoked"); } });
   assert.throws(() => selectEligibleAuthorityContract(hostile as never), /own data|closed|exact fields/i);
   assert.equal(getters, 0);
+});
+
+test("only a newly accepted genuine gate reservation carries send authority", async () => {
+  const f = await fixture();
+  try {
+    const accepted = await f.gate.decide(f.request);
+    assert.equal(accepted.kind, "accepted");
+    if (accepted.kind !== "accepted") return;
+    const authority = bindAcceptedGateReservationAuthorityV1(f.gate, accepted);
+    const description = describeAcceptedGateReservationAuthorityV1(authority);
+    assert.equal(description.reservationId, accepted.signedDecision.reservationId);
+    assert.equal(description.contractDigest, accepted.signedDecision.decisionContext.contractDigest);
+    assert.equal(description.effectDigest, accepted.signedDecision.decisionContext.effectDigest);
+    assert.equal(Object.keys(authority).length, 0);
+    assert.throws(() => bindAcceptedGateReservationAuthorityV1(Object.freeze({ decide: f.gate.decide }), accepted), /genuine|gate|authority/i);
+    assert.throws(() => describeAcceptedGateReservationAuthorityV1(structuredClone(authority) as never), /genuine|authority/i);
+    assert.equal(takeAcceptedGateReservationHandleV1(authority), accepted.handle, "the exact newly accepted handle crosses once");
+    assert.throws(() => takeAcceptedGateReservationHandleV1(authority), /consumed|authority/i);
+
+    const existing = await f.gate.decide(f.request);
+    assert.equal(existing.kind, "existing");
+    assert.throws(() => bindAcceptedGateReservationAuthorityV1(f.gate, existing), /newly accepted|authority/i);
+  } finally { await f.cleanup(); }
 });
 const planAt="2026-01-15T00:00:29.000Z",decisionAt="2026-01-15T00:00:30.000Z";
 const limits={maxEffectsPerWindow:10,windowSeconds:3600,maxEffectsPerSourceTrigger:2,maxBodyBytes:4096};
