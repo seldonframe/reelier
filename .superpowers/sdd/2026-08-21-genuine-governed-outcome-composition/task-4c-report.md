@@ -95,6 +95,18 @@
 - `src/authority/host/receipts.ts`, `src/authority/host/governed-outcome-composition.ts`, and `src/authority/host/local.ts` closure-bind exact publication readback to the publisher-specific factory captured by the local coordinator composition. A second genuine publisher/root, a copied or cloned factory, a duck-typed resolver/query, and a substituted readback capability cannot resolve or authorize the first publisher's head. The coordinator publication head remains the sole verified authority; journals remain indexes only.
 - `test/authority/github-linear-outcomes.test.ts` gives every intended branded-success reservation its authenticated durable request ID. The direct legacy-envelope comment/status probes remain deliberately unbranded and prove zero provider writes.
 
+### Final-review fix round
+
+- `src/authority/gate.ts` transfers a mandatory, closure-bound governed revalidator with the accepted reservation handle. `src/authority/host/dispatch.ts` invokes that same authority after asynchronous prepare/host resolution, immediately before prepared CAS, and again after CAS/publication immediately before send. Certified HTTPS identity remains a separate check. A composed-runtime revocation during host resolution leaves the exact reservation `reserved` with `sendStarted: false` and records zero provider calls.
+- `src/authority/host/local.ts` reloads the current deployment through the same externally pinned Job Card trust material for every revalidation, requires the original tenant and signed Job Card identity, and therefore observes deployment revocation rather than trusting the activation-time snapshot.
+- `src/authority/host/receipts.ts` writes durable receipt nodes as root-bound v2 preimages containing a stable digest of the resolved publication root. Reopening the same root preserves restart/no-resend behavior; copying a valid chain to a different genuine root refuses. Legacy v1 nodes fail closed without silent rewrite.
+- `src/authority/host/effect-transports.ts` preserves legacy executor authority as exactly three fields (`contractDigest`, `bindingDigest`, `reservationId`) and introduces a distinct opaque governed authority with exactly two additional fields (`requestId`, `governedEffectDigest`). GitHub and Linear branded executors require the governed seam; generic or legacy compilation cannot infer it from a request ID.
+- `src/authority/host/github-linear-mission-runtime.ts` records honest terminal mission failure and stops all later reservations after deterministic candidate, pull-request, or comment refusal. Candidate stops after one blob attempt; PR stops after one candidate plus one PR attempt; comment completes the three GitHub effects then stops after one comment attempt; every case makes zero later writes.
+- All five branded writes refuse direct, copied, and replayed coordinator calls without unintended provider access. Accepted-before-index recovery cancels only the exact opaque-linked orphan; an unrelated genuine reserved reservation retains its exact byte/state digest.
+- Sequential status execution presents the already verified comment request to the kernel for read-only durable adoption. The predecessor verifier is a throwing falsifier, the adopted receipt ref must exactly equal the original ref, and provider counters prove only the status send is new. No predecessor verifier rerun, receipt rewrite, remint, or comment resend is possible.
+
+Final-review RED/GREEN commits from immutable `18f60a5e` are: `479aa54c`, `482f4dff`, `bf2308cf`, `a1163c54`, `544ff254`, `64170428`, `399de048`, `b10bc82a`, `d4e4540b`, `2987652b`, `66c88b60`, `d83deb81`, `4a3fbb6e`, `f4ae419a`, `3d934c3d`, `03de7acf`, `13d02f34`, and `c7001780`.
+
 ## Deviations from the plan
 
 - No implementation behavior was broadened beyond tracked amendments. `src/packs/conformance.ts`, `src/authority/host/github-release-runner.ts`, `test/authority/github-release-runner.test.ts`, `test/authority/github-release-serve-fixture.ts`, `src/authority/host/prepared-dispatch.ts`, and `test/acceleration-preflight.test.ts` were touched only after their exact amendments were committed.
@@ -105,20 +117,20 @@
 
 ## Test results
 
-### Review-fix focused gate
+### Final focused Task4C gate
 
 ```text
-ℹ tests 43
+ℹ tests 150
 ℹ suites 0
-ℹ pass 43
+ℹ pass 150
 ℹ fail 0
 ℹ cancelled 0
 ℹ skipped 0
 ℹ todo 0
-ℹ duration_ms 10795.904
+ℹ duration_ms 53892.4582
 ```
 
-This focused gate covers effect transports, the full signed composite and Linear-only runtimes, the reviewed GitHub/Linear pack, and publication binding. The explicit publication adversary is `governed publication readback refuses duck-typed resolver and query substitution`: publisher/root B, factory clones/copies, and substituted resolver/query capabilities cannot adopt publisher/root A's terminal head.
+This gate covers the gate, prepared coordinator, governed and legacy transport seams, root-bound receipts, governed publication, Outcome kernel, full signed composite and Linear-only runtimes, reviewed GitHub/Linear packs, and shared pack conformance. The publication adversaries prove publisher/root B, copied chains, factory clones/copies, and substituted resolver/query capabilities cannot adopt publisher/root A's terminal head.
 
 ### Final build and complete scoped Task4C gates
 
@@ -127,17 +139,19 @@ This focused gate covers effect transports, the full signed composite and Linear
 > node scripts/build-authority-contract.mjs --check && node scripts/build-bootstrap-contract.mjs --check && tsc -p tsconfig.json && node scripts/build-authority-contract.mjs --copy-schemas && node scripts/build-packs.mjs
 
 built cloudflare_api_token, cloudflare_dns, github_issue_labels, github_release, gmail, gmail_labels, hubspot_slack_information_flow, linear_outcomes, neon_database, slack_channel_topic, stripe, vercel_deployment
-ℹ tests 219
-ℹ suites 0
-ℹ pass 219
-ℹ fail 0
-ℹ cancelled 0
-ℹ skipped 0
-ℹ todo 0
-ℹ duration_ms 58042.0348
 ```
 
 Both `npx tsc -p tsconfig.test.json` and `npx tsc -p tsconfig.json` exited 0 with no diagnostics. `npm run build` passed, and a separate `node scripts/build-packs.mjs` produced the same exact twelve-pack inventory.
+
+The generated-pack acceleration preflight passed freshly:
+
+```text
+ℹ tests 9
+ℹ pass 9
+ℹ fail 0
+ℹ skipped 0
+ℹ duration_ms 12169.8699
+```
 
 ### Legacy GitHub release compatibility
 
@@ -149,23 +163,23 @@ Both `npx tsc -p tsconfig.test.json` and `npx tsc -p tsconfig.json` exited 0 wit
 ℹ cancelled 0
 ℹ skipped 0
 ℹ todo 0
-ℹ duration_ms 23672.8867
+ℹ duration_ms 27330.7046
 ```
 
 ### Package and compatibility specs
 
 ```text
-ℹ tests 65
+ℹ tests 58
 ℹ suites 0
-ℹ pass 64
+ℹ pass 58
 ℹ fail 0
 ℹ cancelled 0
-ℹ skipped 1
+ℹ skipped 0
 ℹ todo 0
-ℹ duration_ms 9015.3891
+ℹ duration_ms 2919.4185
 ```
 
-The skip is the declared `public governed Linux factory evidence` test, which requires an already available Linux Node executor.
+This fresh set covers package exports, authority/profile/bootstrap package contracts, agent-adapter conformance, continuity conformance, and the core continuity package. The separately documented universal packed-consumer limitation remains unchanged because its Linux artifact prerequisite is unavailable on this Windows host.
 
 ### Contract checks
 
