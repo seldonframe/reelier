@@ -17,6 +17,7 @@ export const LINEAR_OUTCOME_SERVER_SCHEMA_DIGEST_V1 = authorityDigest({ v: "reel
 
 export type GitHubLinearOutcomeOperationNameV1 = "candidatePublish" | "pullRequestEnsure" | "exactHeadMerge" | "linearEvidenceComment" | "linearStatusTransition";
 export type GitHubLinearOutcomeModeV1 = "github-linear" | "linear-only";
+export const governedOutcomeCompositionAliasesV1 = Object.freeze(["github_release_candidate_publish_v1", "github_release_pr_ensure_v1", "github_release_pr_merge_v1", "linear_evidence_comment_v1", "linear_status_transition_v1"] as const);
 
 export interface GitHubLinearReviewedAuthorityV1 {
   readonly v: "reelier.github-linear-reviewed-authority/v1";

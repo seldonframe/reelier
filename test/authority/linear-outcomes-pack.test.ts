@@ -16,7 +16,7 @@ const source = Object.freeze({ sourceIdentity: "linear-source", triggerIdentity:
 const connectorAccount = Object.freeze({ connectorId: "linear", accountId: "workspace_1" });
 
 function policy(effect: "evidence-comment" | "status-transition") {
-  const common = { allocationDigest: sha("a"), allocationId: `linear-${effect}-allocation`, authorizationHandleDigest: authorityDigest({ handle: "linear_auth_1" }), effect, maxEffects: 1 as const, governed: { toolEffectContractDigest: sha(effect === "evidence-comment" ? "b" : "c"), transportBindingDigest: sha("d"), operationKind: `linear.${effect}`, reviewedPolicyDigest: sha("e") } };
+  const common = { allocationDigest: sha("a"), allocationId: `linear-${effect}-allocation`, authorizationHandleDigest: authorityDigest({ handle: "linear_auth_1" }), effect, maxEffects: 1 as const, governed: { toolEffectContractDigest: sha(effect === "evidence-comment" ? "b" : "c"), transportBindingDigest: sha("d"), operationKind: `linear.${effect}`, reviewedPolicyDigest: sha("e"), ...(effect === "status-transition" ? { predecessorToolEffectContractDigest: sha("b") } : {}) } };
   return effect === "status-transition" ? { ...common, predecessorAlias: linearEvidenceCommentAlias, predecessorContractDigest: sha("b"), predecessorReceiptRequired: true } : common;
 }
 
