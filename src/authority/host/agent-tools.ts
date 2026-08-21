@@ -39,21 +39,20 @@ export function createAuthorityAgentTools(backend: AuthorityAgentToolBackendV1, 
     async agentStatus(input, context) {
       parseAgentToolInputV1("reelier_agent_status", input);
       try {
-        const result = record(await safeBackend.jobsSearch({}, context));
+        const result = exactRecord(await safeBackend.jobsSearch({}, context), ["requestId", "verdict", "reasonCode", "lifecycleState", "jobs"], ["receiptRef"]);
         const base = outcome(result);
-        const outcomeRefs = Object.freeze(jobEntries(result.jobs).flatMap(item => {
-          try {
-            const entry = record(item);
-            return typeof entry.jobRef === "string" && /^(?:jobref|outcomeref)_[0-9a-f]{64}$/.test(entry.jobRef) ? [entry.jobRef] : [];
-          } catch { return []; }
-        }).slice(0, 256));
+        const outcomeRefs = Object.freeze(jobEntries(result.jobs).map(item => {
+          const entry = exactRecord(item, ["jobRef"]);
+          if (typeof entry.jobRef !== "string" || !/^(?:jobref|outcomeref)_[0-9a-f]{64}$/.test(entry.jobRef)) throw new TypeError("agent tool backend job reference is invalid");
+          return entry.jobRef;
+        }));
         return parseAgentToolOutputV1("reelier_agent_status", { ...base, outcomeRefs, capability: neutralCapability }) as AuthorityAgentStatusV1;
       } catch { return parseAgentToolOutputV1("reelier_agent_status", { requestId: "", verdict: "refused", reasonCode: "agent-status-unavailable", lifecycleState: "unavailable", outcomeRefs: Object.freeze([]), capability: neutralCapability }) as AuthorityAgentStatusV1; }
     },
     async outcomeProposal(input, context) {
       const parsed = parseAgentToolInputV1("reelier_outcome_proposal", input);
       try {
-        const result = record(await safeBackend.jobLoad({ jobId: parsed.outcomeRef }, context));
+        const result = exactRecord(await safeBackend.jobLoad({ jobId: parsed.outcomeRef }, context), ["requestId", "verdict", "reasonCode", "lifecycleState"], ["receiptRef", "jobRef"]);
         const base = outcome(result);
         const outcomeRef = typeof result.jobRef === "string" && result.jobRef === parsed.outcomeRef ? result.jobRef : undefined;
         return parseAgentToolOutputV1("reelier_outcome_proposal", { ...base, ...(outcomeRef ? { outcomeRef } : {}) }) as AuthorityOutcomeProposalV1;
@@ -62,26 +61,32 @@ export function createAuthorityAgentTools(backend: AuthorityAgentToolBackendV1, 
     async outcomeRequest(input, context) {
       const parsed = parseAgentToolInputV1("reelier_outcome_request", input);
       try {
-        return parseAgentToolOutputV1("reelier_outcome_request", outcome(record(await safeBackend.invoke({ v: "reelier.outcome-request/v1", jobRef: parsed.outcomeRef, requestId: parsed.requestId, sourceRefs: parsed.sourceRefs, choices: parsed.choices }, context)))) as AuthorityAgentToolOutcomeV1;
-      } catch { return Object.freeze({ requestId: String(parsed.requestId), verdict: "refused", reasonCode: "outcome-request-unavailable", lifecycleState: "unavailable" }); }
+        const result = exactRecord(await safeBackend.invoke({ v: "reelier.outcome-request/v1", jobRef: parsed.outcomeRef, requestId: parsed.requestId, sourceRefs: parsed.sourceRefs, choices: parsed.choices }, context), ["requestId", "verdict", "reasonCode", "lifecycleState"], ["receiptRef"]);
+        return parseAgentToolOutputV1("reelier_outcome_request", outcome(result)) as AuthorityAgentToolOutcomeV1;
+      } catch { return parseAgentToolOutputV1("reelier_outcome_request", { requestId: parsed.requestId, verdict: "refused", reasonCode: "outcome-request-unavailable", lifecycleState: "unavailable" }) as AuthorityAgentToolOutcomeV1; }
     },
     async outcomeStatus(input, context) {
       const parsed = parseAgentToolInputV1("reelier_outcome_status", input);
-      try { return parseAgentToolOutputV1("reelier_outcome_status", outcome(record(await safeBackend.status({ requestId: parsed.requestId }, context)))) as AuthorityAgentToolOutcomeV1; }
-      catch { return Object.freeze({ requestId: String(parsed.requestId), verdict: "refused", reasonCode: "outcome-status-unavailable", lifecycleState: "unavailable" }); }
+      try {
+        const result = exactRecord(await safeBackend.status({ requestId: parsed.requestId }, context), ["requestId", "verdict", "reasonCode", "lifecycleState"], ["receiptRef"]);
+        return parseAgentToolOutputV1("reelier_outcome_status", outcome(result)) as AuthorityAgentToolOutcomeV1;
+      } catch { return parseAgentToolOutputV1("reelier_outcome_status", { requestId: parsed.requestId, verdict: "refused", reasonCode: "outcome-status-unavailable", lifecycleState: "unavailable" }) as AuthorityAgentToolOutcomeV1; }
     },
   };
   return Object.freeze(tools);
 }
 
-function record(value: unknown): Record<string, unknown> {
+function exactRecord(value: unknown, required: readonly string[], optional: readonly string[] = []): Readonly<Record<string, unknown>> {
   if (!value || typeof value !== "object" || isProxy(value) || Array.isArray(value) || Object.getPrototypeOf(value) !== Object.prototype) throw new TypeError("agent tool backend response is not an inert record");
   const descriptors = Object.getOwnPropertyDescriptors(value);
-  for (const key of Reflect.ownKeys(value)) {
+  const keys = Reflect.ownKeys(value), allowed = new Set([...required, ...optional]);
+  if (keys.length < required.length || keys.length > allowed.size) throw new TypeError("agent tool backend response has an invalid shape");
+  for (const key of keys) {
     const descriptor = descriptors[key as keyof typeof descriptors];
-    if (typeof key !== "string" || !descriptor || !("value" in descriptor) || descriptor.get || descriptor.set || !descriptor.enumerable) throw new TypeError("agent tool backend response is not an inert data record");
+    if (typeof key !== "string" || !allowed.has(key) || !descriptor || !("value" in descriptor) || descriptor.get || descriptor.set || !descriptor.enumerable) throw new TypeError("agent tool backend response is not an exact inert data record");
   }
-  return value as Record<string, unknown>;
+  for (const key of required) if (!Object.hasOwn(descriptors, key)) throw new TypeError("agent tool backend response is missing a required field");
+  return Object.freeze(Object.fromEntries(keys.map(key => [key, descriptors[key as keyof typeof descriptors]!.value])));
 }
 
 function inertBackend(value: unknown): AuthorityAgentToolBackendV1 {
@@ -93,9 +98,14 @@ function inertBackend(value: unknown): AuthorityAgentToolBackendV1 {
 
 function jobEntries(value: unknown): readonly unknown[] {
   if (!Array.isArray(value)) return Object.freeze([]);
-  if (isProxy(value) || value.length > 256) throw new TypeError("agent tool backend jobs are hostile or exceed the bound");
-  const descriptors = Object.getOwnPropertyDescriptors(value), output: unknown[] = [];
-  for (let index = 0; index < value.length; index += 1) {
+  if (isProxy(value)) throw new TypeError("agent tool backend jobs are hostile");
+  const descriptors = Object.getOwnPropertyDescriptors(value), keys = Reflect.ownKeys(value);
+  const lengthDescriptor = descriptors["length"] as PropertyDescriptor | undefined;
+  if (!lengthDescriptor || !("value" in lengthDescriptor) || lengthDescriptor.enumerable || typeof lengthDescriptor.value !== "number" || !Number.isSafeInteger(lengthDescriptor.value) || lengthDescriptor.value < 0 || lengthDescriptor.value > 256) throw new TypeError("agent tool backend jobs exceed the bound");
+  const length = lengthDescriptor.value;
+  if (keys.length !== length + 1 || keys.some(key => typeof key !== "string" || (key !== "length" && !/^(?:0|[1-9][0-9]*)$/.test(key)))) throw new TypeError("agent tool backend jobs must be an exact dense array");
+  const output: unknown[] = [];
+  for (let index = 0; index < length; index += 1) {
     const descriptor = descriptors[String(index)];
     if (!descriptor || !("value" in descriptor) || !descriptor.enumerable) throw new TypeError("agent tool backend jobs must contain inert data entries");
     output.push(descriptor.value);
@@ -104,6 +114,6 @@ function jobEntries(value: unknown): readonly unknown[] {
 }
 
 function outcome(value: Record<string, unknown>): AuthorityAgentToolOutcomeV1 {
-  if (typeof value.requestId !== "string" || value.requestId.length > 256 || (value.verdict !== "accepted" && value.verdict !== "refused") || typeof value.reasonCode !== "string" || typeof value.lifecycleState !== "string" || (value.receiptRef !== undefined && typeof value.receiptRef !== "string")) throw new TypeError("agent tool backend outcome is invalid");
+  if (typeof value.requestId !== "string" || value.requestId.length > 256 || (value.verdict !== "accepted" && value.verdict !== "refused") || typeof value.reasonCode !== "string" || value.reasonCode.length > 256 || typeof value.lifecycleState !== "string" || value.lifecycleState.length > 256 || (value.receiptRef !== undefined && (typeof value.receiptRef !== "string" || value.receiptRef.length > 512))) throw new TypeError("agent tool backend outcome is invalid");
   return Object.freeze({ requestId: value.requestId, verdict: value.verdict, reasonCode: value.reasonCode, lifecycleState: value.lifecycleState, ...(typeof value.receiptRef === "string" ? { receiptRef: value.receiptRef } : {}) });
 }
