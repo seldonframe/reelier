@@ -6,6 +6,7 @@ import {
   bindCoordinatorDispatchCallDelegateV1,
   consumeCoordinatorDispatchCallDelegateV1,
   createDispatchCoordinator as createSourceDispatchCoordinator,
+  parseDispatchOutcomeV1,
 } from "../../src/authority/host/dispatch.js";
 import { createReservedDispatchHandle as createSourceReservedDispatchHandle } from "../../src/authority/gate.js";
 import { createDispatchCommitLease as createSourceDispatchCommitLease, createPreparedDispatch as createSourcePreparedDispatch } from "../../src/authority/host/prepared-dispatch.js";
@@ -303,6 +304,11 @@ test("a stale colluding revalidator cannot cross credential, prepare, store, or 
   const state = { reservation: persisted, effect: {}, effectCanonicalBase64: "e30=", effectDigest: persisted.intent.effectDigest };
   await assert.rejects(() => coordinator.dispatch(createReservedDispatchHandle(state)), /generation|route authority|binding|stale/i);
   assert.deepEqual(effects, { credential: 0, prepare: 0, store: 0, provider: 0, commit: 0 });
+});
+
+test("closed deterministic refusal preserves its inert diagnostic reason", () => {
+  const outcome = parseDispatchOutcomeV1({ kind: "definitive-failure", resultDigest: sha("1"), reconciliationStatus: "conflict", normalizedProjectionDigest: null, reason: "base branch drift" });
+  assert.deepEqual(outcome, { kind: "definitive-failure", resultDigest: sha("1"), reconciliationStatus: "conflict", normalizedProjectionDigest: null, reason: "base branch drift" });
 });
 
 test("prepared dispatch carries the exact one-call coordinator capability through commit and finally revokes it", async () => {
