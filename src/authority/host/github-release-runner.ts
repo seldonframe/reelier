@@ -13,7 +13,7 @@ import { createSignedJournal, type SignedJournal, type SignedJournalEventV1 } fr
 import { createGitHubReleaseProviderEvidence } from "./github-release-evidence.js";
 import { assertGitHubReleaseHostedAuthorityBindingV1, type GitHubReleaseHostedAuthorityBindingV1 } from "./github-release-hosted-authority.js";
 import { mintTrustedEffectTransportExecutorV1, type TrustedEffectTransportExecutorV1 } from "./effect-transports.js";
-import { GITHUB_RELEASE_OUTCOME_SERVER_SCHEMA_DIGEST_V1, githubReleaseOutcomeToolSchemaDigestV1 } from "../packs/github-linear-outcomes.js";
+import { GITHUB_RELEASE_OUTCOME_SERVER_SCHEMA_DIGEST_V1, githubReleaseOutcomeToolSchemaDigestV1, githubReviewedOutcomePolicyDigestV1 } from "../packs/github-linear-outcomes.js";
 
 const ALIASES = Object.freeze({ github_release_candidate_publish_v1: "candidate-branch", github_release_pr_ensure_v1: "draft-pr", github_release_pr_merge_v1: "exact-sha-merge", github_release_tag_create_v1: "non-force-tag" } satisfies Record<string, ReleaseProviderEffectV1>);
 const ENDPOINTS = Object.freeze(Object.fromEntries(Object.entries(ALIASES).map(([alias, effect]) => [`github.release.${effect}`, alias])) as Record<string, GitHubReleaseAliasV1>);
@@ -55,7 +55,7 @@ export interface GitHubReleaseProviderV1 {
 }
 export interface GitHubReleaseProviderFaultV1 { readonly v: "reelier.github-release-provider-fault/v1"; readonly kind: "transport-uncertain" | "definitive-refusal"; readonly reason: string }
 export interface GitHubReleaseRunRequestV1 { readonly alias: GitHubReleaseAliasV1; readonly allocationId: string; readonly authorizationHandle: string; readonly requestId: string; readonly semanticsDigest: string }
-interface GitHubReleaseInvocationV1 { readonly alias: GitHubReleaseAliasV1; readonly authorizationHandle: string; readonly requestId: string; readonly semanticsDigest: string }
+interface GitHubReleaseInvocationV1 { readonly alias: GitHubReleaseAliasV1; readonly authorizationHandle: string; readonly requestId: string; readonly semanticsDigest: string; readonly reviewedHost?: Readonly<{ account: string; destination: string; limit: string }> }
 export interface GitHubReleaseRunResultV1 { readonly status: "verified" | "pending-reconciliation" | "refused"; readonly phase: string; readonly evidenceDigest: string | null }
 export interface GitHubReleasePublicationConfirmationV1 { readonly requestId: string; readonly providerEvidenceDigest: string; readonly receiptRef: string; readonly receiptEvidenceDigest: string }
 export interface GitHubReleaseRunnerV1 { run(input: GitHubReleaseRunRequestV1): Promise<GitHubReleaseRunResultV1>; recover(): Promise<readonly string[]> }
@@ -90,11 +90,15 @@ export async function createGitHubReleaseRunner(input: Readonly<{ rootDir: strin
     const context = normalizeContext(resolved);
     const authorization = context.authorization;
     assertVerifiedReleaseAuthorizationV1(authorization);
+    if (invocation.reviewedHost) {
+      try { assertReviewedHost(invocation.reviewedHost, authorization.operationPlan.value); }
+      catch (error) { if (error instanceof TypeError) return Object.freeze({ status: "refused", phase: "reviewed-policy-refused", evidenceDigest: null }); throw error; }
+    }
     const hostedAuthorityBindingDigest = context.hostedAuthority ? assertGitHubReleaseHostedAuthorityBindingV1(context.hostedAuthority, authorization, input.now()) : null;
     const effect = ALIASES[invocation.alias];
     const allocation = authorization.authorization.value.effectAllocations.find(candidate => candidate.effect === effect);
     if (!allocation || allocation.maxEffects !== 1 || !DIGEST.test(allocation.allocationDigest)) throw new TypeError("release alias does not have the authenticated exact one-effect allocation");
-    const request: GitHubReleaseRunRequestV1 = Object.freeze({ ...invocation, allocationId: allocation.allocationId });
+    const request: GitHubReleaseRunRequestV1 = Object.freeze({ alias: invocation.alias, authorizationHandle: invocation.authorizationHandle, requestId: invocation.requestId, semanticsDigest: invocation.semanticsDigest, allocationId: allocation.allocationId });
     validateRequest(request);
     return journal.withLease(`authorization-${authorization.authorization.digest.slice(7)}`, async () => {
       let events = await journal.load(request.requestId);
@@ -215,13 +219,14 @@ export async function createGitHubReleaseRunner(input: Readonly<{ rootDir: strin
         selected = tools[request.tool as keyof typeof tools];
         if (!selected) throw new TypeError("GitHub release pack tool is not reviewed");
         const model = exactRecord(request.arguments.model, ["authorizationHandle", "requestId", "semanticsDigest"], "GitHub release pack model input");
-        invocation = Object.freeze({ alias: selected.alias, authorizationHandle: String(model.authorizationHandle), requestId: String(model.requestId), semanticsDigest: String(model.semanticsDigest) });
+        invocation = Object.freeze({ alias: selected.alias, authorizationHandle: String(model.authorizationHandle), requestId: String(model.requestId), semanticsDigest: String(model.semanticsDigest), reviewedHost: request.arguments.host });
         validateInvocation(invocation);
       } catch { sink.failure(); return; }
       const controller = runnerControllers.get(runner)!;
       const execute = selected.reconcile ? controller.reconcile(invocation) : controller.execute(invocation);
       void execute.then(async result => {
         try {
+          if (result.status === "refused") { sink.success(JSON.stringify({ outcome: "refused", data: {} })); return; }
           const context = normalizeContext(await input.authorizationResolver(invocation.authorizationHandle)), plan = context.authorization.operationPlan.value;
           const events = await journal.load(invocation.requestId), mergeSha = String([...events].reverse().find(event => event.phase === "merge-verified")?.data.mergeSha ?? "");
           const number = Number([...events].reverse().find(event => event.phase === "pr-ready-confirmed")?.data.number ?? 0);
@@ -232,7 +237,10 @@ export async function createGitHubReleaseRunner(input: Readonly<{ rootDir: strin
               : { repository: plan.repository, baseSha: plan.baseCommit, headSha: plan.expectedCommitSha, mergeCommitSha: mergeSha, treeSha: plan.expectedTreeSha };
           sink.success(JSON.stringify({ outcome: result.status === "verified" ? "applied" : result.status === "pending-reconciliation" ? "uncertain" : "refused", data }));
         } catch { sink.failure(); }
-      }, () => sink.failure());
+      }, error => {
+        if (error instanceof TypeError || (error instanceof ReleaseRunFailure && error.deterministic)) sink.success(JSON.stringify({ outcome: "refused", data: {} }));
+        else sink.failure();
+      });
     },
   } });
   outcomeExecutors.set(runner, executor);
@@ -517,7 +525,7 @@ function pending(phase: string): GitHubReleaseRunResultV1 { return Object.freeze
 function failure(reason: string, reconciliationStatus: "not-applied" | "conflict" = "not-applied"): DispatchOutcome { return Object.freeze({ kind: "definitive-failure", resultDigest: authorityDigest({ reason }), reconciliationStatus, normalizedProjectionDigest: null, reason } as DispatchOutcome); }
 function sha256(bytes: Uint8Array): string { return `sha256:${createHash("sha256").update(bytes).digest("hex")}`; }
 function gitBlobSha(bytes: Uint8Array): string { return createHash("sha1").update(`blob ${bytes.byteLength}\0`).update(bytes).digest("hex"); }
-function validateInvocation(request: unknown): asserts request is GitHubReleaseInvocationV1 { const value = exactRecord(request, ["alias", "authorizationHandle", "requestId", "semanticsDigest"], "GitHub release invocation"); if (!(String(value.alias) in ALIASES) || !/^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$/.test(String(value.authorizationHandle)) || !/^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$/.test(String(value.requestId)) || !DIGEST.test(String(value.semanticsDigest))) throw new TypeError("GitHub release invocation is invalid"); }
+function validateInvocation(request: unknown): asserts request is GitHubReleaseInvocationV1 { const hasReviewedHost = !!request && typeof request === "object" && Object.hasOwn(request, "reviewedHost"), value = exactRecord(request, hasReviewedHost ? ["alias", "authorizationHandle", "requestId", "reviewedHost", "semanticsDigest"] : ["alias", "authorizationHandle", "requestId", "semanticsDigest"], "GitHub release invocation"); if (hasReviewedHost) exactRecord(value.reviewedHost, ["account", "destination", "limit"], "reviewed GitHub release host binding"); if (!(String(value.alias) in ALIASES) || !/^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$/.test(String(value.authorizationHandle)) || !/^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$/.test(String(value.requestId)) || !DIGEST.test(String(value.semanticsDigest))) throw new TypeError("GitHub release invocation is invalid"); }
 function validateRequest(request: unknown): asserts request is GitHubReleaseRunRequestV1 { const value = exactRecord(request, ["alias", "allocationId", "authorizationHandle", "requestId", "semanticsDigest"], "GitHub release request"); if (!(String(value.alias) in ALIASES) || !/^[a-z0-9][a-z0-9-]{7,127}$/.test(String(value.allocationId)) || !/^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$/.test(String(value.authorizationHandle)) || !/^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$/.test(String(value.requestId)) || !DIGEST.test(String(value.semanticsDigest))) throw new TypeError("GitHub release request is invalid"); }
 function isPlain(value: unknown): value is Record<string, unknown> { if (!value || typeof value !== "object" || isProxy(value) || Array.isArray(value) || Object.getPrototypeOf(value) !== Object.prototype || Reflect.ownKeys(value).some(key => typeof key !== "string")) return false; return Object.values(Object.getOwnPropertyDescriptors(value)).every(descriptor => "value" in descriptor && descriptor.enumerable); }
 function inertEndpointId(value: unknown): string | null { if (!isPlain(value)) return null; const descriptor = Object.getOwnPropertyDescriptor(value, "endpointId"); return descriptor && "value" in descriptor && typeof descriptor.value === "string" ? descriptor.value : null; }
@@ -530,6 +538,13 @@ function parsePullRequests(value: unknown): readonly GitHubReleasePullRequestV1[
 function assertPullRequestPlan(pr: GitHubReleasePullRequestV1, plan: VerifiedReleaseAuthorizationV1["operationPlan"]["value"], draft: boolean): void { if (pr.head !== plan.pullRequest.head || pr.base !== plan.pullRequest.base || pr.draft !== draft || pr.title !== plan.pullRequest.title || pr.body !== plan.pullRequest.body || pr.headSha !== plan.expectedCommitSha) throw new TypeError("pull request readback does not match exact authorized metadata"); }
 function parseChecks(value: unknown): readonly Readonly<{ name: string; status: string; workflowDigest: string; workflowPath: string }>[] { return Object.freeze(inertArray(value, "checks list").map(raw => { const item = exactRecord(raw, ["name", "status", "workflowDigest", "workflowPath"], "check"); if (typeof item.name !== "string" || typeof item.status !== "string" || typeof item.workflowPath !== "string" || !DIGEST.test(String(item.workflowDigest))) throw new TypeError("check readback is invalid"); return Object.freeze({ name: item.name, status: item.status, workflowDigest: String(item.workflowDigest), workflowPath: item.workflowPath }); })); }
 function assertChecks(checks: readonly Readonly<{ name: string; status: string; workflowDigest: string; workflowPath: string }>[], plan: VerifiedReleaseAuthorizationV1["operationPlan"]["value"]): void { const names = checks.map(check => check.name).sort(), ci = plan.workflowCommitments.find(workflow => workflow.path === ".github/workflows/ci.yml"); if (!ci || names.join("\0") !== [...plan.requiredChecks].sort().join("\0") || checks.some(check => check.status !== "success" || check.workflowPath !== ci.path || check.workflowDigest !== ci.digest)) throw new TypeError("required release checks are not bound to the signed CI workflow commitment"); }
+
+function assertReviewedHost(host: Readonly<{ account: string; destination: string; limit: string }>, plan: VerifiedReleaseAuthorizationV1["operationPlan"]["value"]): void {
+  const ci = plan.workflowCommitments.find(workflow => workflow.path === ".github/workflows/ci.yml");
+  if (!ci) throw new TypeError("reviewed GitHub release policy requires the signed CI workflow commitment");
+  const policyDigest = githubReviewedOutcomePolicyDigestV1({ repository: plan.repository, baseBranch: plan.destinationBranch, baseSha: plan.baseCommit, headBranch: plan.candidateBranch, headSha: plan.expectedCommitSha, candidateDigest: plan.candidateTreeDigest, workflowPath: ci.path, workflowDigest: ci.digest, requiredChecks: plan.requiredChecks, mergeMethod: "squash", postMergeTreeSha: plan.expectedTreeSha });
+  if (host.account !== plan.repository || host.destination !== plan.candidateBranch || host.limit !== policyDigest) throw new TypeError("reviewed GitHub release host binding conflicts with signed authority");
+}
 function parseMerge(value: unknown): Readonly<{ merged: boolean; sha: string }> { const item = exactRecord(value, ["merged", "sha"], "merge result"); if (typeof item.merged !== "boolean" || !GIT_SHA.test(String(item.sha))) throw new TypeError("merge result is invalid"); return Object.freeze({ merged: item.merged, sha: String(item.sha) }); }
 function parseManifest(value: unknown): Readonly<{ name: string; version: string }> { const item = exactRecord(value, ["name", "version"], "package manifest"); if (typeof item.name !== "string" || typeof item.version !== "string") throw new TypeError("package manifest is invalid"); return Object.freeze({ name: item.name, version: item.version }); }
 function parseBoolean(value: unknown, label: string): boolean { if (typeof value !== "boolean") throw new TypeError(`${label} is invalid`); return value; }

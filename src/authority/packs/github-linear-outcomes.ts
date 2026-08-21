@@ -51,13 +51,20 @@ export interface GitHubLinearOutcomePackV1 {
   readonly operations: Readonly<Record<GitHubLinearOutcomeOperationNameV1, ReviewedOutcomeOperationV1>>;
 }
 
+interface GitHubReviewedOutcomePolicyV1 {
+  readonly repository: string; readonly baseBranch: string; readonly baseSha: string; readonly headBranch: string; readonly headSha: string;
+  readonly candidateDigest: string; readonly workflowPath: string; readonly workflowDigest: string; readonly requiredChecks: readonly string[];
+  readonly mergeMethod: "squash"; readonly postMergeTreeSha: string;
+}
+
 const packAuthorities = new WeakMap<object, GitHubLinearReviewedAuthorityV1>();
 
 export function createGitHubLinearOutcomePackV1(value: GitHubLinearReviewedAuthorityV1): GitHubLinearOutcomePackV1 {
   const authority = parseAuthority(value);
   const authorityDigestValue = authorityDigest(authority);
-  const githubPolicyDigest = authorityDigest({ v: "reelier.github-reviewed-outcome-policy/v1", ...authority.github });
-  const linearPolicyDigest = authorityDigest({ v: "reelier.linear-reviewed-outcome-policy/v1", ...authority.linear });
+  const githubPolicyDigest = githubReviewedOutcomePolicyDigestV1(authority.github);
+  const { accountRef: _linearAccountRef, destinationRef: _linearDestinationRef, credentialRef: _linearCredentialRef, limitRef: _linearLimitRef, ...linearPolicy } = authority.linear;
+  const linearPolicyDigest = authorityDigest({ v: "reelier.linear-reviewed-outcome-policy/v1", ...linearPolicy });
   const githubBindings = { credentialRef: authority.github.credentialRef, accountRef: authority.github.accountRef, destinationRef: authority.github.destinationRef, limitRef: authority.github.limitRef };
   const linearBindings = { credentialRef: authority.linear.credentialRef, accountRef: authority.linear.accountRef, destinationRef: authority.linear.destinationRef, limitRef: authority.linear.limitRef };
   const operations = Object.freeze({
@@ -70,6 +77,24 @@ export function createGitHubLinearOutcomePackV1(value: GitHubLinearReviewedAutho
   const pack = Object.freeze({ v: "reelier.github-linear-outcome-pack/v1" as const, authorityDigest: authorityDigestValue, githubPolicyDigest, linearPolicyDigest, operations });
   packAuthorities.set(pack, authority);
   return pack;
+}
+
+/** @internal Shared by the reviewed pack and its branded GitHub host adapter. */
+export function githubReviewedOutcomePolicyDigestV1(value: GitHubReviewedOutcomePolicyV1): string {
+  return authorityDigest({
+    v: "reelier.github-reviewed-outcome-policy/v1",
+    repository: value.repository,
+    baseBranch: value.baseBranch,
+    baseSha: value.baseSha,
+    headBranch: value.headBranch,
+    headSha: value.headSha,
+    candidateDigest: value.candidateDigest,
+    workflowPath: value.workflowPath,
+    workflowDigest: value.workflowDigest,
+    requiredChecks: value.requiredChecks,
+    mergeMethod: value.mergeMethod,
+    postMergeTreeSha: value.postMergeTreeSha,
+  });
 }
 
 export function orderedGitHubLinearOperationsV1(pack: GitHubLinearOutcomePackV1, mode: GitHubLinearOutcomeModeV1): readonly ReviewedOutcomeOperationV1[] {
