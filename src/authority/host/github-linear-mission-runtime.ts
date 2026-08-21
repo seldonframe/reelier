@@ -78,6 +78,7 @@ export async function createGitHubLinearMissionRuntimeV1(input: GenuineGitHubLin
       const requestedOperations = aliases.map(alias => operations.get(alias)!);
       await kernel.claimMission({ v: "reelier.mission-claim/v1", missionId: plan.missionId, mandateDigest: authorityDigest(profileState.scope), promptDigest: authorityDigest({ requestId, source: "prompt-redacted" }), contractDigests: requestedOperations.map(operation => authorityDigest(operation.contract)), claimedAt: new Date(raw.now()).toISOString() });
       const effectRequests: any[] = [];
+      let outcome: Awaited<ReturnType<typeof kernel.execute>> | undefined;
       for (let index = 0; index < aliases.length; index += 1) {
         const alias = aliases[index]!, operation = requestedOperations[index]!;
         let stored: StoredJoin | undefined = plan.joins.find(item => item.alias === alias), gateAuthority: AcceptedGateReservationAuthorityV1 | undefined;
@@ -101,8 +102,18 @@ export async function createGitHubLinearMissionRuntimeV1(input: GenuineGitHubLin
         const governedAuthority = createGovernedOutcomeKernelAuthorityV1({ join: { ...stored.join, reservation } as never, ...(gateAuthority ? { gateAuthority } : {}), publication: components.publication, publicationQuery: governedDurableDispatchPublicationQueryV1(reservation) });
         const verifier = compiled.get(alias)?.verifier ?? createTrustedObservationVerifier({ contractDigest: authorityDigest(operation.contract), verify: observation => observation.authoritative && observation.verdict === "matched" && observation.projectionDigest !== null && observation.semanticIdentity === operation.contract.semanticIdentity });
         effectRequests.push({ contract: operation.contract, verifier, governedAuthority });
+        const groupBoundary = mode === "linear-only" ? index === aliases.length - 1 : index === 2 || index === aliases.length - 1;
+        if (groupBoundary) {
+          outcome = await kernel.execute({ missionId: plan.missionId, effects: effectRequests });
+          effectRequests.length = 0;
+          if (outcome.effects.at(-1)?.status !== "verified") {
+            const next = Object.freeze({ ...plan, lifecycleState: "pending" });
+            await appendPlan(raw.journal, key, next);
+            return pendingIngress(requestId);
+          }
+        }
       }
-      const outcome = await kernel.execute({ missionId: plan.missionId, effects: effectRequests });
+      if (!outcome) throw new TypeError("genuine governed mission has no composed effects");
       const reconciled = outcome.status === "verified", next = Object.freeze({ ...plan, lifecycleState: reconciled ? "reconciled" : "pending", ...(reconciled && outcome.receiptRefs.length ? { receiptRef: outcome.receiptRefs.at(-1) } : {}) });
       await appendPlan(raw.journal, key, next);
       return reconciled ? { requestId, verdict: "accepted" as const, reasonCode: "reconciled", lifecycleState: "reconciled", receiptRef: next.receiptRef } : pendingIngress(requestId);

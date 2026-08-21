@@ -83,11 +83,10 @@ export async function resolveGovernedCoordinatorPublicationV1(publication: Dispa
     const rawHead = await publication.loadDurableHead(input.query, "terminal");
     if (!rawHead) return null;
     const head = picked(rawHead, ["v", "identity", "receiptRef", "evidenceDigest", "reservationReceiptRef", "priorReceiptRef", "phase", "terminalKind"], "durable publication head");
-    if (head.v !== "reelier.durable-dispatch-publication-head/v1" || authorityDigest(durableIdentity(head.identity)) !== authorityDigest(identity) || head.receiptRef !== outcome.receiptRef || head.evidenceDigest !== outcome.evidenceDigest || head.reservationReceiptRef !== outcome.priorReceiptDigest || head.priorReceiptRef !== outcome.priorReceiptDigest) return null;
+    if (head.v !== "reelier.durable-dispatch-publication-head/v1" || authorityDigest(durableIdentity(head.identity)) !== authorityDigest(identity) || head.receiptRef !== outcome.receiptRef || head.evidenceDigest !== outcome.evidenceDigest || typeof head.reservationReceiptRef !== "string" || !SHA.test(head.reservationReceiptRef) || head.priorReceiptRef !== outcome.priorReceiptDigest) return null;
     const reconciled = input.outcome.reconciliationStatus !== undefined && input.outcome.reconciliationStatus !== "not-attempted";
-    const expectedPhase = reconciled ? "reconcile" : input.outcome.kind === "ambiguous" ? "ambiguous" : "dispatch";
-    const expectedTerminal = reconciled ? "reconciled" : input.outcome.kind;
-    if (head.phase !== expectedPhase || head.terminalKind !== expectedTerminal) return null;
+    const exactTerminal = head.phase === "reconcile" ? head.terminalKind === "reconciled" : head.phase === "dispatch" ? head.terminalKind === input.outcome.kind : !reconciled && head.phase === "ambiguous" && head.terminalKind === "ambiguous";
+    if (!exactTerminal || reconciled && head.phase !== "dispatch" && head.phase !== "reconcile") return null;
     return outcome.receiptRef as string;
   } catch { return null; }
 }

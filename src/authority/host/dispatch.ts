@@ -235,6 +235,13 @@ export function createDispatchCoordinator(ledger: AuthorityLedger, adapter: Disp
         let outcome: DispatchOutcome;
         try { certified?.onPhase?.("authority-send-boundary"); outcome = parseDispatchOutcomeV1(await measureLatency(certified?.latencyRecorder, "authority-send-boundary", () => consumePreparedDispatch(prepared, lease))); certified?.onPhase?.("send"); }
         catch { outcome = { kind: "ambiguous", resultDigest: authorityDigest({ v: "reelier.dispatch-result/v1", reservationId, status: "ambiguous" }) }; }
+        if (adapter.reconcile && outcome.kind !== "ambiguous") {
+          try {
+            outcome = parseDispatchOutcomeV1(await adapter.reconcile(state, outcome));
+          } catch {
+            outcome = Object.freeze({ ...outcome, kind: "ambiguous", reconciliationStatus: "unavailable" as const, normalizedProjectionDigest: null });
+          }
+        }
         const current = await ledger.getReservation(reservationId);
         if (current?.state === "reserved") {
           const marked = await ledger.transition(reservationId, "reserved", { to: "dispatched" });

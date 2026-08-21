@@ -63,6 +63,11 @@ test("only the exact terminal coordinator publication head resolves as verified"
   const head = { v: "reelier.durable-dispatch-publication-head/v1" as const, identity, receiptRef: outcome.receiptRef, evidenceDigest: outcome.evidenceDigest, reservationReceiptRef: outcome.priorReceiptDigest, priorReceiptRef: outcome.priorReceiptDigest, phase: "dispatch" as const, terminalKind: "acknowledged" as const };
   const publication = { async publish() { throw new Error("not used"); }, async publishReservation() { throw new Error("not used"); }, async loadDurableHead(_query: unknown, expect?: string) { assert.equal(expect, "terminal"); return head; } };
   assert.equal(await resolveGovernedCoordinatorPublicationV1(publication, { query, outcome }), outcome.receiptRef);
+  const preparedMatched = { ...outcome, reconciliationStatus: "matched" as const, normalizedProjectionDigest: sha("c") };
+  assert.equal(await resolveGovernedCoordinatorPublicationV1(publication, { query, outcome: preparedMatched }), outcome.receiptRef, "prepared exact readback remains bound to its dispatch head");
+  const recovered = { ...preparedMatched, receiptRef: sha("b"), evidenceDigest: sha("c"), priorReceiptDigest: sha("d") };
+  const recoveredHead = { ...head, receiptRef: recovered.receiptRef, evidenceDigest: recovered.evidenceDigest, priorReceiptRef: recovered.priorReceiptDigest, phase: "reconcile" as const, terminalKind: "reconciled" as const };
+  assert.equal(await resolveGovernedCoordinatorPublicationV1({ ...publication, async loadDurableHead() { return recoveredHead; } }, { query, outcome: recovered }), recovered.receiptRef, "ambiguous recovery binds the reconcile head and its exact prior");
 
   for (const replacement of [null, { ...head, receiptRef: sha("b") }, { ...head, evidenceDigest: sha("b") }, { ...head, priorReceiptRef: sha("b") }, { ...head, identity: { ...identity, effectDigest: sha("b") } }, { ...head, phase: "reservation", terminalKind: null, priorReceiptRef: null }]) {
     const candidate = { ...publication, async loadDurableHead() { return replacement as never; } };

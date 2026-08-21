@@ -315,6 +315,7 @@ test("prepared dispatch carries the exact one-call coordinator capability throug
     async recover() { return { ok: true, reservations: [persisted], highWaterMark: null, topology: { directorySync: "verified" } }; },
   } as any;
   let delegate: object | undefined;
+  let reconciles = 0;
   const projection = { v: "reelier.prepared-effect-projection/v1" as const, transport: "fixed-cli", operationDigest: sha("6"), requestDigest: sha("7") };
   const materializedRequestDigest = preparedDispatchProjectionDigest(projection);
   const restore = __testSetSourceAuthorityCellHostPlatform("linux");
@@ -328,11 +329,14 @@ test("prepared dispatch carries the exact one-call coordinator capability throug
       } });
     },
     async dispatch() { throw new Error("non-prepared path must not run"); },
+    async reconcile() { reconciles += 1; return { kind: "acknowledged", resultDigest: sha("9"), reconciliationStatus: "matched", normalizedProjectionDigest: sha("a") }; },
   });
   restore();
   const state = { reservation: persisted, effect: {}, effectCanonicalBase64: "e30=", effectDigest: expected.effectDigest };
   const outcome = await coordinator.dispatch(createSourceReservedDispatchHandle(state));
   assert.equal(outcome.kind, "acknowledged");
+  assert.equal(outcome.reconciliationStatus, "matched");
+  assert.equal(reconciles, 1, "prepared acknowledged writes receive the same authoritative readback as legacy dispatch");
   assert.equal(consumeCoordinatorDispatchCallDelegateV1(delegate!, expected), false, "the prepared call cannot survive finally");
 });
 
