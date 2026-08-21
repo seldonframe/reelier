@@ -29,6 +29,7 @@ export const CALENDAR_LIKE_BINDING: HttpEffectTransportBindingV1 = Object.freeze
   requestSchemaDigest: sha("3"),
   responseProjection: Object.freeze(["/eventId", "/state"]),
   readback: Object.freeze({
+    operation: "event.get",
     method: "GET",
     pathTemplate: "/calendars/{host.destination}/events/{model.eventId}",
     requestSchemaDigest: sha("4"),
@@ -44,7 +45,7 @@ export const SLIDES_LIKE_BINDING: CliEffectTransportBindingV1 = Object.freeze({
   credentialEnv: "SLIDES_TOKEN",
   envNames: Object.freeze(["SLIDES_TOKEN"]),
   responseProjection: Object.freeze(["/deckId", "/revision"]),
-  readbackArgvTemplates: Object.freeze(["show", "--deck", "{host.destination}"]),
+  readback: Object.freeze({ operation: "deck.show", argvTemplates: Object.freeze(["show", "--deck", "{host.destination}"]) }),
 });
 
 function contract(input: Readonly<{
