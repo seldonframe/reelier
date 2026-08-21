@@ -32,7 +32,7 @@ function reservation(id: string, state = "reserved", effectDigest = digestToolEf
   return { reservationId: id, state, intent: { effectDigest, effectCanonicalBase64: "e30=" } } as any;
 }
 
-function durableFixture(): OutcomeKernelStorage & { effects: Map<string, StoredEffectLifecycleV1>; loseHead: boolean; atomicCalls: number; durableCreates: number; published: Map<string, readonly string[]>; dropReceipt(receiptId: string): void; compareAndPublishReceipt(receipt: GovernedReceiptV1, receiptDigest: string): Promise<any> } {
+function durableFixture(): OutcomeKernelStorage & { effects: Map<string, StoredEffectLifecycleV1>; loseHead: boolean; atomicCalls: number; durableCreates: number; published: Map<string, readonly string[]>; dropReceipt(receiptId: string): void; seedReceiptClaim(receiptId: string, receiptDigest: string, receiptRef: string): void; compareAndPublishReceipt(receipt: GovernedReceiptV1, receiptDigest: string): Promise<any> } {
   const missions = new Map<string, { digest: string; claim: MissionClaimV1 }>();
   const effects = new Map<string, StoredEffectLifecycleV1>();
   const receipts = new Map<string, string>();
@@ -40,6 +40,7 @@ function durableFixture(): OutcomeKernelStorage & { effects: Map<string, StoredE
   return {
     durable: true, effects, loseHead: false, atomicCalls: 0, durableCreates: 0, published: new Map(),
     dropReceipt(receiptId) { receipts.delete(receiptId); },
+    seedReceiptClaim(receiptId, receiptDigest, receiptRef) { receiptClaims.set(receiptId, { digest: receiptDigest, ref: receiptRef }); },
     async claimMission(claim, digest) {
       const prior = missions.get(claim.missionId);
       if (!prior) { missions.set(claim.missionId, { claim, digest }); return { status: "claimed" as const, claim }; }
@@ -350,9 +351,22 @@ test("an atomic receipt identity conflict refuses without provider resend", asyn
   const kernel = createOutcomeKernel({ storage: store, coordinator: coordinator(states, counters), ledger: { getReservation: async () => states.get("r1") } as any, now: () => 2_000, authorization: async () => "active" });
   await kernel.claimMission(mission());
   const first = await kernel.execute({ missionId: "mission_1", effects: [{ contract: reviewed, handle: handle("r1"), verifier: verifierFor(reviewed) }] });
-  store.dropReceipt([...store.published.keys()][0]!);
-  store.compareAndPublishReceipt = async () => ({ status: "conflict" as const });
+  const receiptId = [...store.published.keys()][0]!;
+  store.dropReceipt(receiptId);
+  store.seedReceiptClaim(receiptId, sha("e"), sha("8"));
   await assert.rejects(() => kernel.execute({ missionId: "mission_1", effects: [{ contract: reviewed, reservationId: "r1", verifier: verifierFor(reviewed) }] }), /receipt.*conflict|conflict.*receipt/i);
   assert.equal(first.effects[0]!.status, "verified");
+  assert.equal(counters.send, 1);
+});
+
+test("an atomic publication ref that disagrees with the durable head refuses as integrity drift", async () => {
+  const reviewed = contract("identity_1"), digest = digestToolEffectContractV1(reviewed), store = durableFixture(), states = new Map([["r1", reservation("r1", "reserved", digest)]]), counters = { send: 0, readback: 0 };
+  const kernel = createOutcomeKernel({ storage: store, coordinator: coordinator(states, counters), ledger: { getReservation: async () => states.get("r1") } as any, now: () => 2_000, authorization: async () => "active" });
+  await kernel.claimMission(mission());
+  await kernel.execute({ missionId: "mission_1", effects: [{ contract: reviewed, handle: handle("r1"), verifier: verifierFor(reviewed) }] });
+  const receiptId = [...store.published.keys()][0]!, originalLoad = store.loadReceipt.bind(store); let reads = 0;
+  store.loadReceipt = async id => ++reads === 1 ? null : originalLoad(id);
+  store.compareAndPublishReceipt = async (receipt, receiptDigest) => { assert.equal(receipt.receiptId, receiptId); return { status: "exact-existing" as const, receiptDigest, receiptRef: sha("8") }; };
+  await assert.rejects(() => kernel.execute({ missionId: "mission_1", effects: [{ contract: reviewed, reservationId: "r1", verifier: verifierFor(reviewed) }] }), /receipt|head|ref|integrity|mismatch/i);
   assert.equal(counters.send, 1);
 });
