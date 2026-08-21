@@ -95,9 +95,11 @@ Replace raw executable port objects with an opaque host-minted trusted executor 
 - Modify `src/authority/host/github-release-runner.ts` only to adapt existing exact-SHA operations to the generic pack port.
 - Create `src/authority/host/linear-outcome-runner.ts` as a trusted callback executor over a host provider port; it owns no journal, retry state, credentials, or SDK.
 - Modify `src/authority/host/outcome-kernel.ts` only to add a generic host-minted predecessor-policy capability that requires an exact earlier verified Outcome and durable receipt head before successor dispatch.
+- Modify `src/authority/host/effect-transports.ts` only to pass a compiler-owned frozen authority envelope (`contractDigest`, `bindingDigest`, `reservationId`) to trusted executors; model input and host resolver values cannot substitute for it.
 - Create `test/authority/github-linear-outcomes.test.ts`.
 - Modify `test/authority/github-release-runner.test.ts`.
 - Modify `test/authority/outcome-kernel.test.ts` for direct fail-closed and restart predecessor proofs.
+- Modify `test/authority/effect-transports.test.ts` for compiler-owned authority-envelope binding and substitution refusal.
 - Modify `test/authority/package.test.ts` if public pack exports change.
 - Create `.superpowers/sdd/2026-08-20-universal-governed-outcomes-oss/task-4-report.md`.
 
