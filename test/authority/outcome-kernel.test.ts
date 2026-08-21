@@ -496,10 +496,12 @@ test("only the kernel transiently arms exact successor dispatch after durable pr
     ["armed-status", reservation("armed-status", "reserved", successorDigest)],
   ]), counters = { send: 0, readback: 0 };
   const base = coordinator(states, counters);
+  let dispatches = 0;
   const guarded = Object.freeze({
     ...base,
     async dispatch(handleValue: any) {
-      if (!consumeTrustedOutcomePredecessorAuthorizationV1(policy, authority)) throw new Error("successor executor is unarmed");
+      dispatches += 1;
+      if (dispatches === 2 && !consumeTrustedOutcomePredecessorAuthorizationV1(policy, authority)) throw new Error("successor executor is unarmed");
       return base.dispatch(handleValue);
     },
   });

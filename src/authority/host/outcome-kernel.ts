@@ -28,7 +28,8 @@ import type { DispatchCoordinator, DispatchOutcome, DispatchReservationProjectio
 import { constructGovernedReceiptV1 } from "./receipt-authority.js";
 
 const trustedVerifierStates = new WeakMap<object, Readonly<{ contractDigest: string; verify: (observation: ObservationV1) => boolean }>>();
-const trustedPredecessorPolicyStates = new WeakMap<object, Readonly<{ predecessorContractDigest: string; successorContractDigest: string }>>();
+interface TrustedPredecessorPolicyStateV1 { readonly predecessorContractDigest: string; readonly successorContractDigest: string; readonly armed: Set<string> }
+const trustedPredecessorPolicyStates = new WeakMap<object, TrustedPredecessorPolicyStateV1>();
 declare const trustedVerifierBrand: unique symbol;
 export type TrustedObservationVerifierV1 = Readonly<{ readonly [trustedVerifierBrand]: true }>;
 declare const trustedPredecessorPolicyBrand: unique symbol;
@@ -44,11 +45,25 @@ export function createTrustedObservationVerifier(input: Readonly<{ contractDiges
 
 /** Host-minted policy. Caller DTOs cannot manufacture or inspect the predecessor binding. */
 export function createTrustedOutcomePredecessorPolicyV1(input: Readonly<{ predecessorContractDigest: string; successorContractDigest: string }>): TrustedOutcomePredecessorPolicyV1 {
-  const parsed = dataRecord(input, ["predecessorContractDigest", "successorContractDigest"], [], "trusted Outcome predecessor policy");
+  const parsed = closedPolicyRecord(input);
   if (typeof parsed.predecessorContractDigest !== "string" || !SHA.test(parsed.predecessorContractDigest) || typeof parsed.successorContractDigest !== "string" || !SHA.test(parsed.successorContractDigest) || parsed.predecessorContractDigest === parsed.successorContractDigest) throw new TypeError("trusted Outcome predecessor policy is invalid");
   const capability = Object.freeze(Object.create(null)) as TrustedOutcomePredecessorPolicyV1;
-  trustedPredecessorPolicyStates.set(capability as object, Object.freeze({ predecessorContractDigest: parsed.predecessorContractDigest, successorContractDigest: parsed.successorContractDigest }));
+  trustedPredecessorPolicyStates.set(capability as object, { predecessorContractDigest: parsed.predecessorContractDigest, successorContractDigest: parsed.successorContractDigest, armed: new Set() });
   return capability;
+}
+
+/** Host-executor check for the kernel's exact, one-dispatch transient authorization. */
+export function consumeTrustedOutcomePredecessorAuthorizationV1(policy: TrustedOutcomePredecessorPolicyV1, input: Readonly<{ reservationId: string; successorContractDigest: string }>): boolean {
+  const state = policy && typeof policy === "object" ? trustedPredecessorPolicyStates.get(policy as object) : undefined;
+  if (!state) return false;
+  let parsed: Record<string, unknown>;
+  try { parsed = strictDataRecord(input, ["reservationId", "successorContractDigest"], "predecessor dispatch authorization"); }
+  catch { return false; }
+  if (typeof parsed.reservationId !== "string" || parsed.reservationId.length === 0 || parsed.successorContractDigest !== state.successorContractDigest) return false;
+  const key = predecessorArmKey(parsed.reservationId, state.successorContractDigest);
+  if (!state.armed.has(key)) return false;
+  state.armed.delete(key);
+  return true;
 }
 
 export interface StoredEffectLifecycleV1 {
@@ -175,7 +190,7 @@ export function createOutcomeKernel(options: OutcomeKernelOptions): OutcomeKerne
           } else {
           const authorization = await options.authorization(Object.freeze({ mission: parsedMission, contract, reservation: described }));
           if (authorization !== "active") throw new Error(`effect authority is ${authorization}`);
-          dispatchOutcome = parseDispatchOutcome(await options.coordinator.dispatch(requested.handle));
+          dispatchOutcome = parseDispatchOutcome(await dispatchWithPredecessorArm(predecessorPolicy, current.reservationId, contractDigest, () => options.coordinator.dispatch(requested.handle!)));
           boundary("provider-response");
           }
         } else if (state === "ambiguous") {
@@ -208,6 +223,38 @@ export function createOutcomeKernel(options: OutcomeKernelOptions): OutcomeKerne
       return Object.freeze({ v: "reelier.mission-outcome/v1", missionId: parsedMission.missionId, effects: Object.freeze(effects), status, receiptsDurable: receiptsDurable && receiptRefs.length === effects.length, receiptRefs: Object.freeze(receiptRefs) });
     },
   });
+}
+
+async function dispatchWithPredecessorArm(policy: TrustedPredecessorPolicyStateV1 | undefined, reservationId: string, contractDigest: string, dispatch: () => Promise<DispatchOutcome>): Promise<DispatchOutcome> {
+  if (!policy || policy.successorContractDigest !== contractDigest) return dispatch();
+  const key = predecessorArmKey(reservationId, contractDigest);
+  if (policy.armed.has(key)) throw new Error("successor predecessor authorization is already active");
+  policy.armed.add(key);
+  try { return await dispatch(); }
+  finally { policy.armed.delete(key); }
+}
+
+function predecessorArmKey(reservationId: string, successorContractDigest: string): string {
+  return authorityDigest({ v: "reelier.predecessor-dispatch-arm/v1", reservationId, successorContractDigest });
+}
+
+function closedPolicyRecord(value: unknown): Record<string, string> {
+  return strictDataRecord(value, ["predecessorContractDigest", "successorContractDigest"], "trusted Outcome predecessor policy") as Record<string, string>;
+}
+
+function strictDataRecord(value: unknown, keys: readonly string[], label: string): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value) || isProxy(value)) throw new TypeError(`${label} must be an inert data record`);
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) throw new TypeError(`${label} has an unsupported prototype`);
+  const ownKeys = Reflect.ownKeys(value);
+  if (ownKeys.length !== keys.length || ownKeys.some(key => typeof key !== "string" || !keys.includes(key))) throw new TypeError(`${label} is not closed`);
+  const result: Record<string, unknown> = Object.create(null);
+  for (const key of keys) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (!descriptor?.enumerable || !Object.hasOwn(descriptor, "value")) throw new TypeError(`${label} requires enumerable data properties`);
+    result[key] = descriptor.value;
+  }
+  return result;
 }
 
 async function requireVerifiedPredecessor(storage: OutcomeKernelStorage, mission: MissionClaimV1, missionDigest: string, priorEffects: readonly GovernedOutcomeV1[], predecessorContractDigest: string): Promise<void> {
