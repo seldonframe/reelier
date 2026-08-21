@@ -208,8 +208,10 @@ export function createOutcomeKernel(options: OutcomeKernelOptions): OutcomeKerne
             current = parseLedgerProjection(await options.ledger.getReservation(current.reservationId));
             if (!current || current.state === "reserved") throw new Error("reserved restart recovery did not close the undispatched effect");
           } else {
-          const authorization = await options.authorization(Object.freeze({ mission: parsedMission, contract, reservation: described }));
-          if (authorization !== "active") throw new Error(`effect authority is ${authorization}`);
+          if (!governed) {
+            const authorization = await options.authorization(Object.freeze({ mission: parsedMission, contract, reservation: described }));
+            if (authorization !== "active") throw new Error(`effect authority is ${authorization}`);
+          }
           const dispatchHandle = governed ? await takeGovernedOutcomeKernelHandleV1(requested.governedAuthority!) : requested.handle!;
           dispatchOutcome = parseDispatchOutcome(await dispatchWithPredecessorArm(predecessorPolicy, current.reservationId, contractDigest, () => options.coordinator.dispatch(dispatchHandle)));
           boundary("provider-response");

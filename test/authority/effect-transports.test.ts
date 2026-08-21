@@ -15,7 +15,8 @@ import { consumeCoordinatorDispatchCallDelegateV1, createDispatchCoordinator, ty
 import { createOutcomeKernel, type OutcomeKernelStorage, type StoredEffectLifecycleV1 } from "../../src/authority/host/outcome-kernel.js";
 import { __testSetAuthorityCellHostPlatform } from "../../src/authority/host/platform.js";
 import { digestGovernedOutcomeV1, digestMissionClaimV1, digestToolEffectContractV1, type GovernedReceiptV1, type MissionClaimV1, type ToolEffectContractV1 } from "../../src/authority/tool-effect-contract.js";
-import { authorityDigest } from "../../src/authority/wire.js";
+import { authorityCanonicalBytes, authorityDigest } from "../../src/authority/wire.js";
+import { createDispatchCommitLease, preparedDispatchProjectionDigest } from "../../src/authority/host/prepared-dispatch.js";
 import { CALENDAR_LIKE_BINDING, CALENDAR_LIKE_CONTRACT, SLACK_LIKE_BINDING, SLACK_LIKE_CONTRACT, SLIDES_LIKE_BINDING, SLIDES_LIKE_CONTRACT } from "./fixtures/tool-effect-contracts.js";
 
 const sha = (digit: string): string => `sha256:${digit.repeat(64)}`;
@@ -154,6 +155,35 @@ test("a refused coordinator delegate bind stops before host resolution and provi
   } finally {
     restorePlatform();
   }
+});
+
+test("governed transport binds the original Path-C coordinator call before prepared host resolution", async () => {
+  const restorePlatform = __testSetAuthorityCellHostPlatform("linux");
+  const pathEffect = { path: "joined" }, pathEffectDigest = authorityDigest(pathEffect);
+  let hostResolutions = 0, providerCalls = 0, consumed = false;
+  const compiled = compileEffectTransportV1({
+    contract: SLACK_LIKE_CONTRACT, binding: SLACK_LIKE_BINDING, modelInput: { channel: "general", text: "hello" }, resolveHostBindings: async () => { hostResolutions++; return host; },
+    ports: { mcp: { inspectSchemas: slackSchemas, call: (request, sink) => { providerCalls++; consumed = consumeCoordinatorDispatchCallDelegateV1(request.authority, { reservationId: "governed-reservation", effectDigest: pathEffectDigest }); succeed(sink, "ok", { messageId: "m-governed" }); } } },
+  });
+  const requestDigest = authorityDigest({ v: "reelier.governed-effect-transport-request/v1", contractDigest: digestToolEffectContractV1(SLACK_LIKE_CONTRACT), bindingDigest: digestEffectTransportBindingV1(SLACK_LIKE_BINDING), model: { channel: "general", text: "hello" }, account: host.account, destination: host.destination, limit: host.limit });
+  const projection = { v: "reelier.prepared-effect-projection/v1" as const, transport: "mcp", operationDigest: digestEffectTransportBindingV1(SLACK_LIKE_BINDING), requestDigest };
+  const expectedMaterializedRequestDigest = preparedDispatchProjectionDigest(projection);
+  let reservation: any = { reservationId: "governed-reservation", state: "reserved", intent: { tenant: "tenant", requestDigest: sha("1"), capabilityDigest: sha("2"), effectDigest: pathEffectDigest, effectCanonicalBase64: authorityCanonicalBytes(pathEffect).toString("base64"), executionContext: { allocationId: "allocation-1" }, routeAuthority: { v: "reelier.route-authority-snapshot/v1", connectorRegistrationDigest: sha("3"), operatorConfigurationDigest: sha("4"), routeDigest: sha("5"), providerId: "provider", connectorId: "connector", accountId: "account", providerAccountIdentity: "identity", endpointId: "endpoint", credentialSlotId: "slot", slotInstanceId: "instance", slotVersion: "version", authenticatedProviderIdentityDigest: sha("6"), sourceReadRouteDigest: sha("7"), projectionSchemaDigest: sha("8"), expectedMaterializedRequestDigest, authorityGeneration: "generation-1", authorityExpiresAt: "2099-01-01T00:00:00.000Z" } }, limitAssignments: [], sequence: 0, updatedAt: "2026-08-21T00:00:00.000Z" };
+  const state: any = { reservation, effect: pathEffect, effectDigest: pathEffectDigest, effectCanonicalBase64: authorityCanonicalBytes(pathEffect).toString("base64") };
+  const ledger: any = {
+    async getReservation() { return reservation; },
+    async commitPreparedDispatch(input: any) {
+      reservation = { ...reservation, state: "dispatched", sendStarted: true, sequence: reservation.sequence + 1 };
+      return createDispatchCommitLease({ reservationId: input.reservationId, allocationId: input.allocationId, preparedDigest: input.preparedDescription.materializedRequestDigest, authorityGeneration: input.expectedAuthorityGeneration, authorityExpiresAt: input.preparedDescription.authorityExpiresAt, absoluteDeadlineMs: input.absoluteDeadlineMs, commitGeneration: "commit-1" });
+    },
+    async transition(_id: string, expected: string, event: any) { if (reservation.state !== expected) return { ok: false, reason: "state-conflict" }; reservation = { ...reservation, ...event, state: event.to, sequence: reservation.sequence + 1 }; return { ok: true, status: "transitioned", reservation }; },
+    async recover() { return { ok: true, reservations: [reservation], highWaterMark: null, topology: { directorySync: "verified" } }; },
+  };
+  try {
+    const coordinator = createDispatchCoordinator(ledger, { async dispatch(current) { return { kind: "definitive-failure", resultDigest: current.effectDigest }; }, async prepare(current, call) { return compiled.prepareGoverned(current, call!); } });
+    const outcome = await coordinator.dispatch(createReservedDispatchHandle(state));
+    assert.deepEqual({ kind: outcome.kind, hostResolutions, providerCalls, consumed }, { kind: "acknowledged", hostResolutions: 1, providerCalls: 1, consumed: true });
+  } finally { restorePlatform(); }
 });
 
 test("trusted executor minting rejects functions, accessors, and proxies without executing traps", () => {
