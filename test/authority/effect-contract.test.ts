@@ -37,6 +37,13 @@ test("readback projections use closed JSON pointer paths rather than identifier 
   assert.throws(() => parseToolEffectContractV1({ ...contract, readback: { operation: "events.get", projection: ["/body/~2"] } }));
 });
 
+test("effect contract rejects nested accessors without invoking them", () => {
+  let reads = 0;
+  const hostile = { ...contract, model: { get fields() { reads++; return ["summary"]; }, maxBytes: 1024 } };
+  assert.throws(() => parseToolEffectContractV1(hostile));
+  assert.equal(reads, 0);
+});
+
 test("governed outcome transition refuses unverifiable chronology and verified masquerades", () => {
   const outcome = {
     v: "reelier.governed-outcome/v1", outcomeId: "outcome_1", contractDigest: digestToolEffectContractV1(contract), semanticIdentity: contract.semanticIdentity,
