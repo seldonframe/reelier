@@ -54,10 +54,11 @@ export function compileEffectTransportV1(input: Readonly<{ contract: ToolEffectC
   validateTemplateValues(binding, model);
   const effect = deepFreeze({ v: "reelier.compiled-effect-input/v1" as const, contractDigest, bindingDigest, model });
   const evidence = deepFreeze({ v: "reelier.effect-transport-evidence/v1" as const, contractDigest, bindingDigest, model });
-  const matchedProjectionDigest = contract.readback === null ? null : authorityDigest({
+  const matchedProjectionDigest = (reservationId: string): string | null => contract.readback === null ? null : authorityDigest({
     v: "reelier.effect-authoritative-match/v1",
     contractDigest,
     bindingDigest,
+    reservationId,
     semanticIdentity: contract.semanticIdentity,
     modelDigest: authorityDigest(model),
     readbackOperation: contract.readback.operation,
@@ -80,7 +81,7 @@ export function compileEffectTransportV1(input: Readonly<{ contract: ToolEffectC
       if (category === "success") {
         const projection = projectResponse(response.data, contract.readback.projection);
         if (projection === null) return unavailableOutcome(bindingDigest, prior);
-        const normalizedProjectionDigest = matchedProjectionDigest!;
+        const normalizedProjectionDigest = matchedProjectionDigest(state.reservation.reservationId)!;
         return Object.freeze({ kind: "acknowledged", resultDigest: responseDigest(bindingDigest, response), reconciliationStatus: "matched", normalizedProjectionDigest });
       }
       if (category === "conflict" || category === "definitive-failure") {
@@ -91,7 +92,7 @@ export function compileEffectTransportV1(input: Readonly<{ contract: ToolEffectC
       return unavailableOutcome(bindingDigest, prior);
     },
   });
-  const verifier = createTrustedObservationVerifier({ contractDigest, verify: observation => matchedProjectionDigest !== null && observation.projectionDigest === matchedProjectionDigest });
+  const verifier = createTrustedObservationVerifier({ contractDigest, verify: observation => { const expected = matchedProjectionDigest(observation.reservationId); return expected !== null && observation.projectionDigest === expected; } });
   return Object.freeze({ effect, evidence, adapter, verifier });
 }
 

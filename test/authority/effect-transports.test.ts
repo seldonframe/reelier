@@ -62,6 +62,7 @@ test("reviewed HTTP compilation binds method, origin, path, schemas, and respons
     v: "reelier.effect-authoritative-match/v1",
     contractDigest: digestToolEffectContractV1(CALENDAR_LIKE_CONTRACT),
     bindingDigest: digestEffectTransportBindingV1(CALENDAR_LIKE_BINDING),
+    reservationId: "reservation-1",
     semanticIdentity: CALENDAR_LIKE_CONTRACT.semanticIdentity,
     modelDigest: authorityDigest({ eventId: "event-9", title: "Review" }),
     readbackOperation: CALENDAR_LIKE_CONTRACT.readback!.operation,
