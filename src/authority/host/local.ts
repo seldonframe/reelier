@@ -168,9 +168,18 @@ async function createLocalAuthorityRuntimeCore(config:AuthorityHostConfig,option
   const packs = createStaticPackRegistry(firstPartyPacks.map(pack => pack.definition));
   const sources = createFirstPartySourceRegistry(config.tenant);
   const snapshots = new Map(deployment?.states.map(state => [state.definitionAlias, state]) ?? []);
+  const deploymentJobCardDigest = deployment?.jobCard ? signedJobCardDigest(deployment.jobCard) : null;
   const connectorRegistry = deployment?.connectorRegistry ?? createConnectorRegistry([]);
   const state = createAuthorityStatePort({
-    async loadCompleteContractSet(tenant, definitionAlias) { const snapshot = snapshots.get(definitionAlias); return { ok: true as const, snapshot: snapshot && snapshot.tenant === tenant ? snapshot : { tenant, definitionAlias, stateVersion: 1, candidates: [] }, backendToken: Object.freeze({}) }; },
+    async loadCompleteContractSet(tenant, definitionAlias) {
+      let snapshot = snapshots.get(definitionAlias);
+      if (deployment && config.deploymentPath) {
+        const current = await loadAuthorityDeployment(config.deploymentPath, { jobCardTrustPin });
+        if (current.tenant !== deployment.tenant || !current.jobCard || signedJobCardDigest(current.jobCard) !== deploymentJobCardDigest) throw new TypeError("current authority deployment identity changed");
+        snapshot = current.states.find(item => item.definitionAlias === definitionAlias);
+      }
+      return { ok: true as const, snapshot: snapshot && snapshot.tenant === tenant ? snapshot : { tenant, definitionAlias, stateVersion: 1, candidates: [] }, backendToken: Object.freeze({}) };
+    },
     async advanceVersion(backendToken) { void backendToken; return { ok: true as const, backendObservedToken: Object.freeze({}) }; },
     async withCurrent(_token, callback) { return { ok: true as const, value: await callback() }; },
     async executeSourceReads(plans) {
