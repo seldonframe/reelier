@@ -108,6 +108,16 @@
 
 Final-review RED/GREEN commits from immutable `18f60a5e` are: `479aa54c`, `482f4dff`, `bf2308cf`, `a1163c54`, `544ff254`, `64170428`, `399de048`, `b10bc82a`, `d4e4540b`, `2987652b`, `66c88b60`, `d83deb81`, `4a3fbb6e`, `f4ae419a`, `3d934c3d`, `03de7acf`, `13d02f34`, and `c7001780`.
 
+### Final rereview fix round
+
+- `src/authority/host/receipts.ts` advances durable receipt publication to a v3 node/preimage/evidence ABI. The root commitment binds the canonical real path plus the stable directory device/inode identity. Opening a publisher refuses a symlink, Windows junction/reparse point, or linked ancestor before creating or writing durable state; reopening the same canonical directory preserves its identity, while copied valid bytes at another genuine root refuse. Existing v1/v2 nodes fail closed without migration or silent rewrite.
+- Every receipt publication/load operation validates the root immediately before and after the operation. Validation compares the held directory handle identity with a newly opened canonical root and repeats the component/link checks. Node does not provide a portable no-follow, directory-handle-relative filesystem API, so a concurrent namespace swap by a privileged host administrator between individual syscalls remains an explicit trusted-host nonclaim; restart/repoint/copy substitution is closed.
+- `src/authority/host/effect-transports.ts` restores the exact shared legacy `compileEffectTransportV1` conflict/not-applied lifecycle result to `kind: "acknowledged"`. The distinct governed authority seam continues to return a definitive terminal failure, which the composed `OutcomeKernel` grades honestly. Candidate, pull-request, and comment deterministic-failure missions remain failed/refused and stop before all later reservations or writes.
+- `test/authority/gate.test.ts` adds the precise post-CAS/publication authority-revocation falsifier. Revocation occurs after the reservation CAS and coordinator root publication but before prepared send: the provider counter remains zero, recovery publishes an honest ambiguous terminal for exactly that reservation, and repeated recovery never resends.
+- `test/authority/receipts.test.ts` covers same-root reopen, copied bytes, direct linked roots, and linked ancestors conditionally on host support. `test/authority/effect-transports.test.ts` pins both legacy conflict and not-applied acknowledgement while the full composed runtime failure matrix pins governed honesty.
+
+Final-rereview RED/GREEN commits from immutable `edf0a84e` are: `c95b9b4b`, `0d9b8fc7`, `1ef1f430`, `013641f6`, and `69339ece`.
+
 ## Deviations from the plan
 
 - No implementation behavior was broadened beyond tracked amendments. `src/packs/conformance.ts`, `src/authority/host/github-release-runner.ts`, `test/authority/github-release-runner.test.ts`, `test/authority/github-release-serve-fixture.ts`, `src/authority/host/prepared-dispatch.ts`, and `test/acceleration-preflight.test.ts` were touched only after their exact amendments were committed.
@@ -121,17 +131,17 @@ Final-review RED/GREEN commits from immutable `18f60a5e` are: `479aa54c`, `482f4
 ### Final focused Task4C gate
 
 ```text
-ℹ tests 150
+ℹ tests 153
 ℹ suites 0
-ℹ pass 150
+ℹ pass 153
 ℹ fail 0
 ℹ cancelled 0
 ℹ skipped 0
 ℹ todo 0
-ℹ duration_ms 53892.4582
+ℹ duration_ms 64926.5414
 ```
 
-This gate covers the gate, prepared coordinator, governed and legacy transport seams, root-bound receipts, governed publication, Outcome kernel, full signed composite and Linear-only runtimes, reviewed GitHub/Linear packs, and shared pack conformance. The publication adversaries prove publisher/root B, copied chains, factory clones/copies, and substituted resolver/query capabilities cannot adopt publisher/root A's terminal head.
+This gate covers the gate, prepared coordinator, governed and legacy transport seams, v3 canonical-root-bound receipts, governed publication, Outcome kernel, full signed composite and Linear-only runtimes, reviewed GitHub/Linear packs, and shared pack conformance. The publication adversaries prove publisher/root B, copied chains, linked roots/ancestors, factory clones/copies, and substituted resolver/query capabilities cannot adopt publisher/root A's terminal head. The post-publication revocation case additionally proves zero provider calls and idempotent ambiguous recovery.
 
 ### Final build and complete scoped Task4C gates
 
@@ -151,7 +161,7 @@ The generated-pack acceleration preflight passed freshly:
 ℹ pass 9
 ℹ fail 0
 ℹ skipped 0
-ℹ duration_ms 12169.8699
+ℹ duration_ms 21633.0081
 ```
 
 ### Legacy GitHub release compatibility
@@ -164,7 +174,7 @@ The generated-pack acceleration preflight passed freshly:
 ℹ cancelled 0
 ℹ skipped 0
 ℹ todo 0
-ℹ duration_ms 27330.7046
+ℹ duration_ms 47914.268
 ```
 
 ### Package and compatibility specs
@@ -177,7 +187,7 @@ The generated-pack acceleration preflight passed freshly:
 ℹ cancelled 0
 ℹ skipped 0
 ℹ todo 0
-ℹ duration_ms 2919.4185
+ℹ duration_ms 4544.9152
 ```
 
 This fresh set covers package exports, authority/profile/bootstrap package contracts, agent-adapter conformance, continuity conformance, and the core continuity package. The separately documented universal packed-consumer limitation remains unchanged because its Linux artifact prerequisite is unavailable on this Windows host.
