@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { authorityCanonicalBytes, authorityDigest } from "../../src/authority/wire.js";
 import { digestGovernedEffectCommitmentV1 } from "../../src/authority/governed-effect-commitment.js";
-import { verifyGovernedOutcomeEffectJoinV1 } from "../../src/authority/host/governed-outcome-composition.js";
+import { resolveGovernedCoordinatorPublicationV1, verifyGovernedOutcomeEffectJoinV1 } from "../../src/authority/host/governed-outcome-composition.js";
 
 const sha = (character: string) => `sha256:${character.repeat(64)}`;
 const alias = "github_release_candidate_publish_v1";
@@ -54,4 +54,18 @@ test("every durable commitment substitution refuses before any host binding", ()
   decoded.preconditions.push({ kind: "governed-effect-commitment-v1", digest: decoded.preconditions[1].digest });
   const changed = { ...base.reservation, intent: { ...base.reservation.intent, effectCanonicalBase64: Buffer.from(JSON.stringify(decoded)).toString("base64") } };
   assert.throws(() => verifyGovernedOutcomeEffectJoinV1({ ...base.input, reservation: changed } as never), /canonical|ledger|commitment/i);
+});
+
+test("only the exact terminal coordinator publication head resolves as verified", async () => {
+  const identity = { v: "reelier.durable-dispatch-publication-identity/v1" as const, reservationId: "reservation_1", tenant: "tenant_1", requestDigest: sha("1"), capabilityDigest: sha("2"), effectDigest: sha("3"), routeAuthorityDigest: sha("4"), expectedDispatchedRequestDigest: sha("5"), reservationIntentDigest: sha("6") };
+  const query = { v: "reelier.durable-dispatch-publication-query/v1" as const, identity, ledgerState: "dispatched" as const, sendStarted: true as const };
+  const outcome = { kind: "acknowledged" as const, resultDigest: sha("7"), providerResultDigest: sha("8"), receiptRef: sha("7"), evidenceDigest: sha("9"), priorReceiptDigest: sha("a") };
+  const head = { v: "reelier.durable-dispatch-publication-head/v1" as const, identity, receiptRef: outcome.receiptRef, evidenceDigest: outcome.evidenceDigest, reservationReceiptRef: outcome.priorReceiptDigest, priorReceiptRef: outcome.priorReceiptDigest, phase: "dispatch" as const, terminalKind: "acknowledged" as const };
+  const publication = { async publish() { throw new Error("not used"); }, async publishReservation() { throw new Error("not used"); }, async loadDurableHead(_query: unknown, expect?: string) { assert.equal(expect, "terminal"); return head; } };
+  assert.equal(await resolveGovernedCoordinatorPublicationV1(publication, { query, outcome }), outcome.receiptRef);
+
+  for (const replacement of [null, { ...head, receiptRef: sha("b") }, { ...head, evidenceDigest: sha("b") }, { ...head, priorReceiptRef: sha("b") }, { ...head, identity: { ...identity, effectDigest: sha("b") } }, { ...head, phase: "reservation", terminalKind: null, priorReceiptRef: null }]) {
+    const candidate = { ...publication, async loadDurableHead() { return replacement as never; } };
+    assert.equal(await resolveGovernedCoordinatorPublicationV1(candidate, { query, outcome }), null);
+  }
 });
