@@ -8,6 +8,7 @@ import { connectionAdoptionCommitmentDigest, connectionDescriptorDigest, digestN
 import { buildAuthorityDeployment } from "../../src/authority/host/deploy.js";
 import { githubReleasePacks } from "../../src/packs/github-release/index.js";
 import { githubReleaseAliases, githubReleaseEffects, githubReleaseManifest, githubReleasePolicySchemaId, githubReleaseProjectionSchemaId, githubReleaseReadEndpointId, githubReleaseRiskClass } from "../../src/packs/github-release/manifest.js";
+import { createGitHubLinearOutcomePackV1, githubReviewedReleasePackDigestV1 } from "../../src/authority/packs/github-linear-outcomes.js";
 import { jobCardTrustPinFixture } from "./job-card-trust-pin-fixture.js";
 
 const sha = (seed: string) => `sha256:${seed.repeat(64).slice(0, 64)}`;
@@ -221,6 +222,7 @@ export async function releaseServeFixture(title = "Governed production release",
       forbiddenChangeClasses: ["authority-contract", "credential", "dependency", "generated-contract", "lockfile", "policy", "release-script", "workflow"],
       maxChangedBytes: 65_536, maxChangedFiles: 3,
     }, signer);
+    const reviewedPack = createGitHubLinearOutcomePackV1({ v: "reelier.github-linear-reviewed-authority/v1", github: { repository, baseBranch: operationPlan.value.destinationBranch, baseSha: operationPlan.value.baseCommit, headBranch: operationPlan.value.candidateBranch, headSha: operationPlan.value.expectedCommitSha, candidateDigest: operationPlan.value.candidateTreeDigest, workflowPath: ".github/workflows/ci.yml", workflowDigest: workflowCommitments[0]!.digest, requiredChecks: operationPlan.value.requiredChecks, mergeMethod: "squash", postMergeTreeSha: operationPlan.value.expectedTreeSha, accountRef: "github_account_ref", destinationRef: "github_repository_ref", credentialRef: "github_credential_ref", limitRef: "github_release_policy_ref" }, linear: { workspace: "workspace_01", team: "team_01", project: "project_01", issue: "REEL-TEST-1", preStatus: "In Progress", targetStatus: "Done", commentMarker: "reelier:evidence:fixture", evidenceUrl: "https://www.reelier.com/r/fixture", evidenceContentDigest: releaseDigest("f"), accountRef: "linear_account_ref", destinationRef: "linear_issue_ref", credentialRef: "linear_credential_ref", limitRef: "linear_transition_policy_ref" } });
     const authorization = createSignedReleaseAuthorizationBundleV1({
       v: "reelier.release-authorization-bundle/v1", authorityCellDigest: releaseDigest("9"),
       effectAllocations: [
@@ -230,7 +232,7 @@ export async function releaseServeFixture(title = "Governed production release",
         { allocationDigest: releaseDigest("d"), allocationId: "release-non-force-tag-01", effect: "non-force-tag", maxEffects: 1 },
       ],
       evidenceVerifierBindings, expiresAt: AUTHORIZATION_EXPIRES_AT, issuedAt: AUTHORIZATION_ISSUED_AT, jobCardDigest: releaseDigest("e"), missionDigest: releaseDigest("f"),
-      operationPlanDigest: operationPlan.digest, packDigest: releaseDigest("0"), policyDigest: policy.digest, receiptGraphMakerBinding,
+      operationPlanDigest: operationPlan.digest, packDigest: githubReviewedReleasePackDigestV1(reviewedPack), policyDigest: policy.digest, receiptGraphMakerBinding,
       rootGrantDigest: releaseDigest("1"), stagedCandidateManifestDigest: candidateManifest.digest, taskDigest: releaseDigest("2"),
     }, signer);
     const evidence = [
