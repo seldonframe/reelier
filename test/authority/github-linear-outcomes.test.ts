@@ -1,0 +1,109 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { authorityDigest } from "../../src/authority/wire.js";
+import {
+  assertLinearStatusPredecessorV1,
+  createGitHubLinearOutcomePackV1,
+  orderedGitHubLinearOperationsV1,
+} from "../../src/authority/packs/github-linear-outcomes.js";
+
+const sha = (seed: string) => `sha256:${seed.repeat(64).slice(0, 64)}`;
+const git = (seed: string) => seed.repeat(40);
+
+function reviewedInput() {
+  return {
+    v: "reelier.github-linear-reviewed-authority/v1" as const,
+    github: {
+      repository: "seldonframe/reelier",
+      baseBranch: "main",
+      baseSha: git("a"),
+      headBranch: "reelier/release/0.33.0",
+      headSha: git("b"),
+      candidateDigest: sha("c"),
+      workflowPath: ".github/workflows/ci.yml",
+      workflowDigest: sha("d"),
+      requiredChecks: ["coverage", "full-tests", "mutation"],
+      mergeMethod: "squash" as const,
+      postMergeTreeSha: git("e"),
+      accountRef: "github_account_ref",
+      destinationRef: "github_repository_ref",
+      credentialRef: "github_credential_ref",
+      limitRef: "github_release_policy_ref",
+    },
+    linear: {
+      workspace: "workspace_01",
+      team: "team_01",
+      project: "project_01",
+      issue: "REEL-TEST-1",
+      preStatus: "In Progress",
+      targetStatus: "Done",
+      commentMarker: "reelier:evidence:mission_01",
+      accountRef: "linear_account_ref",
+      destinationRef: "linear_issue_ref",
+      credentialRef: "linear_credential_ref",
+      limitRef: "linear_transition_policy_ref",
+    },
+  };
+}
+
+test("reviewed pack binds exact GitHub and Linear authority while model fields contain no provider identity", () => {
+  const pack = createGitHubLinearOutcomePackV1(reviewedInput());
+  assert.deepEqual(Object.keys(pack.operations), ["candidatePublish", "pullRequestEnsure", "exactHeadMerge", "linearEvidenceComment", "linearStatusTransition"]);
+  for (const operation of Object.values(pack.operations)) {
+    assert.equal(operation.contract.operationDigest, authorityDigest(operation.binding));
+    assert.equal(operation.metadata.contractDigest, authorityDigest(operation.contract));
+    assert.equal(JSON.stringify(operation.contract.model).match(/workspace|team|project|issue|repository|status|credential|token|oauth/gi), null);
+  }
+  assert.deepEqual(pack.operations.exactHeadMerge.contract.model.fields, ["authorizationHandle", "requestId", "semanticsDigest"]);
+  assert.deepEqual(pack.operations.linearEvidenceComment.contract.model.fields, ["evidenceUrl"]);
+  assert.deepEqual(pack.operations.linearStatusTransition.contract.model.fields, []);
+  assert.equal(pack.operations.exactHeadMerge.contract.policyDigest, pack.githubPolicyDigest);
+  assert.equal(pack.operations.linearStatusTransition.contract.policyDigest, pack.linearPolicyDigest);
+});
+
+test("composite and Linear-only plans have exact ordering and Linear-only carries no git operation", () => {
+  const pack = createGitHubLinearOutcomePackV1(reviewedInput());
+  assert.deepEqual(orderedGitHubLinearOperationsV1(pack, "github-linear"), [
+    pack.operations.candidatePublish,
+    pack.operations.pullRequestEnsure,
+    pack.operations.exactHeadMerge,
+    pack.operations.linearEvidenceComment,
+    pack.operations.linearStatusTransition,
+  ]);
+  const linearOnly = orderedGitHubLinearOperationsV1(pack, "linear-only");
+  assert.deepEqual(linearOnly, [pack.operations.linearEvidenceComment, pack.operations.linearStatusTransition]);
+  assert.equal(JSON.stringify(linearOnly).match(/baseSha|headSha|repository|workflow|candidate|merge/gi), null);
+});
+
+test("closed reviewed authority refuses wrong identities and hostile DTO roots inertly", () => {
+  const base = reviewedInput();
+  for (const mutate of [
+    (value: any) => { value.github.workflowPath = ".github/workflows/other.yml"; },
+    (value: any) => { value.github.baseBranch = "develop"; },
+    (value: any) => { value.github.headSha = git("f"); },
+    (value: any) => { value.linear.project = "other_project"; },
+    (value: any) => { value.linear.issue = "REEL-OTHER"; },
+    (value: any) => { value.linear.preStatus = "Todo"; },
+    (value: any) => { value.linear.targetStatus = "Cancelled"; },
+  ]) {
+    const changed = structuredClone(base) as any;
+    mutate(changed);
+    assert.notEqual(createGitHubLinearOutcomePackV1(changed).authorityDigest, createGitHubLinearOutcomePackV1(base).authorityDigest);
+  }
+  assert.throws(() => createGitHubLinearOutcomePackV1({ ...base, extra: true } as any), /closed|unknown/i);
+  let traps = 0;
+  assert.throws(() => createGitHubLinearOutcomePackV1(new Proxy(base, { ownKeys() { traps += 1; return []; } }) as any), /inert|proxy/i);
+  assert.equal(traps, 0);
+});
+
+test("Linear status requires the exact verified comment receipt predecessor", () => {
+  const pack = createGitHubLinearOutcomePackV1(reviewedInput());
+  const comment = pack.operations.linearEvidenceComment.contract;
+  const reservation = { v: "reelier.effect-reservation/v1", reservationId: "reservation_comment", missionId: "mission_01", contractDigest: authorityDigest(comment), semanticIdentity: comment.semanticIdentity, idempotencyKey: comment.idempotencyKey, reservedAt: "2026-08-21T12:00:00.000Z" } as const;
+  const outcome = { v: "reelier.governed-outcome/v1", outcomeId: "outcome_comment", missionId: "mission_01", contractDigest: authorityDigest(comment), reservation, attempt: { v: "reelier.attempt/v1", attemptId: "attempt_comment", reservationId: reservation.reservationId, semanticIdentity: reservation.semanticIdentity, dispatchedAt: "2026-08-21T12:00:01.000Z", crossedProviderBoundary: true, result: "acknowledged" }, observation: { v: "reelier.observation/v1", observationId: "observation_comment", reservationId: reservation.reservationId, semanticIdentity: reservation.semanticIdentity, observedAt: "2026-08-21T12:00:02.000Z", authoritative: true, verdict: "matched", projectionDigest: sha("9") }, status: "verified", completedAt: "2026-08-21T12:00:03.000Z" } as const;
+  const receipt = { v: "reelier.governed-receipt/v1", receiptId: "receipt_comment", missionDigest: sha("1"), outcomeDigest: authorityDigest(outcome), mission: { v: "reelier.mission-claim/v1", missionId: "mission_01", mandateDigest: sha("2"), promptDigest: sha("3"), requestedOperations: [comment.operation], claimedAt: "2026-08-21T12:00:00.000Z", expiresAt: "2026-08-21T13:00:00.000Z" }, outcome, issuedAt: outcome.completedAt } as const;
+  assert.doesNotThrow(() => assertLinearStatusPredecessorV1(pack, receipt));
+  assert.throws(() => assertLinearStatusPredecessorV1(pack, { ...receipt, outcome: { ...outcome, status: "pending" } } as any), /verified/i);
+  assert.throws(() => assertLinearStatusPredecessorV1(createGitHubLinearOutcomePackV1({ ...reviewedInput(), linear: { ...reviewedInput().linear, issue: "REEL-TEST-2" } }), receipt), /exact.*comment|predecessor/i);
+});
+
