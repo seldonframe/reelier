@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { cp, mkdir, mkdtemp, readFile, readdir, rm, unlink, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, readdir, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createFileReceiptPublication, __testSetReceiptsDurabilityProbe, type ReceiptsDurabilityProbeEventV1 } from "../../src/authority/host/receipts.js";
@@ -53,6 +53,30 @@ test("a valid durable chain copied to a different genuine publication root refus
   } finally { restore(); await rm(parent, { recursive: true, force: true }); }
 });
 
+test("a symlink or junction receipt root refuses before durable publication", async t => {
+  const restore = __testSetAuthorityCellHostPlatform("linux"), parent = await mkdtemp(path.join(tmpdir(), "reelier-durable-linked-root-")), target = path.join(parent, "target"), linked = path.join(parent, "linked");
+  try {
+    await mkdir(target);
+    try { await symlink(target, linked, process.platform === "win32" ? "junction" : "dir"); }
+    catch (error) { if (["EPERM", "EACCES", "ENOTSUP"].includes((error as NodeJS.ErrnoException).code ?? "")) { t.skip("host cannot create a directory link"); return; } throw error; }
+    const publication = createFileReceiptPublication({ rootDir: linked });
+    await assert.rejects(() => publication.publishReservation!({ phase: "reservation", identity: durableIdentity(), state, outcome: { kind: "ambiguous", resultDigest: "sha256:" + "7".repeat(64) }, dispatchedRequestDigest: null, priorReceiptDigest: null }), /canonical|realpath|root|link|junction/i);
+    assert.deepEqual(await readdir(target), [], "refusal creates no durable node through the linked root");
+  } finally { restore(); await rm(parent, { recursive: true, force: true }); }
+});
+
+test("a receipt root below a symlinked or junction ancestor refuses", async t => {
+  const restore = __testSetAuthorityCellHostPlatform("linux"), parent = await mkdtemp(path.join(tmpdir(), "reelier-durable-linked-ancestor-")), target = path.join(parent, "target"), linked = path.join(parent, "linked"), lexicalRoot = path.join(linked, "receipts");
+  try {
+    await mkdir(target);
+    try { await symlink(target, linked, process.platform === "win32" ? "junction" : "dir"); }
+    catch (error) { if (["EPERM", "EACCES", "ENOTSUP"].includes((error as NodeJS.ErrnoException).code ?? "")) { t.skip("host cannot create a directory link"); return; } throw error; }
+    const publication = createFileReceiptPublication({ rootDir: lexicalRoot });
+    await assert.rejects(() => publication.publishReservation!({ phase: "reservation", identity: durableIdentity(), state, outcome: { kind: "ambiguous", resultDigest: "sha256:" + "7".repeat(64) }, dispatchedRequestDigest: null, priorReceiptDigest: null }), /canonical|realpath|root|link|junction/i);
+    assert.equal((await readdir(target)).includes("receipts"), false, "refusal does not create a root through the linked ancestor");
+  } finally { restore(); await rm(parent, { recursive: true, force: true }); }
+});
+
 test("legacy durable nodes without publisher-root binding fail closed without rewrite", async () => {
   const restore = __testSetAuthorityCellHostPlatform("linux"), root = await mkdtemp(path.join(tmpdir(), "reelier-durable-legacy-root-"));
   try {
@@ -66,7 +90,7 @@ test("legacy durable nodes without publisher-root binding fail closed without re
 });
 
 async function publishedDurableChain(root: string) {
-  const identity = { v: "reelier.durable-dispatch-publication-identity/v1", reservationId: "r1", tenant: "tenant_1", requestDigest: "sha256:" + "2".repeat(64), capabilityDigest: "sha256:" + "3".repeat(64), effectDigest: state.effectDigest, routeAuthorityDigest: "sha256:" + "4".repeat(64), expectedDispatchedRequestDigest: "sha256:" + "5".repeat(64), reservationIntentDigest: "sha256:" + "6".repeat(64) } as const;
+  const identity = durableIdentity();
   const publication = createFileReceiptPublication({ rootDir: root });
   const rootReceipt = await publication.publishReservation!({ phase: "reservation", identity, state, outcome: { kind: "ambiguous", resultDigest: "sha256:" + "7".repeat(64) }, dispatchedRequestDigest: null, priorReceiptDigest: null });
   const terminal = await publication.publish({ phase: "dispatch", state, outcome: { kind: "acknowledged", resultDigest: "sha256:" + "8".repeat(64) }, dispatchedRequestDigest: identity.expectedDispatchedRequestDigest, priorReceiptDigest: rootReceipt.receiptRef });
@@ -75,6 +99,8 @@ async function publishedDurableChain(root: string) {
   const nodes = await Promise.all(names.map(async name => ({ name, node: JSON.parse(await readFile(path.join(durableDir, name), "utf8")) })));
   return { identity, rootReceipt, terminal, durableDir, terminalNode: nodes.find(entry => entry.node.head.phase === "dispatch")! };
 }
+
+function durableIdentity() { return { v: "reelier.durable-dispatch-publication-identity/v1", reservationId: "r1", tenant: "tenant_1", requestDigest: "sha256:" + "2".repeat(64), capabilityDigest: "sha256:" + "3".repeat(64), effectDigest: state.effectDigest, routeAuthorityDigest: "sha256:" + "4".repeat(64), expectedDispatchedRequestDigest: "sha256:" + "5".repeat(64), reservationIntentDigest: "sha256:" + "6".repeat(64) } as const; }
 
 test("restart validation rejects a forged evidence digest and a forged terminal kind", async () => {
   const restore = __testSetAuthorityCellHostPlatform("linux");
