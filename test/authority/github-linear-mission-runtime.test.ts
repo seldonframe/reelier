@@ -75,8 +75,8 @@ test("signed seven-definition runtime recovers the exact Linear-only pair withou
       transitionStatus(_input: unknown, sink: any) { linearWrites += 1; linearStatus = reviewed.linear.targetStatus; sink.success(JSON.stringify({ outcome: "applied", data: { workspace: reviewed.linear.workspace, team: reviewed.linear.team, project: reviewed.linear.project, issue: reviewed.linear.issue, preStatus: reviewed.linear.preStatus, targetStatus: reviewed.linear.targetStatus, status: linearStatus } })); },
       readStatus(_input: unknown, sink: any) { linearReads += 1; sink.success(JSON.stringify({ workspace: reviewed.linear.workspace, team: reviewed.linear.team, project: reviewed.linear.project, issue: reviewed.linear.issue, preStatus: reviewed.linear.preStatus, targetStatus: reviewed.linear.targetStatus, status: linearStatus })); },
     } as never;
-    const journalKeys = generateKeyPairSync("ed25519");
-    const makeRuntime = async () => { const baseJournal = await createSignedJournal({ rootDir: path.join(root, "mission-journal"), journalId: "genuine-five", signerId: "mission-journal", privateKey: journalKeys.privateKey, publicKey: journalKeys.publicKey }); return createGitHubLinearMissionRuntimeV1({
+    const journalKeys = generateKeyPairSync("ed25519"); let lastJournal: Awaited<ReturnType<typeof createSignedJournal>>;
+    const makeRuntime = async () => { const baseJournal = await createSignedJournal({ rootDir: path.join(root, "mission-journal"), journalId: "genuine-five", signerId: "mission-journal", privateKey: journalKeys.privateKey, publicKey: journalKeys.publicKey }); lastJournal=baseJournal; return createGitHubLinearMissionRuntimeV1({
       config: fixture.config, profile, githubReleaseRunner: runner, linearProvider,
       resolveHostBindings: async bindings => ({ credential: "linear-test-secret", account: reviewed.linear.workspace, destination: reviewed.linear.issue, limit: pack.linearPolicyDigest }),
       journal: baseJournal,
@@ -102,6 +102,9 @@ test("signed seven-definition runtime recovers the exact Linear-only pair withou
     const reservedAliases = recoveredLedger.ok ? recoveredLedger.reservations.map(item => item.intent.definitionAlias) : [];
     assert.equal(governedOutcomeCompositionAliasesV1.slice(0, 3).some(alias => reservedAliases.includes(alias)), false, "Linear-only creates no GitHub reservation");
     assert.deepEqual(reservedAliases.sort(), [...governedOutcomeCompositionAliasesV1.slice(5)].sort(), "both Linear-only reservations are durable");
+    assert.deepEqual({ activationConfirmations: evidence.activationConfirmations, routineApprovals: evidence.routineApprovals }, { activationConfirmations: 1, routineApprovals: 0 }, "standing activation and absence of routine approvals are folded from signed artifacts");
+    await lastJournal!.append("routine_approval_probe", sha("9"), "routine-approval", Object.freeze({ approval: Object.freeze({ kind: "operator-routine" }) }));
+    assert.equal((await restarted.inspectEvidence()).routineApprovals, 1, "signed routine approval events are enumerated rather than hard-coded");
 
     const crashFixture = await fiveDefinitionDeployment(path.join(root, "accepted-before-index"), pack, release.authorizationHandle), crashKeys = generateKeyPairSync("ed25519");
     const makeCrashRuntime = async (failPlanAppend: boolean) => {
