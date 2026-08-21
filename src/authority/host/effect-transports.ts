@@ -22,7 +22,7 @@ export interface EffectTransportHostBindingsV1 { readonly credential: string; re
 export interface EffectTransportProviderResponseV1 { readonly outcome: string; readonly data: unknown }
 export type EffectTransportProviderEnvelopeV1 = string;
 export interface EffectTransportResultSinkV1 { readonly success: (serializedJson: string) => void; readonly failure: () => void; }
-export interface EffectTransportExecutorAuthorityV1 { readonly contractDigest: string; readonly bindingDigest: string; readonly reservationId: string }
+export interface EffectTransportExecutorAuthorityV1 { readonly contractDigest: string; readonly bindingDigest: string; readonly reservationId: string; readonly requestId: string; readonly governedEffectDigest: string }
 export interface TrustedEffectTransportExecutorCallbacksV1 {
   readonly mcp?: Readonly<{
     inspectSchemas(request: Readonly<{ server: string; tool: string }>, sink: EffectTransportResultSinkV1): void;
@@ -257,7 +257,9 @@ async function readback(binding: EffectTransportBindingV1, model: Readonly<Recor
 }
 
 function executorAuthority(state: DispatchRequestState, contractDigest: string, bindingDigest: string): EffectTransportExecutorAuthorityV1 {
-  return deepFreeze({ contractDigest, bindingDigest, reservationId: state.reservation.reservationId });
+  const requestId = state.reservation.intent.requestId;
+  if (typeof requestId !== "string" || requestId.length === 0) throw new TypeError("effect transport requires the durable authenticated request ID");
+  return deepFreeze({ contractDigest, bindingDigest, reservationId: state.reservation.reservationId, requestId, governedEffectDigest: state.effectDigest });
 }
 
 function providerBoundary(label: string, invoke: (sink: EffectTransportResultSinkV1) => void): Promise<EffectTransportProviderResponseV1> { return serializedBoundary(label, invoke, parseProviderResponse); }

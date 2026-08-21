@@ -69,7 +69,7 @@ export interface LocalAuthorityRuntimeOptions {
   /** Host-owned credential slots are injected out-of-band and never loaded from authority.yml. */
   readonly secretResolver?: SecretResolver;
   readonly secretResolverOptions?: SecretResolverOptions;
-  readonly routeAuthority?: (input: Readonly<{ tenant:string; requester:string; definitionAlias:string; connectorId:string; accountId:string; endpointId:string; authorityGeneration:string; authorityExpiresAt:string }>) => RouteAuthoritySnapshotV1 | undefined;
+  readonly routeAuthority?: (input: Readonly<{ tenant:string; requester:string; definitionAlias:string; requestId:string; connectorId:string; accountId:string; endpointId:string; authorityGeneration:string; authorityExpiresAt:string }>) => RouteAuthoritySnapshotV1 | undefined;
   readonly authenticatedProviderIdentity?: () => Promise<AuthenticatedProviderIdentityV1>;
   readonly verifyAuthenticatedProviderIdentity?: CertifiedIdentityVerifier;
   readonly certifiedDispatch?: CertifiedDispatchOptions;

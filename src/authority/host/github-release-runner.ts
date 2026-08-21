@@ -219,9 +219,9 @@ export async function createGitHubReleaseRunner(input: Readonly<{ rootDir: strin
         selected = tools[request.tool as keyof typeof tools];
         if (!selected) throw new TypeError("GitHub release pack tool is not reviewed");
         if (request.authority.bindingDigest !== githubReleaseOutcomeBindingDigestV1(request.tool)) throw new TypeError("GitHub release pack compiler binding is invalid");
-        if (!selected.reconcile && !consumeCoordinatorDispatchCallDelegateV1(request.authority, { reservationId: request.authority.reservationId, effectDigest: request.authority.contractDigest })) throw new TypeError("GitHub release write requires the exact coordinator call capability");
+        if (!selected.reconcile && !consumeCoordinatorDispatchCallDelegateV1(request.authority, { reservationId: request.authority.reservationId, effectDigest: request.authority.governedEffectDigest })) throw new TypeError("GitHub release write requires the exact coordinator call capability");
         const model = exactRecord(request.arguments.model, ["authorizationHandle", "requestId"], "GitHub release pack model input");
-        if (model.requestId !== request.authority.reservationId) throw new TypeError("GitHub release pack reservation binding is invalid");
+        if (model.requestId !== request.authority.requestId) throw new TypeError("GitHub release pack authenticated request binding is invalid");
         invocation = Object.freeze({ alias: selected.alias, authorizationHandle: String(model.authorizationHandle), requestId: String(model.requestId), semanticsDigest: request.authority.contractDigest, reviewedHost: request.arguments.host });
         validateInvocation(invocation);
       } catch { sink.failure(); return; }
