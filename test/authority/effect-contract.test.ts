@@ -4,9 +4,15 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import {
+  digestGovernedReceiptV1,
   digestGovernedOutcomeV1,
+  digestMissionClaimV1,
+  digestProviderOutcomePackV1,
   digestToolEffectContractV1,
+  parseGovernedReceiptV1,
   parseGovernedOutcomeV1,
+  parseMissionClaimV1,
+  parseProviderOutcomePackV1,
   parseToolEffectContractV1,
   verifyGovernedOutcomeTransitionV1,
 } from "../../src/authority/tool-effect-contract.js";
@@ -73,11 +79,58 @@ test("effect contract rejects nested accessors without invoking them", () => {
   assert.equal(reads, 0);
 });
 
+test("wire graph bounds refuse hostile shapes before descriptor materialization", () => {
+  const hugeArray = new Array(65).fill("field");
+  const hugeObject = Object.fromEntries(Array.from({ length: 65 }, (_, index) => [`field${index}`, index]));
+  const original = Object.getOwnPropertyDescriptors;
+  const descriptorCalls = new Map<object, number>();
+  Object.getOwnPropertyDescriptors = ((value: object) => {
+    if (value === hugeArray || value === hugeObject) descriptorCalls.set(value, (descriptorCalls.get(value) ?? 0) + 1);
+    return original(value);
+  }) as typeof Object.getOwnPropertyDescriptors;
+  try {
+    assert.throws(() => parseToolEffectContractV1({ ...contract, model: { fields: hugeArray, maxBytes: 1 } }));
+    assert.throws(() => parseToolEffectContractV1({ ...contract, model: { fields: ["field"], maxBytes: 1, hugeObject } }));
+  } finally {
+    Object.getOwnPropertyDescriptors = original;
+  }
+  assert.equal(descriptorCalls.get(hugeArray) ?? 0, 0);
+  assert.equal(descriptorCalls.get(hugeObject) ?? 0, 0);
+
+  const sparse = new Array(2); sparse[0] = "field";
+  let deep: Record<string, unknown> = {}; for (let index = 0; index < 18; index++) deep = { child: deep };
+  const manyNodes = Array.from({ length: 5 }, () => Array.from({ length: 60 }, () => ({})));
+  const cycle: Record<string, unknown> = {}; cycle.self = cycle;
+  const shared = {};
+  for (const hostile of [
+    { ...contract, provider: () => "calendar-like" },
+    { ...contract, model: { fields: sparse, maxBytes: 1 } },
+    { ...contract, deep },
+    { ...contract, manyNodes },
+    { ...contract, cycle },
+    { ...contract, shared: { first: shared, second: shared } },
+  ]) assert.throws(() => parseToolEffectContractV1(hostile));
+});
+
 test("lifecycle standalone parsers close provider packs, mission claims, and receipts", async () => {
-  const api = await import("../../src/authority/tool-effect-contract.js");
+  const pack = { v: "reelier.provider-outcome-pack/v1", packId: "pack_1", provider: "calendar-like", contractDigest: digest, preflightOperation: "events.preflight", dispatchOperation: "events.create", readbackOperation: "events.get" } as const;
+  const claim = { v: "reelier.mission-claim/v1", missionId: "mission_1", mandateDigest: digest, promptDigest: digest, contractDigests: [digest], claimedAt: "2026-08-20T11:59:59.000Z" } as const;
   const receipt = { v: "reelier.governed-receipt/v1", receiptId: "receipt_1", outcomeDigest: digest, missionDigest: digest, issuedAt: "2026-08-20T12:00:00.000Z", status: "verified" };
-  assert.equal(api.parseGovernedReceiptV1(receipt).receiptId, "receipt_1");
-  assert.throws(() => api.parseGovernedReceiptV1({ ...receipt, extra: true }));
+  const parsedPack = parseProviderOutcomePackV1(pack);
+  const parsedClaim = parseMissionClaimV1(claim);
+  const parsedReceipt = parseGovernedReceiptV1(receipt);
+  assert.equal(Object.isFrozen(parsedPack), true);
+  assert.equal(Object.isFrozen(parsedClaim.contractDigests), true);
+  assert.equal(Object.isFrozen(parsedReceipt), true);
+  assert.match(digestProviderOutcomePackV1(parsedPack), /^sha256:[a-f0-9]{64}$/u);
+  assert.match(digestMissionClaimV1(parsedClaim), /^sha256:[a-f0-9]{64}$/u);
+  assert.match(digestGovernedReceiptV1(parsedReceipt), /^sha256:[a-f0-9]{64}$/u);
+  assert.notEqual(digestProviderOutcomePackV1({ ...pack, provider: "document-like" }), digestProviderOutcomePackV1(pack));
+  assert.notEqual(digestMissionClaimV1({ ...claim, missionId: "mission_2" }), digestMissionClaimV1(claim));
+  assert.notEqual(digestGovernedReceiptV1({ ...receipt, receiptId: "receipt_2" }), digestGovernedReceiptV1(receipt));
+  for (const [parser, value] of [[parseProviderOutcomePackV1, pack], [parseMissionClaimV1, claim], [parseGovernedReceiptV1, receipt]] as const) {
+    assert.throws(() => parser({ ...value, extra: true }));
+  }
 });
 
 test("governed outcome transition refuses unverifiable chronology and verified masquerades", () => {
