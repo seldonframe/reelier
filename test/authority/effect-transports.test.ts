@@ -160,15 +160,15 @@ test("a refused coordinator delegate bind stops before host resolution and provi
 test("governed transport binds the original Path-C coordinator call before prepared host resolution", async () => {
   const restorePlatform = __testSetAuthorityCellHostPlatform("linux");
   const pathEffect = { path: "joined" }, pathEffectDigest = authorityDigest(pathEffect);
-  let hostResolutions = 0, providerCalls = 0, consumed = false;
+  let hostResolutions = 0, providerCalls = 0, consumed = false, observedAuthority: unknown;
   const compiled = compileEffectTransportV1({
     contract: SLACK_LIKE_CONTRACT, binding: SLACK_LIKE_BINDING, modelInput: { channel: "general", text: "hello" }, resolveHostBindings: async () => { hostResolutions++; return host; },
-    ports: { mcp: { inspectSchemas: slackSchemas, call: (request, sink) => { providerCalls++; consumed = consumeCoordinatorDispatchCallDelegateV1(request.authority, { reservationId: "governed-reservation", effectDigest: pathEffectDigest }); succeed(sink, "ok", { messageId: "m-governed" }); } } },
+    ports: { mcp: { inspectSchemas: slackSchemas, call: (request, sink) => { providerCalls++; observedAuthority = request.authority; consumed = consumeCoordinatorDispatchCallDelegateV1(request.authority, { reservationId: "governed-reservation", effectDigest: pathEffectDigest }); succeed(sink, "ok", { messageId: "m-governed" }); } } },
   });
   const requestDigest = authorityDigest({ v: "reelier.governed-effect-transport-request/v1", contractDigest: digestToolEffectContractV1(SLACK_LIKE_CONTRACT), bindingDigest: digestEffectTransportBindingV1(SLACK_LIKE_BINDING), model: { channel: "general", text: "hello" }, account: host.account, destination: host.destination, limit: host.limit });
   const projection = { v: "reelier.prepared-effect-projection/v1" as const, transport: "mcp", operationDigest: digestEffectTransportBindingV1(SLACK_LIKE_BINDING), requestDigest };
   const expectedMaterializedRequestDigest = preparedDispatchProjectionDigest(projection);
-  let reservation: any = { reservationId: "governed-reservation", state: "reserved", intent: { tenant: "tenant", requestDigest: sha("1"), capabilityDigest: sha("2"), effectDigest: pathEffectDigest, effectCanonicalBase64: authorityCanonicalBytes(pathEffect).toString("base64"), executionContext: { allocationId: "allocation-1" }, routeAuthority: { v: "reelier.route-authority-snapshot/v1", connectorRegistrationDigest: sha("3"), operatorConfigurationDigest: sha("4"), routeDigest: sha("5"), providerId: "provider", connectorId: "connector", accountId: "account", providerAccountIdentity: "identity", endpointId: "endpoint", credentialSlotId: "slot", slotInstanceId: "instance", slotVersion: "version", authenticatedProviderIdentityDigest: sha("6"), sourceReadRouteDigest: sha("7"), projectionSchemaDigest: sha("8"), expectedMaterializedRequestDigest, authorityGeneration: "generation-1", authorityExpiresAt: "2099-01-01T00:00:00.000Z" } }, limitAssignments: [], sequence: 0, updatedAt: "2026-08-21T00:00:00.000Z" };
+  let reservation: any = { reservationId: "governed-reservation", state: "reserved", intent: { tenant: "tenant", requestId: "authenticated-effect-request", requestDigest: sha("1"), capabilityDigest: sha("2"), effectDigest: pathEffectDigest, effectCanonicalBase64: authorityCanonicalBytes(pathEffect).toString("base64"), executionContext: { allocationId: "allocation-1" }, routeAuthority: { v: "reelier.route-authority-snapshot/v1", connectorRegistrationDigest: sha("3"), operatorConfigurationDigest: sha("4"), routeDigest: sha("5"), providerId: "provider", connectorId: "connector", accountId: "account", providerAccountIdentity: "identity", endpointId: "endpoint", credentialSlotId: "slot", slotInstanceId: "instance", slotVersion: "version", authenticatedProviderIdentityDigest: sha("6"), sourceReadRouteDigest: sha("7"), projectionSchemaDigest: sha("8"), expectedMaterializedRequestDigest, authorityGeneration: "generation-1", authorityExpiresAt: "2099-01-01T00:00:00.000Z" } }, limitAssignments: [], sequence: 0, updatedAt: "2026-08-21T00:00:00.000Z" };
   const state: any = { reservation, effect: pathEffect, effectDigest: pathEffectDigest, effectCanonicalBase64: authorityCanonicalBytes(pathEffect).toString("base64") };
   const ledger: any = {
     async getReservation() { return reservation; },
@@ -183,6 +183,7 @@ test("governed transport binds the original Path-C coordinator call before prepa
     const coordinator = createDispatchCoordinator(ledger, { async dispatch(current) { return { kind: "definitive-failure", resultDigest: current.effectDigest }; }, async prepare(current, call) { return compiled.prepareGoverned(current, call!); } });
     const outcome = await coordinator.dispatch(createReservedDispatchHandle(state));
     assert.deepEqual({ kind: outcome.kind, hostResolutions, providerCalls, consumed }, { kind: "acknowledged", hostResolutions: 1, providerCalls: 1, consumed: true });
+    assert.deepEqual(observedAuthority, { contractDigest: digestToolEffectContractV1(SLACK_LIKE_CONTRACT), bindingDigest: digestEffectTransportBindingV1(SLACK_LIKE_BINDING), reservationId: "governed-reservation", requestId: "authenticated-effect-request", governedEffectDigest: pathEffectDigest });
   } finally { restorePlatform(); }
 });
 

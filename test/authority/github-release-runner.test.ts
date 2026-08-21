@@ -105,8 +105,8 @@ test("generic reviewed pack delegates candidate publication into the existing br
     const mismatched = compile("generic_candidate_wrong_contract", reviewed.contract.policyDigest, mismatchedContract);
     await assert.rejects(() => mismatched.adapter.dispatch({ reservation: { reservationId: "generic_candidate_wrong_contract", state: "dispatched", intent: { effectDigest: authorityDigest(mismatchedContract) } }, effect: mismatched.effect, effectDigest: authorityDigest(mismatchedContract), effectCanonicalBase64: Buffer.from(JSON.stringify(mismatched.effect)).toString("base64") } as any), /boundary|failed/i);
     assert.equal(providerCalls, 0);
-    const compiled = compile("generic_candidate_publish", reviewed.contract.policyDigest);
-    const outcome = await dispatchReviewedThroughCoordinator(compiled, { reservation: { reservationId: "generic_candidate_publish", state: "reserved", intent: { effectDigest: authorityDigest(reviewed.contract) } }, effect: compiled.effect, effectDigest: authorityDigest(reviewed.contract), effectCanonicalBase64: Buffer.from(JSON.stringify(compiled.effect)).toString("base64") } as any);
+    const compiled = compile("authenticated_candidate_publish", reviewed.contract.policyDigest);
+    const outcome = await dispatchReviewedThroughCoordinator(compiled, { reservation: { reservationId: "durable_candidate_reservation", state: "reserved", intent: { requestId: "authenticated_candidate_publish", effectDigest: authorityDigest(reviewed.contract) } }, effect: compiled.effect, effectDigest: authorityDigest(reviewed.contract), effectCanonicalBase64: Buffer.from(JSON.stringify(compiled.effect)).toString("base64") } as any);
     assert.equal(outcome.kind, "acknowledged");
     assert.equal(JSON.stringify({ pack, compiled: compiled.evidence, outcome }).includes("host-only-secret"), false);
   } finally { await rm(root, { recursive: true, force: true }); }
