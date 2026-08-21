@@ -7,11 +7,15 @@ import {
   digestGovernedReceiptV1,
   digestGovernedOutcomeV1,
   digestMissionClaimV1,
+  digestAttemptV1,
+  digestObservationV1,
   digestProviderOutcomePackV1,
   digestToolEffectContractV1,
   parseGovernedReceiptV1,
   parseGovernedOutcomeV1,
   parseMissionClaimV1,
+  parseAttemptV1,
+  parseObservationV1,
   parseProviderOutcomePackV1,
   parseToolEffectContractV1,
   verifyGovernedOutcomeTransitionV1,
@@ -133,6 +137,26 @@ test("lifecycle standalone parsers close provider packs, mission claims, and rec
   }
 });
 
+test("attempt and observation parsers close provider-crossing evidence combinations", () => {
+  const attempt = { v: "reelier.attempt/v1", attemptId: "attempt_1", reservationId: "reservation_1", semanticIdentity: "effect_1", dispatchedAt: "2026-08-20T12:00:01.000Z", crossedProviderBoundary: true, result: "acknowledged" } as const;
+  const localFailure = { ...attempt, crossedProviderBoundary: false, result: "definitive-failure" as const };
+  assert.equal(parseAttemptV1(localFailure).result, "definitive-failure");
+  assert.match(digestAttemptV1(attempt), /^sha256:[a-f0-9]{64}$/u);
+  for (const result of ["acknowledged", "ambiguous"] as const) assert.throws(() => parseAttemptV1({ ...attempt, crossedProviderBoundary: false, result }));
+
+  const observation = { v: "reelier.observation/v1", observationId: "observation_1", reservationId: "reservation_1", semanticIdentity: "effect_1", observedAt: "2026-08-20T12:00:02.000Z", authoritative: true, verdict: "matched", projectionDigest: digest } as const;
+  for (const verdict of ["matched", "conflict", "not-applied"] as const) {
+    assert.equal(parseObservationV1({ ...observation, verdict }).verdict, verdict);
+    assert.throws(() => parseObservationV1({ ...observation, verdict, authoritative: false }));
+    assert.throws(() => parseObservationV1({ ...observation, verdict, projectionDigest: null }));
+  }
+  const unavailable = { ...observation, authoritative: false, verdict: "unavailable" as const, projectionDigest: null };
+  assert.equal(parseObservationV1(unavailable).verdict, "unavailable");
+  assert.match(digestObservationV1(unavailable), /^sha256:[a-f0-9]{64}$/u);
+  assert.throws(() => parseObservationV1({ ...unavailable, authoritative: true }));
+  assert.throws(() => parseObservationV1({ ...unavailable, projectionDigest: digest }));
+});
+
 test("governed outcome transition refuses unverifiable chronology and verified masquerades", () => {
   const contractDigest = digestToolEffectContractV1(contract);
   const projectionDigest = authorityDigest(contract.readback.projection);
@@ -153,6 +177,7 @@ test("governed outcome transition refuses unverifiable chronology and verified m
   assert.equal(parseGovernedOutcomeV1({ ...outcome, status: "partial" }).status, "partial");
   assert.throws(() => parseGovernedOutcomeV1({ ...outcome, completedAt: "2026-08-20T11:00:00.000Z" }));
   assert.throws(() => parseGovernedOutcomeV1({ ...outcome, attempts: [{ ...outcome.attempts[0], semanticIdentity: "drift" }] }));
+  assert.throws(() => parseGovernedOutcomeV1({ ...outcome, attempts: [outcome.attempts[0], { ...outcome.attempts[0], dispatchedAt: "2026-08-20T12:00:02.000Z" }] }));
 
   const differentContract = { ...contract, operation: "events.update" } as const;
   assert.throws(() => verifyGovernedOutcomeTransitionV1(outcome, { ...context, contract: differentContract }));
