@@ -7,8 +7,9 @@ import {
   digestEffectTransportBindingV1,
   parseEffectTransportBindingV1,
   type EffectTransportHostBindingsV1,
-  type EffectTransportPortsV1,
   type EffectTransportResultSinkV1,
+  type TrustedEffectTransportExecutorCallbacksV1,
+  type TrustedEffectTransportExecutorV1,
 } from "../../src/authority/host/effect-transports.js";
 import { createOutcomeKernel, type OutcomeKernelStorage, type StoredEffectLifecycleV1 } from "../../src/authority/host/outcome-kernel.js";
 import { digestGovernedOutcomeV1, digestMissionClaimV1, digestToolEffectContractV1, type GovernedReceiptV1, type MissionClaimV1, type ToolEffectContractV1 } from "../../src/authority/tool-effect-contract.js";
@@ -22,8 +23,14 @@ const host: EffectTransportHostBindingsV1 = Object.freeze({ credential: "credent
 const wire = (outcome: string, data: unknown): string => JSON.stringify({ outcome, data });
 const succeed = (sink: EffectTransportResultSinkV1, outcome: string, data: unknown): void => sink.success(wire(outcome, data));
 const slackSchemas = (_request: unknown, sink: EffectTransportResultSinkV1): void => sink.success(JSON.stringify({ serverSchemaDigest: SLACK_LIKE_BINDING.serverSchemaDigest, toolSchemaDigest: SLACK_LIKE_BINDING.toolSchemaDigest }));
-const compileEffectTransportV1 = (input: Omit<Parameters<typeof compileEffectTransportWithHostKeyV1>[0], "observationAuthKey">, key = observationAuthKey) =>
-  compileEffectTransportWithHostKeyV1({ ...input, observationAuthKey: key } as Parameters<typeof compileEffectTransportWithHostKeyV1>[0] & { observationAuthKey: string });
+type CompileEffectTransportInput = Omit<Parameters<typeof compileEffectTransportWithHostKeyV1>[0], "executor" | "observationAuthKey"> & {
+  readonly executor?: TrustedEffectTransportExecutorV1;
+  readonly ports?: TrustedEffectTransportExecutorCallbacksV1;
+};
+const compileEffectTransportV1 = (input: CompileEffectTransportInput, key = observationAuthKey) => {
+  const { ports, ...rest } = input;
+  return compileEffectTransportWithHostKeyV1({ ...rest, executor: rest.executor ?? mintTrustedExecutor(ports ?? {}), observationAuthKey: key } as Parameters<typeof compileEffectTransportWithHostKeyV1>[0]);
+};
 
 const mintTrustedExecutor = (callbacks: unknown): unknown =>
   (effectTransports as unknown as { mintTrustedEffectTransportExecutorV1(callbacks: unknown): unknown }).mintTrustedEffectTransportExecutorV1(callbacks);
@@ -77,7 +84,7 @@ test("trusted executor minting rejects functions, accessors, and proxies without
   assert.equal(traps, 0);
 });
 
-test("callback contract violations never inspect Promise constructor or species", async () => {
+test("Promise-returning executors are unsupported without inspecting constructor or species", async () => {
   let traps = 0;
   const returned = Promise.resolve();
   Object.defineProperty(returned, "constructor", { get() { traps++; throw new Error("species trap"); } });
@@ -129,7 +136,7 @@ test("observation authentication keys are exact inert host-only 256-bit values",
     binding: SLACK_LIKE_BINDING,
     modelInput: { channel: "general", text: "hello" },
     resolveHostBindings: async () => host,
-    ports: {},
+    executor: mintTrustedExecutor({}) as TrustedEffectTransportExecutorV1,
   };
   for (const invalid of ["", "a".repeat(63), "a".repeat(65), "A".repeat(64)]) {
     assert.throws(() => compileEffectTransportWithHostKeyV1({ ...base, observationAuthKey: invalid }), /authentication key|256 bits/i);
@@ -142,7 +149,7 @@ test("observation authentication keys are exact inert host-only 256-bit values",
 
 test("reviewed HTTP compilation binds method, origin, path, schemas, and response projection", async () => {
   const calls: unknown[] = [];
-  const ports: EffectTransportPortsV1 = { http: { call: (request, sink) => { calls.push(request); succeed(sink, "ok", calls.length === 1 ? { eventId: "event-9", state: "accepted", ignored: "outside projection" } : { eventId: "event-9", state: "visible", ignored: "outside projection" }); } } };
+  const ports: TrustedEffectTransportExecutorCallbacksV1 = { http: { call: (request, sink) => { calls.push(request); succeed(sink, "ok", calls.length === 1 ? { eventId: "event-9", state: "accepted", ignored: "outside projection" } : { eventId: "event-9", state: "visible", ignored: "outside projection" }); } } };
   const compiled = compileEffectTransportV1({ contract: CALENDAR_LIKE_CONTRACT, binding: CALENDAR_LIKE_BINDING, modelInput: { eventId: "event-9", title: "Review" }, resolveHostBindings: async () => host, ports });
   const dispatched = await compiled.adapter.dispatch(dispatchState(CALENDAR_LIKE_CONTRACT, compiled.effect));
   const reconciled = await compiled.adapter.reconcile!(dispatchState(CALENDAR_LIKE_CONTRACT, compiled.effect), dispatched);
@@ -239,7 +246,7 @@ test("provider DTOs are detached before reads and hostile accessors, proxies, ca
   assert.equal(resolverCalls, 0);
 });
 
-test("a caller-controlled port return root is ignored without thenable assimilation or traps", async () => {
+test("a non-undefined callback return refuses without inspecting the returned root", async () => {
   let calls = 0, traps = 0;
   const returnedRoot = new Proxy(Object.create(null), { get() { traps++; throw new Error("provider trap"); } });
   const ports = {
@@ -254,33 +261,21 @@ test("a caller-controlled port return root is ignored without thenable assimilat
   assert.equal(traps, 0);
 });
 
-test("a rejected native port Promise becomes a sanitized boundary failure without an unhandled rejection", async () => {
-  const secret = "async-provider-secret";
-  const unhandled: unknown[] = [];
-  const onUnhandled = (reason: unknown): void => { unhandled.push(reason); };
-  process.on("unhandledRejection", onUnhandled);
-  try {
-    const compiled = compileEffectTransportV1({
-      contract: CALENDAR_LIKE_CONTRACT,
-      binding: CALENDAR_LIKE_BINDING,
-      modelInput: { eventId: "event-9", title: "Review" },
-      resolveHostBindings: async () => host,
-      ports: { http: { call: () => Promise.reject(new Error(secret)) } },
-    });
-    const bounded = Promise.race([
-      compiled.adapter.dispatch(dispatchState(CALENDAR_LIKE_CONTRACT, compiled.effect)),
-      new Promise<never>((_resolve, reject) => setTimeout(() => reject(new Error("native rejection was not observed")), 50)),
-    ]);
-    await assert.rejects(bounded, error => {
-      assert.doesNotMatch(String(error), new RegExp(secret));
-      assert.match(String(error), /HTTP effect transport boundary failed/);
-      return true;
-    });
-    await new Promise<void>(resolve => setImmediate(resolve));
-    assert.deepEqual(unhandled, []);
-  } finally {
-    process.off("unhandledRejection", onUnhandled);
-  }
+test("the first serialized sink settlement wins over double and late callbacks", async () => {
+  const compiled = compileEffectTransportV1({
+    contract: CALENDAR_LIKE_CONTRACT,
+    binding: CALENDAR_LIKE_BINDING,
+    modelInput: { eventId: "event-9", title: "Review" },
+    resolveHostBindings: async () => host,
+    ports: { http: { call: (_request, sink) => {
+      succeed(sink, "ok", { eventId: "event-9", state: "accepted" });
+      sink.failure();
+      queueMicrotask(() => sink.success(new Proxy(Object.create(null), { get() { throw new Error("late trap"); } }) as never));
+    } } },
+  });
+  const outcome = await compiled.adapter.dispatch(dispatchState(CALENDAR_LIKE_CONTRACT, compiled.effect));
+  assert.equal(outcome.kind, "acknowledged");
+  await new Promise<void>(resolve => setImmediate(resolve));
 });
 
 test("provider and host boundary failures are replaced without leaking secret-bearing content", async () => {
@@ -412,7 +407,7 @@ test("MCP readback binds its own runtime tool schema digest before the call", as
 
 test("ambiguous writes use authoritative readback without resend and semantic conflicts are explicit", async () => {
   let sends = 0, reads = 0;
-  const ports: EffectTransportPortsV1 = { http: { call: (request, sink) => request.method === "POST" ? (sends++, succeed(sink, "unknown", null)) : (reads++, succeed(sink, "conflict", { eventId: "event-9", state: "other" })) } };
+  const ports: TrustedEffectTransportExecutorCallbacksV1 = { http: { call: (request, sink) => request.method === "POST" ? (sends++, succeed(sink, "unknown", null)) : (reads++, succeed(sink, "conflict", { eventId: "event-9", state: "other" })) } };
   const compiled = compileEffectTransportV1({ contract: CALENDAR_LIKE_CONTRACT, binding: CALENDAR_LIKE_BINDING, modelInput: { eventId: "event-9", title: "Review" }, resolveHostBindings: async () => host, ports });
   const state = dispatchState(CALENDAR_LIKE_CONTRACT, compiled.effect);
   const ambiguous = await compiled.adapter.dispatch(state);
