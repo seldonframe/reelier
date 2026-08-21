@@ -70,6 +70,21 @@ Compose the existing `AuthorityLedger`, gate, prepared dispatch coordinator, and
 
 Implement closed transport ports for MCP tool calls, reviewed HTTP/OpenAPI calls, and fixed CLI argv/env execution. Compilation accepts only fields named in the signed effect contract; host-owned fields and credentials are injected after model input validation and are excluded from evidence. CLI forbids shell strings and uses executable plus argv; HTTP binds method, origin, path template, request schema digest, and response projection; MCP binds server/tool/schema digests. Trusted port implementations serialize provider responses before delivering them through a host-owned result sink; the host never awaits or inspects a caller-controlled port return root. Create three deliberately unrelated hermetic contracts—a Slack-like message, a Calendar-like event, and a Slides-like document update—and prove all run through the same generic Task 2 kernel, including its minimal generic correction that lets stored pending Outcomes in recoverable states reach authoritative reconciliation. Include ambiguity/readback, conflict, no-readback=`absent`, delayed=`partial`, and credential-leak tests.
 
+**Amended trust boundary after terminal falsification:** provider executor code is a host-minted trusted capability because it receives provider credentials and could otherwise exfiltrate them directly. V1 executors are callback-only and must synchronously return `undefined`; they own all internal asynchronous work and rejection hygiene, and only bounded serialized success or a fixed failure signal crosses into the authority host. Arbitrary returned Promises are unsupported. Untrusted provider data, model input, and durable state remain inertly parsed. If arbitrary Promise-returning executors are required later, isolate them in a child process with framed byte IPC as a separately reviewed task.
+
+### Task 3B: Mint and enforce the trusted callback-only executor capability
+
+**Files:**
+
+- Modify `src/authority/host/effect-transports.ts`.
+- Modify `src/authority/host/index.ts` only if the capability factory is public.
+- Modify `test/authority/effect-transports.test.ts`.
+- Create `.superpowers/sdd/2026-08-20-universal-governed-outcomes-oss/task-3b-report.md`.
+
+**Requirements:**
+
+Replace raw executable port objects with an opaque host-minted trusted executor capability whose callbacks have a `void`/synchronous-`undefined` return contract. Reject raw or unminted port objects before resolving credentials or dispatch. Remove the in-process native-Promise reaction bridge and every claim that the host can safely absorb arbitrary Promise returns. Preserve fixed secret-free errors, first-settle sink semantics, authenticated projection provenance, restart/no-resend behavior, exact HTTP/MCP/CLI bindings, and wire/receipt ABI. Tests must prove raw ports refuse before credential resolution, trusted callback executors work, synchronous throws sanitize, double/late sink settlement converges, and hostile serialized provider data remains inert. Document that async work must be caught inside the trusted executor. Do not begin Task 4 until Task 3B independently ships.
+
 ### Task 4: Certify GitHub merge and Linear operations as contract instances
 
 **Files:**
