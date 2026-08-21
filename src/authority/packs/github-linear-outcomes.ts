@@ -47,6 +47,13 @@ export interface GitHubLinearOutcomePackV1 {
   readonly operations: Readonly<Record<GitHubLinearOutcomeOperationNameV1, ReviewedOutcomeOperationV1>>;
 }
 
+export interface GitHubReviewedReleasePackMemberV1 {
+  readonly alias: "github_release_candidate_publish_v1" | "github_release_pr_ensure_v1" | "github_release_pr_merge_v1";
+  readonly contractDigest: string;
+  readonly bindingDigest: string;
+  readonly policyDigest: string;
+}
+
 interface GitHubReviewedOutcomePolicyV1 {
   readonly repository: string; readonly baseBranch: string; readonly baseSha: string; readonly headBranch: string; readonly headSha: string;
   readonly candidateDigest: string; readonly workflowPath: string; readonly workflowDigest: string; readonly requiredChecks: readonly string[];
@@ -103,6 +110,45 @@ export function createGitHubLinearOutcomePackV1(value: GitHubLinearReviewedAutho
   const pack = Object.freeze({ v: "reelier.github-linear-outcome-pack/v1" as const, authorityDigest: authorityDigestValue, githubPolicyDigest, linearPolicyDigest, operations });
   packAuthorities.set(pack, authority);
   return pack;
+}
+
+/** Canonical signed commitment for the exact reviewed candidate/PR/merge pack. */
+export function githubReviewedReleasePackDigestV1(pack: GitHubLinearOutcomePackV1): string {
+  const parsed = requirePack(pack);
+  return authorityDigest({
+    v: "reelier.github-reviewed-release-pack/v1",
+    operations: githubReviewedReleasePackMembers(parsed),
+  });
+}
+
+/** @internal Exact active-operation membership proof consumed by the branded GitHub executor. */
+export function assertGitHubReviewedReleasePackMemberV1(
+  pack: GitHubLinearOutcomePackV1,
+  tool: string,
+  contractDigest: string,
+  bindingDigest: string,
+  policyDigest: string,
+): GitHubReviewedReleasePackMemberV1 {
+  const parsed = requirePack(pack);
+  const operations = [parsed.operations.candidatePublish, parsed.operations.pullRequestEnsure, parsed.operations.exactHeadMerge] as const;
+  const index = operations.findIndex(operation => operation.binding.kind === "mcp" && (operation.binding.tool === tool || operation.binding.readback?.tool === tool));
+  if (index < 0) throw new TypeError("GitHub release operation is not a member of the reviewed release pack");
+  const member = githubReviewedReleasePackMembers(parsed)[index]!;
+  if (member.contractDigest !== contractDigest || member.bindingDigest !== bindingDigest || member.policyDigest !== policyDigest) throw new TypeError("GitHub release operation conflicts with exact reviewed release pack membership");
+  return member;
+}
+
+function githubReviewedReleasePackMembers(pack: GitHubLinearOutcomePackV1): readonly GitHubReviewedReleasePackMemberV1[] {
+  return Object.freeze([
+    ["github_release_candidate_publish_v1", pack.operations.candidatePublish],
+    ["github_release_pr_ensure_v1", pack.operations.pullRequestEnsure],
+    ["github_release_pr_merge_v1", pack.operations.exactHeadMerge],
+  ].map(([alias, operation]) => Object.freeze({
+    alias,
+    contractDigest: digestToolEffectContractV1((operation as ReviewedOutcomeOperationV1).contract),
+    bindingDigest: authorityDigest((operation as ReviewedOutcomeOperationV1).binding),
+    policyDigest: (operation as ReviewedOutcomeOperationV1).contract.policyDigest,
+  })) as GitHubReviewedReleasePackMemberV1[]);
 }
 
 /** @internal Shared by the reviewed pack and its branded GitHub host adapter. */

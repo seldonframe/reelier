@@ -105,6 +105,10 @@ test("generic reviewed pack delegates candidate publication into the existing br
     const mismatched = compile("generic_candidate_wrong_contract", reviewed.contract.policyDigest, mismatchedContract);
     await assert.rejects(() => mismatched.adapter.dispatch({ reservation: { reservationId: "generic_candidate_wrong_contract", state: "dispatched", intent: { requestId: "generic_candidate_wrong_contract", effectDigest: authorityDigest(mismatchedContract) } }, effect: mismatched.effect, effectDigest: authorityDigest(mismatchedContract), effectCanonicalBase64: Buffer.from(JSON.stringify(mismatched.effect)).toString("base64") } as any), /boundary|failed/i);
     assert.equal(providerCalls, 0);
+    const otherPack = reviewedPackForPlan({ ...plan, candidateBranch: "reelier/release/substituted" });
+    const other = otherPack.operations.candidatePublish, crossPack = compileEffectTransportV1({ contract: other.contract, binding: other.binding, modelInput: { authorizationHandle: "release_auth_1", requestId: "generic_candidate_cross_pack" }, observationAuthKey: "a".repeat(64), resolveHostBindings: async () => ({ credential: "host-only-secret", account: plan.repository, destination: "reelier/release/substituted", limit: otherPack.githubPolicyDigest }), executor });
+    await assert.rejects(() => crossPack.adapter.dispatch({ reservation: { reservationId: "generic_candidate_cross_pack", state: "dispatched", intent: { requestId: "generic_candidate_cross_pack", effectDigest: authorityDigest(other.contract) } }, effect: crossPack.effect, effectDigest: authorityDigest(other.contract), effectCanonicalBase64: Buffer.from(JSON.stringify(crossPack.effect)).toString("base64") } as any), /boundary|failed/i);
+    assert.equal(providerCalls, 0);
     const compiled = compile("authenticated_candidate_publish", reviewed.contract.policyDigest);
     const outcome = await dispatchReviewedThroughCoordinator(compiled, { reservation: { reservationId: "durable_candidate_reservation", state: "reserved", intent: { requestId: "authenticated_candidate_publish", effectDigest: authorityDigest(reviewed.contract) } }, effect: compiled.effect, effectDigest: authorityDigest(reviewed.contract), effectCanonicalBase64: Buffer.from(JSON.stringify(compiled.effect)).toString("base64") } as any);
     assert.equal(outcome.kind, "acknowledged");
@@ -119,11 +123,11 @@ test("generic reviewed executor refuses unsigned PR, merge, and unreviewed tag b
   const refuseCall = async () => { providerCalls += 1; throw new Error("provider must remain unreachable"); };
   try {
     const runner = await createGitHubReleaseRunner({ rootDir: root, journalSigner: { signerId: "release-journal-2026", ...keys }, evidenceSigner: fixture.evidenceSigner, authorizationResolver: async () => fixture.context, provider: candidateProvider({ findPullRequests: refuseCall, createPullRequest: refuseCall, markPullRequestReady: refuseCall, getPullRequest: refuseCall, getChecks: refuseCall, mergePullRequest: refuseCall }), now: () => new Date("2026-08-18T06:00:00.000Z") });
-    const executor = createGitHubReleaseOutcomeExecutorV1(runner);
+    const executor = createGitHubReleaseOutcomeExecutorV1(runner, fixture.reviewedPack);
     for (const [name, requestId] of [["pullRequestEnsure", "unsigned_pr"], ["exactHeadMerge", "unsigned_merge"]] as const) {
       const operation = fixture.reviewedPack.operations[name];
       const compiled = compileEffectTransportV1({ contract: operation.contract, binding: operation.binding, modelInput: { authorizationHandle: "release_auth_1", requestId }, observationAuthKey: "f".repeat(64), resolveHostBindings: async () => ({ credential: "secret", account: plan.repository, destination: plan.candidateBranch, limit: fixture.reviewedPack.githubPolicyDigest }), executor });
-      const state = { reservation: { reservationId: requestId, state: "dispatched", intent: { effectDigest: authorityDigest(operation.contract) } }, effect: compiled.effect, effectDigest: authorityDigest(operation.contract), effectCanonicalBase64: Buffer.from(JSON.stringify(compiled.effect)).toString("base64") } as any;
+      const state = { reservation: { reservationId: requestId, state: "dispatched", intent: { requestId, effectDigest: authorityDigest(operation.contract) } }, effect: compiled.effect, effectDigest: authorityDigest(operation.contract), effectCanonicalBase64: Buffer.from(JSON.stringify(compiled.effect)).toString("base64") } as any;
       await assert.rejects(() => compiled.adapter.dispatch(state), /boundary|failed/i);
       assert.equal(providerCalls, 0);
     }
@@ -131,7 +135,7 @@ test("generic reviewed executor refuses unsigned PR, merge, and unreviewed tag b
     const candidate = fixture.reviewedPack.operations.candidatePublish, tagBinding = { ...(candidate.binding as any), operation: "github.tag.v1", tool: "github_release_tag_create_v1", toolSchemaDigest: digest("e"), readback: null };
     const tagContract = { ...candidate.contract, contractId: "reviewed.github.tag.v1", operation: "github.tag.v1", operationDigest: authorityDigest(tagBinding), schemaDigest: tagBinding.toolSchemaDigest, readback: null, maximumEvidenceGrade: "absent" as const };
     const tag = compileEffectTransportV1({ contract: tagContract, binding: tagBinding, modelInput: { authorizationHandle: "release_auth_1", requestId: "unreviewed_tag" }, observationAuthKey: "f".repeat(64), resolveHostBindings: async () => ({ credential: "secret", account: plan.repository, destination: plan.candidateBranch, limit: fixture.reviewedPack.githubPolicyDigest }), executor });
-    const tagState = { reservation: { reservationId: "unreviewed_tag", state: "dispatched", intent: { effectDigest: authorityDigest(tagContract) } }, effect: tag.effect, effectDigest: authorityDigest(tagContract), effectCanonicalBase64: Buffer.from(JSON.stringify(tag.effect)).toString("base64") } as any;
+    const tagState = { reservation: { reservationId: "unreviewed_tag", state: "dispatched", intent: { requestId: "unreviewed_tag", effectDigest: authorityDigest(tagContract) } }, effect: tag.effect, effectDigest: authorityDigest(tagContract), effectCanonicalBase64: Buffer.from(JSON.stringify(tag.effect)).toString("base64") } as any;
     await assert.rejects(() => tag.adapter.dispatch(tagState), /schema|transport|boundary|drift/i);
     assert.equal(providerCalls, 0);
   } finally { await rm(root, { recursive: true, force: true }); }
@@ -169,8 +173,8 @@ test("signed reviewed PR and exact-head merge execute through the generic adapte
       for (const key of Object.keys(counters) as (keyof typeof counters)[]) counters[key] = 0;
 
       const operation = fixture.reviewedPack.operations[name], requestId = `${name}_reviewed`;
-      const compiled = compileEffectTransportV1({ contract: operation.contract, binding: operation.binding, modelInput: { authorizationHandle: "release_auth_1", requestId }, observationAuthKey: "7".repeat(64), resolveHostBindings: async () => ({ credential: "secret", account: plan.repository, destination: plan.candidateBranch, limit: fixture.reviewedPack.githubPolicyDigest }), executor: createGitHubReleaseOutcomeExecutorV1(runner) });
-      const state = { reservation: { reservationId: requestId, state: "reserved", intent: { effectDigest: authorityDigest(operation.contract) } }, effect: compiled.effect, effectDigest: authorityDigest(operation.contract), effectCanonicalBase64: Buffer.from(JSON.stringify(compiled.effect)).toString("base64") } as any;
+      const compiled = compileEffectTransportV1({ contract: operation.contract, binding: operation.binding, modelInput: { authorizationHandle: "release_auth_1", requestId }, observationAuthKey: "7".repeat(64), resolveHostBindings: async () => ({ credential: "secret", account: plan.repository, destination: plan.candidateBranch, limit: fixture.reviewedPack.githubPolicyDigest }), executor: createGitHubReleaseOutcomeExecutorV1(runner, fixture.reviewedPack) });
+      const state = { reservation: { reservationId: requestId, state: "reserved", intent: { requestId, effectDigest: authorityDigest(operation.contract) } }, effect: compiled.effect, effectDigest: authorityDigest(operation.contract), effectCanonicalBase64: Buffer.from(JSON.stringify(compiled.effect)).toString("base64") } as any;
       assert.equal((await dispatchReviewedThroughCoordinator(compiled, state)).kind, "acknowledged");
       assert.deepEqual(counters, name === "pullRequestEnsure"
         ? { find: 4, create: 1, ready: 1, read: 3, checks: 0, merge: 0, commit: 0 }
