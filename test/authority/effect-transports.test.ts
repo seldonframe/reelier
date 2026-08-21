@@ -9,7 +9,7 @@ import {
   type EffectTransportPortsV1,
 } from "../../src/authority/host/effect-transports.js";
 import { createOutcomeKernel, type OutcomeKernelStorage, type StoredEffectLifecycleV1 } from "../../src/authority/host/outcome-kernel.js";
-import { digestMissionClaimV1, digestToolEffectContractV1, type GovernedReceiptV1, type MissionClaimV1, type ToolEffectContractV1 } from "../../src/authority/tool-effect-contract.js";
+import { digestGovernedOutcomeV1, digestMissionClaimV1, digestToolEffectContractV1, type GovernedReceiptV1, type MissionClaimV1, type ToolEffectContractV1 } from "../../src/authority/tool-effect-contract.js";
 import { authorityDigest } from "../../src/authority/wire.js";
 import { CALENDAR_LIKE_BINDING, CALENDAR_LIKE_CONTRACT, SLACK_LIKE_BINDING, SLACK_LIKE_CONTRACT, SLIDES_LIKE_BINDING, SLIDES_LIKE_CONTRACT } from "./fixtures/tool-effect-contracts.js";
 
@@ -67,6 +67,7 @@ test("reviewed HTTP compilation binds method, origin, path, schemas, and respons
     modelDigest: authorityDigest({ eventId: "event-9", title: "Review" }),
     readbackOperation: CALENDAR_LIKE_CONTRACT.readback!.operation,
     projectionSchemaDigest: authorityDigest(CALENDAR_LIKE_CONTRACT.readback!.projection),
+    projectionDigest: authorityDigest({ "/eventId": "event-9", "/state": "visible" }),
   }));
 
   const changed = { ...CALENDAR_LIKE_BINDING, method: "PATCH" as const };
@@ -155,19 +156,17 @@ test("provider DTOs are detached before reads and hostile accessors, proxies, ca
   assert.equal(resolverCalls, 0);
 });
 
-test("provider responses cross the asynchronous port boundary only as serialized inert data", async () => {
+test("a caller-controlled port return root is ignored without thenable assimilation or traps", async () => {
   let traps = 0;
-  const forbiddenRootDto = new Proxy({ outcome: "ok", data: {} }, { get() { traps++; throw new Error("provider trap"); } });
-  void forbiddenRootDto;
+  const returnedRoot = new Proxy(Object.create(null), { get() { traps++; throw new Error("provider trap"); } });
   const ports = {
     mcp: {
       inspectSchemas: async () => JSON.stringify({ serverSchemaDigest: SLACK_LIKE_BINDING.serverSchemaDigest, toolSchemaDigest: SLACK_LIKE_BINDING.toolSchemaDigest }),
-      call: async () => JSON.stringify({ outcome: "ok", data: { messageId: "m-1", then: "inert-data" } }),
+      call: () => returnedRoot,
     },
   } as any;
   const compiled = compileEffectTransportV1({ contract: SLACK_LIKE_CONTRACT, binding: SLACK_LIKE_BINDING, modelInput: { channel: "general", text: "hello" }, resolveHostBindings: async () => host, ports });
-  const result = await compiled.adapter.dispatch(dispatchState(SLACK_LIKE_CONTRACT, compiled.effect));
-  assert.equal(result.kind, "acknowledged");
+  await assert.rejects(() => compiled.adapter.dispatch(dispatchState(SLACK_LIKE_CONTRACT, compiled.effect)), /effect transport boundary failed/i);
   assert.equal(traps, 0);
 });
 
@@ -308,6 +307,39 @@ test("ambiguous writes use authoritative readback without resend and semantic co
   const readback = await compiled.adapter.reconcile!(state, ambiguous);
   assert.equal(readback.reconciliationStatus, "conflict");
   assert.deepEqual({ sends, reads }, { sends: 1, reads: 1 });
+});
+
+test("same-schema contradictory readback values produce distinct projection commitments in receipts", async () => {
+  const execute = async (stateValue: string) => {
+    const receipts: GovernedReceiptV1[] = [];
+    const compiled = compileEffectTransportV1({
+      contract: CALENDAR_LIKE_CONTRACT,
+      binding: CALENDAR_LIKE_BINDING,
+      modelInput: { eventId: "event-9", title: "Review" },
+      resolveHostBindings: async () => host,
+      ports: { http: { call: async request => request.method === "POST" ? wire("ok", { eventId: "event-9", state: "accepted" }) : wire("ok", { eventId: "event-9", state: stateValue }) } },
+    });
+    const result = await runThroughKernel(CALENDAR_LIKE_CONTRACT, compiled, "reservation-contradictory", receipts);
+    return { outcome: result.effects[0]!, receipt: receipts[0]! };
+  };
+  const visible = await execute("visible"), deleted = await execute("deleted");
+  const visibleCommitment = visible.outcome.observation!.projectionDigest;
+  const deletedCommitment = deleted.outcome.observation!.projectionDigest;
+  assert.notEqual(visibleCommitment, deletedCommitment);
+  assert.equal(visibleCommitment, authorityDigest({
+    v: "reelier.effect-authoritative-match/v1",
+    contractDigest: digestToolEffectContractV1(CALENDAR_LIKE_CONTRACT),
+    bindingDigest: digestEffectTransportBindingV1(CALENDAR_LIKE_BINDING),
+    reservationId: "reservation-contradictory",
+    semanticIdentity: CALENDAR_LIKE_CONTRACT.semanticIdentity,
+    modelDigest: authorityDigest({ eventId: "event-9", title: "Review" }),
+    readbackOperation: CALENDAR_LIKE_CONTRACT.readback!.operation,
+    projectionSchemaDigest: authorityDigest(CALENDAR_LIKE_CONTRACT.readback!.projection),
+    projectionDigest: authorityDigest({ "/eventId": "event-9", "/state": "visible" }),
+  }));
+  assert.equal(visible.receipt.outcomeDigest, digestGovernedOutcomeV1(visible.outcome));
+  assert.equal(deleted.receipt.outcomeDigest, digestGovernedOutcomeV1(deleted.outcome));
+  assert.notEqual(visible.receipt.outcomeDigest, deleted.receipt.outcomeDigest);
 });
 
 test("a durable pending write resumes after restart through authoritative readback without resend", async () => {
