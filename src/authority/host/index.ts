@@ -5,6 +5,7 @@ export { createSecretResolver } from "./secret-resolver.js";
 export type { DispatchAdapter, DispatchCoordinator, DispatchOutcome, DispatchEvidenceWriter, DispatchPublication, DispatchBudget, CertifiedIdentityVerifier, CertifiedDispatchOptions, DispatchReservationProjectionV1 } from "./dispatch.js";
 export { createDispatchCoordinator } from "./dispatch.js";
 export { createOutcomeKernel, createTrustedObservationVerifier, type OutcomeKernel, type OutcomeKernelOptions, type OutcomeKernelStorage, type OutcomeKernelEffectRequestV1, type StoredEffectLifecycleV1, type MissionOutcomeV1, type TrustedObservationVerifierV1 } from "./outcome-kernel.js";
+export { createFileOutcomeKernelStorage } from "./outcome-kernel-fs-storage.js";
 export { compileEffectTransportV1, digestEffectTransportBindingV1, mintTrustedEffectTransportExecutorV1, parseEffectTransportBindingV1, type CliEffectTransportBindingV1, type CompiledEffectTransportV1, type EffectTransportBindingV1, type EffectTransportHostBindingsV1, type EffectTransportProviderEnvelopeV1, type EffectTransportProviderResponseV1, type EffectTransportResultSinkV1, type HttpEffectTransportBindingV1, type McpEffectTransportBindingV1, type TrustedEffectTransportExecutorCallbacksV1, type TrustedEffectTransportExecutorV1 } from "./effect-transports.js";
 export type { McpDispatchRoute, McpDispatchAdapterOptions } from "./mcp-connector.js";
 export { createMcpDispatchAdapter } from "./mcp-connector.js";
