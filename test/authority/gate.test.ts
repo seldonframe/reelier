@@ -21,6 +21,9 @@ import {
 import { AuthorityBoundaryError, type GateRefusalReason } from "../../src/authority/errors.js";
 import { bindableTempRoot } from "./bindable-root.js";
 import { profileGovernanceFixture } from "./profile-governance-fixture.js";
+import { createDispatchCoordinator } from "../../src/authority/host/dispatch.js";
+import { createDispatchCommitLease, createPreparedDispatch, preparedDispatchProjectionDigest } from "../../src/authority/host/prepared-dispatch.js";
+import { __testSetAuthorityCellHostPlatform } from "../../src/authority/host/platform.js";
 
 const sha=(c:string)=>`sha256:${c.repeat(64)}`;
 
@@ -60,6 +63,32 @@ test("only a newly accepted genuine gate reservation carries send authority", as
     assert.equal(existing.kind, "existing");
     assert.throws(() => bindAcceptedGateReservationAuthorityV1(f.gate, existing), /newly accepted|authority/i);
   } finally { await f.cleanup(); }
+});
+
+test("the real prepared coordinator revalidates the transferred gate handle after asynchronous prepare", async () => {
+  const f = await fixture(), restore = __testSetAuthorityCellHostPlatform("linux");
+  try {
+    const accepted = await f.gate.decide(f.request);
+    assert.equal(accepted.kind, "accepted");
+    if (accepted.kind !== "accepted") return;
+    const authority = bindAcceptedGateReservationAuthorityV1(f.gate, accepted), description = describeAcceptedGateReservationAuthorityV1(authority), handle = takeAcceptedGateReservationHandleV1(authority);
+    let persisted: any = await f.ledger.getReservation(description.reservationId), commits = 0, providers = 0;
+    const expiresAt = new Date(Date.now() + 60_000).toISOString(), projection = { v: "reelier.prepared-effect-projection/v1" as const, transport: "mcp", operationDigest: sha("7"), requestDigest: sha("9") }, requestDigest = preparedDispatchProjectionDigest(projection);
+    const coordinator = createDispatchCoordinator({
+      async getReservation() { return persisted; },
+      async commitPreparedDispatch(input: any) { commits += 1; persisted = { ...persisted, state: "dispatched", sendStarted: true }; return createDispatchCommitLease({ reservationId: input.reservationId, allocationId: input.allocationId, preparedDigest: input.preparedDescription.materializedRequestDigest, authorityGeneration: input.expectedAuthorityGeneration, authorityExpiresAt: input.preparedDescription.authorityExpiresAt, absoluteDeadlineMs: input.absoluteDeadlineMs, commitGeneration: "commit_1" }); },
+      async transition(_id: string, expected: string, event: any) { if (persisted.state !== expected) return { ok: false, reason: "state-conflict" }; persisted = { ...persisted, state: event.to, resultDigest: event.resultDigest }; return { ok: true, status: "transitioned", reservation: persisted }; },
+      async recover() { return { ok: true, reservations: [persisted], highWaterMark: null, topology: { directorySync: "verified" } }; },
+    } as any, {
+      async prepare() {
+        (f.stateInput.snapshot.candidates[0]!.stateEvents as any[]).push({ index: 1, kind: "revoked", contractDigest: description.contractDigest, at: decisionAt });
+        return createPreparedDispatch({ description: { v: "reelier.prepared-dispatch-description/v1", routeDigest: sha("8"), materializedRequestDigest: requestDigest, projection, authorityGeneration: "generation_1", authorityExpiresAt: expiresAt, absoluteDeadlineMs: performance.now() + 60_000, reservationId: description.reservationId, allocationId: "allocation_1" }, send: async () => { providers += 1; return { kind: "acknowledged", resultDigest: sha("6") }; } });
+      },
+      async dispatch() { throw new Error("legacy dispatch must not run"); },
+    });
+    await assert.rejects(() => coordinator.dispatch(handle), /changed|revoked|current|authority/i);
+    assert.deepEqual({ commits, providers }, { commits: 0, providers: 0 });
+  } finally { restore(); await f.cleanup(); }
 });
 
 test("accepted exact-existing recovery exposes only an opaque durable readback linkage", async () => {
