@@ -95,7 +95,7 @@ test("GitHub merge readback closes exact base, head, merge commit, and post-merg
 test("ambiguous Linear comment and status writes reconcile by readback without resend", async () => {
   const pack = createGitHubLinearOutcomePackV1(reviewedInput());
   for (const [name, model, readback] of [
-    ["linearEvidenceComment", { evidenceUrl: "https://www.reelier.com/r/receipt_01" }, { workspace: "workspace_01", team: "team_01", project: "project_01", issue: "REEL-TEST-1", commentMarker: "reelier:evidence:mission_01", commentId: "comment_01" }],
+    ["linearEvidenceComment", { evidenceUrl: "https://www.reelier.com/r/receipt_01" }, { workspace: "workspace_01", team: "team_01", project: "project_01", issue: "REEL-TEST-1", commentMarker: "reelier:evidence:mission_01", evidenceUrl: "https://www.reelier.com/r/receipt_01", evidenceContentDigest: sha("f"), commentId: "comment_01" }],
     ["linearStatusTransition", { requestId: "status_request_01" }, { workspace: "workspace_01", team: "team_01", project: "project_01", issue: "REEL-TEST-1", preStatus: "In Progress", targetStatus: "Done", status: "Done" }],
   ] as const) {
     const operation = pack.operations[name];

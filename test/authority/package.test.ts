@@ -202,7 +202,6 @@ test("public authority pack export includes only reviewed pack constructors and 
   assert.deepEqual(Object.keys(pack).sort(), [
     "GITHUB_RELEASE_OUTCOME_SERVER_SCHEMA_DIGEST_V1",
     "assertGitHubLinearProviderReadbackV1",
-    "assertLinearStatusPredecessorV1",
     "assertStaticFirstPartySourcesConform",
     "createGitHubLinearOutcomePackV1",
     "createStaticPackRegistry",

@@ -2,7 +2,6 @@ export type { StaticPackDefinition, StaticPackRegistry } from "../pack.js";
 export { createStaticPackRegistry, definitionRegistrationDigest, assertStaticFirstPartySourcesConform } from "../pack.js";
 export type { PackReconciliationResult, PackReconciliationStatus, PackReconciler, ProviderResponse } from "../../packs/types.js";
 export {
-  assertLinearStatusPredecessorV1,
   assertGitHubLinearProviderReadbackV1,
   createGitHubLinearOutcomePackV1,
   GITHUB_RELEASE_OUTCOME_SERVER_SCHEMA_DIGEST_V1,

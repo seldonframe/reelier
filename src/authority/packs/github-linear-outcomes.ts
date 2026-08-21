@@ -1,13 +1,8 @@
 import { isProxy } from "node:util/types";
 import type { EffectTransportBindingV1, McpEffectTransportBindingV1 } from "../host/effect-transports.js";
 import {
-  digestGovernedOutcomeV1,
   digestToolEffectContractV1,
-  parseGovernedOutcomeV1,
-  parseGovernedReceiptV1,
   parseToolEffectContractV1,
-  type GovernedOutcomeV1,
-  type GovernedReceiptV1,
   type ProviderOutcomePackV1,
   type ToolEffectContractV1,
 } from "../tool-effect-contract.js";
@@ -32,7 +27,7 @@ export interface GitHubLinearReviewedAuthorityV1 {
     accountRef: string; destinationRef: string; credentialRef: string; limitRef: string;
   }>;
   readonly linear: Readonly<{
-    workspace: string; team: string; project: string; issue: string; preStatus: string; targetStatus: string; commentMarker: string;
+    workspace: string; team: string; project: string; issue: string; preStatus: string; targetStatus: string; commentMarker: string; evidenceUrl: string; evidenceContentDigest: string;
     accountRef: string; destinationRef: string; credentialRef: string; limitRef: string;
   }>;
 }
@@ -71,7 +66,7 @@ export function createGitHubLinearOutcomePackV1(value: GitHubLinearReviewedAutho
     candidatePublish: operation({ key: "candidate-publish", provider: "github", policyDigest: githubPolicyDigest, bindings: githubBindings, modelFields: ["authorizationHandle", "requestId", "semanticsDigest"], serverSchemaDigest: GITHUB_RELEASE_OUTCOME_SERVER_SCHEMA_DIGEST_V1, tool: "github_release_candidate_publish_v1", readbackTool: "github_release_candidate_publish_readback_v1", projection: ["/repository", "/baseSha", "/headSha", "/candidateDigest"] }),
     pullRequestEnsure: operation({ key: "pull-request-ensure", provider: "github", policyDigest: githubPolicyDigest, bindings: githubBindings, modelFields: ["authorizationHandle", "requestId", "semanticsDigest"], serverSchemaDigest: GITHUB_RELEASE_OUTCOME_SERVER_SCHEMA_DIGEST_V1, tool: "github_release_pr_ensure_v1", readbackTool: "github_release_pr_ensure_readback_v1", projection: ["/repository", "/baseBranch", "/headSha", "/pullRequest", "/ready"] }),
     exactHeadMerge: operation({ key: "exact-head-squash-merge", provider: "github", policyDigest: githubPolicyDigest, bindings: githubBindings, modelFields: ["authorizationHandle", "requestId", "semanticsDigest"], serverSchemaDigest: GITHUB_RELEASE_OUTCOME_SERVER_SCHEMA_DIGEST_V1, tool: "github_release_pr_merge_v1", readbackTool: "github_release_pr_merge_readback_v1", projection: ["/repository", "/baseSha", "/headSha", "/mergeCommitSha", "/treeSha"] }),
-    linearEvidenceComment: operation({ key: "evidence-comment", provider: "linear", policyDigest: linearPolicyDigest, bindings: linearBindings, modelFields: ["evidenceUrl"], serverSchemaDigest: LINEAR_SERVER_SCHEMA, tool: "linear_evidence_comment_v1", readbackTool: "linear_evidence_comment_readback_v1", projection: ["/workspace", "/team", "/project", "/issue", "/commentMarker", "/commentId"] }),
+    linearEvidenceComment: operation({ key: "evidence-comment", provider: "linear", policyDigest: linearPolicyDigest, bindings: linearBindings, modelFields: ["evidenceUrl"], serverSchemaDigest: LINEAR_SERVER_SCHEMA, tool: "linear_evidence_comment_v1", readbackTool: "linear_evidence_comment_readback_v1", projection: ["/workspace", "/team", "/project", "/issue", "/commentMarker", "/evidenceUrl", "/evidenceContentDigest", "/commentId"] }),
     linearStatusTransition: operation({ key: "status-transition", provider: "linear", policyDigest: linearPolicyDigest, bindings: linearBindings, modelFields: ["requestId"], serverSchemaDigest: LINEAR_SERVER_SCHEMA, tool: "linear_status_transition_v1", readbackTool: "linear_status_transition_readback_v1", projection: ["/workspace", "/team", "/project", "/issue", "/preStatus", "/targetStatus", "/status"] }),
   });
   const pack = Object.freeze({ v: "reelier.github-linear-outcome-pack/v1" as const, authorityDigest: authorityDigestValue, githubPolicyDigest, linearPolicyDigest, operations });
@@ -104,14 +99,6 @@ export function orderedGitHubLinearOperationsV1(pack: GitHubLinearOutcomePackV1,
   return Object.freeze([parsed.operations.candidatePublish, parsed.operations.pullRequestEnsure, parsed.operations.exactHeadMerge, parsed.operations.linearEvidenceComment, parsed.operations.linearStatusTransition]);
 }
 
-export function assertLinearStatusPredecessorV1(pack: GitHubLinearOutcomePackV1, value: Readonly<{ receipt: GovernedReceiptV1; outcome: GovernedOutcomeV1 }>): void {
-  const parsed = requirePack(pack), pair = inertRecord(value, ["receipt", "outcome"], "Linear status predecessor");
-  const receipt = parseGovernedReceiptV1(pair.receipt), outcome = parseGovernedOutcomeV1(pair.outcome);
-  const expectedContractDigest = digestToolEffectContractV1(parsed.operations.linearEvidenceComment.contract);
-  if (receipt.status !== "verified" || outcome.status !== "verified") throw new TypeError("Linear status predecessor receipt must be verified");
-  if (outcome.contractDigest !== expectedContractDigest || outcome.semanticIdentity !== parsed.operations.linearEvidenceComment.contract.semanticIdentity || receipt.outcomeDigest !== digestGovernedOutcomeV1(outcome)) throw new TypeError("Linear status requires the exact verified comment predecessor");
-}
-
 export function assertGitHubLinearProviderReadbackV1(pack: GitHubLinearOutcomePackV1, operationName: GitHubLinearOutcomeOperationNameV1, value: unknown): Readonly<Record<string, string | number | boolean>> {
   const parsed = requirePack(pack), authority = packAuthorities.get(parsed as object);
   if (!authority) throw new TypeError("reviewed outcome pack authority is unavailable");
@@ -128,8 +115,8 @@ export function assertGitHubLinearProviderReadbackV1(pack: GitHubLinearOutcomePa
     expected = { repository: authority.github.repository, baseSha: authority.github.baseSha, headSha: authority.github.headSha, treeSha: authority.github.postMergeTreeSha };
     if (typeof raw.mergeCommitSha !== "string" || !GIT_SHA.test(raw.mergeCommitSha)) throw new TypeError("merge readback conflicts with exact reviewed authority");
   } else if (operationName === "linearEvidenceComment") {
-    raw = inertRecord(value, ["workspace", "team", "project", "issue", "commentMarker", "commentId"], "Linear comment readback");
-    expected = { workspace: authority.linear.workspace, team: authority.linear.team, project: authority.linear.project, issue: authority.linear.issue, commentMarker: authority.linear.commentMarker };
+    raw = inertRecord(value, ["workspace", "team", "project", "issue", "commentMarker", "evidenceUrl", "evidenceContentDigest", "commentId"], "Linear comment readback");
+    expected = { workspace: authority.linear.workspace, team: authority.linear.team, project: authority.linear.project, issue: authority.linear.issue, commentMarker: authority.linear.commentMarker, evidenceUrl: authority.linear.evidenceUrl, evidenceContentDigest: authority.linear.evidenceContentDigest };
     text(raw.commentId, "Linear comment ID");
   } else if (operationName === "linearStatusTransition") {
     raw = inertRecord(value, ["workspace", "team", "project", "issue", "preStatus", "targetStatus", "status"], "Linear status readback");
@@ -168,21 +155,19 @@ function parseAuthority(value: unknown): GitHubLinearReviewedAuthorityV1 {
   const root = inertRecord(value, ["v", "github", "linear"], "reviewed GitHub and Linear authority");
   if (root.v !== "reelier.github-linear-reviewed-authority/v1") throw new TypeError("reviewed authority version is invalid");
   const github = inertRecord(root.github, ["repository", "baseBranch", "baseSha", "headBranch", "headSha", "candidateDigest", "workflowPath", "workflowDigest", "requiredChecks", "mergeMethod", "postMergeTreeSha", "accountRef", "destinationRef", "credentialRef", "limitRef"], "reviewed GitHub authority");
-  const linear = inertRecord(root.linear, ["workspace", "team", "project", "issue", "preStatus", "targetStatus", "commentMarker", "accountRef", "destinationRef", "credentialRef", "limitRef"], "reviewed Linear authority");
+  const linear = inertRecord(root.linear, ["workspace", "team", "project", "issue", "preStatus", "targetStatus", "commentMarker", "evidenceUrl", "evidenceContentDigest", "accountRef", "destinationRef", "credentialRef", "limitRef"], "reviewed Linear authority");
   const requiredChecks = stringArray(github.requiredChecks, "required checks");
   if (github.baseBranch !== "main" || github.workflowPath !== ".github/workflows/ci.yml" || github.mergeMethod !== "squash" || authorityDigest(requiredChecks) !== authorityDigest(REQUIRED_CHECKS)) throw new TypeError("GitHub outcome authority must bind main, the signed CI workflow, exact required checks, and squash merge");
-  for (const [raw, label] of [[github.repository, "repository"], [github.headBranch, "head branch"], [linear.workspace, "workspace"], [linear.team, "team"], [linear.project, "project"], [linear.issue, "issue"], [linear.preStatus, "pre-status"], [linear.targetStatus, "target status"], [linear.commentMarker, "comment marker"]] as const) text(raw, label);
+  for (const [raw, label] of [[github.repository, "repository"], [github.headBranch, "head branch"], [linear.workspace, "workspace"], [linear.team, "team"], [linear.project, "project"], [linear.issue, "issue"], [linear.preStatus, "pre-status"], [linear.targetStatus, "target status"], [linear.commentMarker, "comment marker"], [linear.evidenceUrl, "evidence URL"]] as const) text(raw, label);
   for (const [raw, label] of [[github.baseSha, "base SHA"], [github.headSha, "head SHA"], [github.postMergeTreeSha, "post-merge tree SHA"]] as const) if (typeof raw !== "string" || !GIT_SHA.test(raw)) throw new TypeError(`${label} is invalid`);
-  for (const [raw, label] of [[github.candidateDigest, "candidate digest"], [github.workflowDigest, "workflow digest"]] as const) digest(raw, label);
+  for (const [raw, label] of [[github.candidateDigest, "candidate digest"], [github.workflowDigest, "workflow digest"], [linear.evidenceContentDigest, "evidence content digest"]] as const) digest(raw, label);
   const githubRefs = refs(github), linearRefs = refs(linear);
-  return deepFreeze({ v: root.v, github: { repository: github.repository, baseBranch: github.baseBranch, baseSha: github.baseSha, headBranch: github.headBranch, headSha: github.headSha, candidateDigest: github.candidateDigest, workflowPath: github.workflowPath, workflowDigest: github.workflowDigest, requiredChecks, mergeMethod: github.mergeMethod, postMergeTreeSha: github.postMergeTreeSha, ...githubRefs }, linear: { workspace: linear.workspace, team: linear.team, project: linear.project, issue: linear.issue, preStatus: linear.preStatus, targetStatus: linear.targetStatus, commentMarker: linear.commentMarker, ...linearRefs } }) as GitHubLinearReviewedAuthorityV1;
+  return deepFreeze({ v: root.v, github: { repository: github.repository, baseBranch: github.baseBranch, baseSha: github.baseSha, headBranch: github.headBranch, headSha: github.headSha, candidateDigest: github.candidateDigest, workflowPath: github.workflowPath, workflowDigest: github.workflowDigest, requiredChecks, mergeMethod: github.mergeMethod, postMergeTreeSha: github.postMergeTreeSha, ...githubRefs }, linear: { workspace: linear.workspace, team: linear.team, project: linear.project, issue: linear.issue, preStatus: linear.preStatus, targetStatus: linear.targetStatus, commentMarker: linear.commentMarker, evidenceUrl: linear.evidenceUrl, evidenceContentDigest: linear.evidenceContentDigest, ...linearRefs } }) as GitHubLinearReviewedAuthorityV1;
 }
 
 function requirePack(pack: unknown): GitHubLinearOutcomePackV1 {
-  if (!pack || typeof pack !== "object" || isProxy(pack) || Object.getPrototypeOf(pack) !== null && Object.getPrototypeOf(pack) !== Object.prototype) throw new TypeError("outcome pack is invalid");
-  const value = pack as GitHubLinearOutcomePackV1;
-  if (value.v !== "reelier.github-linear-outcome-pack/v1" || !SHA.test(value.authorityDigest) || !SHA.test(value.githubPolicyDigest) || !SHA.test(value.linearPolicyDigest) || !packAuthorities.has(value as object)) throw new TypeError("outcome pack is invalid");
-  return value;
+  if (!pack || typeof pack !== "object" || isProxy(pack) || !packAuthorities.has(pack)) throw new TypeError("outcome pack brand is invalid");
+  return pack as GitHubLinearOutcomePackV1;
 }
 
 function refs(value: Record<string, unknown>): Readonly<{ accountRef: string; destinationRef: string; credentialRef: string; limitRef: string }> { return Object.freeze({ accountRef: ref(value.accountRef, "account ref"), destinationRef: ref(value.destinationRef, "destination ref"), credentialRef: ref(value.credentialRef, "credential ref"), limitRef: ref(value.limitRef, "limit ref") }); }
@@ -190,5 +175,5 @@ function ref(value: unknown, label: string): string { const result = text(value,
 function text(value: unknown, label: string): string { if (typeof value !== "string" || value.length < 1 || value.length > 512) throw new TypeError(`${label} is invalid`); return value; }
 function digest(value: unknown, label: string): string { if (typeof value !== "string" || !SHA.test(value)) throw new TypeError(`${label} is invalid`); return value; }
 function stringArray(value: unknown, label: string): readonly string[] { if (!Array.isArray(value) || isProxy(value) || value.length < 1 || value.length > 16) throw new TypeError(`${label} is invalid`); const result: string[] = []; for (let index = 0; index < value.length; index++) { const descriptor = Object.getOwnPropertyDescriptor(value, String(index)); if (!descriptor?.enumerable || !Object.hasOwn(descriptor, "value")) throw new TypeError(`${label} must be a dense inert array`); result.push(text(descriptor.value, label)); } if (new Set(result).size !== result.length) throw new TypeError(`${label} contains duplicates`); return Object.freeze(result); }
-function inertRecord(value: unknown, keys: readonly string[], label: string): Record<string, unknown> { if (!value || typeof value !== "object" || Array.isArray(value) || isProxy(value)) throw new TypeError(`${label} must be an inert closed record`); const prototype = Object.getPrototypeOf(value); if (prototype !== Object.prototype && prototype !== null) throw new TypeError(`${label} must be an inert closed record`); const allowed = new Set(keys), result: Record<string, unknown> = Object.create(null); for (const key in value) { if (!Object.hasOwn(value, key)) continue; if (!allowed.has(key)) throw new TypeError(`${label} contains an unknown field`); } for (const key of keys) { const descriptor = Object.getOwnPropertyDescriptor(value, key); if (!descriptor?.enumerable || !Object.hasOwn(descriptor, "value")) throw new TypeError(`${label} requires inert data properties`); result[key] = descriptor.value; } return result; }
+function inertRecord(value: unknown, keys: readonly string[], label: string): Record<string, unknown> { if (!value || typeof value !== "object" || Array.isArray(value) || isProxy(value)) throw new TypeError(`${label} must be an inert closed record`); const prototype = Object.getPrototypeOf(value); if (prototype !== Object.prototype && prototype !== null) throw new TypeError(`${label} must be an inert closed record`); const ownKeys = Reflect.ownKeys(value); if (ownKeys.length !== keys.length || ownKeys.some(key => typeof key !== "string" || !keys.includes(key))) throw new TypeError(`${label} contains an unknown field or is not closed`); const result: Record<string, unknown> = Object.create(null); for (const key of keys) { const descriptor = Object.getOwnPropertyDescriptor(value, key); if (!descriptor?.enumerable || !Object.hasOwn(descriptor, "value")) throw new TypeError(`${label} requires inert data properties`); result[key] = descriptor.value; } return result; }
 function deepFreeze<T>(value: T): T { if (value && typeof value === "object") { for (const child of Object.values(value as Record<string, unknown>)) deepFreeze(child); Object.freeze(value); } return value; }
