@@ -37,8 +37,8 @@ export function createOperatorUsageSnapshotV1(input: {
   readonly humanReviews: number;
   readonly receiptsRecorded: number;
 }): OperatorUsageSnapshotV1 {
-  for (const [name, value] of Object.entries(input).slice(1)) if (!Number.isSafeInteger(value) || value < 0) throw new TypeError(`invalid usage ${name}`);
+  const counters: readonly [string, number][] = [["governedExecutionUnits", input.governedExecutionUnits], ["humanReviews", input.humanReviews], ["receiptsRecorded", input.receiptsRecorded]];
+  for (const [name, value] of counters) if (!Number.isSafeInteger(value) || value < 0) throw new TypeError(`invalid usage ${name}`);
   operatorPlanV1(input.plan);
   return Object.freeze({ v: "reelier.operator-usage/v1", plan: input.plan, governedExecutionUnits: input.governedExecutionUnits, humanReviews: input.humanReviews, receiptsRecorded: input.receiptsRecorded, receiptsAreBillable: false });
 }
-
