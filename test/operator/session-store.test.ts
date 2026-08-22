@@ -29,7 +29,6 @@ test("operator session store persists only redacted lifecycle metadata and reope
     await rm(root, { recursive: true, force: true });
   }
 });
-
 test("operator session store refuses unknown fields and path traversal", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "reelier-operator-session-"));
   try {
@@ -40,4 +39,3 @@ test("operator session store refuses unknown fields and path traversal", async (
     await rm(root, { recursive: true, force: true });
   }
 });
-
