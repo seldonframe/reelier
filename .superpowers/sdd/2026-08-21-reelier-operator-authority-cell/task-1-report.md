@@ -44,9 +44,10 @@ has since been fixed and its focused native route/latency tests pass. After that
 inventory, adapter-contract digest assertion, and malformed-init output contract were corrected and
 their targeted compiled tests pass; the full suite has not been rerun after those corrections. The
 remaining unverified full-suite failures are outside
-this Operator slice and are the known Windows/Linux Authority Cell host checks, a certification
-digest expectation, the missing universal native bootstrap-helper manifest, an installed Eve
-fixture dependency/health prerequisite, and related pre-existing continuity/platform assertions.
+this Operator slice. The five Windows/Linux host assertions were then made hermetic through the
+existing Linux test seam without weakening the production platform guard; their targeted compiled
+tests pass. The remaining unrerun external prerequisites are the missing universal native
+bootstrap-helper manifest and installed Eve fixture dependency/health prerequisite.
 No unsupported skip was added.
 The Operator-focused tests and all release gates above passed in the same worktree. No provider,
 browser, cloud, billing, or credential action occurred. Managed Cloud Task 0-5 remains an
