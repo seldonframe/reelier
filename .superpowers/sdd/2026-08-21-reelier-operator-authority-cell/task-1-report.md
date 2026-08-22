@@ -17,6 +17,9 @@ Verification on the reviewed OSS authority base:
 - Outcome-profile contract: pass.
 - Production and test TypeScript builds: pass.
 - Pack generation and authority/bootstrap contracts: pass.
+- Installed packed-consumer Operator contract: pass. The published `reelier/operator` barrel
+  exposes the model-agnostic harness/session/handoff surface, while `reelier/authority/host`
+  exposes the unchanged canonical quartet; no credentials are included.
 - Operator-evidence acceleration preflight: four controlled commands, all exit code 0.
 - `git diff --check`: pass.
 
