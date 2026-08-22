@@ -22,6 +22,9 @@ Verification on the reviewed OSS authority base:
   exposes the unchanged canonical quartet; no credentials are included.
 - The cross-platform CI pack job now runs this same installed-consumer assertion on the downloaded
   authority tarball before native authority tests.
+- The packed-consumer script also self-creates and cleans an npm tarball when invoked without an
+  argument, so `npm run test:packed-operator-contract` is directly executable on Windows as well
+  as in the CI artifact path.
 - Operator-evidence acceleration preflight: four controlled commands, all exit code 0.
 - `git diff --check`: pass.
 
