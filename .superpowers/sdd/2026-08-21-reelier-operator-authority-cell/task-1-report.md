@@ -38,7 +38,11 @@ or customer-hosted executor. Initial plan constants are provider-neutral: free l
 Personal (10 concurrent executions), $299 managed Team (50), and Enterprise customer-hosted.
 Receipts are never metered.
 
-The full repository suite is a long authority-ledger stress corpus; a bounded run exposed existing
-baseline/platform failures and was interrupted without a final aggregate. No provider, browser,
-cloud, billing, or credential action occurred. Managed Cloud Task 0-5 remains an external
-prerequisite and is not claimed complete by this OSS slice.
+The full repository suite completed with 3,793 tests: 3,759 passed, 12 failed, and 22 skipped
+(exit code 1; approximately 564 seconds). The failures are outside this Operator slice and are
+the known Windows/Linux Authority Cell host checks, a certification digest expectation, native
+route latency ordering, the missing universal native bootstrap-helper manifest, an installed Eve
+fixture dependency/health prerequisite, and related pre-existing continuity/platform assertions.
+The Operator-focused tests and all release gates above passed in the same worktree. No provider,
+browser, cloud, billing, or credential action occurred. Managed Cloud Task 0-5 remains an
+external prerequisite and is not claimed complete by this OSS slice.
