@@ -2,21 +2,22 @@
 
 This implementation adds the first local Operator vertical without creating a second authority
 protocol: a closed Codex / Claude Code / Grok Build registry, atomic non-secret workspace state,
-one-command onboarding, bounded harness process adapters, a local supervisor, and provider-neutral
-managed/customer-hosted handoff and usage contracts. The Operator cannot mint authority, select
-provider accounts, access credentials, or claim a verified Outcome. Local completeness remains
-`unchecked` until the existing Cell returns an authoritative receipt.
+one-command onboarding, bounded harness process adapters, a local supervisor, a genuine-runtime
+bridge, and provider-neutral managed/customer-hosted handoff and usage contracts. The Operator
+cannot mint authority, select provider accounts, access credentials, or claim a verified Outcome.
+Local completeness remains `unchecked` until the existing Cell returns an authoritative receipt.
 
 Verification on the reviewed OSS authority base:
 
-- Operator-focused tests: 18/18 pass.
-- Existing init/signing/CLI-entrypoint tests: pass.
-- Production TypeScript build: pass.
-- `git diff --check`: pass.
+- Operator-focused tests: 19/19 pass.
+- Genuine Task4C runtime: 5/5 end-to-end tests pass.
+- Grok Build agent-adapter conformance: 7/7 checks pass.
+- Core continuity-adapter conformance: 10/10 checks pass; maturity remains `reproduced`.
 - Outcome-profile contract: pass.
-- Grok Build agent-adapter conformance: pass (7/7 checks).
-- Core continuity-adapter conformance: pass (10/10 checks; reproduced maturity only).
-- Reviewed Task4C runtime: pass (5/5 end-to-end tests).
+- Production and test TypeScript builds: pass.
+- Pack generation and authority/bootstrap contracts: pass.
+- Operator-evidence acceleration preflight: four controlled commands, all exit code 0.
+- `git diff --check`: pass.
 
 The process adapter emits only event digests; it does not persist prompt text, model output,
 provider bodies, credentials, or environment values. The supervisor keeps harness lifecycle and
@@ -33,11 +34,11 @@ or customer-hosted executor. Initial plan constants are provider-neutral: free l
 Personal (10 concurrent executions), $299 managed Team (50), and Enterprise customer-hosted.
 Receipts are never metered.
 
-The full repository suite is a long authority-ledger stress corpus; it has not been rerun to a
-completed aggregate on this final expanded tree. No provider, browser, cloud, billing, or credential
-action occurred. Managed Cloud Task 0–5 remains an external prerequisite and is not claimed complete
-by this OSS slice.
+The full repository suite is a long authority-ledger stress corpus; a bounded run exposed existing
+baseline/platform failures and was interrupted without a final aggregate. No provider, browser,
+cloud, billing, or credential action occurred. Managed Cloud Task 0-5 remains an external
+prerequisite and is not claimed complete by this OSS slice.
 
-The acceleration preflight command was invoked with the correct `operator-evidence` profile but was
-unavailable in this Windows environment because its controlled local command resolver could not
-construct the required child command. This is recorded as an environment gate, not a simulated pass.
+The acceleration preflight initially reported unavailable because this isolated worktree had no
+local dependencies. After `npm ci --ignore-scripts`, the correct `operator-evidence` profile passed
+all four controlled commands with exit code 0. No source workaround was required.
