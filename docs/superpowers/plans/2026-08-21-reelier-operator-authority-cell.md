@@ -183,15 +183,17 @@ and model output never select a provider, account, contract, or write scope.
 - Create: `src/operator/local-cell.ts`
 - Test: `test/operator/local-cell.test.ts`
 
-Compose the reviewed Task4C GitHub/Linear runtime, signed five-alias deployment, durable journal
-and receipt publication, and the Operator supervisor. Run one composite GitHub→Linear mission and
-one Linear-only mission, kill/reopen the process, and prove exact-head reconciliation with zero
-duplicate provider writes. Credentials remain in injected local bindings or customer IAM.
+Bridge the reviewed Task4C GitHub/Linear runtime, signed five-alias deployment, durable journal and
+receipt publication, to the Operator supervisor. The runtime remains the owner of reservations,
+providers, and recovery; `createOperatorLocalCellFromRuntimeV1` only delegates canonical tools,
+redacted evidence, and review. The existing Task4C fixture runs one composite GitHub→Linear mission
+and one Linear-only mission, kills/reopens the process, and proves exact-head reconciliation with
+zero duplicate provider writes. Credentials remain in injected local bindings or customer IAM.
 
-- [ ] RED: ambiguity, restart, Linear predecessor, no-resend, and cross-pack/cross-host substitution.
-- [ ] GREEN: use `createGitHubLinearMissionRuntimeV1` and branded executors; never create a parallel
+- [x] RED: ambiguity, restart, Linear predecessor, no-resend, and cross-pack/cross-host substitution.
+- [x] GREEN: use `createGitHubLinearMissionRuntimeV1` and branded executors; never create a parallel
   ledger, generic executor, or fake receipt store.
-- [ ] Gate: local-cell tests, reviewed Task4C matrix, and artifact-derived counters/receipts.
+- [x] Gate: local-cell tests, reviewed Task4C matrix, and artifact-derived counters/receipts.
 
 ### Task 8: Define managed and customer-hosted Cell handoff
 
@@ -204,10 +206,10 @@ The OSS boundary defines only a signed opaque handoff contract. It does not impl
 account creation, OAuth, billing, or credential storage. Managed mode may use Vercel Connect as a
 replaceable broker; AWS/Vault/Cloudflare/enterprise users run the executor inside their network.
 
-- [ ] RED: missing/expired/replayed handoffs, provider substitution, and secret leakage.
-- [ ] GREEN: closed parser, detached frozen handoff, one-time consumption, and explicit local vs
+- [x] RED: missing/expired/replayed handoffs, provider substitution, and secret leakage.
+- [x] GREEN: closed parser, detached frozen handoff, one-time consumption, and explicit local vs
   managed mode distinction.
-- [ ] Gate: handoff tests; Cloud Task 0–5 remains an external prerequisite.
+- [x] Gate: handoff tests; Cloud Task 0–5 remains an external prerequisite.
 
 ### Task 9: Publish the launch economics and operational contract
 
@@ -220,9 +222,9 @@ Encode the initial offer without coupling enforcement to payment: free local Ope
 Personal at $49/month; Team at $299/month; Enterprise customer-hosted Cell. Count governed
 execution units for capacity reporting, never receipts, and do not add overage billing in v1.
 
-- [ ] RED: closed tier/limit parser, no receipt metering, no model markup, and no payment secrets.
-- [ ] GREEN: provider-neutral plan/usage contract only; Cloud billing remains separate.
-- [ ] Gate: usage tests and documentation review.
+- [x] RED: closed tier/limit parser, no receipt metering, no model markup, and no payment secrets.
+- [x] GREEN: provider-neutral plan/usage contract only; Cloud billing remains separate.
+- [x] Gate: usage tests and documentation review.
 
 ### Task 10: Release/conformance gate
 

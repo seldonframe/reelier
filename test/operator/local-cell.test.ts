@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createOperatorLocalCellV1 } from "../../src/operator/local-cell.js";
+import { createOperatorLocalCellFromRuntimeV1, createOperatorLocalCellV1 } from "../../src/operator/local-cell.js";
 import type { AuthorityAgentToolsV1 } from "../../src/authority/host/agent-tools.js";
 
 test("local Operator Cell is only a quartet adapter and preserves Cell lifecycle", async () => {
@@ -25,4 +25,24 @@ test("local Operator Cell is only a quartet adapter and preserves Cell lifecycle
   assert.equal(local.mode, "local-cell");
   assert.equal(done.cellLifecycle, "reconciled");
   assert.deepEqual(calls, ["request", "status"]);
+  assert.deepEqual(await local.inspectEvidence(), { completeness: "unchecked" });
+});
+
+test("the genuine runtime bridge delegates evidence and review without copying authority", async () => {
+  const agentTools = {
+    async agentStatus() { return { requestId: "", verdict: "accepted", reasonCode: "ready", lifecycleState: "ready", outcomeRefs: [], capability: {} as never }; },
+    async outcomeProposal() { return { requestId: "", verdict: "refused", reasonCode: "unused", lifecycleState: "unavailable" }; },
+    async outcomeRequest() { return { requestId: "r", verdict: "refused", reasonCode: "unused", lifecycleState: "unavailable" }; },
+    async outcomeStatus() { return { requestId: "r", verdict: "refused", reasonCode: "unused", lifecycleState: "unavailable" }; },
+  } as never;
+  const reviewed: string[] = [];
+  const local = createOperatorLocalCellFromRuntimeV1({ runtime: {
+    agentTools,
+    async inspectEvidence() { return Object.freeze({ completeness: "reconciled", reservations: 2 }); },
+    async reviewOutcomes(requestIds) { reviewed.push(...requestIds); },
+  } });
+  assert.deepEqual(await local.inspectEvidence(), { completeness: "reconciled", reservations: 2 });
+  await local.reviewOutcomes(["request-1"]);
+  assert.deepEqual(reviewed, ["request-1"]);
+  assert.equal(local.agentTools, agentTools);
 });

@@ -18,7 +18,9 @@ The process adapter emits only event digests; it does not persist prompt text, m
 provider bodies, credentials, or environment values. The supervisor keeps harness lifecycle and
 Cell lifecycle separate: a clean harness exit is not a successful Outcome, and a refused Cell
 result remains refused. The local Cell module is an adapter over an already-created genuine Cell
-runtime; it does not introduce a parallel ledger, generic executor, or receipt store.
+runtime, including an explicit bridge for `createGitHubLinearMissionRuntimeV1`; it does not
+introduce a parallel ledger, generic executor, or receipt store. Evidence and review calls remain
+delegated to that runtime.
 
 The managed handoff is intentionally not Cloud OAuth or billing. It is a one-shot signed contract
 containing only opaque provider-account and authority/contract references. Vercel Connect, AWS,
