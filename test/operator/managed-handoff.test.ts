@@ -17,4 +17,3 @@ test("expired, forged, and extra-field handoffs fail closed", () => {
   const consumer = createOperatorManagedHandoffConsumerV1({ handoff, now: () => "2026-08-21T00:00:00.000Z", verify: () => true });
   assert.throws(() => consumer.consume(), /expired/);
 });
-

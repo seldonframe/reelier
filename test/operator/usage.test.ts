@@ -14,4 +14,3 @@ test("negative or unknown usage is refused", () => {
   assert.throws(() => createOperatorUsageSnapshotV1({ plan: "free-local", governedExecutionUnits: -1, humanReviews: 0, receiptsRecorded: 0 }));
   assert.throws(() => operatorPlanV1("unknown" as never));
 });
-

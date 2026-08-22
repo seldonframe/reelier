@@ -26,4 +26,3 @@ test("local Operator Cell is only a quartet adapter and preserves Cell lifecycle
   assert.equal(done.cellLifecycle, "reconciled");
   assert.deepEqual(calls, ["request", "status"]);
 });
-

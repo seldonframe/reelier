@@ -23,4 +23,3 @@ export function createOperatorLocalCellV1(input: {
     supervisor: createOperatorSupervisorV1({ cell: input.agentTools, processFactory: input.processFactory }),
   });
 }
-

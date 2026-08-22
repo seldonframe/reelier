@@ -57,4 +57,3 @@ test("a refused Cell result remains refused even when the harness exits cleanly"
   await supervisor.observe(state.sessionId);
   assert.equal((await supervisor.status(state.sessionId)).cellVerdict, "refused");
 });
-

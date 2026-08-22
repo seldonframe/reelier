@@ -92,4 +92,3 @@ export function createOperatorManagedHandoffConsumerV1(input: {
     },
   });
 }
-
