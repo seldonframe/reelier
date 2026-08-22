@@ -77,6 +77,8 @@ state, and leaves consequential provider writes to the Authority Cell:
 ```sh
 npx reelier@latest init
 reelier operator status
+reelier operator list
+reelier operator status <session-id>
 ```
 
 Local mode is free and customer-controlled. Its completeness is explicitly `unchecked` until a
