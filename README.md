@@ -70,6 +70,19 @@ docker run --rm ghcr.io/seldonframe/reelier --help
 
 `reelier init [--dry-run]` performs one checkpointed local inspection across all three Reelier paths: Path A observation coverage, Path B replay/freeze candidates, and Path C boundable/outcome-capable/shadow-only/unsupported connections and candidates. It does not deploy, gate, dispatch, upload, copy credentials, or rewrite host configuration. `--dry-run` writes nothing; the normal command writes only sanitized artifacts below `.reelier/init/`.
 
+The same command also initializes the local Operator handoff. It detects installed Codex, Claude
+Code, and Grok Build harnesses without asking for a model API key, stores only non-secret workspace
+state, and leaves consequential provider writes to the Authority Cell:
+
+```sh
+npx reelier@latest init
+reelier operator status
+```
+
+Local mode is free and customer-controlled. Its completeness is explicitly `unchecked` until a
+Cell-backed governed Outcome and authoritative provider readback exist; an installed harness is
+not evidence that a remote write happened.
+
 ### As an agent plugin
 
 Teach your coding agent when to reach for Reelier. Same two commands, either host:

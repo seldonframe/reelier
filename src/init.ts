@@ -18,6 +18,32 @@ import { parseSkill } from "./skill.js";
 import type { TraceRecord } from "./recorder.js";
 import type { RunRecord } from "./runner.js";
 import { writeFileAtomic } from "./writeback.js";
+import { createOperatorHarnessRegistryV1, type OperatorHarnessProbeV1, type OperatorHarnessRegistryV1 } from "./operator/harness.js";
+import { initializeOperatorWorkspaceV1, type OperatorWorkspaceStateV1 } from "./operator/workspace.js";
+export { readOperatorWorkspaceV1 } from "./operator/workspace.js";
+
+export interface OperatorInitSummaryV1 {
+  readonly workspace: OperatorWorkspaceStateV1;
+  readonly harnesses: readonly OperatorHarnessProbeV1[];
+  readonly next: readonly ("open-browser-auth" | "run-local-cell" | "install-harness" | "review-authority")[];
+}
+
+export async function initializeOperatorV1(input: {
+  readonly cwd: string;
+  readonly home: string;
+  readonly now?: string;
+  readonly registry?: OperatorHarnessRegistryV1;
+}): Promise<OperatorInitSummaryV1> {
+  const registry = input.registry ?? createOperatorHarnessRegistryV1();
+  const harnesses = await registry.probeAll();
+  const selectedHarnesses = harnesses.filter((probe) => probe.installed).map((probe) => probe.descriptor.id);
+  const workspace = await initializeOperatorWorkspaceV1({ root: input.cwd, selectedHarnesses, now: input.now });
+  const next: Array<"open-browser-auth" | "run-local-cell" | "install-harness" | "review-authority"> = [];
+  if (selectedHarnesses.length === 0) next.push("install-harness");
+  else next.push("run-local-cell");
+  next.push("review-authority");
+  return Object.freeze({ workspace, harnesses: Object.freeze([...harnesses]), next: Object.freeze(next) });
+}
 
 export async function fileExists(p: string): Promise<boolean> {
   try {

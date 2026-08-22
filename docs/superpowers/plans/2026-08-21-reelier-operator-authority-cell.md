@@ -146,6 +146,98 @@ export async function initializeOperatorV1(input: {
 - [ ] Add launch gates: Codex/Claude/Grok probe passes, first local Cell governed Outcome, restart/no-resend test, and no-secret state audit.
 - [ ] Run build, focused Operator suite, `git diff --check`, and commit `docs: record operator authority-cell launch slice`.
 
+### Task 5: Add bounded harness process adapters
+
+**Files:**
+- Create: `src/operator/process.ts`
+- Test: `test/operator/process.test.ts`
+
+The adapter is a transport boundary, not an authority boundary. It builds a versioned invocation
+for Codex, Claude Code, or Grok Build, starts the installed process with a bounded timeout, and
+emits detached event summaries whose payloads are digests rather than raw prompt/model/tool data.
+
+- [ ] RED: exact argv, no inherited secret environment, timeout/stop behavior, malformed event
+  refusal, and digest-only output.
+- [ ] GREEN: injectable spawn, clock, and digest dependencies; no provider calls or authority minting.
+- [ ] Gate: process tests, both TypeScript builds, and hostile serialization audit.
+
+### Task 6: Compose the local Operator supervisor
+
+**Files:**
+- Create: `src/operator/operator.ts`
+- Test: `test/operator/operator.test.ts`
+
+The supervisor owns sessions and exception state, but all consequential work is submitted to the
+existing canonical quartet and Authority Cell. Harness completion is never an Outcome; prompt text
+and model output never select a provider, account, contract, or write scope.
+
+- [ ] RED: harness completion without a Cell receipt remains `unchecked`; forged events cannot
+  become `verified`; stop/restart is readback-only.
+- [ ] GREEN: in-memory supervisor with injected process factory and Cell adapter; persist only
+  session metadata/digests through the workspace boundary.
+- [ ] Gate: supervisor tests plus no-secret and no-self-authorization probes.
+
+### Task 7: Prove the first complete local vertical
+
+**Files:**
+- Create: `src/operator/local-cell.ts`
+- Test: `test/operator/local-cell.test.ts`
+
+Compose the reviewed Task4C GitHub/Linear runtime, signed five-alias deployment, durable journal
+and receipt publication, and the Operator supervisor. Run one composite GitHub→Linear mission and
+one Linear-only mission, kill/reopen the process, and prove exact-head reconciliation with zero
+duplicate provider writes. Credentials remain in injected local bindings or customer IAM.
+
+- [ ] RED: ambiguity, restart, Linear predecessor, no-resend, and cross-pack/cross-host substitution.
+- [ ] GREEN: use `createGitHubLinearMissionRuntimeV1` and branded executors; never create a parallel
+  ledger, generic executor, or fake receipt store.
+- [ ] Gate: local-cell tests, reviewed Task4C matrix, and artifact-derived counters/receipts.
+
+### Task 8: Define managed and customer-hosted Cell handoff
+
+**Files:**
+- Create: `src/operator/managed-handoff.ts`
+- Test: `test/operator/managed-handoff.test.ts`
+- Modify: `README.md`
+
+The OSS boundary defines only a signed opaque handoff contract. It does not implement Cloud
+account creation, OAuth, billing, or credential storage. Managed mode may use Vercel Connect as a
+replaceable broker; AWS/Vault/Cloudflare/enterprise users run the executor inside their network.
+
+- [ ] RED: missing/expired/replayed handoffs, provider substitution, and secret leakage.
+- [ ] GREEN: closed parser, detached frozen handoff, one-time consumption, and explicit local vs
+  managed mode distinction.
+- [ ] Gate: handoff tests; Cloud Task 0–5 remains an external prerequisite.
+
+### Task 9: Publish the launch economics and operational contract
+
+**Files:**
+- Create: `src/operator/usage.ts`
+- Test: `test/operator/usage.test.ts`
+- Modify: `README.md`
+
+Encode the initial offer without coupling enforcement to payment: free local Operator; managed
+Personal at $49/month; Team at $299/month; Enterprise customer-hosted Cell. Count governed
+execution units for capacity reporting, never receipts, and do not add overage billing in v1.
+
+- [ ] RED: closed tier/limit parser, no receipt metering, no model markup, and no payment secrets.
+- [ ] GREEN: provider-neutral plan/usage contract only; Cloud billing remains separate.
+- [ ] Gate: usage tests and documentation review.
+
+### Task 10: Release/conformance gate
+
+**Files:**
+- Modify: `.superpowers/sdd/2026-08-21-reelier-operator-authority-cell/task-1-report.md`
+- Modify: `README.md`
+
+- [ ] Run Codex, Claude Code, and Grok Build candidates where installed; absent binaries are
+  explicit skips, never simulated passes.
+- [ ] Run focused Operator + Authority Cell + Task4C tests, both TypeScript builds, build-packs,
+  package/export contracts, and the full suite with an honest aggregate.
+- [ ] Record managed Cloud, Neon, Vercel Connect, and universal native-artifact prerequisites as
+  external gates rather than substituting local fixtures.
+- [ ] Commit a final report only after `git diff --check` and a clean worktree.
+
 ## Review Gates
 
 Before expanding into managed billing or customer-hosted executors, the branch must prove:

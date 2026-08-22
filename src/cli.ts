@@ -69,6 +69,8 @@ import {
   formatNextSteps,
   LAUNCH_BENCHMARK_COMPARISON,
   type DemoBenchmarkComparison,
+  initializeOperatorV1,
+  readOperatorWorkspaceV1,
 } from "./init.js";
 import { compileSessionTranscript, detectSessionFormat, SESSION_FORMAT_LABELS, type SessionSkip, type SessionFormatId } from "./session.js";
 import {
@@ -4290,6 +4292,20 @@ export async function cmdInit(args: ParsedArgs, overrides: CmdInitOverrides = {}
     return cmdInitSigning(homedir);
   }
 
+  if (!args.flags.has("dry-run")) {
+    try {
+      const operator = await initializeOperatorV1({ cwd, home: homedir });
+      console.log("Operator — model-agnostic local control plane");
+      console.log(`  harnesses: ${operator.harnesses.filter((probe) => probe.installed).map((probe) => probe.descriptor.displayName).join(", ") || "none detected"}`);
+      console.log(`  authority: ${operator.workspace.authorityCell} Cell (${operator.workspace.mode})`);
+      console.log(`  next: ${operator.next.join(" → ")}`);
+      console.log("  credentials: none requested; consequential writes remain Cell-governed");
+    } catch (error) {
+      console.log(`Operator onboarding unavailable: ${(error as Error).message}`);
+      console.log("  Continuing with the existing authority inspection path.");
+    }
+  }
+
   if (args.positional.length > 1) {
     console.error("Initialization refused: at most one agent name is allowed.");
     return 1;
@@ -4564,8 +4580,35 @@ async function cmdDoctor(args: ParsedArgs): Promise<number> {
   return runAuthorityCommand({ positional: ["doctor"], flags: args.flags, opts: { path: args.opts.path ?? "authority/authority.yml" } });
 }
 
+export async function cmdOperator(args: ParsedArgs): Promise<number> {
+  const subcommand = args.positional[0] ?? "status";
+  const cwd = process.cwd();
+  const home = os.homedir();
+  if (subcommand === "init") {
+    const summary = await initializeOperatorV1({ cwd, home });
+    console.log(`Operator initialized: ${summary.workspace.root}`);
+    console.log(`Harnesses: ${summary.harnesses.filter((probe) => probe.installed).map((probe) => probe.descriptor.displayName).join(", ") || "none detected"}`);
+    console.log(`Next: ${summary.next.join(" → ")}`);
+    return 0;
+  }
+  if (subcommand !== "status") {
+    console.error("Usage: reelier operator <init|status>");
+    return 1;
+  }
+  const state = await readOperatorWorkspaceV1(cwd);
+  if (!state) {
+    console.log("Operator not initialized. Run `npx reelier@latest init`.");
+    return 1;
+  }
+  console.log(`Operator: ${state.workspaceId}`);
+  console.log(`Cell: ${state.authorityCell} (${state.mode})`);
+  console.log(`Harnesses: ${state.selectedHarnesses.join(", ") || "none"}`);
+  console.log("Remote writes: Authority Cell only; local completeness: unchecked");
+  return 0;
+}
+
 const USAGE =
-  "Usage: reelier <run|bench|baseline|cost|prices|mcp|serve|trace|compile|manifest|approve|push|get|verify|diff|ci|policy|init|up|discover|connections|connect|deploy|doctor|bridge|from-session|scan|install|uninstall|login|logout|whoami> [options]\n" +
+  "Usage: reelier <run|bench|baseline|cost|prices|mcp|serve|trace|compile|manifest|approve|push|get|verify|diff|ci|policy|init|operator|up|discover|connections|connect|deploy|doctor|bridge|from-session|scan|install|uninstall|login|logout|whoami> [options]\n" +
   "  discover â€” rank observed workflow opportunities locally; use --upload to preview and explicitly send one sanitized bundle to Arena Cloud.\n" +
   "  bridge  — reelier bridge --port 4777: expose nonce-gated local capabilities and Work Card handoff metadata; never executes Cloud plugin code.\n" +
   "  login  — reelier login: connect this machine to Reelier Cloud via a device-code browser handshake; writes ~/.reelier/config.json.\n" +
@@ -4698,6 +4741,8 @@ async function main(): Promise<number> {
       return runAuthorityCommand(args);
     case "init":
       return cmdInit(args);
+    case "operator":
+      return cmdOperator(args);
     case "up":
       return cmdUp(args);
     case "discover":
