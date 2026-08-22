@@ -10,6 +10,12 @@
 
 **Spec:** `docs/company/FOUNDATION.md`, `docs/company/BUILDING-COMPASS.md`, `docs/superpowers/plans/2026-08-16-managed-paid-user-yolo-launch.md`, and the reviewed OSS governed Outcome contract at `contract/authority/v1/`.
 
+**Status (2026-08-21):** Tasks 1–9 are implemented on this branch, including the genuine-runtime
+bridge added after the initial slice. Task 10 is partially complete: focused Operator/Authority
+Cell/Task4C gates, builds, pack generation, and adapter conformance pass; the bounded full-suite
+run was interrupted after known baseline/platform failures and has no final aggregate. Managed
+Cloud/Neon/Vercel Connect prerequisites remain external and are not represented by local fakes.
+
 ## Global Constraints
 
 - Prompt text, model output, harness claims, and local task descriptions never authorize a provider write.

@@ -13,6 +13,10 @@ Verification on the reviewed OSS authority base:
 - Existing init/signing/CLI-entrypoint tests: pass.
 - Production TypeScript build: pass.
 - `git diff --check`: pass.
+- Outcome-profile contract: pass.
+- Grok Build agent-adapter conformance: pass (7/7 checks).
+- Core continuity-adapter conformance: pass (10/10 checks; reproduced maturity only).
+- Reviewed Task4C runtime: pass (5/5 end-to-end tests).
 
 The process adapter emits only event digests; it does not persist prompt text, model output,
 provider bodies, credentials, or environment values. The supervisor keeps harness lifecycle and
@@ -33,3 +37,7 @@ The full repository suite is a long authority-ledger stress corpus; it has not b
 completed aggregate on this final expanded tree. No provider, browser, cloud, billing, or credential
 action occurred. Managed Cloud Task 0–5 remains an external prerequisite and is not claimed complete
 by this OSS slice.
+
+The acceleration preflight command was invoked with the correct `operator-evidence` profile but was
+unavailable in this Windows environment because its controlled local command resolver could not
+construct the required child command. This is recorded as an environment gate, not a simulated pass.
