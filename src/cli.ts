@@ -4293,14 +4293,17 @@ export async function cmdInit(args: ParsedArgs, overrides: CmdInitOverrides = {}
     return cmdInitSigning(homedir);
   }
 
+  let operatorOutput: readonly string[] = [];
   if (!args.flags.has("dry-run")) {
     try {
       const operator = await initializeOperatorV1({ cwd, home: homedir });
-      console.log("Operator — model-agnostic local control plane");
-      console.log(`  harnesses: ${operator.harnesses.filter((probe) => probe.installed).map((probe) => probe.descriptor.displayName).join(", ") || "none detected"}`);
-      console.log(`  authority: ${operator.workspace.authorityCell} Cell (${operator.workspace.mode})`);
-      console.log(`  next: ${operator.next.join(" → ")}`);
-      console.log("  credentials: none requested; consequential writes remain Cell-governed");
+      operatorOutput = [
+        "Operator — model-agnostic local control plane",
+        `  harnesses: ${operator.harnesses.filter((probe) => probe.installed).map((probe) => probe.descriptor.displayName).join(", ") || "none detected"}`,
+        `  authority: ${operator.workspace.authorityCell} Cell (${operator.workspace.mode})`,
+        `  next: ${operator.next.join(" → ")}`,
+        "  credentials: none requested; consequential writes remain Cell-governed",
+      ];
     } catch (error) {
       console.log(`Operator onboarding unavailable: ${(error as Error).message}`);
       console.log("  Continuing with the existing authority inspection path.");
@@ -4362,6 +4365,7 @@ export async function cmdInit(args: ParsedArgs, overrides: CmdInitOverrides = {}
       return 2;
     }
     for (const line of renderInitializationReport(result.report, result.status === "dry-run")) console.log(line);
+    for (const line of operatorOutput) console.log(line);
     return 0;
   } catch (error) {
     const message = error instanceof Error ? error.message : "";

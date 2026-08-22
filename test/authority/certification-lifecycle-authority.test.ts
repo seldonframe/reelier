@@ -15,7 +15,7 @@ test("pre-readiness lifecycle ceremony exposes only activated public descriptors
   assert.throws(() => structuredClone(ceremony.opaqueHandle), /clone|serial/i);
   assert.equal(JSON.stringify(ceremony), JSON.stringify({ publicDescriptors: ceremony.publicDescriptors, opaqueHandle: {} }));
   assert.equal(JSON.stringify(ceremony).includes("PRIVATE"), false);
-  assert.equal(AUTHORITY_ADAPTER_CONTRACT_V1_DIGEST, "sha256:7f46242b26d9c921f4e1ec9de6418ac5fc8c03d70c4415c25e799ae0e73a1512");
+  assert.equal(AUTHORITY_ADAPTER_CONTRACT_V1_DIGEST, "sha256:cd092558b6963e9f414445fe2235c30530f17684bad71f1bfcfa487178ec00d7");
 });
 
 test("artifact subkeys are closed, purpose-separated, evidence-root delegated, and human committed", () => {

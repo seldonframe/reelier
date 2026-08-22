@@ -14,7 +14,7 @@ const DISPATCH_COMMANDS = [
   "compile", "manifest", "resolve", "approve", "push", "get", "verify", "diff",
   "ci", "policy", "authority", "init", "up", "discover", "connections", "connect",
   "deploy", "doctor", "bridge", "coverage", "from-session", "scan", "install", "uninstall",
-  "login", "logout", "whoami",
+  "login", "logout", "whoami", "operator",
 ] as const;
 
 const cliPath = fileURLToPath(new URL("../src/cli.js", import.meta.url));
