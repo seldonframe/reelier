@@ -260,6 +260,10 @@ jobs:
         if: ${{ needs.pack-authority-host-boundary.result == 'success' && needs.produce-authority-factory-evidence.result == 'success' }}
         shell: bash
         run: node test/packed/native-github-labels.mjs "$(pwd)/authority-host-boundary-pack/$(basename authority-host-boundary-pack/*.tgz)"
+      - name: Verify packed Operator and canonical quartet exports
+        if: ${{ needs.pack-authority-host-boundary.result == 'success' && needs.produce-authority-factory-evidence.result == 'success' }}
+        shell: bash
+        run: node test/packed/operator-contract.mjs "$(pwd)/authority-host-boundary-pack/$(basename authority-host-boundary-pack/*.tgz)"
       - name: Run native authority platform evidence
         if: ${{ needs.pack-authority-host-boundary.result == 'success' && needs.produce-authority-factory-evidence.result == 'success' }}
         shell: bash
