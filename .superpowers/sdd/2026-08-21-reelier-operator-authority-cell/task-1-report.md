@@ -48,7 +48,10 @@ this Operator slice. The five Windows/Linux host assertions were then made herme
 existing Linux test seam without weakening the production platform guard; their targeted compiled
 tests pass. The remaining unrerun external prerequisites are the missing universal native
 bootstrap-helper manifest and installed Eve fixture dependency/health prerequisite.
-No unsupported skip was added.
+The pinned Eve fixture dependency was then installed from its lockfile and the full continuity
+matrix passed 10/10 (about 79 seconds). The only remaining unrerun release prerequisite is the
+universal native bootstrap-helper manifest, which must be assembled from matching Linux and
+Windows artifacts by the existing CI matrix. No unsupported skip was added.
 The Operator-focused tests and all release gates above passed in the same worktree. No provider,
 browser, cloud, billing, or credential action occurred. Managed Cloud Task 0-5 remains an
 external prerequisite and is not claimed complete by this OSS slice.
