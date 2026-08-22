@@ -39,3 +39,25 @@ test("operator session store refuses unknown fields and path traversal", async (
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("operator session store lists only valid persisted sessions in stable order", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "reelier-operator-session-list-"));
+  try {
+    const store = createOperatorSessionStoreV1({ root, now: () => "2026-08-21T00:00:00.000Z" });
+    const base = {
+      v: "reelier.operator-session/v1" as const,
+      harness: "codex" as const,
+      requestId: "request",
+      promptDigest: `sha256:${"a".repeat(64)}`,
+      harnessLifecycle: "completed" as const,
+      cellVerdict: "accepted" as const,
+      cellLifecycle: "reconciled",
+      updatedAt: "2026-08-21T00:00:00.000Z",
+    };
+    await store.save({ ...base, sessionId: "session-b" });
+    await store.save({ ...base, sessionId: "session-a" });
+    assert.deepEqual((await store.list()).map((entry) => entry.sessionId), ["session-a", "session-b"]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

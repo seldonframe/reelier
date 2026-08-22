@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, realpath, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, realpath, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { OperatorHarnessIdV1 } from "./harness.js";
 import type { OperatorSupervisorStateV1 } from "./operator.js";
@@ -71,6 +71,7 @@ async function atomicWrite(target: string, text: string): Promise<void> {
 
 export function createOperatorSessionStoreV1(input: { readonly root: string; readonly now?: () => string }): {
   readonly load: (sessionId: string) => Promise<OperatorPersistedSessionV1 | null>;
+  readonly list: () => Promise<readonly OperatorPersistedSessionV1[]>;
   readonly save: (state: OperatorPersistedSessionV1) => Promise<OperatorPersistedSessionV1>;
 } {
   const now = input.now ?? (() => new Date().toISOString());
@@ -83,6 +84,26 @@ export function createOperatorSessionStoreV1(input: { readonly root: string; rea
         if ((error as { code?: string }).code === "ENOENT") return null;
         throw error;
       }
+    },
+    async list(): Promise<readonly OperatorPersistedSessionV1[]> {
+      const root = await canonicalRoot(input.root);
+      const directory = path.join(root, ".reelier", "operator-sessions");
+      let names: string[];
+      try {
+        names = (await readdir(directory, { withFileTypes: true }))
+          .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
+          .map((entry) => entry.name)
+          .sort();
+      } catch (error: unknown) {
+        if ((error as { code?: string }).code === "ENOENT") return Object.freeze([]);
+        throw error;
+      }
+      const sessions = await Promise.all(names.map(async (name) => {
+        const sessionId = name.slice(0, -".json".length);
+        return parse(JSON.parse(await readFile(sessionPath(root, sessionId), "utf8")));
+      }));
+      sessions.sort((left, right) => left.sessionId.localeCompare(right.sessionId));
+      return Object.freeze(sessions);
     },
     async save(state: OperatorPersistedSessionV1): Promise<OperatorPersistedSessionV1> {
       const root = await canonicalRoot(input.root);

@@ -72,6 +72,7 @@ import {
   initializeOperatorV1,
   readOperatorWorkspaceV1,
 } from "./init.js";
+import { createOperatorSessionStoreV1 } from "./operator/session-store.js";
 import { compileSessionTranscript, detectSessionFormat, SESSION_FORMAT_LABELS, type SessionSkip, type SessionFormatId } from "./session.js";
 import {
   scanTranscripts,
@@ -4582,6 +4583,7 @@ async function cmdDoctor(args: ParsedArgs): Promise<number> {
 
 export async function cmdOperator(args: ParsedArgs): Promise<number> {
   const subcommand = args.positional[0] ?? "status";
+  const sessionId = args.positional[1];
   const cwd = process.cwd();
   const home = os.homedir();
   if (subcommand === "init") {
@@ -4591,9 +4593,38 @@ export async function cmdOperator(args: ParsedArgs): Promise<number> {
     console.log(`Next: ${summary.next.join(" → ")}`);
     return 0;
   }
-  if (subcommand !== "status") {
-    console.error("Usage: reelier operator <init|status>");
+  if (subcommand !== "status" && subcommand !== "list") {
+    console.error("Usage: reelier operator <init|status [sessionId]|list>");
     return 1;
+  }
+  const sessionStore = createOperatorSessionStoreV1({ root: cwd });
+  if (subcommand === "list") {
+    if (sessionId) {
+      console.error("Usage: reelier operator list");
+      return 1;
+    }
+    const sessions = await sessionStore.list();
+    if (sessions.length === 0) {
+      console.log("No persisted Operator sessions.");
+      return 0;
+    }
+    for (const session of sessions) {
+      console.log(`${session.sessionId}\t${session.harness}\t${session.harnessLifecycle}\t${session.cellVerdict}/${session.cellLifecycle}${session.receiptRef ? `\t${session.receiptRef}` : ""}`);
+    }
+    return 0;
+  }
+  if (sessionId) {
+    const session = await sessionStore.load(sessionId);
+    if (!session) {
+      console.error(`Operator session not found: ${sessionId}`);
+      return 1;
+    }
+    console.log(`Session: ${session.sessionId}`);
+    console.log(`Harness: ${session.harness} (${session.harnessLifecycle})`);
+    console.log(`Cell: ${session.cellVerdict} (${session.cellLifecycle})`);
+    if (session.receiptRef) console.log(`Receipt: ${session.receiptRef}`);
+    console.log(`Updated: ${session.updatedAt}`);
+    return 0;
   }
   const state = await readOperatorWorkspaceV1(cwd);
   if (!state) {
