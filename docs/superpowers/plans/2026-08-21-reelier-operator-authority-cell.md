@@ -69,11 +69,11 @@ export function createOperatorHarnessRegistryV1(input?: {
 }): OperatorHarnessRegistryV1;
 ```
 
-- [ ] Write RED tests for exact descriptors, stable ordering, missing executables, hostile version output, and no token/environment serialization.
-- [ ] Implement command probing with bounded execution and sanitized version capture. Use `codex --version`, `claude --version`, and `grok --version`; Grok remains `unavailable` when the executable is absent.
-- [ ] Ensure returned objects are detached/frozen and contain no environment values, command arguments, or auth material.
-- [ ] Run `node --test dist-test/test/operator/harness.test.js` after test compilation.
-- [ ] Commit `feat: add model-agnostic operator harness registry`.
+- [x] Write RED tests for exact descriptors, stable ordering, missing executables, hostile version output, and no token/environment serialization.
+- [x] Implement command probing with bounded execution and sanitized version capture. Use `codex --version`, `claude --version`, and `grok --version`; Grok remains `unavailable` when the executable is absent.
+- [x] Ensure returned objects are detached/frozen and contain no environment values, command arguments, or auth material.
+- [x] Run `node --test dist-test/test/operator/harness.test.js` after test compilation.
+- [x] Commit `feat: add model-agnostic operator harness registry`.
 
 ### Task 2: Add local Operator workspace state
 
@@ -103,11 +103,11 @@ export function initializeOperatorWorkspaceV1(input: {
 }): Promise<OperatorWorkspaceStateV1>;
 ```
 
-- [ ] Write RED tests for absent state, exact idempotent retry, path normalization, duplicate harness rejection, unknown keys, symlink traversal, and token/prompt leakage.
-- [ ] Implement atomic JSON persistence at `.reelier/operator.json` using a closed parser and detached frozen values.
-- [ ] Keep the default mode `local-cell`; managed mode is an explicit future browser-auth choice, never inferred from a subscription or harness presence.
-- [ ] Run focused workspace tests and typecheck.
-- [ ] Commit `feat: persist non-secret operator workspace state`.
+- [x] Write RED tests for absent state, exact idempotent retry, path normalization, duplicate harness rejection, unknown keys, symlink traversal, and token/prompt leakage.
+- [x] Implement atomic JSON persistence at `.reelier/operator.json` using a closed parser and detached frozen values.
+- [x] Keep the default mode `local-cell`; managed mode is an explicit future browser-auth choice, never inferred from a subscription or harness presence.
+- [x] Run focused workspace tests and typecheck.
+- [x] Commit `feat: persist non-secret operator workspace state`.
 
 ### Task 3: Make `init` produce the one-command Operator handoff
 
@@ -133,12 +133,12 @@ export async function initializeOperatorV1(input: {
 }): Promise<OperatorInitSummaryV1>;
 ```
 
-- [ ] Write RED CLI tests proving `npx reelier init` preserves the existing MCP setup path while returning an Operator summary.
-- [ ] Add a bounded `operator init` orchestration helper in `src/init.ts`; it calls the harness registry, creates local workspace state, and computes next steps from observed facts only.
-- [ ] Add a concise CLI rendering section: detected harnesses, Cell mode, and one next action. Do not print credentials, raw environment values, or claim a provider write occurred.
-- [ ] Keep browser auth as a URL handoff placeholder until the Cloud init/session API is complete; represent it as `open-browser-auth`, never as authenticated.
-- [ ] Run focused init tests, build, and the existing init/CLI suite.
-- [ ] Commit `feat: expose one-command operator onboarding`.
+- [x] Write RED CLI tests proving `npx reelier init` preserves the existing MCP setup path while returning an Operator summary.
+- [x] Add a bounded `operator init` orchestration helper in `src/init.ts`; it calls the harness registry, creates local workspace state, and computes next steps from observed facts only.
+- [x] Add a concise CLI rendering section: detected harnesses, Cell mode, and one next action. Do not print credentials, raw environment values, or claim a provider write occurred.
+- [x] Keep browser auth as a URL handoff placeholder until the Cloud init/session API is complete; represent it as `open-browser-auth`, never as authenticated.
+- [x] Run focused init tests, build, and the existing init/CLI suite.
+- [x] Commit `feat: expose one-command operator onboarding`.
 
 ### Task 4: Document the product boundary and launch gate
 
@@ -147,11 +147,11 @@ export async function initializeOperatorV1(input: {
 - Modify: `README.md`
 - Modify: `docs/superpowers/plans/2026-08-16-managed-paid-user-yolo-launch.md`
 
-- [ ] Document the exact local UX: `npx reelier@latest init`, then `reelier operator status`; no model API key entry.
-- [ ] State clearly that local mode is free, customer-controlled, and completeness is `unchecked`; paid managed authority is a separate Cell-backed product.
-- [ ] Record the three-harness support matrix as probe evidence, not as a claim of universal provider coverage.
-- [ ] Add launch gates: Codex/Claude/Grok probe passes, first local Cell governed Outcome, restart/no-resend test, and no-secret state audit.
-- [ ] Run build, focused Operator suite, `git diff --check`, and commit `docs: record operator authority-cell launch slice`.
+- [x] Document the exact local UX: `npx reelier@latest init`, then `reelier operator status`; no model API key entry.
+- [x] State clearly that local mode is free, customer-controlled, and completeness is `unchecked`; paid managed authority is a separate Cell-backed product.
+- [x] Record the three-harness support matrix as probe evidence, not as a claim of universal provider coverage.
+- [x] Add launch gates: Codex/Claude/Grok probe passes, first local Cell governed Outcome, restart/no-resend test, and no-secret state audit.
+- [x] Run build, focused Operator suite, `git diff --check`, and commit `docs: record operator authority-cell launch slice`.
 
 ### Task 5: Add bounded harness process adapters
 
@@ -163,10 +163,10 @@ The adapter is a transport boundary, not an authority boundary. It builds a vers
 for Codex, Claude Code, or Grok Build, starts the installed process with a bounded timeout, and
 emits detached event summaries whose payloads are digests rather than raw prompt/model/tool data.
 
-- [ ] RED: exact argv, no inherited secret environment, timeout/stop behavior, malformed event
+- [x] RED: exact argv, no inherited secret environment, timeout/stop behavior, malformed event
   refusal, and digest-only output.
-- [ ] GREEN: injectable spawn, clock, and digest dependencies; no provider calls or authority minting.
-- [ ] Gate: process tests, both TypeScript builds, and hostile serialization audit.
+- [x] GREEN: injectable spawn, clock, and digest dependencies; no provider calls or authority minting.
+- [x] Gate: process tests, both TypeScript builds, and hostile serialization audit.
 
 ### Task 6: Compose the local Operator supervisor
 
@@ -178,11 +178,12 @@ The supervisor owns sessions and exception state, but all consequential work is 
 existing canonical quartet and Authority Cell. Harness completion is never an Outcome; prompt text
 and model output never select a provider, account, contract, or write scope.
 
-- [ ] RED: harness completion without a Cell receipt remains `unchecked`; forged events cannot
+- [x] RED: harness completion without a Cell receipt remains `unchecked`; forged events cannot
   become `verified`; stop/restart is readback-only.
 - [x] GREEN: supervisor with injected process factory and Cell adapter; persist only redacted
   session metadata/digests through the workspace boundary, with readback-only recreation.
-- [ ] Gate: supervisor tests plus no-secret and no-self-authorization probes.
+- [x] Gate: supervisor tests plus no-secret and no-self-authorization probes. Restart-safe
+  `operator status <sessionId>` and stable redacted `operator list` are also implemented.
 
 ### Task 7: Prove the first complete local vertical
 
