@@ -74,7 +74,7 @@ export interface DispatchBudget { consumeOnce(input: Readonly<{ allocationId: st
 export interface CurrentDispatchAuthorityV1 { readonly authorityGeneration: string; readonly authorityExpiresAt: string; readonly authorityStateDigest?: string; readonly sourceBundleDigest?: string; readonly grantDigest?: string; readonly runtimeSessionId?: string; readonly routeAuthorityDigest: string; readonly providerId?: string; readonly connectorId?: string; readonly accountId?: string; readonly endpointId?: string; }
 export interface DispatchAuthorityRevalidator { revalidate(state: DispatchRequestState): Promise<CurrentDispatchAuthorityV1>; routeReread(state: DispatchRequestState): Promise<import("../ledger.js").RouteAuthoritySnapshotV1>; }
 export interface CertifiedIdentityVerifier { readonly purpose: "authority-evidence"; readonly signerId: string; readonly publicKey: KeyObject; }
-export interface CertifiedDispatchOptions { readonly identityProbe: () => Promise<AuthenticatedProviderIdentityV1>; readonly verifyIdentity?: CertifiedIdentityVerifier; readonly revalidator: DispatchAuthorityRevalidator; readonly latencyRecorder?: AuthorityLatencyRecorder; readonly onPhase?: (phase: "identity-probe" | "route-reread" | "authority-validation-before-prepare" | "prepare" | "authority-validation-after-prepare" | "dispatch-commit-cas" | "authority-send-boundary" | "send-started" | "send") => void; }
+export interface CertifiedDispatchOptions { readonly identityProbe: () => Promise<AuthenticatedProviderIdentityV1>; readonly verifyIdentity?: CertifiedIdentityVerifier; readonly revalidator: DispatchAuthorityRevalidator; readonly latencyRecorder?: AuthorityLatencyRecorder; readonly onPhase?: (phase: "identity-probe" | "route-reread" | "authority-validation-before-prepare" | "prepare" | "authority-validation-after-prepare" | "authority-validation-before-cas" | "dispatch-commit-cas" | "authority-validation-before-send" | "authority-send-boundary" | "send-started" | "send") => void; }
 
 const coordinatorPublicationCalls = new WeakMap<object, Readonly<{ phase: string; reservationId: string; effectDigest: string }>>();
 interface CoordinatorDispatchCallStateV1 { readonly call: object; readonly state: DispatchRequestState; readonly reservationId: string; readonly effectDigest: string; delegate: object | null }
@@ -205,9 +205,9 @@ export function createDispatchCoordinator(ledger: AuthorityLedger, adapter: Disp
         const description: PreparedDispatchDescriptionV1 = prepared.description;
         if (routeAuthority && (description.routeDigest !== routeAuthority.routeDigest || description.materializedRequestDigest !== routeAuthority.expectedMaterializedRequestDigest)) throw new Error("prepared dispatch does not match durable route authority");
         await revalidateGoverned?.();
-        const revalidatePreparedAuthority = certified ? async (): Promise<void> => {
-          certified.onPhase?.("authority-validation-after-prepare");
-          const authorityAfter = await measureLatency(certified.latencyRecorder, "authority-validation-after-prepare", () => certified.revalidator.revalidate(state));
+        const revalidatePreparedAuthority = certified ? async (phase: "authority-validation-after-prepare" | "authority-validation-before-cas" | "authority-validation-before-send"): Promise<void> => {
+          certified.onPhase?.(phase);
+          const authorityAfter = await measureLatency(certified.latencyRecorder, phase, () => certified.revalidator.revalidate(state));
           if (
             !authorityBefore
             || authorityAfter.authorityGeneration !== routeAuthority!.authorityGeneration
@@ -223,10 +223,10 @@ export function createDispatchCoordinator(ledger: AuthorityLedger, adapter: Disp
             || authorityAfter.endpointId !== undefined && authorityAfter.endpointId !== routeAuthority!.endpointId
           ) throw new Error("dispatch authority changed during preparation");
         } : undefined;
-        await revalidatePreparedAuthority?.();
+        await revalidatePreparedAuthority?.("authority-validation-after-prepare");
         const budgetClaim = budgetFor(state);
         if (budget && budgetClaim) await budget.consumeOnce(budgetClaim);
-        await revalidatePreparedAuthority?.();
+        await revalidatePreparedAuthority?.("authority-validation-before-cas");
         await revalidateGoverned?.();
         let lease: import("./prepared-dispatch.js").DispatchCommitLease;
         try { certified?.onPhase?.("dispatch-commit-cas"); lease = await measureLatency(certified?.latencyRecorder, "dispatch-commit-cas", () => ledger.commitPreparedDispatch!({ reservationId, allocationId: context?.allocationId ?? description.allocationId, expectedAuthorityGeneration: description.authorityGeneration, preparedDescription: description, absoluteDeadlineMs: description.absoluteDeadlineMs })); }
@@ -250,7 +250,7 @@ export function createDispatchCoordinator(ledger: AuthorityLedger, adapter: Disp
           try { reservationRoot=await publication.publishReservation(coordinatorPublicationCall({phase:"reservation",identity,state:rootState,outcome:rootOutcome,dispatchedRequestDigest:null,priorReceiptDigest:null})); }
           catch (error) { throw new DispatchBoundaryFailure({ classification: "reservation-publication-unavailable", phase: "reservation-publication", providerEffectPossible: false, cause: error }); }
         }
-        await revalidatePreparedAuthority?.();
+        await revalidatePreparedAuthority?.("authority-validation-before-send");
         await revalidateGoverned?.();
         authorizeCoordinatorCommittedLease(lease);
         let outcome: DispatchOutcome;
