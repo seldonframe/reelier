@@ -20,6 +20,8 @@ Verification on the reviewed OSS authority base:
 - Installed packed-consumer Operator contract: pass. The published `reelier/operator` barrel
   exposes the model-agnostic harness/session/handoff surface, while `reelier/authority/host`
   exposes the unchanged canonical quartet; no credentials are included.
+- The cross-platform CI pack job now runs this same installed-consumer assertion on the downloaded
+  authority tarball before native authority tests.
 - Operator-evidence acceleration preflight: four controlled commands, all exit code 0.
 - `git diff --check`: pass.
 
