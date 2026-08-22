@@ -83,6 +83,11 @@ Local mode is free and customer-controlled. Its completeness is explicitly `unch
 Cell-backed governed Outcome and authoritative provider readback exist; an installed harness is
 not evidence that a remote write happened.
 
+The initial paid offer is authority capacity, not model inference: managed Personal is $49/month
+(10 concurrent governed executions), managed Team is $299/month (50), and Enterprise runs a
+customer-hosted Cell using the customer's AWS, Vault, Cloudflare, or IAM boundary. Receipts and
+attestation are never metered, and Reelier does not require a Codex, Claude, or Grok API key.
+
 ### As an agent plugin
 
 Teach your coding agent when to reach for Reelier. Same two commands, either host:
