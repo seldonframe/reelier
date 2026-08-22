@@ -4713,7 +4713,7 @@ const USAGE =
 const HELP_DISPATCH_COMMANDS = new Set([
   "run", "bench", "baseline", "cost", "prices", "mcp", "serve", "trace", "compile", "manifest", "resolve",
   "approve", "push", "get", "verify", "diff", "ci", "policy", "authority", "init", "up", "discover", "connections",
-  "connect", "deploy", "doctor", "bridge", "coverage", "from-session", "scan", "install", "uninstall", "login", "logout", "whoami",
+  "connect", "deploy", "doctor", "bridge", "coverage", "from-session", "scan", "install", "uninstall", "login", "logout", "whoami", "operator",
 ]);
 
 function isReadOnlySubcommandHelp(cmd: string | undefined, rest: string[]): boolean {
