@@ -38,20 +38,16 @@ or customer-hosted executor. Initial plan constants are provider-neutral: free l
 Personal (10 concurrent executions), $299 managed Team (50), and Enterprise customer-hosted.
 Receipts are never metered.
 
-The latest full repository suite completed with 3,796 tests: 3,764 passed, 10 failed, and 22 skipped
-(exit code 1; approximately 547 seconds). The certified-dispatch latency-ordering reproducer
-has since been fixed and its focused native route/latency tests pass. After that run, the stale help
-inventory, adapter-contract digest assertion, and malformed-init output contract were corrected and
-their targeted compiled tests pass; the full suite has not been rerun after those corrections. The
-remaining unverified full-suite failures are outside
-this Operator slice. The five Windows/Linux host assertions were then made hermetic through the
-existing Linux test seam without weakening the production platform guard; their targeted compiled
-tests pass. The remaining unrerun external prerequisites are the missing universal native
-bootstrap-helper manifest and installed Eve fixture dependency/health prerequisite.
-The pinned Eve fixture dependency was then installed from its lockfile and the full continuity
-matrix passed 10/10 (about 79 seconds). The only remaining unrerun release prerequisite is the
-universal native bootstrap-helper manifest, which must be assembled from matching Linux and
-Windows artifacts by the existing CI matrix. No unsupported skip was added.
+The latest full repository suite completed with 3,805 tests: 3,783 passed, 2 failed, and 20 skipped
+(exit code 1; approximately 845 seconds). One failure was the Operator help inventory: the source
+dispatch set was subsequently corrected to include `operator`, and the targeted compiled help
+oracle passes. The remaining failure is the missing universal native bootstrap-helper manifest,
+which must be assembled from matching Linux and Windows artifacts by the existing CI matrix and
+was not fabricated locally. The certified-dispatch latency-ordering reproducer has been fixed and
+its focused native route/latency tests pass. The adapter-contract digest, malformed-init output,
+and Windows/Linux host-seam assertions were corrected; their targeted compiled tests pass. The
+pinned Eve fixture dependency was installed from its lockfile and the real Eve continuity matrix
+passed 10/10 (about 79 seconds). No unsupported skip was added.
 The Operator-focused tests and all release gates above passed in the same worktree. No provider,
 browser, cloud, billing, or credential action occurred. Managed Cloud Task 0-5 remains an
 external prerequisite and is not claimed complete by this OSS slice.
