@@ -54,3 +54,22 @@ test("operator status reads a persisted session and operator list exposes redact
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("operator review prints the Cloud review surface without exposing local prompts", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "reelier-operator-review-"));
+  const previous = process.cwd();
+  const originalLog = console.log;
+  const output: string[] = [];
+  try {
+    process.chdir(root);
+    console.log = (...args: unknown[]) => output.push(args.join(" "));
+    assert.equal(await cmdOperator({ positional: ["review"], flags: new Set(), vars: {}, wraps: [], opts: {}, fails: [] }), 0);
+    assert.match(output.join("\n"), /dashboard\/outcomes/);
+    assert.match(output.join("\n"), /Verified means reconciled/);
+    assert.doesNotMatch(output.join("\n"), /prompt|request-cli/);
+  } finally {
+    console.log = originalLog;
+    process.chdir(previous);
+    await rm(root, { recursive: true, force: true });
+  }
+});

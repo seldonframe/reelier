@@ -4593,8 +4593,19 @@ export async function cmdOperator(args: ParsedArgs): Promise<number> {
     console.log(`Next: ${summary.next.join(" → ")}`);
     return 0;
   }
+  if (subcommand === "review") {
+    if (sessionId || args.flags.size > 1 || (args.flags.size === 1 && !args.flags.has("open")) || Object.keys(args.opts).length !== 0 || Object.keys(args.vars).length !== 0 || args.wraps.length !== 0 || args.fails.length !== 0) {
+      console.error("Usage: reelier operator review [--open]");
+      return 1;
+    }
+    const url = `${await resolveBaseUrl()}/dashboard/outcomes`;
+    if (args.flags.has("open")) openBrowser(url);
+    console.log(`Outcome review: ${url}`);
+    console.log("Verified means reconciled with an authoritative receipt; pending and partial remain unresolved.");
+    return 0;
+  }
   if (subcommand !== "status" && subcommand !== "list") {
-    console.error("Usage: reelier operator <init|status [sessionId]|list>");
+    console.error("Usage: reelier operator <init|status [sessionId]|list|review [--open]>");
     return 1;
   }
   const sessionStore = createOperatorSessionStoreV1({ root: cwd });
