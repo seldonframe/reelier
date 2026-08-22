@@ -5,6 +5,7 @@ import type {
   AuthorityAgentToolsV1,
 } from "../authority/host/agent-tools.js";
 import type { OperatorHarnessIdV1 } from "./harness.js";
+import type { OperatorPersistedSessionV1 } from "./session-store.js";
 import {
   createOperatorHarnessProcessV1,
   type OperatorHarnessEventV1,
@@ -43,6 +44,11 @@ export interface OperatorSupervisorV1 {
   stop(sessionId: string): Promise<OperatorSupervisorStateV1>;
 }
 
+type OperatorSessionStoreV1 = Readonly<{
+  load(sessionId: string): Promise<OperatorPersistedSessionV1 | null>;
+  save(state: OperatorPersistedSessionV1): Promise<OperatorPersistedSessionV1>;
+}>;
+
 interface SessionRecord {
   readonly process: OperatorHarnessProcessV1;
   readonly request: OperatorCellRequestV1;
@@ -71,9 +77,15 @@ function applyCell(state: OperatorSupervisorStateV1, result: AuthorityAgentToolO
 export function createOperatorSupervisorV1(input: {
   readonly cell: Pick<AuthorityAgentToolsV1, "outcomeRequest" | "outcomeStatus">;
   readonly processFactory?: ReturnType<typeof createOperatorHarnessProcessV1>;
+  readonly sessionStore?: OperatorSessionStoreV1;
 }): OperatorSupervisorV1 {
   const processes = input.processFactory ?? createOperatorHarnessProcessV1();
   const sessions = new Map<string, SessionRecord>();
+
+  async function persist(record: SessionRecord): Promise<void> {
+    if (!input.sessionStore) return;
+    await input.sessionStore.save({ ...record.state, updatedAt: new Date().toISOString() });
+  }
 
   return Object.freeze({
     async start(request: Parameters<OperatorSupervisorV1["start"]>[0]): Promise<OperatorSupervisorStateV1> {
@@ -91,11 +103,14 @@ export function createOperatorSupervisorV1(input: {
       });
       const record: SessionRecord = { process, request: request.cellRequest, context: request.context, state: initial, events: [] };
       sessions.set(process.sessionId, record);
+      await persist(record);
       try {
         const result = await input.cell.outcomeRequest(request.cellRequest, request.context);
         record.state = applyCell(record.state, result);
+        await persist(record);
       } catch {
         record.state = safeState({ ...record.state, cellVerdict: "refused", cellLifecycle: "unavailable" });
+        await persist(record);
       }
       return record.state;
     },
@@ -107,15 +122,21 @@ export function createOperatorSupervisorV1(input: {
         record.events.push(item);
         if (item.kind === "completed") record.state = safeState({ ...record.state, harnessLifecycle: "completed" });
         if (item.kind === "failed") record.state = safeState({ ...record.state, harnessLifecycle: "failed" });
+        await persist(record);
       }
       return Object.freeze([...record.events]);
     },
 
     async status(sessionId: string): Promise<OperatorSupervisorStateV1> {
       const record = sessions.get(sessionId);
-      if (!record) throw new Error("operator session is unknown");
+      if (!record) {
+        const persisted = await input.sessionStore?.load(sessionId);
+        if (!persisted) throw new Error("operator session is unknown");
+        return Object.freeze({ ...persisted });
+      }
       const result = await input.cell.outcomeStatus({ requestId: record.request.requestId }, record.context);
       record.state = applyCell(record.state, result);
+      await persist(record);
       return record.state;
     },
 
@@ -124,6 +145,7 @@ export function createOperatorSupervisorV1(input: {
       if (!record) throw new Error("operator session is unknown");
       await record.process.stop();
       record.state = safeState({ ...record.state, harnessLifecycle: "stopped" });
+      await persist(record);
       return record.state;
     },
   });
