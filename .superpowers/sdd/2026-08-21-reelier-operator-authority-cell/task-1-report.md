@@ -2,14 +2,15 @@
 
 This implementation adds the first local Operator vertical without creating a second authority
 protocol: a closed Codex / Claude Code / Grok Build registry, atomic non-secret workspace state,
-one-command onboarding, bounded harness process adapters, a local supervisor, a genuine-runtime
-bridge, and provider-neutral managed/customer-hosted handoff and usage contracts. The Operator
-cannot mint authority, select provider accounts, access credentials, or claim a verified Outcome.
-Local completeness remains `unchecked` until the existing Cell returns an authoritative receipt.
+one-command onboarding, bounded harness process adapters, a local supervisor, restart-safe redacted
+session metadata, a genuine-runtime bridge, and provider-neutral managed/customer-hosted handoff
+and usage contracts. The Operator cannot mint authority, select provider accounts, access
+credentials, or claim a verified Outcome. Local completeness remains `unchecked` until the existing
+Cell returns an authoritative receipt.
 
 Verification on the reviewed OSS authority base:
 
-- Operator-focused tests: 19/19 pass.
+- Operator-focused tests: 22/22 pass.
 - Genuine Task4C runtime: 5/5 end-to-end tests pass.
 - Grok Build agent-adapter conformance: 7/7 checks pass.
 - Core continuity-adapter conformance: 10/10 checks pass; maturity remains `reproduced`.
@@ -22,10 +23,13 @@ Verification on the reviewed OSS authority base:
 The process adapter emits only event digests; it does not persist prompt text, model output,
 provider bodies, credentials, or environment values. The supervisor keeps harness lifecycle and
 Cell lifecycle separate: a clean harness exit is not a successful Outcome, and a refused Cell
-result remains refused. The local Cell module is an adapter over an already-created genuine Cell
-runtime, including an explicit bridge for `createGitHubLinearMissionRuntimeV1`; it does not
-introduce a parallel ledger, generic executor, or receipt store. Evidence and review calls remain
-delegated to that runtime.
+result remains refused. Session persistence stores only request IDs, prompt digests, harness/Cell
+lifecycle labels, and optional receipt references. Recreating a supervisor returns that redacted
+state read-only; it does not relaunch a harness, resend an Outcome, or mint authority.
+
+The local Cell module is an adapter over an already-created genuine Cell runtime, including an
+explicit bridge for `createGitHubLinearMissionRuntimeV1`; it does not introduce a parallel ledger,
+generic executor, or receipt store. Evidence and review calls remain delegated to that runtime.
 
 The managed handoff is intentionally not Cloud OAuth or billing. It is a one-shot signed contract
 containing only opaque provider-account and authority/contract references. Vercel Connect, AWS,
@@ -38,7 +42,3 @@ The full repository suite is a long authority-ledger stress corpus; a bounded ru
 baseline/platform failures and was interrupted without a final aggregate. No provider, browser,
 cloud, billing, or credential action occurred. Managed Cloud Task 0-5 remains an external
 prerequisite and is not claimed complete by this OSS slice.
-
-The acceleration preflight initially reported unavailable because this isolated worktree had no
-local dependencies. After `npm ci --ignore-scripts`, the correct `operator-evidence` profile passed
-all four controlled commands with exit code 0. No source workaround was required.

@@ -11,7 +11,7 @@
 **Spec:** `docs/company/FOUNDATION.md`, `docs/company/BUILDING-COMPASS.md`, `docs/superpowers/plans/2026-08-16-managed-paid-user-yolo-launch.md`, and the reviewed OSS governed Outcome contract at `contract/authority/v1/`.
 
 **Status (2026-08-21):** Tasks 1–9 are implemented on this branch, including the genuine-runtime
-bridge added after the initial slice. Task 10 focused release gates are green: Operator/Authority
+bridge and restart-safe session persistence added after the initial slice. Task 10 focused release gates are green: Operator/Authority
 Cell/Task4C tests, builds, pack generation, adapter conformance, and operator-evidence preflight
 pass. The bounded full-suite run was interrupted after known baseline/platform failures and has no
 final aggregate. Managed Cloud/Neon/Vercel Connect prerequisites remain external and are not
@@ -180,8 +180,8 @@ and model output never select a provider, account, contract, or write scope.
 
 - [ ] RED: harness completion without a Cell receipt remains `unchecked`; forged events cannot
   become `verified`; stop/restart is readback-only.
-- [ ] GREEN: in-memory supervisor with injected process factory and Cell adapter; persist only
-  session metadata/digests through the workspace boundary.
+- [x] GREEN: supervisor with injected process factory and Cell adapter; persist only redacted
+  session metadata/digests through the workspace boundary, with readback-only recreation.
 - [ ] Gate: supervisor tests plus no-secret and no-self-authorization probes.
 
 ### Task 7: Prove the first complete local vertical
