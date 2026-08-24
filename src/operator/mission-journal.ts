@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { mkdir, open, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { parseMissionControlMissionV1, type MissionControlMissionV1 } from "./mission-control.js";
@@ -18,6 +18,15 @@ export type MissionControlJournalV1 = Readonly<{
 type RootIdentity = Readonly<{ canonical: string; device: bigint; inode: bigint }>;
 const EVENT_KEYS = new Set(["v", "eventId", "kind", "mission"]);
 const EVENT_ID = /^[0-9a-f-]{36}$/;
+const LOCK_KEYS = new Set(["v", "pid", "nonce", "acquiredAt"]);
+const LOCK_NONCE = /^[0-9a-f]{64}$/;
+
+type JournalLockClaimV1 = Readonly<{
+  v: "reelier.mission-control-lock/v1";
+  pid: number;
+  nonce: string;
+  acquiredAt: string;
+}>;
 
 async function bindRoot(root: string): Promise<RootIdentity> {
   const resolved = path.resolve(root);
@@ -85,19 +94,78 @@ function parseEvent(value: unknown): MissionSnapshotEventV1 {
   });
 }
 
+function parseLockClaim(value: unknown): JournalLockClaimV1 | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const keys = Reflect.ownKeys(value);
+  if (keys.length !== LOCK_KEYS.size || keys.some((key) => typeof key !== "string" || !LOCK_KEYS.has(key))) return null;
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  for (const key of LOCK_KEYS) {
+    const descriptor = descriptors[key];
+    if (!descriptor || !("value" in descriptor) || !descriptor.enumerable) return null;
+  }
+  const pid = descriptors.pid!.value;
+  const nonce = descriptors.nonce!.value;
+  const acquiredAt = descriptors.acquiredAt!.value;
+  if (descriptors.v!.value !== "reelier.mission-control-lock/v1" || !Number.isSafeInteger(pid) || pid <= 0 || typeof nonce !== "string" || !LOCK_NONCE.test(nonce) || typeof acquiredAt !== "string" || Number.isNaN(Date.parse(acquiredAt))) return null;
+  return Object.freeze({ v: "reelier.mission-control-lock/v1", pid, nonce, acquiredAt });
+}
+
+function processIsAlive(pid: number): boolean {
+  if (pid === process.pid) return true;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error: unknown) {
+    return (error as { code?: string }).code === "EPERM";
+  }
+}
+
+async function reclaimDeadLock(lockPath: string): Promise<boolean> {
+  try {
+    const before = await stat(lockPath, { bigint: true });
+    if (!before.isFile() || before.size < 1n || before.size > 1_024n) return false;
+    const bytes = await readFile(lockPath, "utf8");
+    const claim = parseLockClaim(JSON.parse(bytes));
+    if (!claim || processIsAlive(claim.pid)) return false;
+    const after = await stat(lockPath, { bigint: true });
+    if (before.dev !== after.dev || before.ino !== after.ino || before.size !== after.size || before.mtimeNs !== after.mtimeNs || await readFile(lockPath, "utf8") !== bytes) return false;
+    await rm(lockPath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function withLock<T>(identity: RootIdentity, operation: () => Promise<T>): Promise<T> {
   const locks = path.join(operatorRoot(identity), "locks");
   await ensureOperatorRoot(identity);
   await ensureLocalDirectory(identity, locks);
   const lockPath = path.join(locks, "journal.lock");
+  const claim: JournalLockClaimV1 = Object.freeze({
+    v: "reelier.mission-control-lock/v1",
+    pid: process.pid,
+    nonce: randomBytes(32).toString("hex"),
+    acquiredAt: new Date().toISOString(),
+  });
   let handle;
   for (let attempt = 0; ; attempt += 1) {
     try {
       handle = await open(lockPath, "wx", 0o600);
+    } catch (error: unknown) {
+      if ((error as { code?: string }).code !== "EEXIST") throw error;
+      if (await reclaimDeadLock(lockPath)) continue;
+      if (attempt >= 100) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      continue;
+    }
+    try {
+      await handle.writeFile(`${JSON.stringify(claim)}\n`, "utf8");
+      await handle.sync();
       break;
     } catch (error: unknown) {
-      if ((error as { code?: string }).code !== "EEXIST" || attempt >= 100) throw error;
-      await new Promise((resolve) => setTimeout(resolve, 5));
+      await handle.close().catch(() => undefined);
+      await rm(lockPath, { force: true }).catch(() => undefined);
+      throw error;
     }
   }
   try {

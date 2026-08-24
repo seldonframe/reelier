@@ -62,6 +62,28 @@ test("restart reclaims only a closed journal lock whose owning process is gone",
   }
 });
 
+test("restart never reclaims a live or malformed journal lock", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "reelier-mission-journal-live-lock-"));
+  const lockDirectory = path.join(root, ".reelier", "operator", "locks");
+  const lockPath = path.join(lockDirectory, "journal.lock");
+  try {
+    await mkdir(lockDirectory, { recursive: true });
+    const claims = [
+      `${JSON.stringify({ v: "reelier.mission-control-lock/v1", pid: process.pid, nonce: "a".repeat(64), acquiredAt: "2026-08-24T12:00:00.000Z" })}\n`,
+      "not-a-closed-lock-claim\n",
+    ];
+    for (const claim of claims) {
+      await writeFile(lockPath, claim, "utf8");
+      const journal = await createMissionControlJournalV1({ root });
+      await assert.rejects(() => journal.reconstruct(), /EEXIST/);
+      assert.equal(await readFile(lockPath, "utf8"), claim);
+      await rm(lockPath);
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("a truncated or hostile event journal fails closed instead of fabricating state", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "reelier-mission-journal-bad-"));
   try {
