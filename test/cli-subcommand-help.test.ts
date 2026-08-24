@@ -185,6 +185,18 @@ test("init help documents the managed local preview without implying authorizati
   assert.match(result.stdout, /does not authorize missions/i);
 });
 
+test("operator help exposes the Local Mission Control command surface instead of the global CLI wall", () => {
+  const result = spawnSync(process.execPath, [cliPath, "operator", "--help"], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^Usage: reelier operator/m);
+  for (const command of ["init", "open", "import", "run", "list", "status", "stop", "resume", "review", "autopilot", "doctor"] as const) {
+    assert.match(result.stdout, new RegExp(`^  ${command}(?:\\s|$)`, "m"), `operator help omitted ${command}`);
+  }
+  assert.match(result.stdout, /Local Mission Control is local, accountless, and independently useful/i);
+  assert.match(result.stdout, /Managed Autopilot appears only at an exact reviewed external consequence/i);
+  assert.doesNotMatch(result.stdout, /^Record, replay, attest, and diff/m, "operator help fell back to the global CLI wall");
+});
+
 test("network oracle inventory exactly matches Node's callable network surfaces", () => {
   const callableOwnProperties = (target: object) => Object.getOwnPropertyNames(target)
     .filter((key) => typeof Object.getOwnPropertyDescriptor(target, key)?.value === "function")
