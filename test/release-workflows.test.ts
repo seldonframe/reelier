@@ -17,6 +17,7 @@ test("npm-publish.yml pins the governed publish shape", () => {
     "environment: production-release", "node-version: 24", "fetch-depth: 0",
     "node scripts/check-release-ancestor.mjs", "node scripts/verify-release-authorization.mjs",
     "node scripts/reconcile-npm-destination.mjs", "npm ci", "npm run build", "npm pack",
+    "node scripts/resolve-npm-dist-tag.mjs", '--tag "$NPM_DIST_TAG"',
     "--provenance", "concurrency:", "group: npm-publish-${{ github.ref_name }}", "cancel-in-progress: false",
     // B3 review, Important #1 and #3: pin the security corrections so a
     // future edit can't silently regress this workflow back to the shape
