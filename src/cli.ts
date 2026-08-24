@@ -80,6 +80,7 @@ import { stopOwnedMissionProcessV1 } from "./operator/mission-process-control.js
 import { runMissionControlDoctorV1, type MissionControlDoctorResultV1 } from "./operator/doctor.js";
 import { createAutopilotHandoffV1, waitForAutopilotReadyV1, type ManagedUpgradeTargetManifest } from "./operator/autopilot-handoff-client.js";
 import { loadManagedUpgradeTargetBundleV1 } from "./operator/managed-upgrade-target-store.js";
+import { createAutonomyBenchmarkStoreV1 } from "./operator/autonomy-benchmark-store.js";
 import { compileSessionTranscript, detectSessionFormat, SESSION_FORMAT_LABELS, type SessionSkip, type SessionFormatId } from "./session.js";
 import {
   scanTranscripts,
@@ -4736,6 +4737,53 @@ export async function cmdOperator(args: ParsedArgs, overrides: CmdOperatorOverri
       return 1;
     }
   }
+  if (subcommand === "benchmark") {
+    const operation = sessionId;
+    if (operation === "record") {
+      const inputFile = args.opts.input;
+      if (args.positional.length !== 2 || typeof inputFile !== "string" || args.flags.size !== 0 || Object.keys(args.opts).some((key) => key !== "input") || Object.keys(args.vars).length !== 0 || args.wraps.length !== 0 || args.fails.length !== 0) {
+        console.error("Usage: reelier operator benchmark record --input <closed-run.json>");
+        return 1;
+      }
+      try {
+        const inputPath = path.resolve(cwd, inputFile);
+        const details = await stat(inputPath);
+        if (!details.isFile() || details.size < 1 || details.size > 16 * 1024 * 1024 || await realpath(inputPath) !== inputPath) throw new Error("benchmark input is not a bounded unlinked regular file");
+        const store = await createAutonomyBenchmarkStoreV1({ root: cwd });
+        const recorded = await store.record(JSON.parse(await readFile(inputPath, "utf8")));
+        console.log(`Benchmark recorded: ${recorded.benchmarkId}`);
+        console.log("Only closed timing, guardrail, harness, workload, and reconciled Outcome reference fields were accepted.");
+        return 0;
+      } catch (error) {
+        console.error(`Benchmark record refused: ${error instanceof Error ? error.message : String(error)}`);
+        return 1;
+      }
+    }
+    if (operation === "export") {
+      const nativeBenchmarkId = args.opts.native;
+      const reelierBenchmarkId = args.opts.reelier;
+      const outputFile = args.opts.out;
+      if (args.positional.length !== 2 || typeof nativeBenchmarkId !== "string" || typeof reelierBenchmarkId !== "string" || typeof outputFile !== "string" || args.flags.size !== 0 || Object.keys(args.opts).some((key) => key !== "native" && key !== "reelier" && key !== "out") || Object.keys(args.vars).length !== 0 || args.wraps.length !== 0 || args.fails.length !== 0) {
+        console.error("Usage: reelier operator benchmark export --native <id> --reelier <id> --out <bundle.json>");
+        return 1;
+      }
+      try {
+        const outputPath = path.resolve(cwd, outputFile);
+        const parent = path.dirname(outputPath);
+        if (await realpath(parent) !== parent) throw new Error("benchmark output parent is linked or invalid");
+        const bundle = await (await createAutonomyBenchmarkStoreV1({ root: cwd })).exportMatched({ nativeBenchmarkId, reelierBenchmarkId });
+        await writeFile(outputPath, `${JSON.stringify(bundle, null, 2)}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
+        console.log(`Matched benchmark exported: ${outputPath}`);
+        console.log(`Improvement: ${bundle.comparison.improvement}x (measured; no extrapolation)`);
+        return 0;
+      } catch (error) {
+        console.error(`Benchmark export refused: ${error instanceof Error ? error.message : String(error)}`);
+        return 1;
+      }
+    }
+    console.error("Usage: reelier operator benchmark <record|export> ...");
+    return 1;
+  }
   if (subcommand === "autopilot") {
     const manifestFile = args.opts.manifest;
     const artifactFile = args.opts.artifact;
@@ -4818,7 +4866,7 @@ export async function cmdOperator(args: ParsedArgs, overrides: CmdOperatorOverri
     return 0;
   }
   if (subcommand !== "status" && subcommand !== "list") {
-    console.error("Usage: reelier operator <init|open|import|run|stop|resume|doctor|autopilot|status [sessionId]|list|review [--open]>");
+    console.error("Usage: reelier operator <init|open|import|run|stop|resume|doctor|benchmark|autopilot|status [sessionId]|list|review [--open]>");
     return 1;
   }
   const sessionStore = createOperatorSessionStoreV1({ root: cwd });

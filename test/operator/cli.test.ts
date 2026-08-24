@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { cmdOperator, type CmdOperatorOverrides, type ParsedArgs } from "../../src/cli.js";
@@ -311,6 +311,46 @@ test("operator autopilot binds an exact manifest to an existing mission and open
     assert.match(output.join("\n"), /Finish this mission without supervising the merge/);
     assert.match(output.join("\n"), /Autopilot is ready for this mission/);
     assert.doesNotMatch(output.join("\n"), /workspace|project|issue|fixlyai/);
+  } finally {
+    console.log = originalLog;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("operator benchmark records closed runs and exports only the signed redacted comparison", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "reelier-operator-benchmark-"));
+  const originalLog = console.log;
+  const output: string[] = [];
+  const digest = `sha256:${"a".repeat(64)}`;
+  const makeRun = (mode: "native" | "reelier", milliseconds: number) => ({
+    version: "reelier.autonomy-benchmark-run/v1",
+    benchmarkId: `customer-1-${mode}`,
+    workloadDigest: digest,
+    mode,
+    harness: "codex",
+    reconciledOutcomeRefs: [`${mode}-outcome-1`],
+    attentionEvents: [{ version: "reelier.human-attention-event/v1", eventId: `${mode}-review`, benchmarkId: `customer-1-${mode}`, kind: "review", startedAt: "2026-08-24T12:00:00.000Z", endedAt: new Date(Date.parse("2026-08-24T12:00:00.000Z") + milliseconds).toISOString(), activeMilliseconds: milliseconds, source: mode === "native" ? "baseline-observer" : "operator" }],
+    duplicateWrites: 0,
+    credentialDisclosures: 0,
+    falseVerifiedOutcomes: 0,
+    unresolvedOutcomes: 0,
+    startedAt: "2026-08-24T12:00:00.000Z",
+    endedAt: "2026-08-24T13:00:00.000Z",
+  });
+  try {
+    const nativeFile = path.join(root, "native.json"), reelierFile = path.join(root, "reelier.json"), bundleFile = path.join(root, "bundle.json");
+    await writeFile(nativeFile, JSON.stringify(makeRun("native", 600_000)));
+    await writeFile(reelierFile, JSON.stringify(makeRun("reelier", 60_000)));
+    console.log = (...values: unknown[]) => output.push(values.join(" "));
+    assert.equal(await cmdOperator({ positional: ["benchmark", "record"], flags: new Set(), vars: {}, wraps: [], opts: { input: nativeFile }, fails: [] }, { cwd: root, home: root }), 0);
+    assert.equal(await cmdOperator({ positional: ["benchmark", "record"], flags: new Set(), vars: {}, wraps: [], opts: { input: reelierFile }, fails: [] }, { cwd: root, home: root }), 0);
+    assert.equal(await cmdOperator({ positional: ["benchmark", "export"], flags: new Set(), vars: {}, wraps: [], opts: { native: "customer-1-native", reelier: "customer-1-reelier", out: bundleFile }, fails: [] }, { cwd: root, home: root }), 0);
+    const bundle = JSON.parse(await readFile(bundleFile, "utf8")) as Record<string, unknown>;
+    assert.equal((bundle.comparison as { improvement: number }).improvement, 10);
+    assert.deepEqual(Object.keys(bundle).sort(), ["bundleDigest", "comparison", "harness", "nativeRunDigest", "reelierRunDigest", "signature", "version", "workloadDigest"].sort());
+    assert.doesNotMatch(JSON.stringify(bundle), /attentionEvents|reconciledOutcomeRefs|customer-1-native|customer-1-reelier/);
+    assert.match(output.join("\n"), /Benchmark recorded: customer-1-native/);
+    assert.match(output.join("\n"), /Matched benchmark exported/);
   } finally {
     console.log = originalLog;
     await rm(root, { recursive: true, force: true });
