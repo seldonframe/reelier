@@ -79,6 +79,7 @@ import { resumeMissionControlMissionV1, runMissionControlMissionV1 } from "./ope
 import { stopOwnedMissionProcessV1 } from "./operator/mission-process-control.js";
 import { runMissionControlDoctorV1, type MissionControlDoctorResultV1 } from "./operator/doctor.js";
 import { createAutopilotHandoffV1, waitForAutopilotReadyV1, type ManagedUpgradeTargetManifest } from "./operator/autopilot-handoff-client.js";
+import { loadManagedUpgradeTargetBundleV1 } from "./operator/managed-upgrade-target-store.js";
 import { compileSessionTranscript, detectSessionFormat, SESSION_FORMAT_LABELS, type SessionSkip, type SessionFormatId } from "./session.js";
 import {
   scanTranscripts,
@@ -4738,20 +4739,27 @@ export async function cmdOperator(args: ParsedArgs, overrides: CmdOperatorOverri
   if (subcommand === "autopilot") {
     const manifestFile = args.opts.manifest;
     const artifactFile = args.opts.artifact;
-    if (!sessionId || args.positional.length !== 2 || typeof manifestFile !== "string" || (artifactFile !== undefined && typeof artifactFile !== "string") || args.flags.size !== 0 || Object.keys(args.opts).some((key) => key !== "manifest" && key !== "artifact") || Object.keys(args.vars).length !== 0 || args.wraps.length !== 0 || args.fails.length !== 0) {
-      console.error("Usage: reelier operator autopilot <mission-ref> --manifest <exact-target-manifest.json> [--artifact <candidate-file>]");
-      console.error("Select exact provider targets in Mission Control first; Reelier never infers them from agent prose.");
+    if (!sessionId || args.positional.length !== 2 || (manifestFile !== undefined && typeof manifestFile !== "string") || (artifactFile !== undefined && typeof artifactFile !== "string") || (artifactFile !== undefined && manifestFile === undefined) || args.flags.size !== 0 || Object.keys(args.opts).some((key) => key !== "manifest" && key !== "artifact") || Object.keys(args.vars).length !== 0 || args.wraps.length !== 0 || args.fails.length !== 0) {
+      console.error("Usage: reelier operator autopilot <mission-ref> [--manifest <exact-target-manifest.json> --artifact <candidate-file>]");
+      console.error("An exact reviewed boundary stages the default target bundle; Reelier never infers targets from agent prose.");
       return 1;
     }
     try {
       const missions = await (await createMissionControlJournalV1({ root: cwd })).reconstruct();
       const mission = missions.find((item) => item.missionId === sessionId);
       if (!mission) throw new Error("mission is not present in the local Mission Control journal");
-      const targetPath = path.resolve(cwd, manifestFile);
-      const targetDetails = await stat(targetPath);
-      if (await realpath(targetPath) !== targetPath || !targetDetails.isFile() || targetDetails.size > 65_536) throw new Error("exact target manifest is not a bounded unlinked regular file");
-      const targetManifest = JSON.parse(await readFile(targetPath, "utf8")) as ManagedUpgradeTargetManifest;
+      let targetManifest: ManagedUpgradeTargetManifest;
       let artifactBytes: Buffer | undefined;
+      if (typeof manifestFile === "string") {
+        const targetPath = path.resolve(cwd, manifestFile);
+        const targetDetails = await stat(targetPath);
+        if (await realpath(targetPath) !== targetPath || !targetDetails.isFile() || targetDetails.size > 65_536) throw new Error("exact target manifest is not a bounded unlinked regular file");
+        targetManifest = JSON.parse(await readFile(targetPath, "utf8")) as ManagedUpgradeTargetManifest;
+      } else {
+        const bundle = await loadManagedUpgradeTargetBundleV1({ root: cwd, missionRef: mission.missionId });
+        targetManifest = bundle.targetManifest;
+        if (bundle.artifactBytes) artifactBytes = Buffer.from(bundle.artifactBytes);
+      }
       if (typeof artifactFile === "string") {
         const artifactPath = path.resolve(cwd, artifactFile), artifactDetails = await stat(artifactPath);
         if (await realpath(artifactPath) !== artifactPath || !artifactDetails.isFile() || artifactDetails.size < 1 || artifactDetails.size > 4 * 1024 * 1024) throw new Error("candidate artifact is not a bounded unlinked regular file");

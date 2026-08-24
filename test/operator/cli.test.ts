@@ -8,6 +8,7 @@ import { cmdOperator, type CmdOperatorOverrides, type ParsedArgs } from "../../s
 import { initializeOperatorWorkspaceV1 } from "../../src/operator/workspace.js";
 import { createOperatorSessionStoreV1 } from "../../src/operator/session-store.js";
 import { createMissionControlJournalV1 } from "../../src/operator/mission-journal.js";
+import { stageManagedUpgradeTargetBundleV1 } from "../../src/operator/managed-upgrade-target-store.js";
 
 const args = (subcommand: string): ParsedArgs => ({ positional: [subcommand], flags: new Set(), vars: {}, wraps: [], opts: {}, fails: [] });
 
@@ -255,8 +256,6 @@ test("operator doctor is local and resume refuses without a captured harness-nat
 
 test("operator autopilot binds an exact manifest to an existing mission and opens only the returned handoff", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "reelier-operator-autopilot-"));
-  const manifestPath = path.join(root, "autopilot-manifest.json");
-  const artifactPath = path.join(root, "candidate.bin");
   const candidate = Buffer.from("exact candidate bytes", "utf8");
   const artifactDigest = `sha256:${createHash("sha256").update(candidate).digest("hex")}`;
   const originalLog = console.log;
@@ -279,8 +278,7 @@ test("operator autopilot binds an exact manifest to an existing mission and open
       imported: false,
       updatedAt: "2026-08-24T12:00:00.000Z",
     });
-    await writeFile(artifactPath, candidate);
-    await writeFile(manifestPath, JSON.stringify({
+    const targetManifest = {
       version: "reelier.managed-upgrade-target-manifest/v2",
       missionRef: "mission-autopilot",
       repository: "fixlyai/reelier-beta",
@@ -291,9 +289,10 @@ test("operator autopilot binds an exact manifest to an existing mission and open
       expiresAt: "2026-08-24T12:10:00.000Z",
       artifactDigest,
       authority: { github: { repository: "fixlyai/reelier-beta", baseBranch: "main", baseSha: "a".repeat(40), headBranch: "reelier/mission-autopilot", headSha: "b".repeat(40), candidateDigest: artifactDigest, workflowPath: ".github/workflows/ci.yml", workflowDigest: `sha256:${"c".repeat(64)}`, requiredChecks: ["test"], postMergeTreeSha: "d".repeat(40) }, linear: { githubLinear: { workspace: "workspace", team: "team", project: "project", issue: "issue-1", preStatus: "In Progress", targetStatus: "Done", commentMarker: "reelier:composite", evidenceUrl: "https://www.reelier.com/r/one", evidenceContentDigest: `sha256:${"e".repeat(64)}` }, linearOnly: { workspace: "workspace", team: "team", project: "project", issue: "issue-2", preStatus: "Todo", targetStatus: "Done", commentMarker: "reelier:linear", evidenceUrl: "https://www.reelier.com/r/two", evidenceContentDigest: `sha256:${"f".repeat(64)}` } } },
-    }), "utf8");
+    } as const;
+    await stageManagedUpgradeTargetBundleV1({ root, operation: "github_release_pr_merge_v1", targetManifest, artifactBytes: candidate, seen: new Set() });
     console.log = (...values: unknown[]) => output.push(values.join(" "));
-    assert.equal(await cmdOperator({ positional: ["autopilot", "mission-autopilot"], flags: new Set(), vars: {}, wraps: [], opts: { manifest: manifestPath, artifact: artifactPath }, fails: [] }, {
+    assert.equal(await cmdOperator({ positional: ["autopilot", "mission-autopilot"], flags: new Set(), vars: {}, wraps: [], opts: {}, fails: [] }, {
       cwd: root,
       home: root,
       createAutopilotHandoff: async (input) => {
