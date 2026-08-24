@@ -55,6 +55,20 @@ test("a truncated or hostile event journal fails closed instead of fabricating s
   }
 });
 
+test("duplicate journal event identities fail closed instead of replaying ambiguous history", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "reelier-mission-journal-duplicate-"));
+  try {
+    const journal = await createMissionControlJournalV1({ root });
+    await journal.appendMission(mission("2026-08-24T12:00:00.000Z", "running"));
+    const eventPath = path.join(root, ".reelier", "operator", "events.jsonl");
+    const first = await readFile(eventPath, "utf8");
+    await writeFile(eventPath, `${first}${first}`, "utf8");
+    await assert.rejects(() => journal.reconstruct(), /duplicate.*event/i);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("a linked workspace root is refused before journal creation", async (context) => {
   const parent = await mkdtemp(path.join(tmpdir(), "reelier-mission-journal-link-"));
   const target = path.join(parent, "target");

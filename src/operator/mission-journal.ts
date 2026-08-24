@@ -149,14 +149,18 @@ export async function createMissionControlJournalV1(input: Readonly<{ root: stri
         }
         if (contents.length > 0 && !contents.endsWith("\n")) throw new Error("Mission Control journal is truncated");
         const latest = new Map<string, MissionControlMissionV1>();
+        const eventIds = new Set<string>();
         for (const [index, line] of contents.split("\n").entries()) {
           if (line.length === 0) continue;
+          let event: MissionSnapshotEventV1;
           try {
-            const event = parseEvent(JSON.parse(line));
-            latest.set(event.mission.missionId, event.mission);
+            event = parseEvent(JSON.parse(line));
           } catch (error: unknown) {
             throw new Error(`Mission Control journal event ${index + 1} is invalid`, { cause: error });
           }
+          if (eventIds.has(event.eventId)) throw new Error(`Mission Control journal contains duplicate event identity ${event.eventId}`);
+          eventIds.add(event.eventId);
+          latest.set(event.mission.missionId, event.mission);
         }
         await assertRoot(identity);
         return Object.freeze([...latest.values()].sort((left, right) => left.missionId.localeCompare(right.missionId)));
