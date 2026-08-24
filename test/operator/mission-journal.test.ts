@@ -42,6 +42,26 @@ test("append-only mission events reconstruct the same latest state after restart
   }
 });
 
+test("restart reclaims only a closed journal lock whose owning process is gone", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "reelier-mission-journal-dead-lock-"));
+  const lockDirectory = path.join(root, ".reelier", "operator", "locks");
+  const lockPath = path.join(lockDirectory, "journal.lock");
+  try {
+    await mkdir(lockDirectory, { recursive: true });
+    await writeFile(lockPath, `${JSON.stringify({
+      v: "reelier.mission-control-lock/v1",
+      pid: 99_999_999,
+      nonce: "d".repeat(64),
+      acquiredAt: "2026-08-24T12:00:00.000Z",
+    })}\n`, "utf8");
+    const journal = await createMissionControlJournalV1({ root });
+    assert.deepEqual(await journal.reconstruct(), []);
+    await assert.rejects(() => readFile(lockPath, "utf8"), /ENOENT/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("a truncated or hostile event journal fails closed instead of fabricating state", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "reelier-mission-journal-bad-"));
   try {
