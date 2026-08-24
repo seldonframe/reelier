@@ -4657,6 +4657,26 @@ export interface CmdOperatorOverrides {
   readonly now?: () => Date;
 }
 
+const OPERATOR_USAGE = `Usage: reelier operator <command> [options]
+
+Local Mission Control is local, accountless, and independently useful.
+
+  init [--no-open]                         Import local sessions and open Mission Control
+  open [--no-open]                         Open the loopback-only Mission Control board
+  import                                   Refresh supported local harness histories
+  run --harness codex|claude-code "<task>" Launch one Reelier-owned mission
+  list                                     List missions without prompts or reasoning
+  status [mission-ref]                     Show truthful harness and Outcome state
+  stop <mission-ref>                       Stop only an exactly owned Reelier process
+  resume <mission-ref>                     Resume only with a captured harness identity
+  review [--open]                          Review local evidence and exceptions
+  autopilot <mission-ref>                  Hand off an exact external consequence
+  doctor                                   Check local readiness without an account
+  benchmark <record|export> ...            Record or export closed measured evidence
+
+Managed Autopilot appears only at an exact reviewed external consequence.
+Native execution remains available; harness completion never becomes a reconciled Outcome.`;
+
 export async function cmdOperator(args: ParsedArgs, overrides: CmdOperatorOverrides = {}): Promise<number> {
   const subcommand = args.positional[0] ?? "status";
   const sessionId = args.positional[1];
@@ -5030,7 +5050,7 @@ async function main(): Promise<number> {
   // `<known-command> --help|-h` grammar before parsing or dispatching; flags
   // in option values and unknown commands retain their ordinary behavior.
   if (isReadOnlySubcommandHelp(cmd, rest)) {
-    console.log(USAGE);
+    console.log(cmd === "operator" ? OPERATOR_USAGE : USAGE);
     return 0;
   }
 
