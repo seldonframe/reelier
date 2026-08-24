@@ -56,6 +56,7 @@ export type MissionControlMissionV1 = Readonly<{
   updatedAt: string;
   startedAt?: string;
   usage?: MissionControlUsageV1;
+  restartCount?: number;
 }>;
 
 export type MissionControlUsageV1 = Readonly<{
@@ -81,7 +82,7 @@ const REQUIRED_KEYS = Object.freeze([
   "updatedAt",
 ] as const);
 const REQUIRED_KEY_SET = new Set<string>(REQUIRED_KEYS);
-const OPTIONAL_KEY_SET = new Set(["startedAt", "usage"]);
+const OPTIONAL_KEY_SET = new Set(["startedAt", "usage", "restartCount"]);
 const ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 const DIGEST = /^sha256:[0-9a-f]{64}$/;
 const HARNESS_LIFECYCLES = new Set<HarnessLifecycleV1>(["discovered", "queued", "running", "stalled", "exited", "stopped", "failed", "unreachable"]);
@@ -167,6 +168,8 @@ export function parseMissionControlMissionV1(value: unknown): MissionControlMiss
   const startedAt = record.startedAt === undefined ? undefined : boundedString(record.startedAt, "startedAt", 64);
   if (startedAt !== undefined && (Number.isNaN(Date.parse(startedAt)) || Date.parse(startedAt) > Date.parse(updatedAt))) throw new TypeError("mission startedAt is invalid");
   const usage = record.usage === undefined ? undefined : missionUsage(record.usage);
+  const restartCount = record.restartCount;
+  if (restartCount !== undefined && (!Number.isSafeInteger(restartCount) || (restartCount as number) < 0)) throw new TypeError("mission restart count is invalid");
   return Object.freeze({
     v: "reelier.mission-control-mission/v1",
     missionId,
@@ -182,6 +185,7 @@ export function parseMissionControlMissionV1(value: unknown): MissionControlMiss
     updatedAt,
     ...(startedAt === undefined ? {} : { startedAt }),
     ...(usage === undefined ? {} : { usage }),
+    ...(restartCount === undefined ? {} : { restartCount: restartCount as number }),
   });
 }
 

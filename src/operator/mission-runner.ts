@@ -55,6 +55,8 @@ export async function runMissionControlMissionV1(input: Readonly<{
   costLimitMicros?: number;
   tokenLimit?: number;
   contextLimit?: number;
+  restartCount?: number;
+  restartLimit?: number;
 }>): Promise<MissionControlMissionV1> {
   if (input.harness !== "codex" && input.harness !== "claude-code") throw new Error(`${input.harness} is experimental and unavailable in the product-ready run path`);
   if (typeof input.task !== "string" || input.task.length === 0 || input.task.length > 128_000) throw new TypeError("Mission Control task is invalid");
@@ -65,6 +67,10 @@ export async function runMissionControlMissionV1(input: Readonly<{
   for (const [name, value] of [["cost", input.costLimitMicros], ["token", input.tokenLimit], ["context", input.contextLimit]] as const) {
     if (value !== undefined && (!Number.isSafeInteger(value) || value < 0)) throw new TypeError(`Mission Control ${name} limit is invalid`);
   }
+  const restartCount = input.restartCount ?? 0;
+  const restartLimit = input.restartLimit ?? 3;
+  if (!Number.isSafeInteger(restartCount) || restartCount < 0 || !Number.isSafeInteger(restartLimit) || restartLimit < 0) throw new TypeError("Mission Control restart limit is invalid");
+  const restartLoop = restartCount > restartLimit;
   const observe = input.observeWorkspace ?? observeGitWorkspace;
   const before = await observe(input.cwd);
   const processFactory = input.processFactory ?? createOperatorHarnessProcessV1();
@@ -81,13 +87,14 @@ export async function runMissionControlMissionV1(input: Readonly<{
     harness: input.harness,
     harnessLifecycle: "running",
     outcomeLifecycle: "pending",
-    attentionState: "none",
-    attentionReasons: [],
+    attentionState: restartLoop ? "required" : "none",
+    attentionReasons: restartLoop ? ["restart-loop"] : [],
     evidenceRefs: [],
     processOwnership: "reelier",
     imported: false,
     updatedAt: startedAt,
     startedAt,
+    restartCount,
   });
   await journal.appendMission(current);
   const captureResumeIdentity = process.resumeIdentity.then(async (resumeIdentity) => {
@@ -108,7 +115,7 @@ export async function runMissionControlMissionV1(input: Readonly<{
       const waited = await waitForEventOrIdle(pending, idleLimitMs);
       let next: NextHarnessEventV1;
       if (waited.kind === "idle") {
-        current = parseMissionControlMissionV1({ ...current, harnessLifecycle: "stalled", attentionState: "watching", attentionReasons: ["idle-threshold-exceeded"], updatedAt: now() });
+        current = parseMissionControlMissionV1({ ...current, harnessLifecycle: "stalled", attentionState: restartLoop ? "required" : "watching", attentionReasons: [...(restartLoop ? ["restart-loop"] : []), "idle-threshold-exceeded"], updatedAt: now() });
         await journal.appendMission(current);
         next = await pending as NextHarnessEventV1;
       } else {
@@ -133,15 +140,15 @@ export async function runMissionControlMissionV1(input: Readonly<{
           errorSignatureCounts.set(event.payloadDigest, count);
           if (count >= 3) {
             repeatedToolError = true;
-            current = parseMissionControlMissionV1({ ...current, harnessLifecycle: "running", attentionState: "watching", attentionReasons: ["repeated-tool-error"], updatedAt: now() });
+            current = parseMissionControlMissionV1({ ...current, harnessLifecycle: "running", attentionState: restartLoop ? "required" : "watching", attentionReasons: [...(restartLoop ? ["restart-loop"] : []), "repeated-tool-error"], updatedAt: now() });
             await journal.appendMission(current);
           }
         }
       }
       else if (event.kind === "completed" && terminal !== "failed") terminal = "exited";
       else {
-        const liveReasons = [...usageAttention];
-        current = parseMissionControlMissionV1({ ...current, harnessLifecycle: "running", attentionState: liveReasons.some((reason) => reason === "cost-ceiling-exceeded" || reason === "token-ceiling-exceeded") ? "required" : liveReasons.length ? "watching" : "none", attentionReasons: liveReasons, ...(usage ? { usage } : {}), updatedAt: now() });
+        const liveReasons = [...(restartLoop ? ["restart-loop"] : []), ...usageAttention];
+        current = parseMissionControlMissionV1({ ...current, harnessLifecycle: "running", attentionState: liveReasons.some((reason) => reason === "restart-loop" || reason === "cost-ceiling-exceeded" || reason === "token-ceiling-exceeded") ? "required" : liveReasons.length ? "watching" : "none", attentionReasons: liveReasons, ...(usage ? { usage } : {}), updatedAt: now() });
         await journal.appendMission(current);
       }
     }
@@ -156,18 +163,19 @@ export async function runMissionControlMissionV1(input: Readonly<{
   }
   const harnessLifecycle = terminal ?? "unreachable";
   const outcomeLifecycle = deriveOutcomeLifecycleV1({ harnessLifecycle, localEvidenceCount: evidenceRefs.length });
+  const durableAttention = [...(restartLoop ? ["restart-loop"] : []), ...usageAttention];
   const attentionReasons = outcomeLifecycle === "completed-unverified"
-    ? [...usageAttention, "harness-exited-without-evidence"]
+    ? [...durableAttention, "harness-exited-without-evidence"]
     : outcomeLifecycle === "failed"
-      ? [...usageAttention, "harness-failed", ...(wallClockExceeded ? ["wall-clock-limit-exceeded"] : []), ...(repeatedToolError ? ["repeated-tool-error"] : [])]
+      ? [...durableAttention, "harness-failed", ...(wallClockExceeded ? ["wall-clock-limit-exceeded"] : []), ...(repeatedToolError ? ["repeated-tool-error"] : [])]
       : harnessLifecycle === "unreachable"
-        ? [...usageAttention, "harness-unreachable"]
-        : [...usageAttention];
+        ? [...durableAttention, "harness-unreachable"]
+        : [...durableAttention];
   current = parseMissionControlMissionV1({
     ...current,
     harnessLifecycle,
     outcomeLifecycle,
-    attentionState: attentionReasons.length === 0 ? "none" : outcomeLifecycle === "failed" || harnessLifecycle === "unreachable" || attentionReasons.some((reason) => reason === "cost-ceiling-exceeded" || reason === "token-ceiling-exceeded") ? "required" : "watching",
+    attentionState: attentionReasons.length === 0 ? "none" : outcomeLifecycle === "failed" || harnessLifecycle === "unreachable" || attentionReasons.some((reason) => reason === "restart-loop" || reason === "cost-ceiling-exceeded" || reason === "token-ceiling-exceeded") ? "required" : "watching",
     attentionReasons,
     evidenceRefs,
     ...(usage ? { usage } : {}),
@@ -200,6 +208,7 @@ export async function resumeMissionControlMissionV1(input: Readonly<{
     task: CONTINUATION_INSTRUCTION,
     missionId: mission.missionId,
     resumeIdentity: resume.resumeIdentity,
+    restartCount: (mission.restartCount ?? 0) + 1,
     ...(input.now ? { now: input.now } : {}),
     ...(input.processFactory ? { processFactory: input.processFactory } : {}),
     ...(input.observeWorkspace ? { observeWorkspace: input.observeWorkspace } : {}),
