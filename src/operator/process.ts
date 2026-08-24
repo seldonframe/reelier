@@ -37,6 +37,15 @@ export interface OperatorHarnessEventV1 {
   readonly kind: OperatorHarnessEventKindV1;
   readonly payloadDigest: string | null;
   readonly at: string;
+  readonly usage?: OperatorHarnessUsageV1;
+}
+
+export interface OperatorHarnessUsageV1 {
+  readonly inputTokens: number;
+  readonly cachedInputTokens: number;
+  readonly outputTokens: number;
+  readonly contextUnits: number;
+  readonly totalCostMicros?: number;
 }
 
 export interface OperatorHarnessProcessV1 {
@@ -135,12 +144,47 @@ function nativeResumeIdentity(value: string, harness: OperatorHarnessIdV1): stri
   }
 }
 
+function harnessUsage(value: string): OperatorHarnessUsageV1 | undefined {
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed) || Object.getPrototypeOf(parsed) !== Object.prototype) return undefined;
+    const record = parsed as Record<string, unknown>;
+    const usage = record.usage;
+    if (!usage || typeof usage !== "object" || Array.isArray(usage) || Object.getPrototypeOf(usage) !== Object.prototype) return undefined;
+    const fields = usage as Record<string, unknown>;
+    const inputTokens = fields.input_tokens;
+    const outputTokens = fields.output_tokens;
+    const cachedInputTokens = fields.cached_input_tokens ?? fields.cache_read_input_tokens ?? 0;
+    if (!Number.isSafeInteger(inputTokens) || (inputTokens as number) < 0 || !Number.isSafeInteger(outputTokens) || (outputTokens as number) < 0 || !Number.isSafeInteger(cachedInputTokens) || (cachedInputTokens as number) < 0) return undefined;
+    const contextUnits = (inputTokens as number) + (outputTokens as number);
+    if (!Number.isSafeInteger(contextUnits)) return undefined;
+    const totalCostUsd = record.total_cost_usd;
+    let totalCostMicros: number | undefined;
+    if (totalCostUsd !== undefined) {
+      if (typeof totalCostUsd !== "number" || !Number.isFinite(totalCostUsd) || totalCostUsd < 0) return undefined;
+      const micros = Math.round(totalCostUsd * 1_000_000);
+      if (!Number.isSafeInteger(micros)) return undefined;
+      totalCostMicros = micros;
+    }
+    return Object.freeze({
+      inputTokens: inputTokens as number,
+      cachedInputTokens: cachedInputTokens as number,
+      outputTokens: outputTokens as number,
+      contextUnits,
+      ...(totalCostMicros === undefined ? {} : { totalCostMicros }),
+    });
+  } catch {
+    return undefined;
+  }
+}
+
 function event(input: {
   harness: OperatorHarnessIdV1;
   sessionId: string;
   kind: OperatorHarnessEventKindV1;
   payload: string | null;
   now: () => string;
+  usage?: OperatorHarnessUsageV1;
 }): OperatorHarnessEventV1 {
   return Object.freeze({
     v: "reelier.operator-event/v1",
@@ -149,6 +193,7 @@ function event(input: {
     kind: input.kind,
     payloadDigest: input.payload === null ? null : digest(input.payload),
     at: input.now(),
+    ...(input.usage ? { usage: input.usage } : {}),
   });
 }
 
@@ -231,7 +276,7 @@ export function createOperatorHarnessProcessV1(input: {
             pendingLine = lineIterator.next();
             const native = nativeResumeIdentity(text, request.harness);
             if (native) settle(native);
-            yield event({ harness: request.harness, sessionId, kind: classifyLine(text), payload: text, now });
+            yield event({ harness: request.harness, sessionId, kind: classifyLine(text), payload: text, now, usage: harnessUsage(text) });
           }
           const [code] = await closed;
           if (timedOut || code !== 0) {

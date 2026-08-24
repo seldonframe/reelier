@@ -7,7 +7,7 @@
  */
 export { createOperatorHarnessRegistryV1, type OperatorHarnessDescriptorV1, type OperatorHarnessIdV1, type OperatorHarnessProbeV1, type OperatorHarnessRegistryV1 } from "./harness.js";
 export { resolveOperatorHarnessCommandV1, type ResolvedOperatorHarnessCommandV1 } from "./harness-executable.js";
-export { createOperatorHarnessProcessV1, buildOperatorHarnessInvocationV1, type OperatorHarnessEventV1, type OperatorHarnessProcessV1, type OperatorHarnessInvocationV1 } from "./process.js";
+export { createOperatorHarnessProcessV1, buildOperatorHarnessInvocationV1, type OperatorHarnessEventV1, type OperatorHarnessUsageV1, type OperatorHarnessProcessV1, type OperatorHarnessInvocationV1 } from "./process.js";
 export { createOperatorSupervisorV1, type OperatorCellRequestV1, type OperatorSupervisorStateV1, type OperatorSupervisorV1 } from "./operator.js";
 export { createOperatorLocalCellV1, createOperatorLocalCellFromRuntimeV1, type OperatorLocalCellV1, type OperatorGenuineRuntimeV1 } from "./local-cell.js";
 export { createOperatorManagedHandoffV1, parseOperatorManagedHandoffV1, createOperatorManagedHandoffConsumerV1, type OperatorManagedHandoffV1, type OperatorCellModeV1 } from "./managed-handoff.js";
