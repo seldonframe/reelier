@@ -224,6 +224,20 @@ test("reelier init my-agent keeps named bootstrap while bare init uses Mission C
   });
 });
 
+test("named init does not import Mission Control histories or create an Operator workspace", async () => {
+  await withTempDir(async root => {
+    const namedResult = await capture(() => cmdInit(named("my-agent", ["yes"]), {
+      cwd: root,
+      homedir: root,
+      dependencies: localDependencies(),
+      nativeSessionFactory: filesystemNativeFactory(),
+    }));
+    assert.equal(namedResult.result, 0);
+    await assert.rejects(readFile(path.join(root, ".reelier", "operator.json"), "utf8"), { code: "ENOENT" });
+    await assert.rejects(readFile(path.join(root, ".reelier", "operator", "events.jsonl"), "utf8"), { code: "ENOENT" });
+  });
+});
+
 test("reelier init --json emits a stable local-only summary and --no-open suppresses browser opening", async () => {
   await withTempDir(async root => {
     let openBrowserWasProvided = true;

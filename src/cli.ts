@@ -4346,23 +4346,6 @@ export async function cmdInit(args: ParsedArgs, overrides: CmdInitOverrides = {}
     }
   }
 
-  let operatorOutput: readonly string[] = [];
-  if (!args.flags.has("dry-run")) {
-    try {
-      const operator = await initializeOperatorV1({ cwd, home: homedir });
-      operatorOutput = [
-        "Operator — model-agnostic local control plane",
-        `  harnesses: ${operator.harnesses.filter((probe) => probe.installed).map((probe) => probe.descriptor.displayName).join(", ") || "none detected"}`,
-        `  authority: ${operator.workspace.authorityCell} Cell (${operator.workspace.mode})`,
-        `  next: ${operator.next.join(" → ")}`,
-        "  credentials: none requested; consequential writes remain Cell-governed",
-      ];
-    } catch (error) {
-      console.log(`Operator onboarding unavailable: ${(error as Error).message}`);
-      console.log("  Continuing with the existing authority inspection path.");
-    }
-  }
-
   if (args.positional.length > 1) {
     console.error("Initialization refused: at most one agent name is allowed.");
     return 1;
@@ -4418,7 +4401,6 @@ export async function cmdInit(args: ParsedArgs, overrides: CmdInitOverrides = {}
       return 2;
     }
     for (const line of renderInitializationReport(result.report, result.status === "dry-run")) console.log(line);
-    for (const line of operatorOutput) console.log(line);
     return 0;
   } catch (error) {
     const message = error instanceof Error ? error.message : "";
