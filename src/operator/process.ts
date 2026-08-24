@@ -178,6 +178,13 @@ export function createOperatorHarnessProcessV1(input: {
         stdio: ["pipe", "pipe", "pipe"],
         windowsHide: true,
       });
+      if (!child.stdout) {
+        child.kill("SIGTERM");
+        throw new Error("harness stdout is unavailable");
+      }
+      const lines = createInterface({ input: child.stdout });
+      const lineIterator = lines[Symbol.asyncIterator]();
+      let pendingLine = lineIterator.next();
       child.stdin?.end();
       child.stderr?.resume();
       const timeoutMs = request.timeoutMs ?? defaultTimeoutMs;
@@ -189,8 +196,8 @@ export function createOperatorHarnessProcessV1(input: {
       let processClosed = false;
       const closed = once(child, "close") as Promise<[number | null, NodeJS.Signals | null]>;
       void closed.then(
-        () => { processClosed = true; },
-        () => { processClosed = true; },
+        () => { processClosed = true; lines.close(); },
+        () => { processClosed = true; lines.close(); },
       );
       let resumeIdentitySettled = false;
       let settleResumeIdentity!: (value: string | null) => void;
@@ -217,10 +224,11 @@ export function createOperatorHarnessProcessV1(input: {
         }, timeoutMs);
         yield event({ harness: request.harness, sessionId, kind: "started", payload: null, now });
         try {
-          if (!child.stdout) throw new Error("harness stdout is unavailable");
-          const lines = createInterface({ input: child.stdout });
-          for await (const line of lines) {
-            const text = String(line);
+          while (true) {
+            const nextLine = await pendingLine;
+            if (nextLine.done) break;
+            const text = String(nextLine.value);
+            pendingLine = lineIterator.next();
             const native = nativeResumeIdentity(text, request.harness);
             if (native) settle(native);
             yield event({ harness: request.harness, sessionId, kind: classifyLine(text), payload: text, now });

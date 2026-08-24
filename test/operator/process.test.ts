@@ -62,7 +62,7 @@ test("a harness that closes between the started event and the next iterator read
   const iterator = process.events[Symbol.asyncIterator]();
   assert.equal((await iterator.next()).value?.kind, "started");
 
-  child.stdout.end();
+  child.stdout.destroy();
   child.emit("close", 0, null);
 
   const terminal = await Promise.race([
