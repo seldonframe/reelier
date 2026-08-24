@@ -4,7 +4,8 @@ export interface OperatorPlanV1 {
   readonly v: "reelier.operator-plan/v1";
   readonly id: OperatorPlanIdV1;
   readonly monthlyPriceUsd: number;
-  readonly maxConcurrentExecutions: number;
+  /** null means local capacity is not metered or limited by a Reelier plan. */
+  readonly maxConcurrentExecutions: number | null;
   readonly managed: boolean;
   readonly customerHosted: boolean;
 }
@@ -19,7 +20,7 @@ export interface OperatorUsageSnapshotV1 {
 }
 
 const PLANS: Readonly<Record<OperatorPlanIdV1, OperatorPlanV1>> = Object.freeze({
-  "free-local": Object.freeze({ v: "reelier.operator-plan/v1", id: "free-local", monthlyPriceUsd: 0, maxConcurrentExecutions: 1, managed: false, customerHosted: false }),
+  "free-local": Object.freeze({ v: "reelier.operator-plan/v1", id: "free-local", monthlyPriceUsd: 0, maxConcurrentExecutions: null, managed: false, customerHosted: false }),
   "managed-personal": Object.freeze({ v: "reelier.operator-plan/v1", id: "managed-personal", monthlyPriceUsd: 49, maxConcurrentExecutions: 10, managed: true, customerHosted: false }),
   "managed-team": Object.freeze({ v: "reelier.operator-plan/v1", id: "managed-team", monthlyPriceUsd: 299, maxConcurrentExecutions: 50, managed: true, customerHosted: false }),
   "enterprise-customer-hosted": Object.freeze({ v: "reelier.operator-plan/v1", id: "enterprise-customer-hosted", monthlyPriceUsd: 0, maxConcurrentExecutions: 500, managed: false, customerHosted: true }),
