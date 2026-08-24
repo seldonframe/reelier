@@ -4664,7 +4664,8 @@ Local Mission Control is local, accountless, and independently useful.
   init [--no-open]                         Import local sessions and open Mission Control
   open [--no-open]                         Open the loopback-only Mission Control board
   import                                   Refresh supported local harness histories
-  run --harness codex|claude-code "<task>" Launch one Reelier-owned mission
+  run --harness codex|claude-code [--max-cost-usd N --max-tokens N --max-context N] "<task>"
+                                           Launch one Reelier-owned mission with optional attention ceilings
   list                                     List missions without prompts or reasoning
   status [mission-ref]                     Show truthful harness and Outcome state
   stop <mission-ref>                       Stop only an exactly owned Reelier process
@@ -4676,6 +4677,23 @@ Local Mission Control is local, accountless, and independently useful.
 
 Managed Autopilot appears only at an exact reviewed external consequence.
 Native execution remains available; harness completion never becomes a reconciled Outcome.`;
+
+function parseOperatorIntegerCeiling(value: string | undefined): number | undefined {
+  if (value === undefined) return undefined;
+  if (!/^(0|[1-9]\d*)$/.test(value)) throw new TypeError("Operator attention ceiling must be a non-negative integer");
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed)) throw new TypeError("Operator attention ceiling is too large");
+  return parsed;
+}
+
+function parseOperatorCostCeiling(value: string | undefined): number | undefined {
+  if (value === undefined) return undefined;
+  const match = /^(0|[1-9]\d*)(?:\.(\d{1,6}))?$/.exec(value);
+  if (!match) throw new TypeError("Operator cost ceiling must be a non-negative USD amount with at most six decimal places");
+  const micros = Number(match[1]) * 1_000_000 + Number((match[2] ?? "").padEnd(6, "0"));
+  if (!Number.isSafeInteger(micros)) throw new TypeError("Operator cost ceiling is too large");
+  return micros;
+}
 
 export async function cmdOperator(args: ParsedArgs, overrides: CmdOperatorOverrides = {}): Promise<number> {
   const subcommand = args.positional[0] ?? "status";
@@ -4709,11 +4727,31 @@ export async function cmdOperator(args: ParsedArgs, overrides: CmdOperatorOverri
   if (subcommand === "run") {
     const task = sessionId;
     const harness = args.opts.harness;
-    if (!task || (harness !== "codex" && harness !== "claude-code") || args.positional.length !== 2 || args.flags.size !== 0 || Object.keys(args.opts).some((key) => key !== "harness") || Object.keys(args.vars).length !== 0 || args.wraps.length !== 0 || args.fails.length !== 0) {
-      console.error("Usage: reelier operator run --harness codex|claude-code \"<task>\"");
+    const allowedOptions = new Set(["harness", "max-cost-usd", "max-tokens", "max-context"]);
+    if (!task || (harness !== "codex" && harness !== "claude-code") || args.positional.length !== 2 || args.flags.size !== 0 || Object.keys(args.opts).some((key) => !allowedOptions.has(key)) || Object.keys(args.vars).length !== 0 || args.wraps.length !== 0 || args.fails.length !== 0) {
+      console.error("Usage: reelier operator run --harness codex|claude-code [--max-cost-usd N --max-tokens N --max-context N] \"<task>\"");
       return 1;
     }
-    const mission = await (overrides.runMission ?? runMissionControlMissionV1)({ root: cwd, cwd, harness, task });
+    let costLimitMicros: number | undefined;
+    let tokenLimit: number | undefined;
+    let contextLimit: number | undefined;
+    try {
+      costLimitMicros = parseOperatorCostCeiling(args.opts["max-cost-usd"]);
+      tokenLimit = parseOperatorIntegerCeiling(args.opts["max-tokens"]);
+      contextLimit = parseOperatorIntegerCeiling(args.opts["max-context"]);
+    } catch {
+      console.error("Usage: reelier operator run --harness codex|claude-code [--max-cost-usd N --max-tokens N --max-context N] \"<task>\"");
+      return 1;
+    }
+    const mission = await (overrides.runMission ?? runMissionControlMissionV1)({
+      root: cwd,
+      cwd,
+      harness,
+      task,
+      ...(costLimitMicros === undefined ? {} : { costLimitMicros }),
+      ...(tokenLimit === undefined ? {} : { tokenLimit }),
+      ...(contextLimit === undefined ? {} : { contextLimit }),
+    });
     console.log(`Mission: ${mission.missionId}`);
     console.log(`Harness: ${mission.harness} (${mission.harnessLifecycle})`);
     console.log(`Outcome: ${mission.outcomeLifecycle}`);
