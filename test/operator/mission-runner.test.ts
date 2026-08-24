@@ -13,6 +13,7 @@ function fakeProcess(events: readonly OperatorHarnessEventV1[]): { launch(): Pro
     async launch() {
       return {
         sessionId: "owned-session",
+        resumeIdentity: Promise.resolve("owned-session"),
         invocation: { executable: "codex", args: [], cwd: "fixture" },
         events: (async function* () { for (const event of events) yield event; })(),
         async stop() {},
@@ -94,6 +95,7 @@ test("a second CLI can stop an active Reelier-owned mission through its exact lo
         async launch() {
           return {
             sessionId: "mission-stoppable",
+            resumeIdentity: Promise.resolve("mission-stoppable"),
             invocation: { executable: "codex", args: [], cwd: root },
             events: (async function* () {
               yield { v: "reelier.operator-event/v1" as const, harness: "codex" as const, sessionId: "mission-stoppable", kind: "started" as const, payloadDigest: null, at: "2026-08-24T12:00:00.000Z" };

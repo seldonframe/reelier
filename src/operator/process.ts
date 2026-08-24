@@ -39,6 +39,7 @@ export interface OperatorHarnessEventV1 {
 
 export interface OperatorHarnessProcessV1 {
   readonly sessionId: string;
+  readonly resumeIdentity: Promise<string | null>;
   readonly invocation: OperatorHarnessInvocationV1;
   readonly events: AsyncIterable<OperatorHarnessEventV1>;
   readonly stop: () => Promise<void>;
@@ -55,6 +56,8 @@ const executableFor: Record<OperatorHarnessIdV1, string> = {
   "claude-code": "claude",
   "grok-build": "grok",
 };
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
+const OPAQUE_SESSION = /^[A-Za-z0-9][A-Za-z0-9_-]{0,255}$/u;
 
 function assertPrompt(prompt: string): void {
   if (typeof prompt !== "string" || prompt.length === 0 || prompt.length > 128_000) {
@@ -81,6 +84,10 @@ export function buildOperatorHarnessInvocationV1(input: OperatorHarnessLaunchReq
   } else if (input.harness === "claude-code") {
     args = ["--print", "--output-format", "stream-json", "--permission-mode", "default"];
     if (input.resume) args.push("--resume", sessionId!);
+    else if (sessionId) {
+      if (!UUID.test(sessionId)) throw new Error("Claude initial session id must be a UUID");
+      args.push("--session-id", sessionId);
+    }
     args.push(input.prompt);
   } else {
     args = ["--output-format", "stream-json", "--cwd", input.cwd];
@@ -108,6 +115,22 @@ function classifyLine(value: string): OperatorHarnessEventKindV1 {
     return "text";
   }
   return "unknown";
+}
+
+function nativeResumeIdentity(value: string, harness: OperatorHarnessIdV1): string | null {
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed) || Object.getPrototypeOf(parsed) !== Object.prototype) return null;
+    const record = parsed as Record<string, unknown>;
+    const candidate = harness === "codex" && record.type === "thread.started"
+      ? record.thread_id
+      : harness === "claude-code" && record.type === "system" && record.subtype === "init"
+        ? record.session_id
+        : null;
+    return typeof candidate === "string" && OPAQUE_SESSION.test(candidate) ? candidate : null;
+  } catch {
+    return null;
+  }
 }
 
 function event(input: {
@@ -138,8 +161,8 @@ export function createOperatorHarnessProcessV1(input: {
 
   return Object.freeze({
     async launch(request: OperatorHarnessLaunchRequestV1): Promise<OperatorHarnessProcessV1> {
-      const invocation = buildOperatorHarnessInvocationV1(request);
       const sessionId = request.sessionId ?? randomUUID();
+      const invocation = buildOperatorHarnessInvocationV1({ ...request, ...(request.harness === "claude-code" && !request.resume ? { sessionId } : {}) });
       const child = spawn(invocation.executable, invocation.args, {
         cwd: invocation.cwd,
         stdio: ["pipe", "pipe", "pipe"],
@@ -152,6 +175,16 @@ export function createOperatorHarnessProcessV1(input: {
       }
       let stopped = false;
       let processClosed = false;
+      let resumeIdentitySettled = false;
+      let settleResumeIdentity!: (value: string | null) => void;
+      const resumeIdentity = new Promise<string | null>((resolve) => { settleResumeIdentity = resolve; });
+      const settle = (value: string | null): void => {
+        if (resumeIdentitySettled) return;
+        resumeIdentitySettled = true;
+        settleResumeIdentity(value);
+      };
+      if (request.harness === "claude-code" && !request.resume) settle(sessionId);
+      if (request.resume && request.sessionId) settle(request.sessionId);
       child.once("close", () => { processClosed = true; });
       const stop = async (): Promise<void> => {
         if (stopped) return;
@@ -173,6 +206,8 @@ export function createOperatorHarnessProcessV1(input: {
           const lines = createInterface({ input: child.stdout });
           for await (const line of lines) {
             const text = String(line);
+            const native = nativeResumeIdentity(text, request.harness);
+            if (native) settle(native);
             yield event({ harness: request.harness, sessionId, kind: classifyLine(text), payload: text, now });
           }
           const [code] = (await closed) as [number | null, NodeJS.Signals | null];
@@ -185,9 +220,10 @@ export function createOperatorHarnessProcessV1(input: {
           yield event({ harness: request.harness, sessionId, kind: "failed", payload: error instanceof Error ? error.message : "harness-failed", now });
         } finally {
           clearTimeout(timer);
+          settle(null);
         }
       })();
-      return Object.freeze({ sessionId, invocation, events, stop });
+      return Object.freeze({ sessionId, resumeIdentity, invocation, events, stop });
     },
   });
 }
