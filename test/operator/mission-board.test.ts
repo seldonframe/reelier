@@ -10,6 +10,20 @@ import { createMissionControlJournalV1 } from "../../src/operator/mission-journa
 
 const CAPABILITY = "c".repeat(64);
 
+function relativeLuminance(hex: string): number {
+  const channel = (offset: number) => {
+    const value = Number.parseInt(hex.slice(offset, offset + 2), 16) / 255;
+    return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
+  };
+  return (0.2126 * channel(1)) + (0.7152 * channel(3)) + (0.0722 * channel(5));
+}
+
+function contrast(left: string, right: string): number {
+  const a = relativeLuminance(left);
+  const b = relativeLuminance(right);
+  return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
+}
+
 async function seed(root: string, ownership: "reelier" | "external", imported: boolean): Promise<void> {
   await (await createMissionControlJournalV1({ root })).appendMission({
     v: "reelier.mission-control-mission/v1",
@@ -39,7 +53,17 @@ test("the board binds to loopback and exposes no mission state without its fragm
     assert.match(html, /Mission Control/);
     assert.match(html, /setInterval\(loadState,2000\)/);
     assert.match(html, /Last activity: "\+m\.updatedAt/);
+    assert.match(html, /button,select,textarea\{min-height:44px\}/);
+    assert.match(html, /button\{min-width:44px\}/);
+    const colors = Object.fromEntries([...html.matchAll(/--([a-z]+):(#[0-9a-f]{6})/g)].map((match) => [match[1], match[2]]));
+    for (const foreground of ["ink", "muted", "signal", "watch", "calm", "harness"]) {
+      assert.ok(contrast(colors[foreground]!, colors.sheet!) >= 4.5, `${foreground} text must retain 4.5:1 contrast on the mission sheet`);
+    }
     assert.doesNotMatch(html, /mission-board|https:\/\/|<script[^>]+src=/i);
+
+    const favicon = await fetch(`${board.origin}/favicon.ico`);
+    assert.equal(favicon.status, 204);
+    assert.equal(await favicon.text(), "");
 
     assert.equal((await fetch(`${board.origin}/api/state`)).status, 401);
     const authorized = await fetch(`${board.origin}/api/state`, { headers: { authorization: `Bearer ${CAPABILITY}` } });
