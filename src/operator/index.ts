@@ -14,3 +14,4 @@ export { createOperatorSessionStoreV1, type OperatorPersistedSessionV1 } from ".
 export { operatorPlanV1, createOperatorUsageSnapshotV1, type OperatorPlanV1, type OperatorUsageSnapshotV1 } from "./usage.js";
 export { initializeOperatorWorkspaceV1, readOperatorWorkspaceV1, type OperatorWorkspaceStateV1 } from "./workspace.js";
 export { deriveOutcomeLifecycleV1, parseMissionControlMissionV1, type AttentionStateV1, type HarnessLifecycleV1, type MissionControlMissionV1, type OutcomeLifecycleV1, type ProcessOwnershipV1 } from "./mission-control.js";
+export { createMissionControlJournalV1, type MissionControlJournalV1 } from "./mission-journal.js";
