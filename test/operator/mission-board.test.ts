@@ -38,6 +38,7 @@ test("the board binds to loopback and exposes no mission state without its fragm
     const html = await shell.text();
     assert.match(html, /Mission Control/);
     assert.match(html, /setInterval\(loadState,2000\)/);
+    assert.match(html, /Last activity: "\+m\.updatedAt/);
     assert.doesNotMatch(html, /mission-board|https:\/\/|<script[^>]+src=/i);
 
     assert.equal((await fetch(`${board.origin}/api/state`)).status, 401);

@@ -159,3 +159,52 @@ test("a second CLI can stop an active Reelier-owned mission through its exact lo
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("a silent owned harness becomes stalled in the live journal and recovers on activity", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "reelier-mission-runner-stalled-"));
+  let releaseActivity!: () => void;
+  const activity = new Promise<void>((resolve) => { releaseActivity = resolve; });
+  try {
+    const running = runMissionControlMissionV1({
+      root,
+      cwd: root,
+      harness: "codex",
+      task: "bounded task",
+      idleLimitMs: 10,
+      processFactory: {
+        async launch() {
+          return {
+            sessionId: "mission-silent",
+            resumeIdentity: Promise.resolve("mission-silent"),
+            invocation: { executable: "codex", args: [], cwd: root },
+            events: (async function* () {
+              yield { v: "reelier.operator-event/v1" as const, harness: "codex" as const, sessionId: "mission-silent", kind: "started" as const, payloadDigest: null, at: "2026-08-24T12:00:00.000Z" };
+              await activity;
+              yield { v: "reelier.operator-event/v1" as const, harness: "codex" as const, sessionId: "mission-silent", kind: "tool-completed" as const, payloadDigest: null, at: "2026-08-24T12:00:01.000Z" };
+              yield { v: "reelier.operator-event/v1" as const, harness: "codex" as const, sessionId: "mission-silent", kind: "completed" as const, payloadDigest: null, at: "2026-08-24T12:00:02.000Z" };
+            })(),
+            async stop() {},
+          };
+        },
+      },
+      observeWorkspace: async () => null,
+      now: (() => { let tick = 0; return () => new Date(Date.parse("2026-08-24T12:00:00.000Z") + tick++).toISOString(); })(),
+    });
+    let stalled;
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      stalled = (await (await createMissionControlJournalV1({ root })).reconstruct())[0];
+      if (stalled?.harnessLifecycle === "stalled") break;
+      await new Promise((resolve) => setTimeout(resolve, 2));
+    }
+    assert.equal(stalled?.harnessLifecycle, "stalled");
+    assert.equal(stalled?.attentionState, "watching");
+    assert.deepEqual(stalled?.attentionReasons, ["idle-threshold-exceeded"]);
+    releaseActivity();
+    const completed = await running;
+    assert.equal(completed.harnessLifecycle, "exited");
+    assert.deepEqual(completed.attentionReasons, ["harness-exited-without-evidence"]);
+  } finally {
+    releaseActivity?.();
+    await rm(root, { recursive: true, force: true });
+  }
+});

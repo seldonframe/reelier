@@ -4,7 +4,7 @@ import { promisify } from "node:util";
 import path from "node:path";
 import { createMissionControlJournalV1 } from "./mission-journal.js";
 import { createMissionEvidenceStoreV1 } from "./mission-evidence.js";
-import { createOperatorHarnessProcessV1, type OperatorHarnessLaunchRequestV1, type OperatorHarnessProcessV1 } from "./process.js";
+import { createOperatorHarnessProcessV1, type OperatorHarnessEventV1, type OperatorHarnessLaunchRequestV1, type OperatorHarnessProcessV1 } from "./process.js";
 import { deriveOutcomeLifecycleV1, parseMissionControlMissionV1, type MissionControlMissionV1 } from "./mission-control.js";
 import type { OperatorHarnessIdV1 } from "./harness.js";
 import { createMissionProcessControlV1 } from "./mission-process-control.js";
@@ -13,6 +13,17 @@ import { createMissionResumeStoreV1 } from "./mission-resume.js";
 const execFileAsync = promisify(execFile);
 type WorkspaceObservationV1 = Readonly<{ subjectDigest: string; resultDigest: string }>;
 type ProcessFactoryV1 = Readonly<{ launch(request: OperatorHarnessLaunchRequestV1): Promise<OperatorHarnessProcessV1> }>;
+type NextHarnessEventV1 = IteratorResult<OperatorHarnessEventV1>;
+
+async function waitForEventOrIdle<T>(pending: Promise<IteratorResult<T>>, idleLimitMs: number): Promise<Readonly<{ kind: "event"; result: IteratorResult<T> }> | Readonly<{ kind: "idle" }>> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => resolve(Object.freeze({ kind: "idle" as const })), idleLimitMs);
+    pending.then(
+      (result) => { clearTimeout(timer); resolve(Object.freeze({ kind: "event" as const, result })); },
+      (error: unknown) => { clearTimeout(timer); reject(error); },
+    );
+  });
+}
 
 function digest(value: string): string {
   return `sha256:${createHash("sha256").update(value, "utf8").digest("hex")}`;
@@ -40,10 +51,13 @@ export async function runMissionControlMissionV1(input: Readonly<{
   observeWorkspace?: (cwd: string) => Promise<WorkspaceObservationV1 | null>;
   missionId?: string;
   resumeIdentity?: string;
+  idleLimitMs?: number;
 }>): Promise<MissionControlMissionV1> {
   if (input.harness !== "codex" && input.harness !== "claude-code") throw new Error(`${input.harness} is experimental and unavailable in the product-ready run path`);
   if (typeof input.task !== "string" || input.task.length === 0 || input.task.length > 128_000) throw new TypeError("Mission Control task is invalid");
   const now = input.now ?? (() => new Date().toISOString());
+  const idleLimitMs = input.idleLimitMs ?? 5 * 60_000;
+  if (!Number.isSafeInteger(idleLimitMs) || idleLimitMs < 1 || idleLimitMs > 24 * 60 * 60_000) throw new TypeError("Mission Control idle limit is invalid");
   const observe = input.observeWorkspace ?? observeGitWorkspace;
   const before = await observe(input.cwd);
   const processFactory = input.processFactory ?? createOperatorHarnessProcessV1();
@@ -75,9 +89,26 @@ export async function runMissionControlMissionV1(input: Readonly<{
   let terminal: "exited" | "failed" | null = null;
   const control = await createMissionProcessControlV1({ root: input.root, missionId, stop: process.stop });
   try {
-    for await (const event of process.events) {
+    const iterator = process.events[Symbol.asyncIterator]();
+    while (true) {
+      const pending = iterator.next();
+      const waited = await waitForEventOrIdle(pending, idleLimitMs);
+      let next: NextHarnessEventV1;
+      if (waited.kind === "idle") {
+        current = parseMissionControlMissionV1({ ...current, harnessLifecycle: "stalled", attentionState: "watching", attentionReasons: ["idle-threshold-exceeded"], updatedAt: now() });
+        await journal.appendMission(current);
+        next = await pending as NextHarnessEventV1;
+      } else {
+        next = waited.result as NextHarnessEventV1;
+      }
+      if (next.done) break;
+      const event = next.value;
       if (event.kind === "failed") terminal = "failed";
       else if (event.kind === "completed" && terminal !== "failed") terminal = "exited";
+      else {
+        current = parseMissionControlMissionV1({ ...current, harnessLifecycle: "running", attentionState: "none", attentionReasons: [], updatedAt: event.at });
+        await journal.appendMission(current);
+      }
     }
   } finally {
     await control.close();
