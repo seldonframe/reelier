@@ -4728,8 +4728,9 @@ export async function cmdOperator(args: ParsedArgs, overrides: CmdOperatorOverri
   }
   if (subcommand === "autopilot") {
     const manifestFile = args.opts.manifest;
-    if (!sessionId || args.positional.length !== 2 || typeof manifestFile !== "string" || args.flags.size !== 0 || Object.keys(args.opts).some((key) => key !== "manifest") || Object.keys(args.vars).length !== 0 || args.wraps.length !== 0 || args.fails.length !== 0) {
-      console.error("Usage: reelier operator autopilot <mission-ref> --manifest <exact-target-manifest.json>");
+    const artifactFile = args.opts.artifact;
+    if (!sessionId || args.positional.length !== 2 || typeof manifestFile !== "string" || (artifactFile !== undefined && typeof artifactFile !== "string") || args.flags.size !== 0 || Object.keys(args.opts).some((key) => key !== "manifest" && key !== "artifact") || Object.keys(args.vars).length !== 0 || args.wraps.length !== 0 || args.fails.length !== 0) {
+      console.error("Usage: reelier operator autopilot <mission-ref> --manifest <exact-target-manifest.json> [--artifact <candidate-file>]");
       console.error("Select exact provider targets in Mission Control first; Reelier never infers them from agent prose.");
       return 1;
     }
@@ -4739,14 +4740,21 @@ export async function cmdOperator(args: ParsedArgs, overrides: CmdOperatorOverri
       if (!mission) throw new Error("mission is not present in the local Mission Control journal");
       const targetPath = path.resolve(cwd, manifestFile);
       const targetDetails = await stat(targetPath);
-      if (!targetDetails.isFile() || targetDetails.size > 65_536) throw new Error("exact target manifest is not a bounded regular file");
+      if (await realpath(targetPath) !== targetPath || !targetDetails.isFile() || targetDetails.size > 65_536) throw new Error("exact target manifest is not a bounded unlinked regular file");
       const targetManifest = JSON.parse(await readFile(targetPath, "utf8")) as ManagedUpgradeTargetManifest;
+      let artifactBytes: Buffer | undefined;
+      if (typeof artifactFile === "string") {
+        const artifactPath = path.resolve(cwd, artifactFile), artifactDetails = await stat(artifactPath);
+        if (await realpath(artifactPath) !== artifactPath || !artifactDetails.isFile() || artifactDetails.size < 1 || artifactDetails.size > 4 * 1024 * 1024) throw new Error("candidate artifact is not a bounded unlinked regular file");
+        artifactBytes = await readFile(artifactPath);
+      }
       const result = await (overrides.createAutopilotHandoff ?? createAutopilotHandoffV1)({
         root: cwd,
         cloudBaseUrl: await resolveBaseUrl(),
         missionRef: mission.missionId,
         localEvidenceRefs: mission.evidenceRefs,
         targetManifest,
+        ...(artifactBytes ? { artifactBytes } : {}),
         ...(overrides.now ? { now: overrides.now } : {}),
       });
       (overrides.openBrowser ?? openBrowser)(result.browserUrl);
