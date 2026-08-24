@@ -80,7 +80,7 @@ export function buildOperatorHarnessInvocationV1(input: OperatorHarnessLaunchReq
   if (!executable) throw new Error("unknown harness");
   let args: string[];
   if (input.harness === "codex") {
-    args = ["exec", "--json", "--sandbox", "workspace-write", "--cd", input.cwd];
+    args = ["exec", "--json", "--approve-for-me", "--cd", input.cwd];
     if (input.resume) args.push("resume", sessionId!);
     args.push(input.prompt);
   } else if (input.harness === "claude-code") {

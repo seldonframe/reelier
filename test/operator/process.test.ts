@@ -6,7 +6,8 @@ import { buildOperatorHarnessInvocationV1, createOperatorHarnessProcessV1 } from
 
 test("harness invocations are deterministic and resume only with an opaque session", () => {
   const invocation = buildOperatorHarnessInvocationV1({ harness: "codex", cwd: "C:/repo", prompt: "finish the issue" });
-  assert.deepEqual(invocation, { executable: "codex", args: ["exec", "--json", "--sandbox", "workspace-write", "--cd", "C:/repo", "finish the issue"], cwd: "C:/repo" });
+  assert.deepEqual(invocation, { executable: "codex", args: ["exec", "--json", "--approve-for-me", "--cd", "C:/repo", "finish the issue"], cwd: "C:/repo" });
+  assert.equal(invocation.args.includes("--sandbox"), false);
   assert.equal(invocation.args.includes("--dangerously-bypass-approvals-and-sandbox"), false);
   assert.throws(() => buildOperatorHarnessInvocationV1({ harness: "claude-code", cwd: "C:/repo", prompt: "x", resume: true }));
   const resumed = buildOperatorHarnessInvocationV1({ harness: "claude-code", cwd: "C:/repo", prompt: "x", resume: true, sessionId: "session-1" });
