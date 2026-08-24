@@ -4797,10 +4797,16 @@ export async function cmdOperator(args: ParsedArgs, overrides: CmdOperatorOverri
       console.error("Usage: reelier operator review [--open]");
       return 1;
     }
-    const url = `${await resolveBaseUrl()}/dashboard/outcomes`;
-    if (args.flags.has("open")) openBrowser(url);
-    console.log(`Outcome review: ${url}`);
-    console.log("Verified means reconciled with an authoritative receipt; pending and partial remain unresolved.");
+    const missions = await (await createMissionControlJournalV1({ root: cwd })).reconstruct();
+    const reviewable = missions.filter((mission) => mission.attentionState !== "none" || ["completed-unverified", "locally-observed", "reconciled", "refused", "failed", "ambiguous"].includes(mission.outcomeLifecycle));
+    for (const mission of reviewable) console.log(`${mission.missionId}\t${mission.harness}\t${mission.harnessLifecycle}\t${mission.outcomeLifecycle}\t${mission.attentionState}`);
+    const attentionCount = reviewable.filter((mission) => mission.attentionState !== "none").length;
+    console.log(`Local review: ${reviewable.length} ${reviewable.length === 1 ? "mission" : "missions"}; ${attentionCount} ${attentionCount === 1 ? "needs" : "need"} attention`);
+    console.log("Harness completion remains separate from Outcome reconciliation.");
+    if (args.flags.has("open")) {
+      const board = await (overrides.launchBoard ?? launchDetachedMissionControlBoardV1)({ root: cwd, openBrowser: overrides.openBrowser ?? openBrowser });
+      console.log(`Mission Control: ${board.origin}`);
+    }
     return 0;
   }
   if (subcommand !== "status" && subcommand !== "list") {

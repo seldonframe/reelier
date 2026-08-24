@@ -57,18 +57,32 @@ test("operator status reads a persisted session and operator list exposes redact
   }
 });
 
-test("operator review prints the Cloud review surface without exposing local prompts", async () => {
+test("operator review stays local and accountless without exposing local prompts or a Cloud nag", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "reelier-operator-review-"));
   const previous = process.cwd();
   const originalLog = console.log;
   const output: string[] = [];
   try {
     process.chdir(root);
+    await (await createMissionControlJournalV1({ root })).appendMission({
+      v: "reelier.mission-control-mission/v1",
+      missionId: "mission-review",
+      workspaceDigest: `sha256:${"a".repeat(64)}`,
+      harness: "codex",
+      harnessLifecycle: "exited",
+      outcomeLifecycle: "completed-unverified",
+      attentionState: "watching",
+      attentionReasons: ["harness-exited-without-evidence"],
+      evidenceRefs: [],
+      processOwnership: "reelier",
+      imported: false,
+      updatedAt: "2026-08-24T12:00:00.000Z",
+    });
     console.log = (...args: unknown[]) => output.push(args.join(" "));
     assert.equal(await cmdOperator({ positional: ["review"], flags: new Set(), vars: {}, wraps: [], opts: {}, fails: [] }), 0);
-    assert.match(output.join("\n"), /dashboard\/outcomes/);
-    assert.match(output.join("\n"), /Verified means reconciled/);
-    assert.doesNotMatch(output.join("\n"), /prompt|request-cli/);
+    assert.match(output.join("\n"), /mission-review\tcodex\texited\tcompleted-unverified\twatching/);
+    assert.match(output.join("\n"), /Local review: 1 mission; 1 needs attention/);
+    assert.doesNotMatch(output.join("\n"), /https?:\/\/|pricing|upgrade|dashboard|prompt|request-cli/i);
   } finally {
     console.log = originalLog;
     process.chdir(previous);
