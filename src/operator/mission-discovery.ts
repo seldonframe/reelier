@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { open, stat } from "node:fs/promises";
 import path from "node:path";
-import { scanAgentSessions, type ScannedSession } from "../scan.js";
+import { agentSources, findTranscriptFiles } from "../scan.js";
 import { parseMissionControlMissionV1, type MissionControlMissionV1 } from "./mission-control.js";
 
 export type DiscoveredMissionControlMissionV1 = Readonly<{
@@ -23,6 +23,12 @@ export type MissionControlDiscoveryV1 = Readonly<{
 }>;
 
 type HistoryMetadata = Readonly<{ sessionId: string; cwd?: string }>;
+export type MissionControlSessionMetadataV1 = Readonly<{
+  path: string;
+  mtimeMs: number;
+  sourceId: string;
+  sourceLabel: string;
+}>;
 const MAX_METADATA_BYTES = 1_048_576;
 const MAX_SESSIONS = 2_000;
 
@@ -63,14 +69,43 @@ function samePath(left: string | undefined, right: string): boolean {
   return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
 }
 
+async function readMetadataPrefix(transcriptPath: string): Promise<string> {
+  const handle = await open(transcriptPath, "r");
+  try {
+    const buffer = Buffer.allocUnsafe(MAX_METADATA_BYTES);
+    const { bytesRead } = await handle.read(buffer, 0, buffer.byteLength, 0);
+    return buffer.subarray(0, bytesRead).toString("utf8");
+  } finally {
+    await handle.close();
+  }
+}
+
+export async function scanMissionControlSessionMetadataV1(home: string): Promise<readonly MissionControlSessionMetadataV1[]> {
+  const sources = agentSources(home);
+  const groups = await Promise.all(sources.map(async (source) => {
+    const files = await findTranscriptFiles(source.dir);
+    const rows = await Promise.all(files.map(async (transcriptPath): Promise<MissionControlSessionMetadataV1 | null> => {
+      try {
+        const details = await stat(transcriptPath);
+        if (!details.isFile()) return null;
+        return Object.freeze({ path: transcriptPath, mtimeMs: details.mtimeMs, sourceId: source.id, sourceLabel: source.label });
+      } catch {
+        return null;
+      }
+    }));
+    return rows.filter((row): row is MissionControlSessionMetadataV1 => row !== null);
+  }));
+  return Object.freeze(groups.flat().sort((left, right) => right.mtimeMs - left.mtimeMs).slice(0, MAX_SESSIONS));
+}
+
 export async function discoverMissionControlV1(input: Readonly<{
   cwd: string;
   home: string;
-  scan?: (home: string) => Promise<ScannedSession[]>;
+  scan?: (home: string) => Promise<readonly MissionControlSessionMetadataV1[]>;
   readTranscript?: (transcriptPath: string) => Promise<string>;
 }>): Promise<MissionControlDiscoveryV1> {
-  const scan = input.scan ?? scanAgentSessions;
-  const readTranscript = input.readTranscript ?? ((transcriptPath: string) => readFile(transcriptPath, "utf8"));
+  const scan = input.scan ?? scanMissionControlSessionMetadataV1;
+  const readTranscript = input.readTranscript ?? readMetadataPrefix;
   const sessions = (await scan(input.home)).slice(0, MAX_SESSIONS);
   const missions: DiscoveredMissionControlMissionV1[] = [];
   const observedCounts = new Map<string, number>();

@@ -3,7 +3,25 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { discoverMissionControlV1 } from "../../src/operator/mission-discovery.js";
+import { discoverMissionControlV1, scanMissionControlSessionMetadataV1 } from "../../src/operator/mission-discovery.js";
+
+test("Mission Control discovery scans bounded file metadata without replay-parsing transcripts", async () => {
+  const home = await mkdtemp(path.join(tmpdir(), "reelier-mission-metadata-home-"));
+  try {
+    const directory = path.join(home, ".codex", "sessions", "2026", "08", "24");
+    await mkdir(directory, { recursive: true });
+    const transcript = path.join(directory, "rollout-hostile.jsonl");
+    await writeFile(transcript, "not replayable and never parsed by discovery\n".repeat(10_000));
+    const result = await scanMissionControlSessionMetadataV1(home);
+    assert.equal(result.length, 1);
+    assert.deepEqual(Object.keys(result[0]!).sort(), ["mtimeMs", "path", "sourceId", "sourceLabel"]);
+    assert.equal(result[0]!.sourceId, "codex");
+    assert.equal(result[0]!.path, transcript);
+    assert.equal("replayableCount" in result[0]!, false);
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
 
 test("global Codex and Claude histories import as observe-only missions with the current repository first", async () => {
   const home = await mkdtemp(path.join(tmpdir(), "reelier-mission-discovery-home-"));
