@@ -40,6 +40,7 @@ An exact tarball was built and installed outside every repository:
 ## Verification
 
 - Operator-focused matrix: 90 tests, 89 pass, 0 fail, 1 declared Windows-symlink privilege skip.
+- Hosted release run `32783992799`, Ubuntu job `97612767233`, completed the supported test command with 3,870 passing tests and no supported-test failure. The job then failed in the separate README badge check because the committed badge still encoded 3,861. The badge update is therefore derived from that immutable hosted run; it is not evidence of a newly skipped or removed test.
 - The first Ubuntu release rerun exposed four stale beta-version pins rather than a platform defect: one restart assertion, two portable skill vintages, and the generated Claude plugin manifest. The sources now derive or declare `0.33`, generated packages are synchronized, and the exact focused regression matrix is 14/14 green.
 - Production build: exit 0; 12 packs built.
 - Production TypeScript: exit 0.
