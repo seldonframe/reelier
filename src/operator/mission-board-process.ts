@@ -6,6 +6,7 @@ import path from "node:path";
 import { createMissionControlBoardV1 } from "./mission-board.js";
 import { createMissionControlJournalV1 } from "./mission-journal.js";
 import { stopOwnedMissionProcessV1 } from "./mission-process-control.js";
+import { resumeMissionControlMissionV1 } from "./mission-runner.js";
 
 type SpawnOptionsV1 = Readonly<{ env: NodeJS.ProcessEnv; cwd: string; detached: true; stdio: "ignore"; windowsHide: true }>;
 export type BoardSpawnV1 = (command: string, args: readonly string[], options: SpawnOptionsV1) => Readonly<{ unref(): void }>;
@@ -99,6 +100,7 @@ export async function runMissionControlBoardServerFromEnvironmentV1(environment:
     capability,
     expiresAt,
     stopMission: async (missionId) => { await stopOwnedMissionProcessV1({ root, missionId }); },
+    resumeMission: async (missionId) => { await resumeMissionControlMissionV1({ root, cwd: root, missionId }); },
   });
   await atomicDescriptor(descriptorPath, { v: "reelier.mission-control-board-process/v1", origin: board.origin, pid: process.pid, expiresAt });
   await new Promise<void>((resolve) => {

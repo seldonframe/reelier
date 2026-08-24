@@ -155,3 +155,19 @@ test("the board returns only evidence already bound to the exact mission", async
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("the board resumes only an exact non-imported Reelier-owned mission", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "reelier-mission-board-resume-"));
+  await (await createMissionControlJournalV1({ root })).appendMission({ v: "reelier.mission-control-mission/v1", missionId: "mission-resume", workspaceDigest: `sha256:${"a".repeat(64)}`, harness: "claude-code", harnessLifecycle: "stopped", outcomeLifecycle: "pending", attentionState: "watching", attentionReasons: ["stopped"], evidenceRefs: [], processOwnership: "reelier", imported: false, updatedAt: "2026-08-24T12:00:00.000Z" });
+  const resumed: string[] = [];
+  const board = await createMissionControlBoardV1({ root, capability: CAPABILITY, now: () => Date.parse("2026-08-24T12:30:00.000Z"), expiresAt: "2026-08-24T13:00:00.000Z", resumeMission: async (missionId) => { resumed.push(missionId); } });
+  try {
+    const response = await fetch(`${board.origin}/api/actions/resume`, { method: "POST", headers: { authorization: `Bearer ${CAPABILITY}`, origin: board.origin, "x-reelier-csrf": CAPABILITY, "content-type": "application/json" }, body: JSON.stringify({ missionId: "mission-resume" }) });
+    assert.equal(response.status, 202);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.deepEqual(resumed, ["mission-resume"]);
+  } finally {
+    await board.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
