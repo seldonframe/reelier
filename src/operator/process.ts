@@ -11,6 +11,7 @@ export type OperatorHarnessEventKindV1 =
   | "tool-completed"
   | "completed"
   | "failed"
+  | "timed-out"
   | "unknown";
 
 export interface OperatorHarnessLaunchRequestV1 {
@@ -214,7 +215,7 @@ export function createOperatorHarnessProcessV1(input: {
           }
           const [code] = (await closed) as [number | null, NodeJS.Signals | null];
           if (timedOut || code !== 0) {
-            yield event({ harness: request.harness, sessionId, kind: "failed", payload: timedOut ? "timeout" : String(code), now });
+            yield event({ harness: request.harness, sessionId, kind: timedOut ? "timed-out" : "failed", payload: timedOut ? null : String(code), now });
           } else {
             yield event({ harness: request.harness, sessionId, kind: "completed", payload: String(code), now });
           }

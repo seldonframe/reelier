@@ -89,6 +89,7 @@ export async function runMissionControlMissionV1(input: Readonly<{
   let terminal: "exited" | "failed" | null = null;
   const errorSignatureCounts = new Map<string, number>();
   let repeatedToolError = false;
+  let wallClockExceeded = false;
   const control = await createMissionProcessControlV1({ root: input.root, missionId, stop: process.stop });
   try {
     const iterator = process.events[Symbol.asyncIterator]();
@@ -105,7 +106,10 @@ export async function runMissionControlMissionV1(input: Readonly<{
       }
       if (next.done) break;
       const event = next.value;
-      if (event.kind === "failed") {
+      if (event.kind === "timed-out") {
+        terminal = "failed";
+        wallClockExceeded = true;
+      } else if (event.kind === "failed") {
         terminal = "failed";
         if (event.payloadDigest) {
           const count = (errorSignatureCounts.get(event.payloadDigest) ?? 0) + 1;
@@ -137,7 +141,7 @@ export async function runMissionControlMissionV1(input: Readonly<{
   const attentionReasons = outcomeLifecycle === "completed-unverified"
     ? ["harness-exited-without-evidence"]
     : outcomeLifecycle === "failed"
-      ? ["harness-failed", ...(repeatedToolError ? ["repeated-tool-error"] : [])]
+      ? ["harness-failed", ...(wallClockExceeded ? ["wall-clock-limit-exceeded"] : []), ...(repeatedToolError ? ["repeated-tool-error"] : [])]
       : harnessLifecycle === "unreachable"
         ? ["harness-unreachable"]
         : [];

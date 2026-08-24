@@ -258,3 +258,23 @@ test("repeated identical harness errors become a live attention reason without s
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("a harness wall-clock timeout is named explicitly without treating it as an Outcome", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "reelier-mission-runner-timeout-"));
+  try {
+    const result = await runMissionControlMissionV1({
+      root,
+      cwd: root,
+      harness: "codex",
+      task: "bounded task",
+      processFactory: fakeProcess([{ v: "reelier.operator-event/v1", harness: "codex", sessionId: "owned-session", kind: "timed-out", payloadDigest: null, at: "2026-08-24T12:30:00.000Z" }]),
+      observeWorkspace: async () => null,
+    });
+    assert.equal(result.harnessLifecycle, "failed");
+    assert.equal(result.outcomeLifecycle, "failed");
+    assert.equal(result.attentionState, "required");
+    assert.deepEqual(result.attentionReasons, ["harness-failed", "wall-clock-limit-exceeded"]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

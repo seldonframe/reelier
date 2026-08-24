@@ -44,6 +44,26 @@ test("process events contain only digests and stop is bounded", async () => {
   assert.equal(child.killed, false);
 });
 
+test("a wall-clock kill is exposed as a closed timeout event without output text", async () => {
+  class TimedChild extends EventEmitter {
+    killed = false;
+    stdout = new PassThrough();
+    stderr = new PassThrough();
+    stdin = { end() {} };
+    kill() { this.killed = true; this.stdout.end(); queueMicrotask(() => this.emit("close", null, "SIGTERM")); return true; }
+  }
+  const child = new TimedChild();
+  const process = await createOperatorHarnessProcessV1({ spawn: () => child as never, defaultTimeoutMs: 1_000 }).launch({ harness: "codex", cwd: "C:/repo", prompt: "wait forever" });
+  const eventsPromise = (async () => {
+    const events = [];
+    for await (const event of process.events) events.push(event);
+    return events;
+  })();
+  const events = await eventsPromise;
+  assert.equal(events.at(-1)?.kind, "timed-out");
+  assert.equal(events.at(-1)?.payloadDigest, null);
+});
+
 test("the harness boundary closes unused stdin and drains stderr without recording it", async () => {
   class FakeChild extends EventEmitter {
     killed = false;
