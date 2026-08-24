@@ -51,3 +51,22 @@ test("Operator retries a lost start response with the exact same locally journal
     assert.deepEqual(bodies[1], bodies[0]);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
+
+test("Operator refreshes an expired pending selector with its exact cached secrets", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "reelier-target-selection-expired-"));
+  try {
+    const bodies: Array<{ missionRef: string; pollSecret: string; browserSecret: string }> = [];
+    const request = async (_url: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as { missionRef: string; pollSecret: string; browserSecret: string };
+      bodies.push(body);
+      const expiresAt = bodies.length === 1 ? "2026-08-24T20:15:00.000Z" : "2026-08-24T20:31:00.000Z";
+      return new Response(JSON.stringify({ status: "pending", pollSecret: body.pollSecret, browserUrl: `https://www.reelier.com/autopilot/targets?mission=mission-expired#selection=${body.browserSecret}`, expiresAt }), { status: 201 });
+    };
+    await startAutopilotTargetSelectionV1({ root, cloudBaseUrl: "https://www.reelier.com", missionRef: "mission-expired", now: () => new Date("2026-08-24T20:00:00.000Z"), fetch: request as typeof fetch });
+    await startAutopilotTargetSelectionV1({ root, cloudBaseUrl: "https://www.reelier.com", missionRef: "mission-expired", now: () => new Date("2026-08-24T20:16:00.000Z"), fetch: request as typeof fetch });
+    assert.equal(bodies.length, 2);
+    assert.deepEqual(bodies[1], bodies[0]);
+    const persisted = JSON.parse(await readFile(path.join(root, ".reelier", "operator", "target-selections", "mission-expired.json"), "utf8"));
+    assert.equal(persisted.expiresAt, "2026-08-24T20:31:00.000Z");
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
