@@ -91,6 +91,38 @@ test("an exact captured identity resumes the same mission without persisting the
   }
 });
 
+test("repeated real resumes become a durable restart-loop exception", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "reelier-mission-runner-restart-loop-"));
+  const workspaceDigest = `sha256:${createHash("sha256").update(path.resolve(root), "utf8").digest("hex")}`;
+  let tick = 0;
+  try {
+    await (await createMissionControlJournalV1({ root })).appendMission({ v: "reelier.mission-control-mission/v1", missionId: "restart-loop", workspaceDigest, harness: "codex", harnessLifecycle: "stopped", outcomeLifecycle: "pending", attentionState: "watching", attentionReasons: ["stopped"], evidenceRefs: [], processOwnership: "reelier", imported: false, updatedAt: "2026-08-24T12:00:00.000Z" });
+    await (await createMissionResumeStoreV1({ root })).save({ missionId: "restart-loop", harness: "codex", resumeIdentity: "restart-loop", workspaceDigest });
+    let result;
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      result = await resumeMissionControlMissionV1({
+        root,
+        cwd: root,
+        missionId: "restart-loop",
+        processFactory: {
+          async launch() {
+            return { sessionId: "restart-loop", resumeIdentity: Promise.resolve("restart-loop"), invocation: { executable: "codex", args: [], cwd: root }, events: (async function* () { yield { v: "reelier.operator-event/v1" as const, harness: "codex" as const, sessionId: "restart-loop", kind: "completed" as const, payloadDigest: null, at: "2026-08-24T12:00:01.000Z" }; })(), async stop() {} };
+          },
+        },
+        observeWorkspace: async () => null,
+        now: () => new Date(Date.parse("2026-08-24T12:00:01.000Z") + tick++ * 1_000).toISOString(),
+      });
+    }
+    const resultWithRestarts = result as (typeof result & { readonly restartCount?: number });
+    assert.equal(resultWithRestarts?.restartCount, 4);
+    assert.equal(result?.attentionState, "required");
+    assert.deepEqual(result?.attentionReasons, ["restart-loop", "harness-exited-without-evidence"]);
+    assert.equal(((await (await createMissionControlJournalV1({ root })).reconstruct())[0] as { readonly restartCount?: number } | undefined)?.restartCount, 4);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("a completed harness without independent evidence remains completed-unverified", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "reelier-mission-runner-unverified-"));
   try {
