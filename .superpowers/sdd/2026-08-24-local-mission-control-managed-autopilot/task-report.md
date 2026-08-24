@@ -3,10 +3,10 @@
 ## Scope and identity
 
 - Reviewed Operator base: `f67729f59229675ca0ea945b1da93e1e50181e6a`.
-- Exact production/package source head: `225893a4`.
+- Exact production/package source head: `7332fbac`.
 - Branch: `codex/operator-authority-cell-full`.
 - Draft review: `https://github.com/seldonframe/reelier/pull/130`.
-- Exact changed-file inventory: `git diff --name-only f67729f59229675ca0ea945b1da93e1e50181e6a..225893a4`.
+- Exact changed-file inventory: `git diff --name-only f67729f59229675ca0ea945b1da93e1e50181e6a..7332fbac`.
 - The dirty root checkout was not edited. All work was performed in the isolated Operator and Cloud worktrees.
 
 ## Implemented product boundary
@@ -26,18 +26,19 @@
 
 An exact tarball was built and installed outside every repository:
 
-- Tarball: `C:\Users\maxim\AppData\Local\Temp\reelier-beta-pack-0.33.0-beta.0-225893a4\reelier-0.33.0-beta.0.tgz`.
-- Tarball SHA-256: `604c85f6f440b111d4dc3a1a775326957e0dd7151fdb438dd74c8f108510a24b`.
-- Disposable consumer: `C:\Users\maxim\AppData\Local\Temp\reelier-packed-customer-225893a4-20260824`.
+- Tarball: `C:\Users\maxim\AppData\Local\Temp\reelier-beta-pack-0.33.0-beta.0-7332fbac\reelier-0.33.0-beta.0.tgz`.
+- Tarball SHA-256: `f2282c532baa304431c8a2ebc52fac98d77511c91985d23468cd9e4658645d6b`.
+- Disposable consumer: `C:\Users\maxim\AppData\Local\Temp\reelier-packed-customer-27071d4d-20260824` (upgraded in place to the exact `7332fbac` tarball).
 - `npm pack` rebuilt production output before packaging and then verified the universal native artifacts; stale `dist` cannot silently enter this release path.
 - `reelier init --no-open --json` completed in about 25 seconds and reported both installed product-ready harnesses, 1,792 imported missions, accountless Local Mission Control, and a loopback board. `reelier operator doctor` then independently reported a readable journal and that neither an account nor Cloud was required.
 - The installed package exports the Operator, managed handoff, canonical quartet, and genuine host runtime. The canonical quartet remains `reelier_agent_status`, `reelier_outcome_proposal`, `reelier_outcome_request`, and `reelier_outcome_status`.
 - The tarball contains the Linux and Windows bootstrap binaries plus the universal native manifest.
 - The disposable state audit covered 1,792 files / 1,742,946 bytes and found no prompt, reasoning, model output, provider body, credential, API key, bearer token, authorization header, password, or secret record key.
+- A fresh installed-package mission in `C:\Users\maxim\AppData\Local\Temp\reelier-customer1-local-proof-7332fbac` launched the installed Codex harness, created and locally committed only `mission-control-proof.txt` (`57e563b`), and returned `locally-observed` with one independent Git evidence reference. It did not claim a provider Outcome. The real-path run exposed and fixed the public `--harness` parser, two fast-child process races, and Codex's local approval mode before this proof was accepted.
 
 ## Verification
 
-- Operator-focused matrix: 89 tests, 88 pass, 0 fail, 1 declared Windows-symlink privilege skip.
+- Operator-focused matrix: 90 tests, 89 pass, 0 fail, 1 declared Windows-symlink privilege skip.
 - Production build: exit 0; 12 packs built.
 - Production TypeScript: exit 0.
 - Test TypeScript: exit 0.
@@ -58,7 +59,7 @@ An exact tarball was built and installed outside every repository:
 
 - Exact-head GitHub CI and independent review are still required before merging, tagging, publishing, or promoting the npm prerelease.
 - The beta package is built and installed but is not published to npm. No `latest` promotion occurred.
-- The exact target-selection rendezvous and local mission compiler are implemented, but Customer #1 still must complete the authenticated browser payment/provider/passkey ceremony. The disposable GitHub repository is intentionally empty, so no exact base SHA or provider-write ceremony exists yet.
+- The exact target-selection rendezvous and local mission compiler are implemented, but Customer #1 still must complete the authenticated browser payment/provider/passkey ceremony. The disposable GitHub repository now contains only the inert pinned base fixture at `e8efa8b49e9bd3dfdcfa1828f27ca90ab098ecd7`; the governed candidate commit `f0028f570c633239ac683207826dcb950707f774` exists locally only and has not been pushed, opened as a PR, merged, released, deployed, or sent to Linear.
 - Stripe payment, GitHub/Linear provider writes, Fly Cell promotion to `ready`, and cleanup remain explicit ceremonies. None was simulated or claimed complete.
 - No 10x or 100x product claim is made. The implementation can record the measurements, but the matched ten-session, ten-Outcome, and 100-Outcome experiments have not been run.
 - Free Mission Control observes only supported local surfaces. Invisible direct shell/provider writes remain unknown coverage, never governed or complete.
