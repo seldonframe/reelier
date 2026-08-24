@@ -170,13 +170,15 @@ test("operator run sends the task only to the harness runner and prints truthful
   const output: string[] = [];
   const secretTask = "SECRET RUN TASK";
   let receivedTask = "";
+  let receivedLimits: Readonly<{ costLimitMicros?: number; tokenLimit?: number; contextLimit?: number }> = {};
   try {
     console.log = (...values: unknown[]) => output.push(values.join(" "));
-    const result = await cmdOperator({ positional: ["run", secretTask], flags: new Set(), vars: {}, wraps: [], opts: { harness: "codex" }, fails: [] }, {
+    const result = await cmdOperator({ positional: ["run", secretTask], flags: new Set(), vars: {}, wraps: [], opts: { harness: "codex", "max-cost-usd": "1.25", "max-tokens": "4000", "max-context": "8000" }, fails: [] }, {
       cwd: root,
       home: root,
       runMission: async (input) => {
         receivedTask = input.task;
+        receivedLimits = { costLimitMicros: input.costLimitMicros, tokenLimit: input.tokenLimit, contextLimit: input.contextLimit };
         return {
           v: "reelier.mission-control-mission/v1",
           missionId: "mission-run",
@@ -195,6 +197,7 @@ test("operator run sends the task only to the harness runner and prints truthful
     });
     assert.equal(result, 0);
     assert.equal(receivedTask, secretTask);
+    assert.deepEqual(receivedLimits, { costLimitMicros: 1_250_000, tokenLimit: 4_000, contextLimit: 8_000 });
     assert.match(output.join("\n"), /Mission: mission-run/);
     assert.match(output.join("\n"), /Outcome: locally-observed/);
     assert.doesNotMatch(output.join("\n"), new RegExp(secretTask));
@@ -202,6 +205,24 @@ test("operator run sends the task only to the harness runner and prints truthful
     console.log = originalLog;
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("operator run refuses malformed or negative attention ceilings before launching a harness", async () => {
+  let launches = 0;
+  const runMission = async (..._args: Parameters<NonNullable<CmdOperatorOverrides["runMission"]>>) => {
+    launches += 1;
+    throw new Error("must not launch");
+  };
+  const cases: Array<Record<string, string>> = [
+    { harness: "codex", "max-cost-usd": "-1" },
+    { harness: "codex", "max-cost-usd": "1.0000001" },
+    { harness: "codex", "max-tokens": "4.5" },
+    { harness: "codex", "max-context": "NaN" },
+  ];
+  for (const opts of cases) {
+    assert.equal(await cmdOperator({ positional: ["run", "bounded task"], flags: new Set(), vars: {}, wraps: [], opts, fails: [] }, { runMission }), 1);
+  }
+  assert.equal(launches, 0);
 });
 
 test("operator stop delegates only the exact mission reference to the owned-process controller", async () => {
