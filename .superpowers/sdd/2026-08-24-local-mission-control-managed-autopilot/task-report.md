@@ -30,7 +30,7 @@ An exact tarball was built and installed outside every repository:
 - Tarball SHA-256: `0bd9d823a62973a494f9e0363c9c829e999564f3b2e5b84c810975822087a344`.
 - Disposable consumer: `C:\Users\maxim\AppData\Local\Temp\reelier-packed-customer-0aad54fc-20260824`.
 - `npm pack` rebuilt production output before packaging and then verified the universal native artifacts; stale `dist` cannot silently enter this release path.
-- `reelier init --no-open --json` completed in about 25 seconds and reported both installed product-ready harnesses, 1,792 imported missions, accountless Local Mission Control, and a loopback board. `reelier operator doctor` then independently reported a readable journal and that neither an account nor Cloud was required.
+- The final `0aad54fc` installed package ran `reelier init --no-open --json` in 16.8 seconds and reported both installed product-ready harnesses, 1,805 imported missions, accountless Local Mission Control, and a loopback board. `reelier operator doctor` independently reported a readable journal and that neither an account nor Cloud was required.
 - The installed package exports the Operator, managed handoff, canonical quartet, and genuine host runtime. The canonical quartet remains `reelier_agent_status`, `reelier_outcome_proposal`, `reelier_outcome_request`, and `reelier_outcome_status`.
 - The tarball contains the Linux and Windows bootstrap binaries plus the universal native manifest.
 - The disposable state audit covered 1,792 files / 1,742,946 bytes and found no prompt, reasoning, model output, provider body, credential, API key, bearer token, authorization header, password, or secret record key.
