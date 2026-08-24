@@ -147,3 +147,43 @@ test("operator list and status prefer truthful Mission Control state over legacy
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("operator run sends the task only to the harness runner and prints truthful local completion", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "reelier-operator-cli-run-"));
+  const originalLog = console.log;
+  const output: string[] = [];
+  const secretTask = "SECRET RUN TASK";
+  let receivedTask = "";
+  try {
+    console.log = (...values: unknown[]) => output.push(values.join(" "));
+    const result = await cmdOperator({ positional: ["run", secretTask], flags: new Set(), vars: {}, wraps: [], opts: { harness: "codex" }, fails: [] }, {
+      cwd: root,
+      home: root,
+      runMission: async (input) => {
+        receivedTask = input.task;
+        return {
+          v: "reelier.mission-control-mission/v1",
+          missionId: "mission-run",
+          workspaceDigest: `sha256:${"a".repeat(64)}`,
+          harness: "codex",
+          harnessLifecycle: "exited",
+          outcomeLifecycle: "locally-observed",
+          attentionState: "none",
+          attentionReasons: [],
+          evidenceRefs: [`sha256:${"b".repeat(64)}`],
+          processOwnership: "reelier",
+          imported: false,
+          updatedAt: "2026-08-24T12:00:00.000Z",
+        };
+      },
+    });
+    assert.equal(result, 0);
+    assert.equal(receivedTask, secretTask);
+    assert.match(output.join("\n"), /Mission: mission-run/);
+    assert.match(output.join("\n"), /Outcome: locally-observed/);
+    assert.doesNotMatch(output.join("\n"), new RegExp(secretTask));
+  } finally {
+    console.log = originalLog;
+    await rm(root, { recursive: true, force: true });
+  }
+});

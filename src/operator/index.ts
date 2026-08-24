@@ -19,3 +19,4 @@ export { discoverMissionControlV1, type DiscoveredMissionControlMissionV1, type 
 export { createMissionControlBoardV1, type MissionControlBoardV1 } from "./mission-board.js";
 export { launchDetachedMissionControlBoardV1, runMissionControlBoardServerFromEnvironmentV1, type BoardSpawnV1, type DetachedMissionControlBoardV1 } from "./mission-board-process.js";
 export { createMissionEvidenceStoreV1, type MissionEvidenceInputV1, type MissionEvidenceKindV1, type MissionEvidenceStatusV1, type MissionEvidenceStoreV1, type MissionEvidenceV1 } from "./mission-evidence.js";
+export { runMissionControlMissionV1 } from "./mission-runner.js";
