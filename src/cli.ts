@@ -79,6 +79,8 @@ import { resumeMissionControlMissionV1, runMissionControlMissionV1 } from "./ope
 import { stopOwnedMissionProcessV1 } from "./operator/mission-process-control.js";
 import { runMissionControlDoctorV1, type MissionControlDoctorResultV1 } from "./operator/doctor.js";
 import { createAutopilotHandoffV1, waitForAutopilotReadyV1, type ManagedUpgradeTargetManifest } from "./operator/autopilot-handoff-client.js";
+import { startAutopilotTargetSelectionV1, waitForAutopilotTargetSelectionV1 } from "./operator/autopilot-target-selection-client.js";
+import { compileAndStageManagedAutopilotBundleV1 } from "./operator/managed-autopilot-compiler.js";
 import { loadManagedUpgradeTargetBundleV1 } from "./operator/managed-upgrade-target-store.js";
 import { createAutonomyBenchmarkStoreV1 } from "./operator/autonomy-benchmark-store.js";
 import { compileSessionTranscript, detectSessionFormat, SESSION_FORMAT_LABELS, type SessionSkip, type SessionFormatId } from "./session.js";
@@ -4647,6 +4649,9 @@ export interface CmdOperatorOverrides {
   readonly doctor?: (input: Readonly<{ root: string }>) => Promise<MissionControlDoctorResultV1>;
   readonly createAutopilotHandoff?: typeof createAutopilotHandoffV1;
   readonly waitForAutopilotReady?: typeof waitForAutopilotReadyV1;
+  readonly startAutopilotTargetSelection?: typeof startAutopilotTargetSelectionV1;
+  readonly waitForAutopilotTargetSelection?: typeof waitForAutopilotTargetSelectionV1;
+  readonly compileManagedAutopilotBundle?: typeof compileAndStageManagedAutopilotBundleV1;
   readonly openBrowser?: (url: string) => void;
   readonly now?: () => Date;
 }
@@ -4804,7 +4809,17 @@ export async function cmdOperator(args: ParsedArgs, overrides: CmdOperatorOverri
         if (await realpath(targetPath) !== targetPath || !targetDetails.isFile() || targetDetails.size > 65_536) throw new Error("exact target manifest is not a bounded unlinked regular file");
         targetManifest = JSON.parse(await readFile(targetPath, "utf8")) as ManagedUpgradeTargetManifest;
       } else {
-        const bundle = await loadManagedUpgradeTargetBundleV1({ root: cwd, missionRef: mission.missionId });
+        let bundle;
+        try {
+          bundle = await loadManagedUpgradeTargetBundleV1({ root: cwd, missionRef: mission.missionId });
+        } catch (error) {
+          if ((error as { code?: string }).code !== "ENOENT") throw error;
+          const selectionStart = await (overrides.startAutopilotTargetSelection ?? startAutopilotTargetSelectionV1)({ root: cwd, cloudBaseUrl: await resolveBaseUrl(), missionRef: mission.missionId, ...(overrides.now ? { now: overrides.now } : {}) });
+          (overrides.openBrowser ?? openBrowser)(selectionStart.browserUrl);
+          console.log("Select the exact Linear project and two issues in your browser. Nothing writes; the selected boundary returns only to this local Operator.");
+          const selection = await (overrides.waitForAutopilotTargetSelection ?? waitForAutopilotTargetSelectionV1)({ root: cwd, missionRef: mission.missionId, ...(overrides.now ? { now: overrides.now } : {}) });
+          bundle = await (overrides.compileManagedAutopilotBundle ?? compileAndStageManagedAutopilotBundleV1)({ root: cwd, missionRef: mission.missionId, selection, ...(overrides.now ? { now: overrides.now } : {}) });
+        }
         targetManifest = bundle.targetManifest;
         if (bundle.artifactBytes) artifactBytes = Buffer.from(bundle.artifactBytes);
       }

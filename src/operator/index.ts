@@ -28,5 +28,6 @@ export { createManagedUpgradeIntentV1, createManagedUpgradeIntentConsumerV1, par
 export { createAutopilotHandoffV1, waitForAutopilotReadyV1, parseManagedUpgradeTargetManifestV1, type AutopilotReadyV1, type ManagedUpgradeTargetManifestV1, type ManagedUpgradeExecutionTargetManifestV2, type ManagedUpgradeTargetManifest } from "./autopilot-handoff-client.js";
 export { startAutopilotTargetSelectionV1, waitForAutopilotTargetSelectionV1, parseAutopilotTargetSelectionV1, type AutopilotTargetSelectionV1 } from "./autopilot-target-selection-client.js";
 export { loadManagedUpgradeTargetBundleV1, stageManagedUpgradeTargetBundleV1, type ManagedUpgradeTargetBundleV1 } from "./managed-upgrade-target-store.js";
+export { compileAndStageManagedAutopilotBundleV1 } from "./managed-autopilot-compiler.js";
 export { parseAutonomyBenchmarkRunV1, calculateAutonomyLeverageV1, compareAutonomyBenchmarkRunsV1, createSignedAutonomyBenchmarkBundleV1, type HumanAttentionKindV1, type HumanAttentionEventV1, type AutonomyBenchmarkRunV1 } from "./autonomy-benchmark.js";
 export { createAutonomyBenchmarkStoreV1, type AutonomyBenchmarkStoreV1 } from "./autonomy-benchmark-store.js";
