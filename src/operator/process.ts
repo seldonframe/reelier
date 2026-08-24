@@ -3,6 +3,7 @@ import { spawn as nodeSpawn, type ChildProcess } from "node:child_process";
 import { createInterface } from "node:readline";
 import { once } from "node:events";
 import type { OperatorHarnessIdV1 } from "./harness.js";
+import { resolveOperatorHarnessCommandV1, type ResolvedOperatorHarnessCommandV1 } from "./harness-executable.js";
 
 export type OperatorHarnessEventKindV1 =
   | "started"
@@ -153,17 +154,25 @@ function event(input: {
 
 export function createOperatorHarnessProcessV1(input: {
   readonly spawn?: SpawnLike;
+  readonly resolveExecutable?: (executable: string) => Promise<ResolvedOperatorHarnessCommandV1>;
   readonly now?: () => string;
   readonly defaultTimeoutMs?: number;
 } = {}): { launch(request: OperatorHarnessLaunchRequestV1): Promise<OperatorHarnessProcessV1> } {
   const spawn = input.spawn ?? (nodeSpawn as unknown as SpawnLike);
+  const resolveExecutable = input.resolveExecutable ?? ((executable: string) => resolveOperatorHarnessCommandV1({ executable }));
   const now = input.now ?? (() => new Date().toISOString());
   const defaultTimeoutMs = input.defaultTimeoutMs ?? 30 * 60_000;
 
   return Object.freeze({
     async launch(request: OperatorHarnessLaunchRequestV1): Promise<OperatorHarnessProcessV1> {
       const sessionId = request.sessionId ?? randomUUID();
-      const invocation = buildOperatorHarnessInvocationV1({ ...request, ...(request.harness === "claude-code" && !request.resume ? { sessionId } : {}) });
+      const logicalInvocation = buildOperatorHarnessInvocationV1({ ...request, ...(request.harness === "claude-code" && !request.resume ? { sessionId } : {}) });
+      const resolved = await resolveExecutable(logicalInvocation.executable);
+      const invocation = Object.freeze({
+        executable: resolved.executable,
+        args: Object.freeze([...resolved.argsPrefix, ...logicalInvocation.args]),
+        cwd: logicalInvocation.cwd,
+      });
       const child = spawn(invocation.executable, invocation.args, {
         cwd: invocation.cwd,
         stdio: ["pipe", "pipe", "pipe"],

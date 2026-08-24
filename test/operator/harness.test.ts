@@ -1,6 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createOperatorHarnessRegistryV1, type OperatorHarnessIdV1 } from "../../src/operator/harness.js";
+import { resolveOperatorHarnessCommandV1 } from "../../src/operator/harness-executable.js";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 
 const ids: OperatorHarnessIdV1[] = ["codex", "claude-code", "grok-build"];
 
@@ -45,4 +49,20 @@ test("registry rejects unknown harness ids before probing", async () => {
   });
 
   await assert.rejects(() => registry.probe("cursor" as never), /unknown harness/);
+});
+
+test("Windows npm shims resolve to direct Codex and Claude entrypoints without a command shell", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "reelier-harness-bin-"));
+  try {
+    const claude = path.join(root, "node_modules", "@anthropic-ai", "claude-code", "bin", "claude.exe");
+    const codex = path.join(root, "node_modules", "@openai", "codex", "bin", "codex.js");
+    await mkdir(path.dirname(claude), { recursive: true });
+    await mkdir(path.dirname(codex), { recursive: true });
+    await writeFile(claude, "native");
+    await writeFile(codex, "javascript");
+    assert.deepEqual(await resolveOperatorHarnessCommandV1({ executable: "claude", platform: "win32", pathValue: root }), { executable: claude, argsPrefix: [] });
+    assert.deepEqual(await resolveOperatorHarnessCommandV1({ executable: "codex", platform: "win32", pathValue: root }), { executable: process.execPath, argsPrefix: [codex] });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });

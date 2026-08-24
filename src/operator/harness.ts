@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { resolveOperatorHarnessCommandV1 } from "./harness-executable.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -67,16 +68,17 @@ function descriptorFor(id: OperatorHarnessIdV1): OperatorHarnessDescriptorV1 {
 
 async function defaultCommandExists(executable: string): Promise<boolean> {
   try {
-    await execFileAsync(executable, ["--version"], { timeout: 3_000, maxBuffer: 16 * 1024 });
+    const resolved = await resolveOperatorHarnessCommandV1({ executable });
+    await execFileAsync(resolved.executable, [...resolved.argsPrefix, "--version"], { timeout: 3_000, maxBuffer: 16 * 1024 });
     return true;
-  } catch (error: unknown) {
-    const candidate = error as { code?: string | number };
-    return candidate.code !== "ENOENT" && candidate.code !== 1 ? true : false;
+  } catch {
+    return false;
   }
 }
 
 async function defaultRunVersion(executable: string): Promise<string> {
-  const result = await execFileAsync(executable, ["--version"], { timeout: 3_000, maxBuffer: 16 * 1024 });
+  const resolved = await resolveOperatorHarnessCommandV1({ executable });
+  const result = await execFileAsync(resolved.executable, [...resolved.argsPrefix, "--version"], { timeout: 3_000, maxBuffer: 16 * 1024 });
   return result.stdout;
 }
 

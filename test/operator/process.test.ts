@@ -30,6 +30,7 @@ test("process events contain only digests and stop is bounded", async () => {
   const adapter = createOperatorHarnessProcessV1({
     now: () => "2026-08-21T00:00:00.000Z",
     defaultTimeoutMs: 5_000,
+    resolveExecutable: async (executable) => ({ executable, argsPrefix: [] }),
     spawn: () => child as never,
   });
   const process = await adapter.launch({ harness: "codex", cwd: "C:/repo", prompt: "secret prompt" });
@@ -53,7 +54,7 @@ test("a wall-clock kill is exposed as a closed timeout event without output text
     kill() { this.killed = true; this.stdout.end(); queueMicrotask(() => this.emit("close", null, "SIGTERM")); return true; }
   }
   const child = new TimedChild();
-  const process = await createOperatorHarnessProcessV1({ spawn: () => child as never, defaultTimeoutMs: 1_000 }).launch({ harness: "codex", cwd: "C:/repo", prompt: "wait forever" });
+  const process = await createOperatorHarnessProcessV1({ resolveExecutable: async (executable) => ({ executable, argsPrefix: [] }), spawn: () => child as never, defaultTimeoutMs: 1_000 }).launch({ harness: "codex", cwd: "C:/repo", prompt: "wait forever" });
   const eventsPromise = (async () => {
     const events = [];
     for await (const event of process.events) events.push(event);
@@ -74,7 +75,7 @@ test("the harness boundary closes unused stdin and drains stderr without recordi
     kill() { this.killed = true; queueMicrotask(() => this.emit("close", 0, null)); return true; }
   }
   const child = new FakeChild();
-  const adapter = createOperatorHarnessProcessV1({ defaultTimeoutMs: 5_000, spawn: () => child as never });
+  const adapter = createOperatorHarnessProcessV1({ resolveExecutable: async (executable) => ({ executable, argsPrefix: [] }), defaultTimeoutMs: 5_000, spawn: () => child as never });
   const process = await adapter.launch({ harness: "codex", cwd: "C:/repo", prompt: "private task" });
   assert.equal(child.stdinEnded, true);
   assert.equal(child.stderr.readableFlowing, true);
@@ -82,4 +83,26 @@ test("the harness boundary closes unused stdin and drains stderr without recordi
   const events = [];
   for await (const item of process.events) events.push(item);
   assert.equal(JSON.stringify(events).includes("private task"), false);
+});
+
+test("the process runner launches the resolved Windows entrypoint with mission text as direct argv", async () => {
+  class FakeChild extends EventEmitter {
+    killed = false;
+    stdout = Readable.from([]);
+    stderr = new PassThrough();
+    stdin = { end() {} };
+    kill() { this.killed = true; return true; }
+  }
+  const child = new FakeChild();
+  let launch: { executable: string; args: readonly string[] } | undefined;
+  const adapter = createOperatorHarnessProcessV1({
+    resolveExecutable: async () => ({ executable: "C:/node.exe", argsPrefix: ["C:/npm/node_modules/@openai/codex/bin/codex.js"] }),
+    spawn: (executable, args) => { launch = { executable, args }; setTimeout(() => child.emit("close", 0, null), 5); return child as never; },
+  });
+  const missionText = "finish safely & never enter a shell";
+  const running = await adapter.launch({ harness: "codex", cwd: "C:/repo", prompt: missionText });
+  for await (const _event of running.events) { /* drain */ }
+  assert.equal(launch?.executable, "C:/node.exe");
+  assert.deepEqual(launch?.args.slice(-1), [missionText]);
+  assert.equal(launch?.args[0], "C:/npm/node_modules/@openai/codex/bin/codex.js");
 });
