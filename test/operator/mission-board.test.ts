@@ -38,6 +38,8 @@ async function seed(root: string, ownership: "reelier" | "external", imported: b
     processOwnership: ownership,
     imported,
     updatedAt: "2026-08-24T12:00:00.000Z",
+    startedAt: "2026-08-24T11:55:00.000Z",
+    usage: { inputTokens: 1_200, cachedInputTokens: 400, outputTokens: 300, contextUnits: 1_500, totalCostMicros: 123_456 },
   });
 }
 
@@ -53,6 +55,9 @@ test("the board binds to loopback and exposes no mission state without its fragm
     assert.match(html, /Mission Control/);
     assert.match(html, /setInterval\(loadState,2000\)/);
     assert.match(html, /Last activity: "\+m\.updatedAt/);
+    assert.match(html, /Elapsed: /);
+    assert.match(html, /Exposed cost: /);
+    assert.match(html, /Tokens: /);
     assert.match(html, /button,select,textarea\{min-height:44px\}/);
     assert.match(html, /button\{min-width:44px\}/);
     const colors = Object.fromEntries([...html.matchAll(/--([a-z]+):(#[0-9a-f]{6})/g)].map((match) => [match[1], match[2]]));
@@ -68,8 +73,10 @@ test("the board binds to loopback and exposes no mission state without its fragm
     assert.equal((await fetch(`${board.origin}/api/state`)).status, 401);
     const authorized = await fetch(`${board.origin}/api/state`, { headers: { authorization: `Bearer ${CAPABILITY}` } });
     assert.equal(authorized.status, 200);
-    const state = await authorized.json() as { currentWorkspaceDigest: string; missions: Array<{ missionId: string }> };
+    const state = await authorized.json() as { currentWorkspaceDigest: string; missions: Array<{ missionId: string; startedAt?: string; usage?: { totalCostMicros?: number } }> };
     assert.deepEqual(state.missions.map((mission) => mission.missionId), ["mission-board"]);
+    assert.equal(state.missions[0]?.startedAt, "2026-08-24T11:55:00.000Z");
+    assert.equal(state.missions[0]?.usage?.totalCostMicros, 123_456);
     assert.equal(state.currentWorkspaceDigest, `sha256:${createHash("sha256").update(path.resolve(root), "utf8").digest("hex")}`);
   } finally {
     await board.close();
@@ -93,6 +100,9 @@ test("the board orders current-repository work first and exposes a local/global 
     assert.match(html, /Current repository/);
     assert.match(html, /All work/);
     assert.match(html, /Exception inbox/);
+    assert.match(html, />Running</);
+    assert.match(html, />Needs attention</);
+    assert.match(html, />Ambiguous</);
     assert.match(html, /Harness state: /);
     assert.match(html, /Outcome state: /);
   } finally {
