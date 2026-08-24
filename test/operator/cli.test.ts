@@ -254,7 +254,7 @@ test("operator autopilot binds an exact manifest to an existing mission and open
       missionRef: "mission-autopilot",
       repository: "fixlyai/reelier-beta",
       githubActions: ["github_release_pr_merge_v1"],
-      linearTarget: "workspace/project/issue",
+      linearTarget: { workspaceId: "workspace", teamId: "team", projectId: "project", issueIds: ["issue"] },
       linearActions: ["linear_evidence_comment_v1", "linear_status_transition_v1"],
       maximumWrites: 3,
       expiresAt: "2026-08-24T12:10:00.000Z",
@@ -277,7 +277,7 @@ test("operator autopilot binds an exact manifest to an existing mission and open
     assert.deepEqual(waited, ["mission-autopilot"]);
     assert.match(output.join("\n"), /Finish this mission without supervising the merge/);
     assert.match(output.join("\n"), /Autopilot is ready for this mission/);
-    assert.doesNotMatch(output.join("\n"), /workspace\/project\/issue|fixlyai/);
+    assert.doesNotMatch(output.join("\n"), /workspace|project|issue|fixlyai/);
   } finally {
     console.log = originalLog;
     await rm(root, { recursive: true, force: true });
