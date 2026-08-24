@@ -4,6 +4,7 @@
 
 - Reviewed Operator base: `f67729f59229675ca0ea945b1da93e1e50181e6a`.
 - Current implementation head: `8c02a09464c527b25ae7acea84a06857a56f4f07`.
+- Exact report-and-package evidence head: `cbecece9a577c56c8aa7207d18b89940af7fb06b`.
 - Branch: `codex/operator-authority-cell-full`.
 - Draft review: `https://github.com/seldonframe/reelier/pull/130`.
 - Exact changed-file inventory: `git diff --name-only f67729f59229675ca0ea945b1da93e1e50181e6a..8c02a09464c527b25ae7acea84a06857a56f4f07`.
@@ -26,9 +27,10 @@
 
 An exact tarball was built and installed outside every repository:
 
-- Tarball: `C:\Users\maxim\AppData\Local\Temp\reelier-beta-pack-0.33.0-beta.0\reelier-0.33.0-beta.0.tgz`.
-- Disposable consumer: `C:\Users\maxim\AppData\Local\Temp\reelier-packed-customer-0.33.0-beta.0-20260824`.
-- `reelier init --no-open --json` plus doctor completed in 23.26 seconds and reported both installed product-ready harnesses, an accountless local Cell, and a loopback board.
+- Tarball: `C:\Users\maxim\AppData\Local\Temp\reelier-beta-pack-0.33.0-beta.0-cbecece9\reelier-0.33.0-beta.0.tgz`.
+- Tarball SHA-256: `393e39a133cd6564e068fa3604f8ec0d5bd1ebc73fb952f37de18e72cc08727b`.
+- Disposable consumer: `C:\Users\maxim\AppData\Local\Temp\reelier-packed-customer-cbecece9-20260824-1455`.
+- `reelier init --no-open --json` completed in 20.72 seconds and reported both installed product-ready harnesses, accountless Local Mission Control, and a loopback board. `reelier operator doctor` then independently reported a readable journal and that neither an account nor Cloud was required.
 - The installed package exports the Operator, managed handoff, canonical quartet, and genuine host runtime. The canonical quartet remains `reelier_agent_status`, `reelier_outcome_proposal`, `reelier_outcome_request`, and `reelier_outcome_status`.
 - The tarball contains the Linux and Windows bootstrap binaries plus the universal native manifest.
 - The disposable state audit covered 1,792 files / 1,742,946 bytes and found no prompt, reasoning, model output, provider body, credential, API key, bearer token, authorization header, password, or secret record key.
