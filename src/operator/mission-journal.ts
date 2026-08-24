@@ -38,6 +38,19 @@ function operatorRoot(identity: RootIdentity): string {
   return path.join(identity.canonical, ".reelier", "operator");
 }
 
+async function ensureLocalDirectory(identity: RootIdentity, target: string): Promise<void> {
+  await mkdir(target, { recursive: true, mode: 0o700 });
+  const actual = await realpath(target);
+  if (actual !== path.resolve(target)) throw new Error("Mission Control operator root is linked or symlinked");
+  const relative = path.relative(identity.canonical, actual);
+  if (relative.startsWith("..") || path.isAbsolute(relative)) throw new Error("Mission Control operator root escaped the workspace");
+}
+
+async function ensureOperatorRoot(identity: RootIdentity): Promise<void> {
+  await ensureLocalDirectory(identity, path.join(identity.canonical, ".reelier"));
+  await ensureLocalDirectory(identity, operatorRoot(identity));
+}
+
 function missionPath(identity: RootIdentity, missionId: string): string {
   return path.join(operatorRoot(identity), "missions", `${missionId}.json`);
 }
@@ -74,7 +87,8 @@ function parseEvent(value: unknown): MissionSnapshotEventV1 {
 
 async function withLock<T>(identity: RootIdentity, operation: () => Promise<T>): Promise<T> {
   const locks = path.join(operatorRoot(identity), "locks");
-  await mkdir(locks, { recursive: true, mode: 0o700 });
+  await ensureOperatorRoot(identity);
+  await ensureLocalDirectory(identity, locks);
   const lockPath = path.join(locks, "journal.lock");
   let handle;
   for (let attempt = 0; ; attempt += 1) {
@@ -103,7 +117,7 @@ export async function createMissionControlJournalV1(input: Readonly<{ root: stri
       return withLock(identity, async () => {
         await assertRoot(identity);
         const base = operatorRoot(identity);
-        await mkdir(path.join(base, "missions"), { recursive: true, mode: 0o700 });
+        await ensureLocalDirectory(identity, path.join(base, "missions"));
         const event: MissionSnapshotEventV1 = Object.freeze({
           v: "reelier.mission-control-event/v1",
           eventId: randomUUID(),

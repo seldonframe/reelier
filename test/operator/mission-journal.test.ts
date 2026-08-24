@@ -72,3 +72,22 @@ test("a linked workspace root is refused before journal creation", async (contex
     await rm(parent, { recursive: true, force: true });
   }
 });
+
+test("a linked .reelier directory cannot redirect journal writes outside the workspace", async (context) => {
+  const root = await mkdtemp(path.join(tmpdir(), "reelier-mission-journal-nested-link-"));
+  const outside = await mkdtemp(path.join(tmpdir(), "reelier-mission-journal-outside-"));
+  try {
+    try {
+      await symlink(outside, path.join(root, ".reelier"), process.platform === "win32" ? "junction" : "dir");
+    } catch (error: unknown) {
+      if ((error as { code?: string }).code === "EPERM") return context.skip("symlink creation is unavailable");
+      throw error;
+    }
+    const journal = await createMissionControlJournalV1({ root });
+    await assert.rejects(() => journal.appendMission(mission("2026-08-24T12:00:00.000Z", "running")), /linked|symlink|operator root/i);
+    await assert.rejects(() => readFile(path.join(outside, "operator", "events.jsonl"), "utf8"), /ENOENT/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
+  }
+});
