@@ -87,6 +87,8 @@ export async function runMissionControlMissionV1(input: Readonly<{
     await resumeStore.save({ missionId, harness: input.harness, resumeIdentity, workspaceDigest });
   });
   let terminal: "exited" | "failed" | null = null;
+  const errorSignatureCounts = new Map<string, number>();
+  let repeatedToolError = false;
   const control = await createMissionProcessControlV1({ root: input.root, missionId, stop: process.stop });
   try {
     const iterator = process.events[Symbol.asyncIterator]();
@@ -103,7 +105,18 @@ export async function runMissionControlMissionV1(input: Readonly<{
       }
       if (next.done) break;
       const event = next.value;
-      if (event.kind === "failed") terminal = "failed";
+      if (event.kind === "failed") {
+        terminal = "failed";
+        if (event.payloadDigest) {
+          const count = (errorSignatureCounts.get(event.payloadDigest) ?? 0) + 1;
+          errorSignatureCounts.set(event.payloadDigest, count);
+          if (count >= 3) {
+            repeatedToolError = true;
+            current = parseMissionControlMissionV1({ ...current, harnessLifecycle: "running", attentionState: "watching", attentionReasons: ["repeated-tool-error"], updatedAt: event.at });
+            await journal.appendMission(current);
+          }
+        }
+      }
       else if (event.kind === "completed" && terminal !== "failed") terminal = "exited";
       else {
         current = parseMissionControlMissionV1({ ...current, harnessLifecycle: "running", attentionState: "none", attentionReasons: [], updatedAt: event.at });
@@ -124,7 +137,7 @@ export async function runMissionControlMissionV1(input: Readonly<{
   const attentionReasons = outcomeLifecycle === "completed-unverified"
     ? ["harness-exited-without-evidence"]
     : outcomeLifecycle === "failed"
-      ? ["harness-failed"]
+      ? ["harness-failed", ...(repeatedToolError ? ["repeated-tool-error"] : [])]
       : harnessLifecycle === "unreachable"
         ? ["harness-unreachable"]
         : [];

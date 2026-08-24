@@ -208,3 +208,53 @@ test("a silent owned harness becomes stalled in the live journal and recovers on
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("repeated identical harness errors become a live attention reason without storing error text", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "reelier-mission-runner-errors-"));
+  let releaseCompletion!: () => void;
+  const completion = new Promise<void>((resolve) => { releaseCompletion = resolve; });
+  const signature = `sha256:${"e".repeat(64)}`;
+  let running: ReturnType<typeof runMissionControlMissionV1> | undefined;
+  try {
+    running = runMissionControlMissionV1({
+      root,
+      cwd: root,
+      harness: "codex",
+      task: "bounded task",
+      processFactory: {
+        async launch() {
+          return {
+            sessionId: "mission-repeated-errors",
+            resumeIdentity: Promise.resolve("mission-repeated-errors"),
+            invocation: { executable: "codex", args: [], cwd: root },
+            events: (async function* () {
+              for (let index = 0; index < 3; index += 1) {
+                yield { v: "reelier.operator-event/v1" as const, harness: "codex" as const, sessionId: "mission-repeated-errors", kind: "failed" as const, payloadDigest: signature, at: `2026-08-24T12:00:0${index}.000Z` };
+              }
+              await completion;
+            })(),
+            async stop() {},
+          };
+        },
+      },
+      observeWorkspace: async () => null,
+    });
+    let observed;
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      observed = (await (await createMissionControlJournalV1({ root })).reconstruct())[0];
+      if (observed?.attentionReasons.includes("repeated-tool-error")) break;
+      await new Promise((resolve) => setTimeout(resolve, 2));
+    }
+    assert.equal(observed?.attentionState, "watching");
+    assert.deepEqual(observed?.attentionReasons, ["repeated-tool-error"]);
+    releaseCompletion();
+    const terminal = await running;
+    assert.equal(terminal.harnessLifecycle, "failed");
+    assert.deepEqual(terminal.attentionReasons, ["harness-failed", "repeated-tool-error"]);
+    assert.doesNotMatch(await readFile(path.join(root, ".reelier", "operator", "events.jsonl"), "utf8"), /bounded task/i);
+  } finally {
+    releaseCompletion?.();
+    await running?.catch(() => undefined);
+    await rm(root, { recursive: true, force: true });
+  }
+});
