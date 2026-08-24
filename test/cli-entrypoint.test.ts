@@ -108,7 +108,8 @@ test("real CLI restart recovers an interrupted exact plan and refuses later iden
     assert.notEqual(JSON.parse(await readFile(transactionPath, "utf8")).state, "complete");
 
     const restarted = await execFileAsync(process.execPath, [cliPath, "init", "restart-agent"], { cwd: project });
-    assert.match(restarted.stdout, /npx reelier@0\.32\.1 up/);
+    const packageVersion = (JSON.parse(await readFile(path.resolve(CLI_DIR, "../../package.json"), "utf8")) as { version: string }).version;
+    assert.ok(restarted.stdout.includes(`npx reelier@${packageVersion} up`), `restart command did not pin the current package version ${packageVersion}`);
     const pointer = JSON.parse(await readFile(path.join(bootstrap, "current.json"), "utf8"));
     assert.deepEqual((await readdir(path.join(bootstrap, "generations", pointer.generation))).sort(), ["checkpoint.json", "project.json", "recovery-command.txt", "report.json"]);
 
