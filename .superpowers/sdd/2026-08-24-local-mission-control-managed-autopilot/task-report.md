@@ -3,10 +3,10 @@
 ## Scope and identity
 
 - Reviewed Operator base: `f67729f59229675ca0ea945b1da93e1e50181e6a`.
-- Exact production/package source head: `d45f24678625269e78d6251e2189fa636594a269`.
+- Exact production/package source head: `225893a4`.
 - Branch: `codex/operator-authority-cell-full`.
 - Draft review: `https://github.com/seldonframe/reelier/pull/130`.
-- Exact changed-file inventory: `git diff --name-only f67729f59229675ca0ea945b1da93e1e50181e6a..d45f24678625269e78d6251e2189fa636594a269`.
+- Exact changed-file inventory: `git diff --name-only f67729f59229675ca0ea945b1da93e1e50181e6a..225893a4`.
 - The dirty root checkout was not edited. All work was performed in the isolated Operator and Cloud worktrees.
 
 ## Implemented product boundary
@@ -26,18 +26,18 @@
 
 An exact tarball was built and installed outside every repository:
 
-- Tarball: `C:\Users\maxim\AppData\Local\Temp\reelier-beta-pack-0.33.0-beta.0-d45f2467\reelier-0.33.0-beta.0.tgz`.
-- Tarball SHA-256: `ffcdea8ffb0c5d7b0fb5f9b665b820fc8d010833d87045dbf451e8fef8ac8551`.
-- Disposable consumer: `C:\Users\maxim\AppData\Local\Temp\reelier-packed-customer-d45f2467-20260824`.
+- Tarball: `C:\Users\maxim\AppData\Local\Temp\reelier-beta-pack-0.33.0-beta.0-225893a4\reelier-0.33.0-beta.0.tgz`.
+- Tarball SHA-256: `604c85f6f440b111d4dc3a1a775326957e0dd7151fdb438dd74c8f108510a24b`.
+- Disposable consumer: `C:\Users\maxim\AppData\Local\Temp\reelier-packed-customer-225893a4-20260824`.
 - `npm pack` rebuilt production output before packaging and then verified the universal native artifacts; stale `dist` cannot silently enter this release path.
-- `reelier init --no-open --json` completed in 16.76 seconds and reported both installed product-ready harnesses, accountless Local Mission Control, and a loopback board. `reelier operator doctor` then independently reported a readable journal and that neither an account nor Cloud was required.
+- `reelier init --no-open --json` completed in about 25 seconds and reported both installed product-ready harnesses, 1,792 imported missions, accountless Local Mission Control, and a loopback board. `reelier operator doctor` then independently reported a readable journal and that neither an account nor Cloud was required.
 - The installed package exports the Operator, managed handoff, canonical quartet, and genuine host runtime. The canonical quartet remains `reelier_agent_status`, `reelier_outcome_proposal`, `reelier_outcome_request`, and `reelier_outcome_status`.
 - The tarball contains the Linux and Windows bootstrap binaries plus the universal native manifest.
 - The disposable state audit covered 1,792 files / 1,742,946 bytes and found no prompt, reasoning, model output, provider body, credential, API key, bearer token, authorization header, password, or secret record key.
 
 ## Verification
 
-- Operator-focused matrix: 84 tests, 83 pass, 0 fail, 1 declared Windows-symlink privilege skip.
+- Operator-focused matrix: 89 tests, 88 pass, 0 fail, 1 declared Windows-symlink privilege skip.
 - Production build: exit 0; 12 packs built.
 - Production TypeScript: exit 0.
 - Test TypeScript: exit 0.
@@ -49,15 +49,16 @@ An exact tarball was built and installed outside every repository:
 
 - Managed Autopilot lives on the separate reviewed Cloud branch and reuses Neon lifecycle authority, passkey activation, Stripe canonical subscription state, exact GitHub/Linear bindings, the seven reviewed definitions, the one-shot Cell authority, brokered execution, authoritative readback, receipts, and no-resend ambiguity recovery.
 - Cloud draft review: `https://github.com/seldonframe/reelier-cloud/pull/72`.
-- Cloud local gate at head `9cb29e6c09d76c8b9c189f96b7fab9b46ad35c77`: 1,912 tests, 1,910 pass, 0 fail, 2 honest skips; typecheck, production build, and Drizzle check exit 0.
-- Live disposable Neon schema gate reports 75 tables / 825 columns and migrations through `0050`; no provider write was performed.
-- The fresh `iad` Fly Cell remains `certifying`, not `ready`, because no fabricated tenant-scoped activation or provider binding was inserted.
+- Cloud local gate at head `07c067f`: 1,919 tests, 1,917 pass, 0 fail, 2 honest skips; typecheck, production build, and Drizzle check exit 0.
+- Live disposable Neon schema gate reports 76 tables / 836 columns and migrations through `0051`; no provider write was performed.
+- Production deployment `dpl_CPB5Tq3RDEmcSJvFEUJ4mTGxZoyh` is `READY` and aliased to `https://www.reelier.com`; public root, pricing, Autopilot, and DB health probes return 200.
+- The fresh `iad` Fly Cell `reelier-autopilot-customer-1-20260824` runs image `sha256:427d7d0cf9051f99f1c6acd2751ea5d2c57e0c9a981eca99a1a8543b8f7bf393`, refuses unauthenticated health with 401, pins the exact reviewed seven-definition and Outcome ABI roots during startup, and remains `certifying`, not `ready`, because no fabricated tenant-scoped activation or provider binding was inserted.
 
 ## Open gates and explicit non-claims
 
 - Exact-head GitHub CI and independent review are still required before merging, tagging, publishing, or promoting the npm prerelease.
 - The beta package is built and installed but is not published to npm. No `latest` promotion occurred.
-- Customer #1 still must authenticate the browser flow and select exact Linear targets. The disposable GitHub repository is intentionally empty, so no exact base SHA or provider-write ceremony exists yet.
+- The exact target-selection rendezvous and local mission compiler are implemented, but Customer #1 still must complete the authenticated browser payment/provider/passkey ceremony. The disposable GitHub repository is intentionally empty, so no exact base SHA or provider-write ceremony exists yet.
 - Stripe payment, GitHub/Linear provider writes, Fly Cell promotion to `ready`, and cleanup remain explicit ceremonies. None was simulated or claimed complete.
 - No 10x or 100x product claim is made. The implementation can record the measurements, but the matched ten-session, ten-Outcome, and 100-Outcome experiments have not been run.
 - Free Mission Control observes only supported local surfaces. Invisible direct shell/provider writes remain unknown coverage, never governed or complete.
