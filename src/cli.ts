@@ -77,6 +77,7 @@ import { launchDetachedMissionControlBoardV1, runMissionControlBoardServerFromEn
 import { createMissionControlJournalV1 } from "./operator/mission-journal.js";
 import { runMissionControlMissionV1 } from "./operator/mission-runner.js";
 import { stopOwnedMissionProcessV1 } from "./operator/mission-process-control.js";
+import { runMissionControlDoctorV1, type MissionControlDoctorResultV1 } from "./operator/doctor.js";
 import { compileSessionTranscript, detectSessionFormat, SESSION_FORMAT_LABELS, type SessionSkip, type SessionFormatId } from "./session.js";
 import {
   scanTranscripts,
@@ -4639,6 +4640,7 @@ export interface CmdOperatorOverrides {
   readonly runBoardServer?: () => Promise<never>;
   readonly runMission?: typeof runMissionControlMissionV1;
   readonly stopMission?: typeof stopOwnedMissionProcessV1;
+  readonly doctor?: (input: Readonly<{ root: string }>) => Promise<MissionControlDoctorResultV1>;
 }
 
 export async function cmdOperator(args: ParsedArgs, overrides: CmdOperatorOverrides = {}): Promise<number> {
@@ -4699,6 +4701,26 @@ export async function cmdOperator(args: ParsedArgs, overrides: CmdOperatorOverri
       return 1;
     }
   }
+  if (subcommand === "doctor") {
+    if (sessionId || args.flags.size !== 0 || Object.keys(args.opts).length !== 0 || Object.keys(args.vars).length !== 0 || args.wraps.length !== 0 || args.fails.length !== 0) {
+      console.error("Usage: reelier operator doctor");
+      return 1;
+    }
+    const result = await (overrides.doctor ?? runMissionControlDoctorV1)({ root: cwd });
+    console.log(`Local Mission Control: ${result.status}`);
+    console.log(`Harnesses: ${result.productReadyHarnesses.join(", ") || "none product-ready"}`);
+    console.log(`Journal: ${result.journalReadable ? "readable" : "needs attention"}`);
+    console.log("Account: not required; Cloud: not required");
+    return result.status === "ready" ? 0 : 1;
+  }
+  if (subcommand === "resume") {
+    if (!sessionId || args.positional.length !== 2 || args.flags.size !== 0 || Object.keys(args.opts).length !== 0 || Object.keys(args.vars).length !== 0 || args.wraps.length !== 0 || args.fails.length !== 0) {
+      console.error("Usage: reelier operator resume <mission-ref>");
+      return 1;
+    }
+    console.error("Mission resume refused: no captured harness-native resume identity is available. Reopen with `reelier operator run` or import a verified resume-capable session.");
+    return 1;
+  }
   if (subcommand === "init") {
     if (sessionId || [...args.flags].some((flag) => flag !== "no-open") || Object.keys(args.opts).length !== 0 || Object.keys(args.vars).length !== 0 || args.wraps.length !== 0 || args.fails.length !== 0) {
       console.error("Usage: reelier operator init [--no-open]");
@@ -4725,7 +4747,7 @@ export async function cmdOperator(args: ParsedArgs, overrides: CmdOperatorOverri
     return 0;
   }
   if (subcommand !== "status" && subcommand !== "list") {
-    console.error("Usage: reelier operator <init|open|import|run|stop|status [sessionId]|list|review [--open]>");
+    console.error("Usage: reelier operator <init|open|import|run|stop|resume|doctor|status [sessionId]|list|review [--open]>");
     return 1;
   }
   const sessionStore = createOperatorSessionStoreV1({ root: cwd });

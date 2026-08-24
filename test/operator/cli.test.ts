@@ -210,3 +210,18 @@ test("operator stop delegates only the exact mission reference to the owned-proc
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("operator doctor is local and resume refuses without a captured harness-native identity", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "reelier-operator-cli-doctor-"));
+  const originalLog = console.log, originalError = console.error;
+  const output: string[] = [];
+  try {
+    console.log = (...values: unknown[]) => output.push(values.join(" "));
+    console.error = (...values: unknown[]) => output.push(values.join(" "));
+    assert.equal(await cmdOperator(args("doctor"), { cwd: root, home: root, doctor: async () => ({ status: "ready", accountRequired: false, cloudRequired: false, productReadyHarnesses: ["codex"], journalReadable: true }) }), 0);
+    assert.match(output.join("\n"), /Local Mission Control: ready/);
+    output.length = 0;
+    assert.equal(await cmdOperator({ positional: ["resume", "mission-unknown"], flags: new Set(), vars: {}, wraps: [], opts: {}, fails: [] }, { cwd: root, home: root }), 1);
+    assert.match(output.join("\n"), /captured harness-native resume identity/i);
+  } finally { console.log = originalLog; console.error = originalError; await rm(root, { recursive: true, force: true }); }
+});
