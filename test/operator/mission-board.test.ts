@@ -194,3 +194,22 @@ test("the board resumes only an exact non-imported Reelier-owned mission", async
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("the board starts one exact product-ready harness mission without reflecting its task", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "reelier-mission-board-run-"));
+  const received: unknown[] = [];
+  const board = await createMissionControlBoardV1({ root, capability: CAPABILITY, now: () => Date.parse("2026-08-24T12:30:00.000Z"), expiresAt: "2026-08-24T13:00:00.000Z", runMission: async (input) => { received.push(input); } });
+  try {
+    const task = "PRIVATE TASK SENT ONLY TO CODEX";
+    const response = await fetch(`${board.origin}/api/actions/run`, { method: "POST", headers: { authorization: `Bearer ${CAPABILITY}`, origin: board.origin, "x-reelier-csrf": CAPABILITY, "content-type": "application/json" }, body: JSON.stringify({ harness: "codex", task }) });
+    assert.equal(response.status, 202);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.deepEqual(received, [{ harness: "codex", task }]);
+    assert.doesNotMatch(await response.text(), new RegExp(task));
+    const unsupported = await fetch(`${board.origin}/api/actions/run`, { method: "POST", headers: { authorization: `Bearer ${CAPABILITY}`, origin: board.origin, "x-reelier-csrf": CAPABILITY, "content-type": "application/json" }, body: JSON.stringify({ harness: "grok-build", task: "x" }) });
+    assert.equal(unsupported.status, 400);
+  } finally {
+    await board.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
