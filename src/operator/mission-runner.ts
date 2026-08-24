@@ -8,6 +8,7 @@ import { createOperatorHarnessProcessV1, type OperatorHarnessLaunchRequestV1, ty
 import { deriveOutcomeLifecycleV1, parseMissionControlMissionV1, type MissionControlMissionV1 } from "./mission-control.js";
 import type { OperatorHarnessIdV1 } from "./harness.js";
 import { createMissionProcessControlV1 } from "./mission-process-control.js";
+import { createMissionResumeStoreV1 } from "./mission-resume.js";
 
 const execFileAsync = promisify(execFile);
 type WorkspaceObservationV1 = Readonly<{ subjectDigest: string; resultDigest: string }>;
@@ -37,6 +38,8 @@ export async function runMissionControlMissionV1(input: Readonly<{
   now?: () => string;
   processFactory?: ProcessFactoryV1;
   observeWorkspace?: (cwd: string) => Promise<WorkspaceObservationV1 | null>;
+  missionId?: string;
+  resumeIdentity?: string;
 }>): Promise<MissionControlMissionV1> {
   if (input.harness !== "codex" && input.harness !== "claude-code") throw new Error(`${input.harness} is experimental and unavailable in the product-ready run path`);
   if (typeof input.task !== "string" || input.task.length === 0 || input.task.length > 128_000) throw new TypeError("Mission Control task is invalid");
@@ -44,13 +47,16 @@ export async function runMissionControlMissionV1(input: Readonly<{
   const observe = input.observeWorkspace ?? observeGitWorkspace;
   const before = await observe(input.cwd);
   const processFactory = input.processFactory ?? createOperatorHarnessProcessV1();
-  const process = await processFactory.launch({ harness: input.harness, cwd: input.cwd, prompt: input.task });
+  const process = await processFactory.launch({ harness: input.harness, cwd: input.cwd, prompt: input.task, ...(input.resumeIdentity ? { resume: true, sessionId: input.resumeIdentity } : {}) });
   const journal = await createMissionControlJournalV1({ root: input.root });
   const evidenceStore = await createMissionEvidenceStoreV1({ root: input.root });
+  const resumeStore = await createMissionResumeStoreV1({ root: input.root });
+  const missionId = input.missionId ?? process.sessionId;
+  const workspaceDigest = digest(path.resolve(input.cwd));
   let current = parseMissionControlMissionV1({
     v: "reelier.mission-control-mission/v1",
-    missionId: process.sessionId,
-    workspaceDigest: digest(path.resolve(input.cwd)),
+    missionId,
+    workspaceDigest,
     harness: input.harness,
     harnessLifecycle: "running",
     outcomeLifecycle: "pending",
@@ -62,8 +68,12 @@ export async function runMissionControlMissionV1(input: Readonly<{
     updatedAt: now(),
   });
   await journal.appendMission(current);
+  const captureResumeIdentity = process.resumeIdentity.then(async (resumeIdentity) => {
+    if (!resumeIdentity) return;
+    await resumeStore.save({ missionId, harness: input.harness, resumeIdentity, workspaceDigest });
+  });
   let terminal: "exited" | "failed" | null = null;
-  const control = await createMissionProcessControlV1({ root: input.root, missionId: process.sessionId, stop: process.stop });
+  const control = await createMissionProcessControlV1({ root: input.root, missionId, stop: process.stop });
   try {
     for await (const event of process.events) {
       if (event.kind === "failed") terminal = "failed";
@@ -71,6 +81,7 @@ export async function runMissionControlMissionV1(input: Readonly<{
     }
   } finally {
     await control.close();
+    await captureResumeIdentity;
   }
   const after = await observe(input.cwd);
   const evidenceRefs: string[] = [];
@@ -97,4 +108,33 @@ export async function runMissionControlMissionV1(input: Readonly<{
   });
   await journal.appendMission(current);
   return current;
+}
+
+const CONTINUATION_INSTRUCTION = "Continue the previous task. Inspect current state before acting and do not repeat completed external actions.";
+
+export async function resumeMissionControlMissionV1(input: Readonly<{
+  root: string;
+  cwd: string;
+  missionId: string;
+  now?: () => string;
+  processFactory?: ProcessFactoryV1;
+  observeWorkspace?: (cwd: string) => Promise<WorkspaceObservationV1 | null>;
+}>): Promise<MissionControlMissionV1> {
+  const mission = (await (await createMissionControlJournalV1({ root: input.root })).reconstruct()).find((item) => item.missionId === input.missionId);
+  if (!mission) throw new Error("mission is not present in the local Mission Control journal");
+  if (mission.harness !== "codex" && mission.harness !== "claude-code") throw new Error("mission harness does not support verified resume");
+  const resume = await (await createMissionResumeStoreV1({ root: input.root })).load(input.missionId);
+  if (!resume || resume.harness !== mission.harness || resume.workspaceDigest !== mission.workspaceDigest) throw new Error("captured harness-native resume identity is unavailable or crossed");
+  if (digest(path.resolve(input.cwd)) !== mission.workspaceDigest) throw new Error("mission resume workspace does not match the current repository");
+  return runMissionControlMissionV1({
+    root: input.root,
+    cwd: input.cwd,
+    harness: mission.harness,
+    task: CONTINUATION_INSTRUCTION,
+    missionId: mission.missionId,
+    resumeIdentity: resume.resumeIdentity,
+    ...(input.now ? { now: input.now } : {}),
+    ...(input.processFactory ? { processFactory: input.processFactory } : {}),
+    ...(input.observeWorkspace ? { observeWorkspace: input.observeWorkspace } : {}),
+  });
 }

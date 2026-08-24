@@ -1,9 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { runMissionControlMissionV1 } from "../../src/operator/mission-runner.js";
+import { resumeMissionControlMissionV1, runMissionControlMissionV1 } from "../../src/operator/mission-runner.js";
+import { createMissionResumeStoreV1 } from "../../src/operator/mission-resume.js";
 import { createMissionControlJournalV1 } from "../../src/operator/mission-journal.js";
 import { stopOwnedMissionProcessV1 } from "../../src/operator/mission-process-control.js";
 import type { OperatorHarnessEventV1, OperatorHarnessProcessV1 } from "../../src/operator/process.js";
@@ -41,6 +43,13 @@ test("a Reelier-owned harness run becomes locally observed only from independent
     assert.equal(result.processOwnership, "reelier");
     assert.equal(result.evidenceRefs.length, 1);
     assert.deepEqual(await (await createMissionControlJournalV1({ root })).reconstruct(), [result]);
+    assert.deepEqual(await (await createMissionResumeStoreV1({ root })).load("owned-session"), {
+      v: "reelier.mission-resume/v1",
+      missionId: "owned-session",
+      harness: "codex",
+      resumeIdentity: "owned-session",
+      workspaceDigest: result.workspaceDigest,
+    });
     const operatorRoot = path.join(root, ".reelier", "operator");
     const files = [
       path.join(operatorRoot, "events.jsonl"),
@@ -48,6 +57,35 @@ test("a Reelier-owned harness run becomes locally observed only from independent
       ...((await readdir(path.join(operatorRoot, "evidence"))).map((name) => path.join(operatorRoot, "evidence", name))),
     ];
     assert.doesNotMatch((await Promise.all(files.map((file) => readFile(file, "utf8")))).join("\n"), new RegExp(secretTask));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("an exact captured identity resumes the same mission without persisting the continuation instruction", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "reelier-mission-runner-resume-"));
+  const workspaceDigest = `sha256:${createHash("sha256").update(path.resolve(root), "utf8").digest("hex")}`;
+  const requests: unknown[] = [];
+  try {
+    await (await createMissionControlJournalV1({ root })).appendMission({ v: "reelier.mission-control-mission/v1", missionId: "native-thread", workspaceDigest, harness: "codex", harnessLifecycle: "stopped", outcomeLifecycle: "pending", attentionState: "watching", attentionReasons: ["stopped"], evidenceRefs: [], processOwnership: "reelier", imported: false, updatedAt: "2026-08-24T12:00:00.000Z" });
+    await (await createMissionResumeStoreV1({ root })).save({ missionId: "native-thread", harness: "codex", resumeIdentity: "native-thread", workspaceDigest });
+    const result = await resumeMissionControlMissionV1({
+      root,
+      cwd: root,
+      missionId: "native-thread",
+      processFactory: {
+        async launch(request) {
+          requests.push(request);
+          return { sessionId: "native-thread", resumeIdentity: Promise.resolve("native-thread"), invocation: { executable: "codex", args: [], cwd: root }, events: (async function* () { yield { v: "reelier.operator-event/v1" as const, harness: "codex" as const, sessionId: "native-thread", kind: "completed" as const, payloadDigest: null, at: "2026-08-24T12:00:01.000Z" }; })(), async stop() {} };
+        },
+      },
+      observeWorkspace: async () => null,
+      now: () => "2026-08-24T12:00:01.000Z",
+    });
+    assert.equal(result.missionId, "native-thread");
+    assert.deepEqual(requests, [{ harness: "codex", cwd: root, prompt: "Continue the previous task. Inspect current state before acting and do not repeat completed external actions.", resume: true, sessionId: "native-thread" }]);
+    const bytes = await readFile(path.join(root, ".reelier", "operator", "events.jsonl"), "utf8");
+    assert.doesNotMatch(bytes, /Continue the previous task/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

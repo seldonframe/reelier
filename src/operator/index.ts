@@ -19,7 +19,8 @@ export { discoverMissionControlV1, type DiscoveredMissionControlMissionV1, type 
 export { createMissionControlBoardV1, type MissionControlBoardV1 } from "./mission-board.js";
 export { launchDetachedMissionControlBoardV1, runMissionControlBoardServerFromEnvironmentV1, type BoardSpawnV1, type DetachedMissionControlBoardV1 } from "./mission-board-process.js";
 export { createMissionEvidenceStoreV1, type MissionEvidenceInputV1, type MissionEvidenceKindV1, type MissionEvidenceStatusV1, type MissionEvidenceStoreV1, type MissionEvidenceV1 } from "./mission-evidence.js";
-export { runMissionControlMissionV1 } from "./mission-runner.js";
+export { resumeMissionControlMissionV1, runMissionControlMissionV1 } from "./mission-runner.js";
+export { createMissionResumeStoreV1, type MissionResumeInputV1, type MissionResumeRecordV1, type MissionResumeStoreV1 } from "./mission-resume.js";
 export { createMissionProcessControlV1, stopOwnedMissionProcessV1 } from "./mission-process-control.js";
 export { runMissionControlDoctorV1, type MissionControlDoctorResultV1 } from "./doctor.js";
 export { createManagedUpgradeIntentV1, createManagedUpgradeIntentConsumerV1, parseManagedUpgradeIntentV1, recordConsequentialBoundaryV1, constantTimeSignatureEqualsV1, type ManagedUpgradeIntentV1, type ReviewedConsequentialOperationV1 } from "./managed-upgrade-intent.js";

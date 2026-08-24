@@ -222,6 +222,18 @@ test("operator doctor is local and resume refuses without a captured harness-nat
     assert.equal(await cmdOperator(args("doctor"), { cwd: root, home: root, doctor: async () => ({ status: "ready", accountRequired: false, cloudRequired: false, productReadyHarnesses: ["codex"], journalReadable: true }) }), 0);
     assert.match(output.join("\n"), /Local Mission Control: ready/);
     output.length = 0;
+    const resumed: string[] = [];
+    assert.equal(await cmdOperator({ positional: ["resume", "mission-native"], flags: new Set(), vars: {}, wraps: [], opts: {}, fails: [] }, {
+      cwd: root,
+      home: root,
+      resumeMission: async (input) => {
+        resumed.push(input.missionId);
+        return { v: "reelier.mission-control-mission/v1", missionId: input.missionId, workspaceDigest: `sha256:${"a".repeat(64)}`, harness: "codex", harnessLifecycle: "exited", outcomeLifecycle: "completed-unverified", attentionState: "watching", attentionReasons: ["harness-exited-without-evidence"], evidenceRefs: [], processOwnership: "reelier", imported: false, updatedAt: "2026-08-24T12:00:00.000Z" };
+      },
+    }), 0);
+    assert.deepEqual(resumed, ["mission-native"]);
+    assert.match(output.join("\n"), /Resumed mission: mission-native/);
+    output.length = 0;
     assert.equal(await cmdOperator({ positional: ["resume", "mission-unknown"], flags: new Set(), vars: {}, wraps: [], opts: {}, fails: [] }, { cwd: root, home: root }), 1);
     assert.match(output.join("\n"), /captured harness-native resume identity/i);
   } finally { console.log = originalLog; console.error = originalError; await rm(root, { recursive: true, force: true }); }

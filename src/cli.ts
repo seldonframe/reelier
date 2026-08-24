@@ -75,7 +75,7 @@ import {
 import { createOperatorSessionStoreV1 } from "./operator/session-store.js";
 import { launchDetachedMissionControlBoardV1, runMissionControlBoardServerFromEnvironmentV1, type DetachedMissionControlBoardV1 } from "./operator/mission-board-process.js";
 import { createMissionControlJournalV1 } from "./operator/mission-journal.js";
-import { runMissionControlMissionV1 } from "./operator/mission-runner.js";
+import { resumeMissionControlMissionV1, runMissionControlMissionV1 } from "./operator/mission-runner.js";
 import { stopOwnedMissionProcessV1 } from "./operator/mission-process-control.js";
 import { runMissionControlDoctorV1, type MissionControlDoctorResultV1 } from "./operator/doctor.js";
 import { createAutopilotHandoffV1, waitForAutopilotReadyV1, type ManagedUpgradeTargetManifest } from "./operator/autopilot-handoff-client.js";
@@ -4640,6 +4640,7 @@ export interface CmdOperatorOverrides {
   readonly launchBoard?: (input: Readonly<{ root: string; openBrowser?: (url: string) => void }>) => Promise<DetachedMissionControlBoardV1>;
   readonly runBoardServer?: () => Promise<never>;
   readonly runMission?: typeof runMissionControlMissionV1;
+  readonly resumeMission?: typeof resumeMissionControlMissionV1;
   readonly stopMission?: typeof stopOwnedMissionProcessV1;
   readonly doctor?: (input: Readonly<{ root: string }>) => Promise<MissionControlDoctorResultV1>;
   readonly createAutopilotHandoff?: typeof createAutopilotHandoffV1;
@@ -4723,8 +4724,16 @@ export async function cmdOperator(args: ParsedArgs, overrides: CmdOperatorOverri
       console.error("Usage: reelier operator resume <mission-ref>");
       return 1;
     }
-    console.error("Mission resume refused: no captured harness-native resume identity is available. Reopen with `reelier operator run` or import a verified resume-capable session.");
-    return 1;
+    try {
+      const mission = await (overrides.resumeMission ?? resumeMissionControlMissionV1)({ root: cwd, cwd, missionId: sessionId });
+      console.log(`Resumed mission: ${mission.missionId}`);
+      console.log(`Harness: ${mission.harness} (${mission.harnessLifecycle})`);
+      console.log(`Outcome: ${mission.outcomeLifecycle}`);
+      return mission.outcomeLifecycle === "failed" ? 1 : 0;
+    } catch (error) {
+      console.error(`Mission resume refused: captured harness-native resume identity is unavailable (${error instanceof Error ? error.message : "unknown mission"})`);
+      return 1;
+    }
   }
   if (subcommand === "autopilot") {
     const manifestFile = args.opts.manifest;
