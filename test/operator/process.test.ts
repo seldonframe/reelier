@@ -45,6 +45,34 @@ test("process events contain only digests and stop is bounded", async () => {
   assert.equal(child.killed, false);
 });
 
+test("a harness that closes between the started event and the next iterator read terminates honestly", async () => {
+  class FastChild extends EventEmitter {
+    killed = false;
+    stdout = new PassThrough();
+    stderr = new PassThrough();
+    stdin = { end() {} };
+    kill() { this.killed = true; return true; }
+  }
+  const child = new FastChild();
+  const process = await createOperatorHarnessProcessV1({
+    resolveExecutable: async (executable) => ({ executable, argsPrefix: [] }),
+    spawn: () => child as never,
+    defaultTimeoutMs: 5_000,
+  }).launch({ harness: "codex", cwd: "C:/repo", prompt: "finish quickly" });
+  const iterator = process.events[Symbol.asyncIterator]();
+  assert.equal((await iterator.next()).value?.kind, "started");
+
+  child.stdout.end();
+  child.emit("close", 0, null);
+
+  const terminal = await Promise.race([
+    iterator.next(),
+    new Promise<never>((_resolve, reject) => setTimeout(() => reject(new Error("missed harness close event")), 100)),
+  ]);
+  assert.equal(terminal.value?.kind, "completed");
+  assert.equal((await iterator.next()).done, true);
+});
+
 test("a wall-clock kill is exposed as a closed timeout event without output text", async () => {
   class TimedChild extends EventEmitter {
     killed = false;

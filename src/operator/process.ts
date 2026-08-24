@@ -187,6 +187,11 @@ export function createOperatorHarnessProcessV1(input: {
       }
       let stopped = false;
       let processClosed = false;
+      const closed = once(child, "close") as Promise<[number | null, NodeJS.Signals | null]>;
+      void closed.then(
+        () => { processClosed = true; },
+        () => { processClosed = true; },
+      );
       let resumeIdentitySettled = false;
       let settleResumeIdentity!: (value: string | null) => void;
       const resumeIdentity = new Promise<string | null>((resolve) => { settleResumeIdentity = resolve; });
@@ -197,7 +202,6 @@ export function createOperatorHarnessProcessV1(input: {
       };
       if (request.harness === "claude-code" && !request.resume) settle(sessionId);
       if (request.resume && request.sessionId) settle(request.sessionId);
-      child.once("close", () => { processClosed = true; });
       const stop = async (): Promise<void> => {
         if (stopped) return;
         stopped = true;
@@ -214,7 +218,6 @@ export function createOperatorHarnessProcessV1(input: {
         yield event({ harness: request.harness, sessionId, kind: "started", payload: null, now });
         try {
           if (!child.stdout) throw new Error("harness stdout is unavailable");
-          const closed = once(child, "close");
           const lines = createInterface({ input: child.stdout });
           for await (const line of lines) {
             const text = String(line);
@@ -222,7 +225,7 @@ export function createOperatorHarnessProcessV1(input: {
             if (native) settle(native);
             yield event({ harness: request.harness, sessionId, kind: classifyLine(text), payload: text, now });
           }
-          const [code] = (await closed) as [number | null, NodeJS.Signals | null];
+          const [code] = await closed;
           if (timedOut || code !== 0) {
             yield event({ harness: request.harness, sessionId, kind: timedOut ? "timed-out" : "failed", payload: timedOut ? null : String(code), now });
           } else {
