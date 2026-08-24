@@ -68,6 +68,9 @@ test("the board orders current-repository work first and exposes a local/global 
     const html = await (await fetch(board.origin)).text();
     assert.match(html, /Current repository/);
     assert.match(html, /All work/);
+    assert.match(html, /Exception inbox/);
+    assert.match(html, /Harness state: /);
+    assert.match(html, /Outcome state: /);
   } finally {
     await board.close();
     await rm(root, { recursive: true, force: true });
