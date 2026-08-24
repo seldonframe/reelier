@@ -7,6 +7,7 @@ import { createMissionEvidenceStoreV1 } from "./mission-evidence.js";
 import { createOperatorHarnessProcessV1, type OperatorHarnessLaunchRequestV1, type OperatorHarnessProcessV1 } from "./process.js";
 import { deriveOutcomeLifecycleV1, parseMissionControlMissionV1, type MissionControlMissionV1 } from "./mission-control.js";
 import type { OperatorHarnessIdV1 } from "./harness.js";
+import { createMissionProcessControlV1 } from "./mission-process-control.js";
 
 const execFileAsync = promisify(execFile);
 type WorkspaceObservationV1 = Readonly<{ subjectDigest: string; resultDigest: string }>;
@@ -62,9 +63,14 @@ export async function runMissionControlMissionV1(input: Readonly<{
   });
   await journal.appendMission(current);
   let terminal: "exited" | "failed" | null = null;
-  for await (const event of process.events) {
-    if (event.kind === "failed") terminal = "failed";
-    else if (event.kind === "completed" && terminal !== "failed") terminal = "exited";
+  const control = await createMissionProcessControlV1({ root: input.root, missionId: process.sessionId, stop: process.stop });
+  try {
+    for await (const event of process.events) {
+      if (event.kind === "failed") terminal = "failed";
+      else if (event.kind === "completed" && terminal !== "failed") terminal = "exited";
+    }
+  } finally {
+    await control.close();
   }
   const after = await observe(input.cwd);
   const evidenceRefs: string[] = [];

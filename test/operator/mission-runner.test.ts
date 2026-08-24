@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { runMissionControlMissionV1 } from "../../src/operator/mission-runner.js";
 import { createMissionControlJournalV1 } from "../../src/operator/mission-journal.js";
+import { stopOwnedMissionProcessV1 } from "../../src/operator/mission-process-control.js";
 import type { OperatorHarnessEventV1, OperatorHarnessProcessV1 } from "../../src/operator/process.js";
 
 function fakeProcess(events: readonly OperatorHarnessEventV1[]): { launch(): Promise<OperatorHarnessProcessV1> } {
@@ -75,6 +76,46 @@ test("experimental harnesses cannot enter the product-ready run path", async () 
   try {
     await assert.rejects(() => runMissionControlMissionV1({ root, cwd: root, harness: "grok-build", task: "work" }), /experimental|product-ready|unsupported/i);
   } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a second CLI can stop an active Reelier-owned mission through its exact loopback control", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "reelier-mission-runner-stop-"));
+  let releaseStop!: () => void;
+  const stopped = new Promise<void>((resolve) => { releaseStop = resolve; });
+  try {
+    const running = runMissionControlMissionV1({
+      root,
+      cwd: root,
+      harness: "codex",
+      task: "bounded task",
+      processFactory: {
+        async launch() {
+          return {
+            sessionId: "mission-stoppable",
+            invocation: { executable: "codex", args: [], cwd: root },
+            events: (async function* () {
+              yield { v: "reelier.operator-event/v1" as const, harness: "codex" as const, sessionId: "mission-stoppable", kind: "started" as const, payloadDigest: null, at: "2026-08-24T12:00:00.000Z" };
+              await stopped;
+              yield { v: "reelier.operator-event/v1" as const, harness: "codex" as const, sessionId: "mission-stoppable", kind: "failed" as const, payloadDigest: null, at: "2026-08-24T12:00:01.000Z" };
+            })(),
+            async stop() { releaseStop(); },
+          };
+        },
+      },
+      observeWorkspace: async () => null,
+    });
+    const descriptor = path.join(root, ".reelier", "operator", "processes", "mission-stoppable.json");
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      try { await readFile(descriptor, "utf8"); break; } catch { await new Promise((resolve) => setTimeout(resolve, 5)); }
+    }
+    assert.deepEqual(await stopOwnedMissionProcessV1({ root, missionId: "mission-stoppable" }), { status: "stopped", missionId: "mission-stoppable" });
+    const result = await running;
+    assert.equal(result.harnessLifecycle, "failed");
+    await assert.rejects(() => readFile(descriptor, "utf8"), /ENOENT/);
+  } finally {
+    releaseStop?.();
     await rm(root, { recursive: true, force: true });
   }
 });
