@@ -47,6 +47,33 @@ test("process events contain only digests and stop is bounded", async () => {
   assert.equal(child.killed, false);
 });
 
+test("Codex and Claude usage becomes closed numeric telemetry without model output", async () => {
+  const run = async (harness: "codex" | "claude-code", line: string) => {
+    class UsageChild extends EventEmitter {
+      killed = false;
+      stdout = Readable.from([`${line}\n`]);
+      stderr = new PassThrough();
+      stdin = { end() {} };
+      kill() { this.killed = true; return true; }
+    }
+    const child = new UsageChild();
+    const process = await createOperatorHarnessProcessV1({
+      resolveExecutable: async (executable) => ({ executable, argsPrefix: [] }),
+      spawn: () => { setTimeout(() => child.emit("close", 0, null), 5); return child as never; },
+      defaultTimeoutMs: 5_000,
+    }).launch({ harness, cwd: "C:/repo", prompt: "private mission" });
+    const events = [];
+    for await (const event of process.events) events.push(event);
+    return events.find((event) => event.usage !== undefined);
+  };
+
+  const codex = await run("codex", JSON.stringify({ type: "turn.completed", usage: { input_tokens: 1_200, cached_input_tokens: 400, output_tokens: 300 }, secret: "never persist" }));
+  assert.deepEqual(codex?.usage, { inputTokens: 1_200, cachedInputTokens: 400, outputTokens: 300, contextUnits: 1_500 });
+  const claude = await run("claude-code", JSON.stringify({ type: "result", total_cost_usd: 0.123456, usage: { input_tokens: 100, output_tokens: 50 }, result: "never persist" }));
+  assert.deepEqual(claude?.usage, { inputTokens: 100, cachedInputTokens: 0, outputTokens: 50, contextUnits: 150, totalCostMicros: 123_456 });
+  assert.doesNotMatch(JSON.stringify([codex, claude]), /never persist|private mission/i);
+});
+
 test("a harness that closes between the started event and the next iterator read terminates honestly", async () => {
   class FastChild extends EventEmitter {
     killed = false;
