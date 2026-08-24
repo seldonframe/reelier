@@ -74,6 +74,7 @@ import {
 } from "./init.js";
 import { createOperatorSessionStoreV1 } from "./operator/session-store.js";
 import { launchDetachedMissionControlBoardV1, runMissionControlBoardServerFromEnvironmentV1, type DetachedMissionControlBoardV1 } from "./operator/mission-board-process.js";
+import { createMissionControlJournalV1 } from "./operator/mission-journal.js";
 import { compileSessionTranscript, detectSessionFormat, SESSION_FORMAT_LABELS, type SessionSkip, type SessionFormatId } from "./session.js";
 import {
   scanTranscripts,
@@ -4260,6 +4261,7 @@ export interface CmdInitOverrides {
   readonly dependencies?: InitializationDependencies;
   readonly nativeSessionFactory?: InitializeAgentProjectOptions["nativeSessionFactory"];
   readonly failAt?: InitializeAgentProjectOptions["failAt"];
+  readonly missionControlLauncher?: (input: Readonly<{ root: string; openBrowser?: (url: string) => void }>) => Promise<DetachedMissionControlBoardV1>;
 }
 
 export async function cmdInit(args: ParsedArgs, overrides: CmdInitOverrides = {}): Promise<number> {
@@ -4292,6 +4294,47 @@ export async function cmdInit(args: ParsedArgs, overrides: CmdInitOverrides = {}
 
   if (args.flags.has("signing")) {
     return cmdInitSigning(homedir);
+  }
+
+  const missionControlFlags = new Set(["json", "no-open"]);
+  const isMissionControlInit = args.positional.length === 0
+    && [...args.flags].every((flag) => missionControlFlags.has(flag))
+    && Object.keys(args.opts).length === 0
+    && Object.keys(args.vars).length === 0
+    && args.wraps.length === 0
+    && args.fails.length === 0;
+  if (isMissionControlInit) {
+    try {
+      const operator = await initializeOperatorV1({ cwd, home: homedir });
+      const board = await (overrides.missionControlLauncher ?? launchDetachedMissionControlBoardV1)({
+        root: cwd,
+        ...(args.flags.has("no-open") ? {} : { openBrowser }),
+      });
+      const installedHarnesses = operator.harnesses.filter((probe) => probe.installed).map((probe) => probe.descriptor.id);
+      if (args.flags.has("json")) {
+        console.log(JSON.stringify({
+          v: "reelier.mission-control-init/v1",
+          status: "ready",
+          harnesses: installedHarnesses,
+          missions: operator.missionCount,
+          currentRepositoryMissions: operator.currentWorkspaceMissionCount,
+          observedOnly: operator.observedOnly,
+          boardOrigin: board.origin,
+          accountRequired: false,
+        }));
+      } else {
+        console.log("Reelier Mission Control");
+        console.log(`Harnesses: ${installedHarnesses.join(", ") || "none detected"}`);
+        console.log(`Imported missions: ${operator.missionCount} (${operator.currentWorkspaceMissionCount} current repository)`);
+        console.log("Account: not required; storage: local; telemetry: off");
+        console.log(`Local board: ${board.origin}`);
+        console.log("Harness completion is not Outcome verification. Reelier shows evidence and exceptions separately.");
+      }
+      return 0;
+    } catch (error: unknown) {
+      console.error(`Mission Control initialization refused: ${error instanceof Error ? error.message : "unavailable"}`);
+      return 1;
+    }
   }
 
   let operatorOutput: readonly string[] = [];
@@ -4624,9 +4667,16 @@ export async function cmdOperator(args: ParsedArgs, overrides: CmdOperatorOverri
     return 0;
   }
   if (subcommand === "init") {
+    if (sessionId || [...args.flags].some((flag) => flag !== "no-open") || Object.keys(args.opts).length !== 0 || Object.keys(args.vars).length !== 0 || args.wraps.length !== 0 || args.fails.length !== 0) {
+      console.error("Usage: reelier operator init [--no-open]");
+      return 1;
+    }
     const summary = await initialize({ cwd, home });
-    console.log(`Operator initialized: ${summary.workspace.root}`);
+    const board = await (overrides.launchBoard ?? launchDetachedMissionControlBoardV1)({ root: cwd, ...(args.flags.has("no-open") ? {} : { openBrowser }) });
+    console.log("Reelier Mission Control initialized.");
     console.log(`Harnesses: ${summary.harnesses.filter((probe) => probe.installed).map((probe) => probe.descriptor.displayName).join(", ") || "none detected"}`);
+    console.log(`Imported missions: ${summary.missionCount} (${summary.currentWorkspaceMissionCount} current repository)`);
+    console.log(`Mission Control: ${board.origin}`);
     console.log(`Next: ${summary.next.join(" → ")}`);
     return 0;
   }
@@ -4646,10 +4696,16 @@ export async function cmdOperator(args: ParsedArgs, overrides: CmdOperatorOverri
     return 1;
   }
   const sessionStore = createOperatorSessionStoreV1({ root: cwd });
+  const missionJournal = await createMissionControlJournalV1({ root: cwd });
+  const missions = await missionJournal.reconstruct();
   if (subcommand === "list") {
     if (sessionId) {
       console.error("Usage: reelier operator list");
       return 1;
+    }
+    if (missions.length > 0) {
+      for (const mission of missions) console.log(`${mission.missionId}\t${mission.harness}\t${mission.harnessLifecycle}\t${mission.outcomeLifecycle}\t${mission.attentionState}`);
+      return 0;
     }
     const sessions = await sessionStore.list();
     if (sessions.length === 0) {
@@ -4662,6 +4718,16 @@ export async function cmdOperator(args: ParsedArgs, overrides: CmdOperatorOverri
     return 0;
   }
   if (sessionId) {
+    const mission = missions.find((item) => item.missionId === sessionId);
+    if (mission) {
+      console.log(`Mission: ${mission.missionId}`);
+      console.log(`Harness: ${mission.harness} (${mission.harnessLifecycle})`);
+      console.log(`Outcome: ${mission.outcomeLifecycle}`);
+      console.log(`Attention: ${mission.attentionState}${mission.attentionReasons.length ? ` (${mission.attentionReasons.join(", ")})` : ""}`);
+      console.log(`Evidence: ${mission.evidenceRefs.length}`);
+      console.log(`Updated: ${mission.updatedAt}`);
+      return 0;
+    }
     const session = await sessionStore.load(sessionId);
     if (!session) {
       console.error(`Operator session not found: ${sessionId}`);

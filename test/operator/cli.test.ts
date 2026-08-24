@@ -6,6 +6,7 @@ import path from "node:path";
 import { cmdOperator, type CmdOperatorOverrides, type ParsedArgs } from "../../src/cli.js";
 import { initializeOperatorWorkspaceV1 } from "../../src/operator/workspace.js";
 import { createOperatorSessionStoreV1 } from "../../src/operator/session-store.js";
+import { createMissionControlJournalV1 } from "../../src/operator/mission-journal.js";
 
 const args = (subcommand: string): ParsedArgs => ({ positional: [subcommand], flags: new Set(), vars: {}, wraps: [], opts: {}, fails: [] });
 
@@ -97,13 +98,50 @@ test("operator open launches the detached loopback board and import reports curr
   };
   try {
     console.log = (...values: unknown[]) => output.push(values.join(" "));
-    assert.equal(await cmdOperator(args("open"), overrides), 0);
+    assert.equal(await cmdOperator(args("init"), overrides), 0);
     assert.equal(launched, 1);
+    assert.match(output.join("\n"), /Mission Control: http:\/\/127\.0\.0\.1:43111/);
+    output.length = 0;
+    assert.equal(await cmdOperator(args("open"), overrides), 0);
+    assert.equal(launched, 2);
     assert.match(output.join("\n"), /Mission Control: http:\/\/127\.0\.0\.1:43111/);
     output.length = 0;
     assert.equal(await cmdOperator(args("import"), overrides), 0);
     assert.match(output.join("\n"), /Imported missions: 3 \(2 current repository\)/);
     assert.match(output.join("\n"), /Cursor: 1 observed-only/);
+  } finally {
+    console.log = originalLog;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("operator list and status prefer truthful Mission Control state over legacy session verdicts", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "reelier-operator-cli-missions-"));
+  const originalLog = console.log;
+  const output: string[] = [];
+  try {
+    await (await createMissionControlJournalV1({ root })).appendMission({
+      v: "reelier.mission-control-mission/v1",
+      missionId: "mission-cli",
+      workspaceDigest: `sha256:${"e".repeat(64)}`,
+      harness: "claude-code",
+      harnessLifecycle: "exited",
+      outcomeLifecycle: "completed-unverified",
+      attentionState: "required",
+      attentionReasons: ["completion-claim-unverified"],
+      evidenceRefs: [],
+      processOwnership: "external",
+      imported: true,
+      updatedAt: "2026-08-24T12:00:00.000Z",
+    });
+    console.log = (...values: unknown[]) => output.push(values.join(" "));
+    assert.equal(await cmdOperator({ ...args("list") }, { cwd: root, home: root }), 0);
+    assert.match(output.join("\n"), /mission-cli\tclaude-code\texited\tcompleted-unverified\trequired/);
+    output.length = 0;
+    assert.equal(await cmdOperator({ positional: ["status", "mission-cli"], flags: new Set(), vars: {}, wraps: [], opts: {}, fails: [] }, { cwd: root, home: root }), 0);
+    assert.match(output.join("\n"), /Outcome: completed-unverified/);
+    assert.match(output.join("\n"), /Attention: required \(completion-claim-unverified\)/);
+    assert.doesNotMatch(output.join("\n"), /Outcome: reconciled|prompt|workspaceDigest/i);
   } finally {
     console.log = originalLog;
     await rm(root, { recursive: true, force: true });
