@@ -18,3 +18,4 @@ export { createMissionControlJournalV1, type MissionControlJournalV1 } from "./m
 export { discoverMissionControlV1, type DiscoveredMissionControlMissionV1, type MissionControlDiscoveryV1, type ObservedOnlyHarnessV1 } from "./mission-discovery.js";
 export { createMissionControlBoardV1, type MissionControlBoardV1 } from "./mission-board.js";
 export { launchDetachedMissionControlBoardV1, runMissionControlBoardServerFromEnvironmentV1, type BoardSpawnV1, type DetachedMissionControlBoardV1 } from "./mission-board-process.js";
+export { createMissionEvidenceStoreV1, type MissionEvidenceInputV1, type MissionEvidenceKindV1, type MissionEvidenceStatusV1, type MissionEvidenceStoreV1, type MissionEvidenceV1 } from "./mission-evidence.js";
