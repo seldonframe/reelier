@@ -17,3 +17,4 @@ export { analyzeMissionAttentionV1, deriveOutcomeLifecycleV1, parseMissionContro
 export { createMissionControlJournalV1, type MissionControlJournalV1 } from "./mission-journal.js";
 export { discoverMissionControlV1, type DiscoveredMissionControlMissionV1, type MissionControlDiscoveryV1, type ObservedOnlyHarnessV1 } from "./mission-discovery.js";
 export { createMissionControlBoardV1, type MissionControlBoardV1 } from "./mission-board.js";
+export { launchDetachedMissionControlBoardV1, runMissionControlBoardServerFromEnvironmentV1, type BoardSpawnV1, type DetachedMissionControlBoardV1 } from "./mission-board-process.js";
