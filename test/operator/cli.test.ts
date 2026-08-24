@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { cmdOperator, type ParsedArgs } from "../../src/cli.js";
+import { cmdOperator, type CmdOperatorOverrides, type ParsedArgs } from "../../src/cli.js";
 import { initializeOperatorWorkspaceV1 } from "../../src/operator/workspace.js";
 import { createOperatorSessionStoreV1 } from "../../src/operator/session-store.js";
 
@@ -70,6 +70,42 @@ test("operator review prints the Cloud review surface without exposing local pro
   } finally {
     console.log = originalLog;
     process.chdir(previous);
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("operator open launches the detached loopback board and import reports current-repository missions", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "reelier-operator-open-"));
+  const originalLog = console.log;
+  const output: string[] = [];
+  let launched = 0;
+  const overrides: CmdOperatorOverrides = {
+    cwd: root,
+    home: root,
+    launchBoard: async () => {
+      launched += 1;
+      return { origin: "http://127.0.0.1:43111", url: `http://127.0.0.1:43111/#${"c".repeat(64)}`, pid: 4321, expiresAt: "2026-08-24T20:00:00.000Z" };
+    },
+    initialize: async () => ({
+      workspace: await initializeOperatorWorkspaceV1({ root, selectedHarnesses: ["codex"], now: "2026-08-24T12:00:00.000Z" }),
+      harnesses: [],
+      missionCount: 3,
+      currentWorkspaceMissionCount: 2,
+      observedOnly: [{ harness: "cursor", sessions: 1, reason: "history-observed-control-unverified" }],
+      next: ["run-local-cell", "review-authority"],
+    }),
+  };
+  try {
+    console.log = (...values: unknown[]) => output.push(values.join(" "));
+    assert.equal(await cmdOperator(args("open"), overrides), 0);
+    assert.equal(launched, 1);
+    assert.match(output.join("\n"), /Mission Control: http:\/\/127\.0\.0\.1:43111/);
+    output.length = 0;
+    assert.equal(await cmdOperator(args("import"), overrides), 0);
+    assert.match(output.join("\n"), /Imported missions: 3 \(2 current repository\)/);
+    assert.match(output.join("\n"), /Cursor: 1 observed-only/);
+  } finally {
+    console.log = originalLog;
     await rm(root, { recursive: true, force: true });
   }
 });

@@ -73,6 +73,7 @@ import {
   readOperatorWorkspaceV1,
 } from "./init.js";
 import { createOperatorSessionStoreV1 } from "./operator/session-store.js";
+import { launchDetachedMissionControlBoardV1, runMissionControlBoardServerFromEnvironmentV1, type DetachedMissionControlBoardV1 } from "./operator/mission-board-process.js";
 import { compileSessionTranscript, detectSessionFormat, SESSION_FORMAT_LABELS, type SessionSkip, type SessionFormatId } from "./session.js";
 import {
   scanTranscripts,
@@ -4585,13 +4586,45 @@ async function cmdDoctor(args: ParsedArgs): Promise<number> {
   return runAuthorityCommand({ positional: ["doctor"], flags: args.flags, opts: { path: args.opts.path ?? "authority/authority.yml" } });
 }
 
-export async function cmdOperator(args: ParsedArgs): Promise<number> {
+export interface CmdOperatorOverrides {
+  readonly cwd?: string;
+  readonly home?: string;
+  readonly initialize?: typeof initializeOperatorV1;
+  readonly launchBoard?: (input: Readonly<{ root: string; openBrowser?: (url: string) => void }>) => Promise<DetachedMissionControlBoardV1>;
+  readonly runBoardServer?: () => Promise<never>;
+}
+
+export async function cmdOperator(args: ParsedArgs, overrides: CmdOperatorOverrides = {}): Promise<number> {
   const subcommand = args.positional[0] ?? "status";
   const sessionId = args.positional[1];
-  const cwd = process.cwd();
-  const home = os.homedir();
+  const cwd = overrides.cwd ?? process.cwd();
+  const home = overrides.home ?? os.homedir();
+  const initialize = overrides.initialize ?? initializeOperatorV1;
+  if (subcommand === "board-server") {
+    await (overrides.runBoardServer ?? runMissionControlBoardServerFromEnvironmentV1)();
+  }
+  if (subcommand === "open") {
+    if (sessionId || [...args.flags].some((flag) => flag !== "no-open") || Object.keys(args.opts).length !== 0 || Object.keys(args.vars).length !== 0 || args.wraps.length !== 0 || args.fails.length !== 0) {
+      console.error("Usage: reelier operator open [--no-open]");
+      return 1;
+    }
+    const board = await (overrides.launchBoard ?? launchDetachedMissionControlBoardV1)({ root: cwd, ...(args.flags.has("no-open") ? {} : { openBrowser }) });
+    console.log(`Mission Control: ${board.origin}`);
+    console.log(`Local board process: ${board.pid}; capability expires ${board.expiresAt}`);
+    return 0;
+  }
+  if (subcommand === "import") {
+    if (sessionId || args.flags.size !== 0 || Object.keys(args.opts).length !== 0 || Object.keys(args.vars).length !== 0 || args.wraps.length !== 0 || args.fails.length !== 0) {
+      console.error("Usage: reelier operator import");
+      return 1;
+    }
+    const summary = await initialize({ cwd, home });
+    console.log(`Imported missions: ${summary.missionCount} (${summary.currentWorkspaceMissionCount} current repository)`);
+    for (const observed of summary.observedOnly) console.log(`${observed.harness === "cursor" ? "Cursor" : observed.harness}: ${observed.sessions} observed-only (${observed.reason})`);
+    return 0;
+  }
   if (subcommand === "init") {
-    const summary = await initializeOperatorV1({ cwd, home });
+    const summary = await initialize({ cwd, home });
     console.log(`Operator initialized: ${summary.workspace.root}`);
     console.log(`Harnesses: ${summary.harnesses.filter((probe) => probe.installed).map((probe) => probe.descriptor.displayName).join(", ") || "none detected"}`);
     console.log(`Next: ${summary.next.join(" → ")}`);
@@ -4609,7 +4642,7 @@ export async function cmdOperator(args: ParsedArgs): Promise<number> {
     return 0;
   }
   if (subcommand !== "status" && subcommand !== "list") {
-    console.error("Usage: reelier operator <init|status [sessionId]|list|review [--open]>");
+    console.error("Usage: reelier operator <init|open|import|status [sessionId]|list|review [--open]>");
     return 1;
   }
   const sessionStore = createOperatorSessionStoreV1({ root: cwd });
