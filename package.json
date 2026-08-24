@@ -105,7 +105,7 @@
     "test:mutation": "stryker run",
     "preflight": "node scripts/preflight.mjs",
     "preflight:acceleration": "node scripts/run-acceleration-preflight.mjs",
-    "prepack": "node scripts/verify-bootstrap-native-artifacts.mjs",
+    "prepack": "npm run build && node scripts/verify-bootstrap-native-artifacts.mjs",
     "prepublishOnly": "npm run check:authority-contract && npm run build && npm test",
     "hooks:install": "git config core.hooksPath .githooks"
   },
