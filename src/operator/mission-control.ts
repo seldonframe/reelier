@@ -23,6 +23,22 @@ export type OutcomeLifecycleV1 =
 
 export type AttentionStateV1 = "none" | "watching" | "required";
 export type ProcessOwnershipV1 = "reelier" | "external";
+export type AttentionReasonV1 =
+  | "idle-threshold-exceeded"
+  | "wall-clock-limit-exceeded"
+  | "cost-ceiling-exceeded"
+  | "repeated-tool-error"
+  | "restart-loop"
+  | "context-growth-threshold-exceeded"
+  | "repository-head-drift"
+  | "missing-expected-evidence"
+  | "completion-claim-unverified";
+export type AttentionActionV1 = "inspect" | "stop-or-restart" | "verify-evidence";
+export type MissionAttentionAssessmentV1 = Readonly<{
+  state: AttentionStateV1;
+  reasons: readonly AttentionReasonV1[];
+  suggestedActions: readonly AttentionActionV1[];
+}>;
 
 export type MissionControlMissionV1 = Readonly<{
   v: "reelier.mission-control-mission/v1";
@@ -141,4 +157,81 @@ export function deriveOutcomeLifecycleV1(input: Readonly<{
   if (input.harnessLifecycle === "exited") return input.localEvidenceCount > 0 ? "locally-observed" : "completed-unverified";
   if (input.harnessLifecycle === "discovered" || input.harnessLifecycle === "queued") return "unrequested";
   return "pending";
+}
+
+function timestamp(value: string, name: string): number {
+  const parsed = Date.parse(value);
+  if (!Number.isFinite(parsed)) throw new TypeError(`${name} is invalid`);
+  return parsed;
+}
+
+function nonnegativeInteger(value: number, name: string): number {
+  if (!Number.isSafeInteger(value) || value < 0) throw new TypeError(`${name} is invalid`);
+  return value;
+}
+
+export function analyzeMissionAttentionV1(input: Readonly<{
+  now: string;
+  startedAt: string;
+  lastActivityAt: string;
+  idleLimitMs: number;
+  wallClockLimitMs: number;
+  exposedCostMicros?: number;
+  costLimitMicros?: number;
+  contextUnits?: number;
+  contextLimit?: number;
+  recentErrorSignatures: readonly string[];
+  recentRestartCount: number;
+  restartLimit: number;
+  expectedRepositoryHead?: string;
+  actualRepositoryHead?: string;
+  expectedEvidenceCount: number;
+  actualEvidenceCount: number;
+  harnessClaimedComplete: boolean;
+}>): MissionAttentionAssessmentV1 {
+  const now = timestamp(input.now, "attention now");
+  const startedAt = timestamp(input.startedAt, "attention startedAt");
+  const lastActivityAt = timestamp(input.lastActivityAt, "attention lastActivityAt");
+  const idleLimitMs = nonnegativeInteger(input.idleLimitMs, "idle limit");
+  const wallClockLimitMs = nonnegativeInteger(input.wallClockLimitMs, "wall-clock limit");
+  const recentRestartCount = nonnegativeInteger(input.recentRestartCount, "restart count");
+  const restartLimit = nonnegativeInteger(input.restartLimit, "restart limit");
+  const expectedEvidenceCount = nonnegativeInteger(input.expectedEvidenceCount, "expected evidence count");
+  const actualEvidenceCount = nonnegativeInteger(input.actualEvidenceCount, "actual evidence count");
+  if (startedAt > now || lastActivityAt < startedAt || lastActivityAt > now || typeof input.harnessClaimedComplete !== "boolean") throw new TypeError("attention chronology is invalid");
+  if (!Array.isArray(input.recentErrorSignatures) || input.recentErrorSignatures.length > 32 || input.recentErrorSignatures.some((item) => typeof item !== "string" || item.length === 0 || item.length > 256)) throw new TypeError("recent error signatures are invalid");
+
+  const reasons: AttentionReasonV1[] = [];
+  if (now - lastActivityAt > idleLimitMs) reasons.push("idle-threshold-exceeded");
+  if (now - startedAt > wallClockLimitMs) reasons.push("wall-clock-limit-exceeded");
+  if (input.exposedCostMicros !== undefined || input.costLimitMicros !== undefined) {
+    const exposed = nonnegativeInteger(input.exposedCostMicros ?? -1, "exposed cost");
+    const limit = nonnegativeInteger(input.costLimitMicros ?? -1, "cost limit");
+    if (exposed > limit) reasons.push("cost-ceiling-exceeded");
+  }
+  const signatureCounts = new Map<string, number>();
+  for (const signature of input.recentErrorSignatures) signatureCounts.set(signature, (signatureCounts.get(signature) ?? 0) + 1);
+  if ([...signatureCounts.values()].some((count) => count >= 3)) reasons.push("repeated-tool-error");
+  if (recentRestartCount > restartLimit) reasons.push("restart-loop");
+  if (input.contextUnits !== undefined || input.contextLimit !== undefined) {
+    const units = nonnegativeInteger(input.contextUnits ?? -1, "context units");
+    const limit = nonnegativeInteger(input.contextLimit ?? -1, "context limit");
+    if (units > limit) reasons.push("context-growth-threshold-exceeded");
+  }
+  if (input.expectedRepositoryHead !== undefined || input.actualRepositoryHead !== undefined) {
+    if (typeof input.expectedRepositoryHead !== "string" || typeof input.actualRepositoryHead !== "string" || input.expectedRepositoryHead.length === 0 || input.actualRepositoryHead.length === 0) throw new TypeError("repository heads are invalid");
+    if (input.expectedRepositoryHead !== input.actualRepositoryHead) reasons.push("repository-head-drift");
+  }
+  if (actualEvidenceCount < expectedEvidenceCount) reasons.push("missing-expected-evidence");
+  if (input.harnessClaimedComplete && actualEvidenceCount === 0) reasons.push("completion-claim-unverified");
+
+  const stoppingReasons = new Set<AttentionReasonV1>(["idle-threshold-exceeded", "wall-clock-limit-exceeded", "cost-ceiling-exceeded", "repeated-tool-error", "restart-loop", "context-growth-threshold-exceeded"]);
+  const evidenceReasons = new Set<AttentionReasonV1>(["repository-head-drift", "missing-expected-evidence", "completion-claim-unverified"]);
+  const requiredReasons = new Set<AttentionReasonV1>(["wall-clock-limit-exceeded", "cost-ceiling-exceeded", "restart-loop", "repository-head-drift"]);
+  const actions: AttentionActionV1[] = [];
+  if (reasons.length > 0) actions.push("inspect");
+  if (reasons.some((reason) => stoppingReasons.has(reason))) actions.push("stop-or-restart");
+  if (reasons.some((reason) => evidenceReasons.has(reason))) actions.push("verify-evidence");
+  const state: AttentionStateV1 = reasons.length === 0 ? "none" : reasons.some((reason) => requiredReasons.has(reason)) ? "required" : "watching";
+  return Object.freeze({ state, reasons: Object.freeze(reasons), suggestedActions: Object.freeze(actions) });
 }
