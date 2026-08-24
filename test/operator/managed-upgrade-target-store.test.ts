@@ -32,6 +32,7 @@ test("an exact reviewed consequence stages the target bundle behind the one-line
     assert.equal(staged.cta, "Ready to merge. Continue natively, or let Reelier execute and verify it with bounded authority: reelier operator autopilot mission-1");
     assert.deepEqual(await loadManagedUpgradeTargetBundleV1({ root, missionRef: "mission-1" }), { targetManifest: manifest() });
     assert.equal((await stageManagedUpgradeTargetBundleV1({ root, operation: "github_release_pr_merge_v1", targetManifest: manifest(), seen })).cta, null);
+    assert.equal((await stageManagedUpgradeTargetBundleV1({ root, operation: "github_release_pr_merge_v1", targetManifest: manifest(), seen: new Set() })).cta, null);
     await assert.rejects(() => stageManagedUpgradeTargetBundleV1({
       root,
       operation: "github_release_pr_merge_v1",

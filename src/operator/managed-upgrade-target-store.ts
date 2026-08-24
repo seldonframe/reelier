@@ -51,6 +51,23 @@ async function optionalRead(target: string): Promise<Buffer | null> {
   }
 }
 
+async function firstDisplay(directory: string, operation: ReviewedConsequentialOperationV1): Promise<boolean> {
+  const marker = path.join(directory, `shown-${operation}.marker`);
+  try {
+    const handle = await open(marker, "wx", 0o600);
+    try { await handle.writeFile(`${operation}\n`, "utf8"); await handle.sync(); } finally { await handle.close(); }
+    return true;
+  } catch (error: unknown) {
+    if ((error as { code?: string }).code === "EEXIST") return false;
+    throw error;
+  }
+}
+
+async function boundaryCta(directory: string, missionRef: string, operation: ReviewedConsequentialOperationV1, seen: Set<string>): Promise<string | null> {
+  if (!(await firstDisplay(directory, operation))) return null;
+  return recordConsequentialBoundaryV1({ missionRef, operation, seen });
+}
+
 async function bundleDirectory(root: string, missionRef: string): Promise<string> {
   if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(missionRef)) throw new TypeError("Autopilot mission reference is invalid");
   const operator = path.join(root, ".reelier", "operator");
@@ -107,11 +124,11 @@ export async function stageManagedUpgradeTargetBundleV1(input: Readonly<{
     if (JSON.stringify(existingManifest) !== JSON.stringify(targetManifest)) throw new TypeError("existing Autopilot target conflicts with the exact reviewed manifest");
     const existing = await loadManagedUpgradeTargetBundleV1({ root, missionRef: targetManifest.missionRef });
     if (artifactBytes && (!existing.artifactBytes || sha(existing.artifactBytes) !== sha(artifactBytes))) throw new TypeError("existing Autopilot target artifact conflicts with the exact reviewed candidate");
-    return Object.freeze({ cta: recordConsequentialBoundaryV1({ missionRef: targetManifest.missionRef, operation: input.operation, seen: input.seen }) });
+    return Object.freeze({ cta: await boundaryCta(directory, targetManifest.missionRef, input.operation, input.seen) });
   }
   const orphanCandidate = await optionalRead(candidatePath);
   if (orphanCandidate && (!artifactBytes || sha(orphanCandidate) !== sha(artifactBytes))) throw new TypeError("existing Autopilot target artifact conflicts with the exact reviewed candidate");
   if (artifactBytes && !orphanCandidate) await atomicWrite(candidatePath, artifactBytes);
   await atomicWrite(manifestPath, manifestBytes);
-  return Object.freeze({ cta: recordConsequentialBoundaryV1({ missionRef: targetManifest.missionRef, operation: input.operation, seen: input.seen }) });
+  return Object.freeze({ cta: await boundaryCta(directory, targetManifest.missionRef, input.operation, input.seen) });
 }
