@@ -168,6 +168,8 @@ export function createOperatorHarnessProcessV1(input: {
         stdio: ["pipe", "pipe", "pipe"],
         windowsHide: true,
       });
+      child.stdin?.end();
+      child.stderr?.resume();
       const timeoutMs = request.timeoutMs ?? defaultTimeoutMs;
       if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1_000 || timeoutMs > 24 * 60 * 60_000) {
         child.kill("SIGTERM");

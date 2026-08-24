@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { Readable } from "node:stream";
+import { PassThrough, Readable } from "node:stream";
 import { buildOperatorHarnessInvocationV1, createOperatorHarnessProcessV1 } from "../../src/operator/process.js";
 
 test("harness invocations are deterministic and resume only with an opaque session", () => {
@@ -42,4 +42,24 @@ test("process events contain only digests and stop is bounded", async () => {
   assert.equal(await process.resumeIdentity, "01a01530-38b5-7831-8309-5d61e42408c5");
   await process.stop();
   assert.equal(child.killed, false);
+});
+
+test("the harness boundary closes unused stdin and drains stderr without recording it", async () => {
+  class FakeChild extends EventEmitter {
+    killed = false;
+    stdout = Readable.from(["done\n"]);
+    stderr = new PassThrough();
+    stdinEnded = false;
+    stdin = { end: () => { this.stdinEnded = true; } };
+    kill() { this.killed = true; queueMicrotask(() => this.emit("close", 0, null)); return true; }
+  }
+  const child = new FakeChild();
+  const adapter = createOperatorHarnessProcessV1({ defaultTimeoutMs: 5_000, spawn: () => child as never });
+  const process = await adapter.launch({ harness: "codex", cwd: "C:/repo", prompt: "private task" });
+  assert.equal(child.stdinEnded, true);
+  assert.equal(child.stderr.readableFlowing, true);
+  setTimeout(() => child.emit("close", 0, null), 5);
+  const events = [];
+  for await (const item of process.events) events.push(item);
+  assert.equal(JSON.stringify(events).includes("private task"), false);
 });
