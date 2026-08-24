@@ -21,3 +21,4 @@ export { launchDetachedMissionControlBoardV1, runMissionControlBoardServerFromEn
 export { createMissionEvidenceStoreV1, type MissionEvidenceInputV1, type MissionEvidenceKindV1, type MissionEvidenceStatusV1, type MissionEvidenceStoreV1, type MissionEvidenceV1 } from "./mission-evidence.js";
 export { runMissionControlMissionV1 } from "./mission-runner.js";
 export { createMissionProcessControlV1, stopOwnedMissionProcessV1 } from "./mission-process-control.js";
+export { createManagedUpgradeIntentV1, createManagedUpgradeIntentConsumerV1, parseManagedUpgradeIntentV1, recordConsequentialBoundaryV1, constantTimeSignatureEqualsV1, type ManagedUpgradeIntentV1, type ReviewedConsequentialOperationV1 } from "./managed-upgrade-intent.js";
