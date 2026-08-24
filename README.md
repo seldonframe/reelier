@@ -12,7 +12,7 @@ Reelier gives local agent work one truthful control room: what is running, stall
 
 [![npm version](https://img.shields.io/npm/v/reelier.svg?color=blue)](https://www.npmjs.com/package/reelier)
 [![CI](https://github.com/seldonframe/reelier/actions/workflows/ci.yml/badge.svg)](https://github.com/seldonframe/reelier/actions/workflows/ci.yml)
-[![tests](https://img.shields.io/badge/tests-3861%20passing-brightgreen.svg)](./test)
+[![tests](https://img.shields.io/badge/tests-3870%20passing-brightgreen.svg)](./test)
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 [![Discord](https://img.shields.io/badge/Discord-join-5865F2?logo=discord&logoColor=white)](https://discord.gg/nSp5sd4v)
 [![stars](https://img.shields.io/github/stars/seldonframe/reelier?style=social)](https://github.com/seldonframe/reelier)
