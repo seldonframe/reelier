@@ -16,3 +16,4 @@ export { initializeOperatorWorkspaceV1, readOperatorWorkspaceV1, type OperatorWo
 export { analyzeMissionAttentionV1, deriveOutcomeLifecycleV1, parseMissionControlMissionV1, type AttentionActionV1, type AttentionReasonV1, type AttentionStateV1, type HarnessLifecycleV1, type MissionAttentionAssessmentV1, type MissionControlMissionV1, type OutcomeLifecycleV1, type ProcessOwnershipV1 } from "./mission-control.js";
 export { createMissionControlJournalV1, type MissionControlJournalV1 } from "./mission-journal.js";
 export { discoverMissionControlV1, type DiscoveredMissionControlMissionV1, type MissionControlDiscoveryV1, type ObservedOnlyHarnessV1 } from "./mission-discovery.js";
+export { createMissionControlBoardV1, type MissionControlBoardV1 } from "./mission-board.js";
