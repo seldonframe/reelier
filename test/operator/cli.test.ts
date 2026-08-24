@@ -232,6 +232,7 @@ test("operator autopilot binds an exact manifest to an existing mission and open
   const originalLog = console.log;
   const output: string[] = [];
   const opened: string[] = [];
+  const waited: string[] = [];
   let handoffInput: Parameters<NonNullable<CmdOperatorOverrides["createAutopilotHandoff"]>>[0] | undefined;
   try {
     await (await createMissionControlJournalV1({ root })).appendMission({
@@ -266,13 +267,16 @@ test("operator autopilot binds an exact manifest to an existing mission and open
         handoffInput = input;
         return { browserUrl: "https://www.reelier.com/autopilot?mission=mission-autopilot", pollSecret: "p".repeat(43), intent: {} as never };
       },
+      waitForAutopilotReady: async input => { waited.push(input.missionRef); return { status: "ready", agentRef: "agent-opaque", configurationDigest: `sha256:${"c".repeat(64)}` }; },
       openBrowser: (url) => opened.push(url),
       now: () => new Date("2026-08-24T12:00:00.000Z"),
     }), 0);
     assert.equal(handoffInput?.missionRef, "mission-autopilot");
     assert.deepEqual(handoffInput?.localEvidenceRefs, [`sha256:${"b".repeat(64)}`]);
     assert.deepEqual(opened, ["https://www.reelier.com/autopilot?mission=mission-autopilot"]);
+    assert.deepEqual(waited, ["mission-autopilot"]);
     assert.match(output.join("\n"), /Finish this mission without supervising the merge/);
+    assert.match(output.join("\n"), /Autopilot is ready for this mission/);
     assert.doesNotMatch(output.join("\n"), /workspace\/project\/issue|fixlyai/);
   } finally {
     console.log = originalLog;

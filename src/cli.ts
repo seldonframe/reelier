@@ -78,7 +78,7 @@ import { createMissionControlJournalV1 } from "./operator/mission-journal.js";
 import { runMissionControlMissionV1 } from "./operator/mission-runner.js";
 import { stopOwnedMissionProcessV1 } from "./operator/mission-process-control.js";
 import { runMissionControlDoctorV1, type MissionControlDoctorResultV1 } from "./operator/doctor.js";
-import { createAutopilotHandoffV1, type ManagedUpgradeTargetManifestV1 } from "./operator/autopilot-handoff-client.js";
+import { createAutopilotHandoffV1, waitForAutopilotReadyV1, type ManagedUpgradeTargetManifestV1 } from "./operator/autopilot-handoff-client.js";
 import { compileSessionTranscript, detectSessionFormat, SESSION_FORMAT_LABELS, type SessionSkip, type SessionFormatId } from "./session.js";
 import {
   scanTranscripts,
@@ -4643,6 +4643,7 @@ export interface CmdOperatorOverrides {
   readonly stopMission?: typeof stopOwnedMissionProcessV1;
   readonly doctor?: (input: Readonly<{ root: string }>) => Promise<MissionControlDoctorResultV1>;
   readonly createAutopilotHandoff?: typeof createAutopilotHandoffV1;
+  readonly waitForAutopilotReady?: typeof waitForAutopilotReadyV1;
   readonly openBrowser?: (url: string) => void;
   readonly now?: () => Date;
 }
@@ -4751,6 +4752,9 @@ export async function cmdOperator(args: ParsedArgs, overrides: CmdOperatorOverri
       (overrides.openBrowser ?? openBrowser)(result.browserUrl);
       console.log("Finish this mission without supervising the merge.");
       console.log("Exact bounded powers are ready for review in your browser. Continue locally at any time; no write occurs before confirmation.");
+      console.log("Waiting for the exact onboarding session. Closing the browser preserves this local mission.");
+      await (overrides.waitForAutopilotReady ?? waitForAutopilotReadyV1)({ root: cwd, missionRef: mission.missionId });
+      console.log("Reelier Autopilot is ready for this mission. Exact powers are confirmed; execution and verification will continue here.");
       return 0;
     } catch (error) {
       console.error(`Autopilot handoff refused: ${error instanceof Error ? error.message : String(error)}`);
