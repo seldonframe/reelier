@@ -174,6 +174,11 @@ test("dedicated help inventory exactly matches main's dispatch switch", async ()
 test("init help documents the managed local preview without implying authorization", () => {
   const result = spawnSync(process.execPath, [cliPath, "init", "--help"], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /reelier init \[--no-open\] \[--json\]/);
+  assert.match(result.stdout, /Local Mission Control/i);
+  assert.match(result.stdout, /reelier operator init/);
+  assert.match(result.stdout, /account.*not required/i);
+  assert.doesNotMatch(result.stdout, /^\s*init\s+- reelier init \[--dry-run\]: checkpointed local inspection/m);
   assert.match(result.stdout, /init --managed \[--dry-run\]/);
   assert.match(result.stdout, /local preview/i);
   assert.match(result.stdout, /does not authorize missions/i);

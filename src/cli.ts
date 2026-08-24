@@ -4946,9 +4946,10 @@ const USAGE =
   "           An explicit per-call cwd/out argument always wins over the workspace.\n" +
   "  get    — fetch a public registry skill to ./skills/<skill>.skill.md; never executes it.\n" +
   "           reelier get --mine <name> fetches YOUR OWN private skill (authenticated) instead.\n" +
-  "  init   - reelier init [--dry-run]: checkpointed local inspection of Path A observation, Path B replay/freeze\n" +
-  "           candidates, and Path C connections/candidates. It does not deploy, gate, dispatch, upload, or rewrite configs.\n" +
-  "           --dry-run performs the same local inspection without writing .reelier/init artifacts.\n" +
+  "  init   - reelier init [--no-open] [--json]: start accountless Local Mission Control, import supported local\n" +
+  "           harness histories, print a truthful summary, and serve the loopback board. `reelier operator init` is an alias.\n" +
+  "           Account and Cloud are not required; --no-open suppresses browser launch and --json emits the stable summary.\n" +
+  "           Expert mode `reelier init --dry-run` retains the checkpointed read-only authority inspection without writes.\n" +
   "  init --managed [--dry-run] — local preview of a redacted managed-session configuration diff; it does not authorize missions,\n" +
   "           receive credentials, contact Cloud/providers, or write configuration files.\n" +
   "  init --signing — generate (or print the existing) Ed25519 signing key at ~/.reelier/signing/; idempotent.\n" +
