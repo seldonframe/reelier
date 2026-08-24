@@ -57,6 +57,13 @@ export type MissionControlMissionV1 = Readonly<{
   startedAt?: string;
   usage?: MissionControlUsageV1;
   restartCount?: number;
+  attentionLimits?: MissionControlAttentionLimitsV1;
+}>;
+
+export type MissionControlAttentionLimitsV1 = Readonly<{
+  costLimitMicros?: number;
+  tokenLimit?: number;
+  contextLimit?: number;
 }>;
 
 export type MissionControlUsageV1 = Readonly<{
@@ -82,7 +89,7 @@ const REQUIRED_KEYS = Object.freeze([
   "updatedAt",
 ] as const);
 const REQUIRED_KEY_SET = new Set<string>(REQUIRED_KEYS);
-const OPTIONAL_KEY_SET = new Set(["startedAt", "usage", "restartCount"]);
+const OPTIONAL_KEY_SET = new Set(["startedAt", "usage", "restartCount", "attentionLimits"]);
 const ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 const DIGEST = /^sha256:[0-9a-f]{64}$/;
 const HARNESS_LIFECYCLES = new Set<HarnessLifecycleV1>(["discovered", "queued", "running", "stalled", "exited", "stopped", "failed", "unreachable"]);
@@ -145,6 +152,25 @@ function missionUsage(value: unknown): MissionControlUsageV1 {
   });
 }
 
+function missionAttentionLimits(value: unknown): MissionControlAttentionLimitsV1 {
+  if (!value || typeof value !== "object" || Array.isArray(value) || utilTypes.isProxy(value) || Object.getPrototypeOf(value) !== Object.prototype) throw new TypeError("mission attention limits must be an inert object");
+  const allowed = new Set(["costLimitMicros", "tokenLimit", "contextLimit"]);
+  const keys = Reflect.ownKeys(value);
+  if (keys.length < 1 || keys.length > allowed.size || keys.some((key) => typeof key !== "string" || !allowed.has(key))) throw new TypeError("mission attention limits shape is invalid");
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  const result: Record<string, number> = {};
+  for (const key of keys as string[]) {
+    const descriptor = descriptors[key];
+    if (!descriptor || !("value" in descriptor) || !descriptor.enumerable || !Number.isSafeInteger(descriptor.value) || descriptor.value < 0) throw new TypeError("mission attention limits must contain nonnegative inert integers");
+    result[key] = descriptor.value as number;
+  }
+  return Object.freeze({
+    ...(result.costLimitMicros === undefined ? {} : { costLimitMicros: result.costLimitMicros }),
+    ...(result.tokenLimit === undefined ? {} : { tokenLimit: result.tokenLimit }),
+    ...(result.contextLimit === undefined ? {} : { contextLimit: result.contextLimit }),
+  });
+}
+
 export function parseMissionControlMissionV1(value: unknown): MissionControlMissionV1 {
   const record = inertRecord(value);
   if (record.v !== "reelier.mission-control-mission/v1") throw new TypeError("mission record version is invalid");
@@ -170,6 +196,7 @@ export function parseMissionControlMissionV1(value: unknown): MissionControlMiss
   const usage = record.usage === undefined ? undefined : missionUsage(record.usage);
   const restartCount = record.restartCount;
   if (restartCount !== undefined && (!Number.isSafeInteger(restartCount) || (restartCount as number) < 0)) throw new TypeError("mission restart count is invalid");
+  const attentionLimits = record.attentionLimits === undefined ? undefined : missionAttentionLimits(record.attentionLimits);
   return Object.freeze({
     v: "reelier.mission-control-mission/v1",
     missionId,
@@ -186,6 +213,7 @@ export function parseMissionControlMissionV1(value: unknown): MissionControlMiss
     ...(startedAt === undefined ? {} : { startedAt }),
     ...(usage === undefined ? {} : { usage }),
     ...(restartCount === undefined ? {} : { restartCount: restartCount as number }),
+    ...(attentionLimits === undefined ? {} : { attentionLimits }),
   });
 }
 

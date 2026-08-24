@@ -71,6 +71,12 @@ export async function runMissionControlMissionV1(input: Readonly<{
   const restartLimit = input.restartLimit ?? 3;
   if (!Number.isSafeInteger(restartCount) || restartCount < 0 || !Number.isSafeInteger(restartLimit) || restartLimit < 0) throw new TypeError("Mission Control restart limit is invalid");
   const restartLoop = restartCount > restartLimit;
+  const attentionLimits = {
+    ...(input.costLimitMicros === undefined ? {} : { costLimitMicros: input.costLimitMicros }),
+    ...(input.tokenLimit === undefined ? {} : { tokenLimit: input.tokenLimit }),
+    ...(input.contextLimit === undefined ? {} : { contextLimit: input.contextLimit }),
+  };
+  const hasAttentionLimits = Object.keys(attentionLimits).length > 0;
   const observe = input.observeWorkspace ?? observeGitWorkspace;
   const before = await observe(input.cwd);
   const processFactory = input.processFactory ?? createOperatorHarnessProcessV1();
@@ -95,6 +101,7 @@ export async function runMissionControlMissionV1(input: Readonly<{
     updatedAt: startedAt,
     startedAt,
     restartCount,
+    ...(hasAttentionLimits ? { attentionLimits } : {}),
   });
   await journal.appendMission(current);
   const captureResumeIdentity = process.resumeIdentity.then(async (resumeIdentity) => {
@@ -209,6 +216,9 @@ export async function resumeMissionControlMissionV1(input: Readonly<{
     missionId: mission.missionId,
     resumeIdentity: resume.resumeIdentity,
     restartCount: (mission.restartCount ?? 0) + 1,
+    ...(mission.attentionLimits?.costLimitMicros === undefined ? {} : { costLimitMicros: mission.attentionLimits.costLimitMicros }),
+    ...(mission.attentionLimits?.tokenLimit === undefined ? {} : { tokenLimit: mission.attentionLimits.tokenLimit }),
+    ...(mission.attentionLimits?.contextLimit === undefined ? {} : { contextLimit: mission.attentionLimits.contextLimit }),
     ...(input.now ? { now: input.now } : {}),
     ...(input.processFactory ? { processFactory: input.processFactory } : {}),
     ...(input.observeWorkspace ? { observeWorkspace: input.observeWorkspace } : {}),
