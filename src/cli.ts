@@ -78,6 +78,7 @@ import { createMissionControlJournalV1 } from "./operator/mission-journal.js";
 import { runMissionControlMissionV1 } from "./operator/mission-runner.js";
 import { stopOwnedMissionProcessV1 } from "./operator/mission-process-control.js";
 import { runMissionControlDoctorV1, type MissionControlDoctorResultV1 } from "./operator/doctor.js";
+import { createAutopilotHandoffV1, type ManagedUpgradeTargetManifestV1 } from "./operator/autopilot-handoff-client.js";
 import { compileSessionTranscript, detectSessionFormat, SESSION_FORMAT_LABELS, type SessionSkip, type SessionFormatId } from "./session.js";
 import {
   scanTranscripts,
@@ -4641,6 +4642,9 @@ export interface CmdOperatorOverrides {
   readonly runMission?: typeof runMissionControlMissionV1;
   readonly stopMission?: typeof stopOwnedMissionProcessV1;
   readonly doctor?: (input: Readonly<{ root: string }>) => Promise<MissionControlDoctorResultV1>;
+  readonly createAutopilotHandoff?: typeof createAutopilotHandoffV1;
+  readonly openBrowser?: (url: string) => void;
+  readonly now?: () => Date;
 }
 
 export async function cmdOperator(args: ParsedArgs, overrides: CmdOperatorOverrides = {}): Promise<number> {
@@ -4721,6 +4725,38 @@ export async function cmdOperator(args: ParsedArgs, overrides: CmdOperatorOverri
     console.error("Mission resume refused: no captured harness-native resume identity is available. Reopen with `reelier operator run` or import a verified resume-capable session.");
     return 1;
   }
+  if (subcommand === "autopilot") {
+    const manifestFile = args.opts.manifest;
+    if (!sessionId || args.positional.length !== 2 || typeof manifestFile !== "string" || args.flags.size !== 0 || Object.keys(args.opts).some((key) => key !== "manifest") || Object.keys(args.vars).length !== 0 || args.wraps.length !== 0 || args.fails.length !== 0) {
+      console.error("Usage: reelier operator autopilot <mission-ref> --manifest <exact-target-manifest.json>");
+      console.error("Select exact provider targets in Mission Control first; Reelier never infers them from agent prose.");
+      return 1;
+    }
+    try {
+      const missions = await (await createMissionControlJournalV1({ root: cwd })).reconstruct();
+      const mission = missions.find((item) => item.missionId === sessionId);
+      if (!mission) throw new Error("mission is not present in the local Mission Control journal");
+      const targetPath = path.resolve(cwd, manifestFile);
+      const targetDetails = await stat(targetPath);
+      if (!targetDetails.isFile() || targetDetails.size > 65_536) throw new Error("exact target manifest is not a bounded regular file");
+      const targetManifest = JSON.parse(await readFile(targetPath, "utf8")) as ManagedUpgradeTargetManifestV1;
+      const result = await (overrides.createAutopilotHandoff ?? createAutopilotHandoffV1)({
+        root: cwd,
+        cloudBaseUrl: await resolveBaseUrl(),
+        missionRef: mission.missionId,
+        localEvidenceRefs: mission.evidenceRefs,
+        targetManifest,
+        ...(overrides.now ? { now: overrides.now } : {}),
+      });
+      (overrides.openBrowser ?? openBrowser)(result.browserUrl);
+      console.log("Finish this mission without supervising the merge.");
+      console.log("Exact bounded powers are ready for review in your browser. Continue locally at any time; no write occurs before confirmation.");
+      return 0;
+    } catch (error) {
+      console.error(`Autopilot handoff refused: ${error instanceof Error ? error.message : String(error)}`);
+      return 1;
+    }
+  }
   if (subcommand === "init") {
     if (sessionId || [...args.flags].some((flag) => flag !== "no-open") || Object.keys(args.opts).length !== 0 || Object.keys(args.vars).length !== 0 || args.wraps.length !== 0 || args.fails.length !== 0) {
       console.error("Usage: reelier operator init [--no-open]");
@@ -4747,7 +4783,7 @@ export async function cmdOperator(args: ParsedArgs, overrides: CmdOperatorOverri
     return 0;
   }
   if (subcommand !== "status" && subcommand !== "list") {
-    console.error("Usage: reelier operator <init|open|import|run|stop|resume|doctor|status [sessionId]|list|review [--open]>");
+    console.error("Usage: reelier operator <init|open|import|run|stop|resume|doctor|autopilot|status [sessionId]|list|review [--open]>");
     return 1;
   }
   const sessionStore = createOperatorSessionStoreV1({ root: cwd });

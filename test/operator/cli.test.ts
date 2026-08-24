@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { cmdOperator, type CmdOperatorOverrides, type ParsedArgs } from "../../src/cli.js";
@@ -224,4 +224,58 @@ test("operator doctor is local and resume refuses without a captured harness-nat
     assert.equal(await cmdOperator({ positional: ["resume", "mission-unknown"], flags: new Set(), vars: {}, wraps: [], opts: {}, fails: [] }, { cwd: root, home: root }), 1);
     assert.match(output.join("\n"), /captured harness-native resume identity/i);
   } finally { console.log = originalLog; console.error = originalError; await rm(root, { recursive: true, force: true }); }
+});
+
+test("operator autopilot binds an exact manifest to an existing mission and opens only the returned handoff", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "reelier-operator-autopilot-"));
+  const manifestPath = path.join(root, "autopilot-manifest.json");
+  const originalLog = console.log;
+  const output: string[] = [];
+  const opened: string[] = [];
+  let handoffInput: Parameters<NonNullable<CmdOperatorOverrides["createAutopilotHandoff"]>>[0] | undefined;
+  try {
+    await (await createMissionControlJournalV1({ root })).appendMission({
+      v: "reelier.mission-control-mission/v1",
+      missionId: "mission-autopilot",
+      workspaceDigest: `sha256:${"a".repeat(64)}`,
+      harness: "codex",
+      harnessLifecycle: "exited",
+      outcomeLifecycle: "locally-observed",
+      attentionState: "none",
+      attentionReasons: [],
+      evidenceRefs: [`sha256:${"b".repeat(64)}`],
+      processOwnership: "reelier",
+      imported: false,
+      updatedAt: "2026-08-24T12:00:00.000Z",
+    });
+    await writeFile(manifestPath, JSON.stringify({
+      version: "reelier.managed-upgrade-target-manifest/v1",
+      missionRef: "mission-autopilot",
+      repository: "fixlyai/reelier-beta",
+      githubActions: ["github_release_pr_merge_v1"],
+      linearTarget: "workspace/project/issue",
+      linearActions: ["linear_evidence_comment_v1", "linear_status_transition_v1"],
+      maximumWrites: 3,
+      expiresAt: "2026-08-24T12:10:00.000Z",
+    }), "utf8");
+    console.log = (...values: unknown[]) => output.push(values.join(" "));
+    assert.equal(await cmdOperator({ positional: ["autopilot", "mission-autopilot"], flags: new Set(), vars: {}, wraps: [], opts: { manifest: manifestPath }, fails: [] }, {
+      cwd: root,
+      home: root,
+      createAutopilotHandoff: async (input) => {
+        handoffInput = input;
+        return { browserUrl: "https://www.reelier.com/autopilot?mission=mission-autopilot", intent: {} as never };
+      },
+      openBrowser: (url) => opened.push(url),
+      now: () => new Date("2026-08-24T12:00:00.000Z"),
+    }), 0);
+    assert.equal(handoffInput?.missionRef, "mission-autopilot");
+    assert.deepEqual(handoffInput?.localEvidenceRefs, [`sha256:${"b".repeat(64)}`]);
+    assert.deepEqual(opened, ["https://www.reelier.com/autopilot?mission=mission-autopilot"]);
+    assert.match(output.join("\n"), /Finish this mission without supervising the merge/);
+    assert.doesNotMatch(output.join("\n"), /workspace\/project\/issue|fixlyai/);
+  } finally {
+    console.log = originalLog;
+    await rm(root, { recursive: true, force: true });
+  }
 });
