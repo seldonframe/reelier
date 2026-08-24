@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -229,6 +230,9 @@ test("operator doctor is local and resume refuses without a captured harness-nat
 test("operator autopilot binds an exact manifest to an existing mission and opens only the returned handoff", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "reelier-operator-autopilot-"));
   const manifestPath = path.join(root, "autopilot-manifest.json");
+  const artifactPath = path.join(root, "candidate.bin");
+  const candidate = Buffer.from("exact candidate bytes", "utf8");
+  const artifactDigest = `sha256:${createHash("sha256").update(candidate).digest("hex")}`;
   const originalLog = console.log;
   const output: string[] = [];
   const opened: string[] = [];
@@ -249,18 +253,21 @@ test("operator autopilot binds an exact manifest to an existing mission and open
       imported: false,
       updatedAt: "2026-08-24T12:00:00.000Z",
     });
+    await writeFile(artifactPath, candidate);
     await writeFile(manifestPath, JSON.stringify({
-      version: "reelier.managed-upgrade-target-manifest/v1",
+      version: "reelier.managed-upgrade-target-manifest/v2",
       missionRef: "mission-autopilot",
       repository: "fixlyai/reelier-beta",
-      githubActions: ["github_release_pr_merge_v1"],
-      linearTarget: { workspaceId: "workspace", teamId: "team", projectId: "project", issueIds: ["issue"] },
-      linearActions: ["linear_evidence_comment_v1", "linear_status_transition_v1"],
-      maximumWrites: 3,
+      githubActions: ["github_release_candidate_publish_v1", "github_release_pr_ensure_v1", "github_release_pr_merge_v1"],
+      linearTarget: { workspaceId: "workspace", teamId: "team", projectId: "project", issueIds: ["issue-1", "issue-2"] },
+      linearActions: ["linear_evidence_comment_v1", "linear_status_transition_v1", "linear_only_evidence_comment_v1", "linear_only_status_transition_v1"],
+      maximumWrites: 7,
       expiresAt: "2026-08-24T12:10:00.000Z",
+      artifactDigest,
+      authority: { github: { repository: "fixlyai/reelier-beta", baseBranch: "main", baseSha: "a".repeat(40), headBranch: "reelier/mission-autopilot", headSha: "b".repeat(40), candidateDigest: artifactDigest, workflowPath: ".github/workflows/ci.yml", workflowDigest: `sha256:${"c".repeat(64)}`, requiredChecks: ["test"], postMergeTreeSha: "d".repeat(40) }, linear: { githubLinear: { workspace: "workspace", team: "team", project: "project", issue: "issue-1", preStatus: "In Progress", targetStatus: "Done", commentMarker: "reelier:composite", evidenceUrl: "https://www.reelier.com/r/one", evidenceContentDigest: `sha256:${"e".repeat(64)}` }, linearOnly: { workspace: "workspace", team: "team", project: "project", issue: "issue-2", preStatus: "Todo", targetStatus: "Done", commentMarker: "reelier:linear", evidenceUrl: "https://www.reelier.com/r/two", evidenceContentDigest: `sha256:${"f".repeat(64)}` } } },
     }), "utf8");
     console.log = (...values: unknown[]) => output.push(values.join(" "));
-    assert.equal(await cmdOperator({ positional: ["autopilot", "mission-autopilot"], flags: new Set(), vars: {}, wraps: [], opts: { manifest: manifestPath }, fails: [] }, {
+    assert.equal(await cmdOperator({ positional: ["autopilot", "mission-autopilot"], flags: new Set(), vars: {}, wraps: [], opts: { manifest: manifestPath, artifact: artifactPath }, fails: [] }, {
       cwd: root,
       home: root,
       createAutopilotHandoff: async (input) => {
@@ -273,6 +280,7 @@ test("operator autopilot binds an exact manifest to an existing mission and open
     }), 0);
     assert.equal(handoffInput?.missionRef, "mission-autopilot");
     assert.deepEqual(handoffInput?.localEvidenceRefs, [`sha256:${"b".repeat(64)}`]);
+    assert.deepEqual(Buffer.from(handoffInput!.artifactBytes!), candidate);
     assert.deepEqual(opened, ["https://www.reelier.com/autopilot?mission=mission-autopilot"]);
     assert.deepEqual(waited, ["mission-autopilot"]);
     assert.match(output.join("\n"), /Finish this mission without supervising the merge/);
