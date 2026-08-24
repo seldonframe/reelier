@@ -47,3 +47,14 @@ test("Autopilot polling returns Ready once and removes the local poll capability
     assert.deepEqual(persisted, { version: "reelier.autopilot-ready/v1", missionRef, agentRef: "agent-opaque", configurationDigest: `sha256:${"c".repeat(64)}` });
   } finally { await rm(root, { recursive: true, force: true }); }
 });
+
+test("Autopilot client signs the exact reviewed execution authority and artifact digest", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "reelier-autopilot-v2-"));
+  const d = (char: string) => `sha256:${char.repeat(64)}`;
+  let request: any;
+  try {
+    await createAutopilotHandoffV1({ root, cloudBaseUrl: "https://www.reelier.com", missionRef: "mission-v2", localEvidenceRefs: [d("a")], now: () => new Date("2026-08-24T12:00:00.000Z"), targetManifest: { version: "reelier.managed-upgrade-target-manifest/v2", missionRef: "mission-v2", repository: "fixlyai/reelier-beta", githubActions: ["github_release_candidate_publish_v1", "github_release_pr_ensure_v1", "github_release_pr_merge_v1"], linearTarget: { workspaceId: "workspace-1", teamId: "team-1", projectId: "project-1", issueIds: ["issue-1", "issue-2"] }, linearActions: ["linear_evidence_comment_v1", "linear_status_transition_v1", "linear_only_evidence_comment_v1", "linear_only_status_transition_v1"], maximumWrites: 7, expiresAt: "2026-08-24T12:10:00.000Z", artifactDigest: d("c"), authority: { github: { repository: "fixlyai/reelier-beta", baseBranch: "main", baseSha: "a".repeat(40), headBranch: "reelier/mission-v2", headSha: "b".repeat(40), candidateDigest: d("c"), workflowPath: ".github/workflows/ci.yml", workflowDigest: d("d"), requiredChecks: ["test"], postMergeTreeSha: "e".repeat(40) }, linear: { githubLinear: { workspace: "workspace-1", team: "team-1", project: "project-1", issue: "issue-1", preStatus: "In Progress", targetStatus: "Done", commentMarker: "reelier:mission-v2:composite", evidenceUrl: "https://www.reelier.com/r/outcome-1", evidenceContentDigest: d("e") }, linearOnly: { workspace: "workspace-1", team: "team-1", project: "project-1", issue: "issue-2", preStatus: "Todo", targetStatus: "Done", commentMarker: "reelier:mission-v2:linear", evidenceUrl: "https://www.reelier.com/r/outcome-2", evidenceContentDigest: d("f") } } } } as never, fetch: async (_url, init) => { request = JSON.parse(String(init?.body)); return new Response(JSON.stringify({ browserPath: `/autopilot?mission=mission-v2#init=${"b".repeat(43)}`, pollSecret: "p".repeat(43) }), { status: 201 }); } });
+    assert.equal(request.targetManifest.version, "reelier.managed-upgrade-target-manifest/v2");
+    assert.equal(request.targetManifest.artifactDigest, d("c"));
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
