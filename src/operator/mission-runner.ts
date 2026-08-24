@@ -52,12 +52,19 @@ export async function runMissionControlMissionV1(input: Readonly<{
   missionId?: string;
   resumeIdentity?: string;
   idleLimitMs?: number;
+  costLimitMicros?: number;
+  tokenLimit?: number;
+  contextLimit?: number;
 }>): Promise<MissionControlMissionV1> {
   if (input.harness !== "codex" && input.harness !== "claude-code") throw new Error(`${input.harness} is experimental and unavailable in the product-ready run path`);
   if (typeof input.task !== "string" || input.task.length === 0 || input.task.length > 128_000) throw new TypeError("Mission Control task is invalid");
   const now = input.now ?? (() => new Date().toISOString());
+  const startedAt = now();
   const idleLimitMs = input.idleLimitMs ?? 5 * 60_000;
   if (!Number.isSafeInteger(idleLimitMs) || idleLimitMs < 1 || idleLimitMs > 24 * 60 * 60_000) throw new TypeError("Mission Control idle limit is invalid");
+  for (const [name, value] of [["cost", input.costLimitMicros], ["token", input.tokenLimit], ["context", input.contextLimit]] as const) {
+    if (value !== undefined && (!Number.isSafeInteger(value) || value < 0)) throw new TypeError(`Mission Control ${name} limit is invalid`);
+  }
   const observe = input.observeWorkspace ?? observeGitWorkspace;
   const before = await observe(input.cwd);
   const processFactory = input.processFactory ?? createOperatorHarnessProcessV1();
@@ -79,7 +86,8 @@ export async function runMissionControlMissionV1(input: Readonly<{
     evidenceRefs: [],
     processOwnership: "reelier",
     imported: false,
-    updatedAt: now(),
+    updatedAt: startedAt,
+    startedAt,
   });
   await journal.appendMission(current);
   const captureResumeIdentity = process.resumeIdentity.then(async (resumeIdentity) => {
@@ -90,6 +98,8 @@ export async function runMissionControlMissionV1(input: Readonly<{
   const errorSignatureCounts = new Map<string, number>();
   let repeatedToolError = false;
   let wallClockExceeded = false;
+  let usage: OperatorHarnessEventV1["usage"];
+  const usageAttention = new Set<string>();
   const control = await createMissionProcessControlV1({ root: input.root, missionId, stop: process.stop });
   try {
     const iterator = process.events[Symbol.asyncIterator]();
@@ -106,6 +116,13 @@ export async function runMissionControlMissionV1(input: Readonly<{
       }
       if (next.done) break;
       const event = next.value;
+      if (event.usage) {
+        usage = event.usage;
+        const exposedTokens = event.usage.inputTokens + event.usage.outputTokens;
+        if (input.costLimitMicros !== undefined && event.usage.totalCostMicros !== undefined && event.usage.totalCostMicros > input.costLimitMicros) usageAttention.add("cost-ceiling-exceeded");
+        if (input.tokenLimit !== undefined && exposedTokens > input.tokenLimit) usageAttention.add("token-ceiling-exceeded");
+        if (input.contextLimit !== undefined && event.usage.contextUnits > input.contextLimit) usageAttention.add("context-growth-threshold-exceeded");
+      }
       if (event.kind === "timed-out") {
         terminal = "failed";
         wallClockExceeded = true;
@@ -116,14 +133,15 @@ export async function runMissionControlMissionV1(input: Readonly<{
           errorSignatureCounts.set(event.payloadDigest, count);
           if (count >= 3) {
             repeatedToolError = true;
-            current = parseMissionControlMissionV1({ ...current, harnessLifecycle: "running", attentionState: "watching", attentionReasons: ["repeated-tool-error"], updatedAt: event.at });
+            current = parseMissionControlMissionV1({ ...current, harnessLifecycle: "running", attentionState: "watching", attentionReasons: ["repeated-tool-error"], updatedAt: now() });
             await journal.appendMission(current);
           }
         }
       }
       else if (event.kind === "completed" && terminal !== "failed") terminal = "exited";
       else {
-        current = parseMissionControlMissionV1({ ...current, harnessLifecycle: "running", attentionState: "none", attentionReasons: [], updatedAt: event.at });
+        const liveReasons = [...usageAttention];
+        current = parseMissionControlMissionV1({ ...current, harnessLifecycle: "running", attentionState: liveReasons.some((reason) => reason === "cost-ceiling-exceeded" || reason === "token-ceiling-exceeded") ? "required" : liveReasons.length ? "watching" : "none", attentionReasons: liveReasons, ...(usage ? { usage } : {}), updatedAt: now() });
         await journal.appendMission(current);
       }
     }
@@ -139,19 +157,20 @@ export async function runMissionControlMissionV1(input: Readonly<{
   const harnessLifecycle = terminal ?? "unreachable";
   const outcomeLifecycle = deriveOutcomeLifecycleV1({ harnessLifecycle, localEvidenceCount: evidenceRefs.length });
   const attentionReasons = outcomeLifecycle === "completed-unverified"
-    ? ["harness-exited-without-evidence"]
+    ? [...usageAttention, "harness-exited-without-evidence"]
     : outcomeLifecycle === "failed"
-      ? ["harness-failed", ...(wallClockExceeded ? ["wall-clock-limit-exceeded"] : []), ...(repeatedToolError ? ["repeated-tool-error"] : [])]
+      ? [...usageAttention, "harness-failed", ...(wallClockExceeded ? ["wall-clock-limit-exceeded"] : []), ...(repeatedToolError ? ["repeated-tool-error"] : [])]
       : harnessLifecycle === "unreachable"
-        ? ["harness-unreachable"]
-        : [];
+        ? [...usageAttention, "harness-unreachable"]
+        : [...usageAttention];
   current = parseMissionControlMissionV1({
     ...current,
     harnessLifecycle,
     outcomeLifecycle,
-    attentionState: attentionReasons.length === 0 ? "none" : outcomeLifecycle === "failed" || harnessLifecycle === "unreachable" ? "required" : "watching",
+    attentionState: attentionReasons.length === 0 ? "none" : outcomeLifecycle === "failed" || harnessLifecycle === "unreachable" || attentionReasons.some((reason) => reason === "cost-ceiling-exceeded" || reason === "token-ceiling-exceeded") ? "required" : "watching",
     attentionReasons,
     evidenceRefs,
+    ...(usage ? { usage } : {}),
     updatedAt: now(),
   });
   await journal.appendMission(current);

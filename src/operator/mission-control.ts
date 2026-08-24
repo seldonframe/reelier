@@ -27,6 +27,7 @@ export type AttentionReasonV1 =
   | "idle-threshold-exceeded"
   | "wall-clock-limit-exceeded"
   | "cost-ceiling-exceeded"
+  | "token-ceiling-exceeded"
   | "repeated-tool-error"
   | "restart-loop"
   | "context-growth-threshold-exceeded"
@@ -53,6 +54,16 @@ export type MissionControlMissionV1 = Readonly<{
   processOwnership: ProcessOwnershipV1;
   imported: boolean;
   updatedAt: string;
+  startedAt?: string;
+  usage?: MissionControlUsageV1;
+}>;
+
+export type MissionControlUsageV1 = Readonly<{
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+  contextUnits: number;
+  totalCostMicros?: number;
 }>;
 
 const REQUIRED_KEYS = Object.freeze([
@@ -70,6 +81,7 @@ const REQUIRED_KEYS = Object.freeze([
   "updatedAt",
 ] as const);
 const REQUIRED_KEY_SET = new Set<string>(REQUIRED_KEYS);
+const OPTIONAL_KEY_SET = new Set(["startedAt", "usage"]);
 const ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 const DIGEST = /^sha256:[0-9a-f]{64}$/;
 const HARNESS_LIFECYCLES = new Set<HarnessLifecycleV1>(["discovered", "queued", "running", "stalled", "exited", "stopped", "failed", "unreachable"]);
@@ -81,13 +93,13 @@ function inertRecord(value: unknown): Record<string, unknown> {
   const prototype = Object.getPrototypeOf(value);
   if (prototype !== Object.prototype && prototype !== null) throw new TypeError("mission record shape is invalid");
   const keys = Reflect.ownKeys(value);
-  if (keys.length !== REQUIRED_KEYS.length || keys.some((key) => typeof key !== "string" || !REQUIRED_KEY_SET.has(key))) throw new TypeError("mission record has unknown fields or an incomplete shape");
+  if (keys.length < REQUIRED_KEYS.length || keys.length > REQUIRED_KEYS.length + OPTIONAL_KEY_SET.size || keys.some((key) => typeof key !== "string" || (!REQUIRED_KEY_SET.has(key) && !OPTIONAL_KEY_SET.has(key))) || REQUIRED_KEYS.some((key) => !Object.hasOwn(value, key))) throw new TypeError("mission record has unknown fields or an incomplete shape");
   const descriptors = Object.getOwnPropertyDescriptors(value);
-  for (const key of REQUIRED_KEYS) {
+  for (const key of keys as string[]) {
     const descriptor = descriptors[key];
     if (!descriptor || !("value" in descriptor) || !descriptor.enumerable) throw new TypeError("mission record must use inert data descriptors without accessors");
   }
-  return Object.fromEntries(REQUIRED_KEYS.map((key) => [key, descriptors[key]!.value])) as Record<string, unknown>;
+  return Object.fromEntries((keys as string[]).map((key) => [key, descriptors[key]!.value])) as Record<string, unknown>;
 }
 
 function boundedString(value: unknown, name: string, maximum: number): string {
@@ -110,6 +122,28 @@ function stringList(value: unknown, name: string, maximumItems: number): readonl
   return Object.freeze(result);
 }
 
+function missionUsage(value: unknown): MissionControlUsageV1 {
+  if (!value || typeof value !== "object" || Array.isArray(value) || utilTypes.isProxy(value) || Object.getPrototypeOf(value) !== Object.prototype) throw new TypeError("mission usage must be an inert object");
+  const allowed = new Set(["inputTokens", "cachedInputTokens", "outputTokens", "contextUnits", "totalCostMicros"]);
+  const required = ["inputTokens", "cachedInputTokens", "outputTokens", "contextUnits"] as const;
+  const keys = Reflect.ownKeys(value);
+  if (keys.some((key) => typeof key !== "string" || !allowed.has(key)) || required.some((key) => !Object.hasOwn(value, key))) throw new TypeError("mission usage shape is invalid");
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  const result: Record<string, number> = {};
+  for (const key of keys as string[]) {
+    const descriptor = descriptors[key];
+    if (!descriptor || !("value" in descriptor) || !descriptor.enumerable || !Number.isSafeInteger(descriptor.value) || descriptor.value < 0) throw new TypeError("mission usage must contain nonnegative inert integers");
+    result[key] = descriptor.value as number;
+  }
+  return Object.freeze({
+    inputTokens: result.inputTokens!,
+    cachedInputTokens: result.cachedInputTokens!,
+    outputTokens: result.outputTokens!,
+    contextUnits: result.contextUnits!,
+    ...(result.totalCostMicros === undefined ? {} : { totalCostMicros: result.totalCostMicros }),
+  });
+}
+
 export function parseMissionControlMissionV1(value: unknown): MissionControlMissionV1 {
   const record = inertRecord(value);
   if (record.v !== "reelier.mission-control-mission/v1") throw new TypeError("mission record version is invalid");
@@ -130,6 +164,9 @@ export function parseMissionControlMissionV1(value: unknown): MissionControlMiss
   if (record.imported && record.processOwnership !== "external") throw new TypeError("imported missions must have external process ownership");
   const updatedAt = boundedString(record.updatedAt, "updatedAt", 64);
   if (Number.isNaN(Date.parse(updatedAt))) throw new TypeError("mission updatedAt is invalid");
+  const startedAt = record.startedAt === undefined ? undefined : boundedString(record.startedAt, "startedAt", 64);
+  if (startedAt !== undefined && (Number.isNaN(Date.parse(startedAt)) || Date.parse(startedAt) > Date.parse(updatedAt))) throw new TypeError("mission startedAt is invalid");
+  const usage = record.usage === undefined ? undefined : missionUsage(record.usage);
   return Object.freeze({
     v: "reelier.mission-control-mission/v1",
     missionId,
@@ -143,6 +180,8 @@ export function parseMissionControlMissionV1(value: unknown): MissionControlMiss
     processOwnership: record.processOwnership,
     imported: record.imported,
     updatedAt,
+    ...(startedAt === undefined ? {} : { startedAt }),
+    ...(usage === undefined ? {} : { usage }),
   });
 }
 
@@ -178,6 +217,8 @@ export function analyzeMissionAttentionV1(input: Readonly<{
   wallClockLimitMs: number;
   exposedCostMicros?: number;
   costLimitMicros?: number;
+  exposedTokens?: number;
+  tokenLimit?: number;
   contextUnits?: number;
   contextLimit?: number;
   recentErrorSignatures: readonly string[];
@@ -209,6 +250,11 @@ export function analyzeMissionAttentionV1(input: Readonly<{
     const limit = nonnegativeInteger(input.costLimitMicros ?? -1, "cost limit");
     if (exposed > limit) reasons.push("cost-ceiling-exceeded");
   }
+  if (input.exposedTokens !== undefined || input.tokenLimit !== undefined) {
+    const exposed = nonnegativeInteger(input.exposedTokens ?? -1, "exposed tokens");
+    const limit = nonnegativeInteger(input.tokenLimit ?? -1, "token limit");
+    if (exposed > limit) reasons.push("token-ceiling-exceeded");
+  }
   const signatureCounts = new Map<string, number>();
   for (const signature of input.recentErrorSignatures) signatureCounts.set(signature, (signatureCounts.get(signature) ?? 0) + 1);
   if ([...signatureCounts.values()].some((count) => count >= 3)) reasons.push("repeated-tool-error");
@@ -225,9 +271,9 @@ export function analyzeMissionAttentionV1(input: Readonly<{
   if (actualEvidenceCount < expectedEvidenceCount) reasons.push("missing-expected-evidence");
   if (input.harnessClaimedComplete && actualEvidenceCount === 0) reasons.push("completion-claim-unverified");
 
-  const stoppingReasons = new Set<AttentionReasonV1>(["idle-threshold-exceeded", "wall-clock-limit-exceeded", "cost-ceiling-exceeded", "repeated-tool-error", "restart-loop", "context-growth-threshold-exceeded"]);
+  const stoppingReasons = new Set<AttentionReasonV1>(["idle-threshold-exceeded", "wall-clock-limit-exceeded", "cost-ceiling-exceeded", "token-ceiling-exceeded", "repeated-tool-error", "restart-loop", "context-growth-threshold-exceeded"]);
   const evidenceReasons = new Set<AttentionReasonV1>(["repository-head-drift", "missing-expected-evidence", "completion-claim-unverified"]);
-  const requiredReasons = new Set<AttentionReasonV1>(["wall-clock-limit-exceeded", "cost-ceiling-exceeded", "restart-loop", "repository-head-drift"]);
+  const requiredReasons = new Set<AttentionReasonV1>(["wall-clock-limit-exceeded", "cost-ceiling-exceeded", "token-ceiling-exceeded", "restart-loop", "repository-head-drift"]);
   const actions: AttentionActionV1[] = [];
   if (reasons.length > 0) actions.push("inspect");
   if (reasons.some((reason) => stoppingReasons.has(reason))) actions.push("stop-or-restart");
