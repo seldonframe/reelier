@@ -26,6 +26,7 @@ export { createMissionProcessControlV1, stopOwnedMissionProcessV1 } from "./miss
 export { runMissionControlDoctorV1, type MissionControlDoctorResultV1 } from "./doctor.js";
 export { createManagedUpgradeIntentV1, createManagedUpgradeIntentConsumerV1, parseManagedUpgradeIntentV1, recordConsequentialBoundaryV1, constantTimeSignatureEqualsV1, type ManagedUpgradeIntentV1, type ReviewedConsequentialOperationV1 } from "./managed-upgrade-intent.js";
 export { createAutopilotHandoffV1, waitForAutopilotReadyV1, parseManagedUpgradeTargetManifestV1, type AutopilotReadyV1, type ManagedUpgradeTargetManifestV1, type ManagedUpgradeExecutionTargetManifestV2, type ManagedUpgradeTargetManifest } from "./autopilot-handoff-client.js";
+export { startAutopilotTargetSelectionV1, waitForAutopilotTargetSelectionV1, parseAutopilotTargetSelectionV1, type AutopilotTargetSelectionV1 } from "./autopilot-target-selection-client.js";
 export { loadManagedUpgradeTargetBundleV1, stageManagedUpgradeTargetBundleV1, type ManagedUpgradeTargetBundleV1 } from "./managed-upgrade-target-store.js";
 export { parseAutonomyBenchmarkRunV1, calculateAutonomyLeverageV1, compareAutonomyBenchmarkRunsV1, createSignedAutonomyBenchmarkBundleV1, type HumanAttentionKindV1, type HumanAttentionEventV1, type AutonomyBenchmarkRunV1 } from "./autonomy-benchmark.js";
 export { createAutonomyBenchmarkStoreV1, type AutonomyBenchmarkStoreV1 } from "./autonomy-benchmark-store.js";
