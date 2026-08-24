@@ -237,6 +237,7 @@ export function parseArgv(argv: string[]): ParsedArgs {
       || arg === "--token-ref"
       || arg === "--cell-id"
       || arg === "--adapter-contract-digest"
+      || arg === "--harness"
     ) {
       const val = argv[++i];
       if (!val || val.startsWith("--")) {

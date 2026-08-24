@@ -67,6 +67,13 @@ test("root parser retains authority connection values required by the existing c
   });
 });
 
+test("root parser retains the harness value required by the public Operator run command", () => {
+  const parsed = parseArgv(["operator", "run", "--harness", "codex", "prepare the exact local candidate"]);
+  assert.deepEqual(parsed.positional, ["operator", "run", "prepare the exact local candidate"]);
+  assert.deepEqual(parsed.opts, { harness: "codex" });
+  assert.deepEqual([...parsed.flags], []);
+});
+
 test("real CLI restart recovers an interrupted exact plan and refuses later identity drift", async t => {
   try { await access(path.resolve(CLI_DIR, "../../native/bootstrap-helper/manifest.json")); }
   catch { t.skip("certified native bootstrap artifacts are unavailable on this checkout"); return; }
