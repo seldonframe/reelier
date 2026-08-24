@@ -2,7 +2,7 @@
   "name": "reelier",
   "version": "0.32.1",
   "mcpName": "io.github.seldonframe/reelier",
-  "description": "Agents make claims, Reelier writes receipts - record an agent workflow once, replay it deterministically at 0 tokens, and get an asserted receipt on every run.",
+  "description": "Local Mission Control for coding agents, with optional managed authority for verified GitHub and Linear Outcomes.",
   "license": "MIT",
   "type": "module",
   "bin": {
