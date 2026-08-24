@@ -1,6 +1,6 @@
 import { mkdir, open, readFile, realpath, rename, rm } from "node:fs/promises";
 import path from "node:path";
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 
 const ID = /^[A-Za-z0-9][A-Za-z0-9._~:/@+-]{0,255}$/u;
 const SECRET = /^[A-Za-z0-9_-]{32,256}$/u;
@@ -72,17 +72,33 @@ function baseUrl(value: string): URL {
 
 export async function startAutopilotTargetSelectionV1(input: Readonly<{ root: string; cloudBaseUrl: string; missionRef: string; fetch?: FetchLike; now?: () => Date }>) {
   const missionRef = exactId(input.missionRef, "mission reference"), base = baseUrl(input.cloudBaseUrl), target = path.join(await directory(input.root), `${missionRef}.json`);
+  let pollSecret: string | undefined, browserSecret: string | undefined;
   try {
-    const prior = JSON.parse(await readFile(target, "utf8")) as Record<string, unknown>;
-    if (prior.version === "reelier.autopilot-target-selection-poll/v1" && prior.missionRef === missionRef && typeof prior.browserUrl === "string") return Object.freeze({ browserUrl: prior.browserUrl });
-    if (prior.version === "reelier.autopilot-target-selection/v1") throw new TypeError("Autopilot targets are already selected");
-  } catch (error) { if ((error as { code?: string }).code !== "ENOENT" && !(error instanceof SyntaxError)) throw error; }
-  const response = await (input.fetch ?? fetch)(new URL("/api/v1/autopilot/target-selections/start", base).toString(), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ missionRef }) });
+    const raw: unknown = JSON.parse(await readFile(target, "utf8"));
+    if (raw && typeof raw === "object" && !Array.isArray(raw) && (raw as { version?: unknown }).version === "reelier.autopilot-target-selection-poll/v1") {
+      const prior = exactRecord(raw, ["version", "missionRef", "cloudBaseUrl", "pollSecret", "browserUrl", "expiresAt"], "Autopilot target-selection poll state");
+      if (prior.missionRef !== missionRef || prior.cloudBaseUrl !== base.toString() || typeof prior.browserUrl !== "string") throw new TypeError("Autopilot target-selection poll state is invalid");
+      return Object.freeze({ browserUrl: prior.browserUrl });
+    }
+    if (raw && typeof raw === "object" && !Array.isArray(raw) && (raw as { version?: unknown }).version === "reelier.autopilot-target-selection-start/v2") {
+      const prior = exactRecord(raw, ["version", "missionRef", "cloudBaseUrl", "pollSecret", "browserSecret"], "Autopilot target-selection start state");
+      if (prior.missionRef !== missionRef || prior.cloudBaseUrl !== base.toString() || typeof prior.pollSecret !== "string" || !SECRET.test(prior.pollSecret) || typeof prior.browserSecret !== "string" || !SECRET.test(prior.browserSecret)) throw new TypeError("Autopilot target-selection start state is invalid");
+      pollSecret = prior.pollSecret; browserSecret = prior.browserSecret;
+    } else if (raw && typeof raw === "object" && !Array.isArray(raw) && (raw as { version?: unknown }).version === "reelier.autopilot-target-selection/v1") {
+      parseAutopilotTargetSelectionV1(raw);
+      throw new TypeError("Autopilot targets are already selected");
+    } else if (!pollSecret) throw new TypeError("Autopilot target-selection state is invalid");
+  } catch (error) { if ((error as { code?: string }).code !== "ENOENT") throw error; }
+  if (!pollSecret || !browserSecret) {
+    pollSecret = randomBytes(32).toString("base64url"); browserSecret = randomBytes(32).toString("base64url");
+    await atomicWrite(target, { version: "reelier.autopilot-target-selection-start/v2", missionRef, cloudBaseUrl: base.toString(), pollSecret, browserSecret });
+  }
+  const response = await (input.fetch ?? fetch)(new URL("/api/v1/autopilot/target-selections/start", base).toString(), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ missionRef, pollSecret, browserSecret }) });
   if (response.status !== 201) throw new Error(`Autopilot target selection refused (${response.status})`);
   const result = exactRecord(await response.json(), ["status", "pollSecret", "browserUrl", "expiresAt"], "Autopilot target-selection response");
-  if (result.status !== "pending" || typeof result.pollSecret !== "string" || !SECRET.test(result.pollSecret) || typeof result.browserUrl !== "string" || typeof result.expiresAt !== "string" || Number.isNaN(Date.parse(result.expiresAt))) throw new TypeError("Autopilot target-selection response is invalid");
+  if (result.status !== "pending" || result.pollSecret !== pollSecret || typeof result.browserUrl !== "string" || typeof result.expiresAt !== "string" || Number.isNaN(Date.parse(result.expiresAt))) throw new TypeError("Autopilot target-selection response is invalid");
   const browser = new URL(result.browserUrl), expectedPath = "/autopilot/targets";
-  if (browser.origin !== base.origin || browser.pathname !== expectedPath || browser.searchParams.get("mission") !== missionRef || !SECRET.test(new URLSearchParams(browser.hash.slice(1)).get("selection") ?? "")) throw new TypeError("Autopilot target-selection browser destination is invalid");
+  if (browser.origin !== base.origin || browser.pathname !== expectedPath || browser.searchParams.get("mission") !== missionRef || new URLSearchParams(browser.hash.slice(1)).get("selection") !== browserSecret) throw new TypeError("Autopilot target-selection browser destination is invalid");
   const now = (input.now ?? (() => new Date()))();
   if (Date.parse(result.expiresAt) <= now.getTime() || Date.parse(result.expiresAt) - now.getTime() > 15 * 60_000 + 5_000) throw new TypeError("Autopilot target-selection expiry is invalid");
   await atomicWrite(target, { version: "reelier.autopilot-target-selection-poll/v1", missionRef, cloudBaseUrl: base.toString(), pollSecret: result.pollSecret, browserUrl: browser.toString(), expiresAt: result.expiresAt });
