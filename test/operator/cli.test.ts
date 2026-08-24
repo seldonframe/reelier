@@ -187,3 +187,26 @@ test("operator run sends the task only to the harness runner and prints truthful
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("operator stop delegates only the exact mission reference to the owned-process controller", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "reelier-operator-cli-stop-"));
+  const originalLog = console.log;
+  const output: string[] = [];
+  const stopped: string[] = [];
+  try {
+    console.log = (...values: unknown[]) => output.push(values.join(" "));
+    assert.equal(await cmdOperator({ positional: ["stop", "mission-owned"], flags: new Set(), vars: {}, wraps: [], opts: {}, fails: [] }, {
+      cwd: root,
+      home: root,
+      stopMission: async (input) => {
+        stopped.push(input.missionId);
+        return { status: "stopped", missionId: input.missionId };
+      },
+    }), 0);
+    assert.deepEqual(stopped, ["mission-owned"]);
+    assert.deepEqual(output, ["Stopped Reelier-owned mission: mission-owned"]);
+  } finally {
+    console.log = originalLog;
+    await rm(root, { recursive: true, force: true });
+  }
+});

@@ -76,6 +76,7 @@ import { createOperatorSessionStoreV1 } from "./operator/session-store.js";
 import { launchDetachedMissionControlBoardV1, runMissionControlBoardServerFromEnvironmentV1, type DetachedMissionControlBoardV1 } from "./operator/mission-board-process.js";
 import { createMissionControlJournalV1 } from "./operator/mission-journal.js";
 import { runMissionControlMissionV1 } from "./operator/mission-runner.js";
+import { stopOwnedMissionProcessV1 } from "./operator/mission-process-control.js";
 import { compileSessionTranscript, detectSessionFormat, SESSION_FORMAT_LABELS, type SessionSkip, type SessionFormatId } from "./session.js";
 import {
   scanTranscripts,
@@ -4637,6 +4638,7 @@ export interface CmdOperatorOverrides {
   readonly launchBoard?: (input: Readonly<{ root: string; openBrowser?: (url: string) => void }>) => Promise<DetachedMissionControlBoardV1>;
   readonly runBoardServer?: () => Promise<never>;
   readonly runMission?: typeof runMissionControlMissionV1;
+  readonly stopMission?: typeof stopOwnedMissionProcessV1;
 }
 
 export async function cmdOperator(args: ParsedArgs, overrides: CmdOperatorOverrides = {}): Promise<number> {
@@ -4683,6 +4685,20 @@ export async function cmdOperator(args: ParsedArgs, overrides: CmdOperatorOverri
     if (mission.outcomeLifecycle === "locally-observed") console.log("Local evidence observed. Provider completion still requires Managed authoritative readback.");
     return mission.outcomeLifecycle === "failed" ? 1 : 0;
   }
+  if (subcommand === "stop") {
+    if (!sessionId || args.positional.length !== 2 || args.flags.size !== 0 || Object.keys(args.opts).length !== 0 || Object.keys(args.vars).length !== 0 || args.wraps.length !== 0 || args.fails.length !== 0) {
+      console.error("Usage: reelier operator stop <mission-ref>");
+      return 1;
+    }
+    try {
+      const result = await (overrides.stopMission ?? stopOwnedMissionProcessV1)({ root: cwd, missionId: sessionId });
+      console.log(`Stopped Reelier-owned mission: ${result.missionId}`);
+      return 0;
+    } catch (error) {
+      console.error(`Mission stop refused: ${error instanceof Error ? error.message : String(error)}`);
+      return 1;
+    }
+  }
   if (subcommand === "init") {
     if (sessionId || [...args.flags].some((flag) => flag !== "no-open") || Object.keys(args.opts).length !== 0 || Object.keys(args.vars).length !== 0 || args.wraps.length !== 0 || args.fails.length !== 0) {
       console.error("Usage: reelier operator init [--no-open]");
@@ -4709,7 +4725,7 @@ export async function cmdOperator(args: ParsedArgs, overrides: CmdOperatorOverri
     return 0;
   }
   if (subcommand !== "status" && subcommand !== "list") {
-    console.error("Usage: reelier operator <init|open|import|run|status [sessionId]|list|review [--open]>");
+    console.error("Usage: reelier operator <init|open|import|run|stop|status [sessionId]|list|review [--open]>");
     return 1;
   }
   const sessionStore = createOperatorSessionStoreV1({ root: cwd });

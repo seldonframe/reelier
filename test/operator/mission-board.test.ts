@@ -87,3 +87,28 @@ test("expired capabilities, foreign origins, and imported-session stop attempts 
     await rm(expiredRoot, { recursive: true, force: true });
   }
 });
+
+test("the board stops an exact Reelier-owned mission through the default process controller", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "reelier-mission-board-owned-stop-"));
+  await seed(root, "reelier", false);
+  const stopped: string[] = [];
+  const board = await createMissionControlBoardV1({
+    root,
+    capability: CAPABILITY,
+    now: () => Date.parse("2026-08-24T12:30:00.000Z"),
+    expiresAt: "2026-08-24T13:00:00.000Z",
+    stopMission: async (missionId) => { stopped.push(missionId); },
+  });
+  try {
+    const response = await fetch(`${board.origin}/api/actions/stop`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${CAPABILITY}`, origin: board.origin, "x-reelier-csrf": CAPABILITY, "content-type": "application/json" },
+      body: JSON.stringify({ missionId: "mission-board" }),
+    });
+    assert.equal(response.status, 200);
+    assert.deepEqual(stopped, ["mission-board"]);
+  } finally {
+    await board.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});

@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { createMissionControlBoardV1 } from "./mission-board.js";
 import { createMissionControlJournalV1 } from "./mission-journal.js";
+import { stopOwnedMissionProcessV1 } from "./mission-process-control.js";
 
 type SpawnOptionsV1 = Readonly<{ env: NodeJS.ProcessEnv; cwd: string; detached: true; stdio: "ignore"; windowsHide: true }>;
 export type BoardSpawnV1 = (command: string, args: readonly string[], options: SpawnOptionsV1) => Readonly<{ unref(): void }>;
@@ -93,7 +94,12 @@ export async function runMissionControlBoardServerFromEnvironmentV1(environment:
   const descriptorPath = environment.REELIER_BOARD_DESCRIPTOR;
   if (!root || !capability || !expiresAt || !descriptorPath) throw new Error("Mission Control board environment is incomplete");
   delete environment.REELIER_BOARD_CAPABILITY;
-  const board = await createMissionControlBoardV1({ root, capability, expiresAt });
+  const board = await createMissionControlBoardV1({
+    root,
+    capability,
+    expiresAt,
+    stopMission: async (missionId) => { await stopOwnedMissionProcessV1({ root, missionId }); },
+  });
   await atomicDescriptor(descriptorPath, { v: "reelier.mission-control-board-process/v1", origin: board.origin, pid: process.pid, expiresAt });
   await new Promise<void>((resolve) => {
     process.once("SIGINT", resolve);
