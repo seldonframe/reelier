@@ -78,7 +78,7 @@ import { createMissionControlJournalV1 } from "./operator/mission-journal.js";
 import { runMissionControlMissionV1 } from "./operator/mission-runner.js";
 import { stopOwnedMissionProcessV1 } from "./operator/mission-process-control.js";
 import { runMissionControlDoctorV1, type MissionControlDoctorResultV1 } from "./operator/doctor.js";
-import { createAutopilotHandoffV1, waitForAutopilotReadyV1, type ManagedUpgradeTargetManifestV1 } from "./operator/autopilot-handoff-client.js";
+import { createAutopilotHandoffV1, waitForAutopilotReadyV1, type ManagedUpgradeTargetManifest } from "./operator/autopilot-handoff-client.js";
 import { compileSessionTranscript, detectSessionFormat, SESSION_FORMAT_LABELS, type SessionSkip, type SessionFormatId } from "./session.js";
 import {
   scanTranscripts,
@@ -4740,7 +4740,7 @@ export async function cmdOperator(args: ParsedArgs, overrides: CmdOperatorOverri
       const targetPath = path.resolve(cwd, manifestFile);
       const targetDetails = await stat(targetPath);
       if (!targetDetails.isFile() || targetDetails.size > 65_536) throw new Error("exact target manifest is not a bounded regular file");
-      const targetManifest = JSON.parse(await readFile(targetPath, "utf8")) as ManagedUpgradeTargetManifestV1;
+      const targetManifest = JSON.parse(await readFile(targetPath, "utf8")) as ManagedUpgradeTargetManifest;
       const result = await (overrides.createAutopilotHandoff ?? createAutopilotHandoffV1)({
         root: cwd,
         cloudBaseUrl: await resolveBaseUrl(),
