@@ -264,7 +264,7 @@ test("operator autopilot binds an exact manifest to an existing mission and open
       home: root,
       createAutopilotHandoff: async (input) => {
         handoffInput = input;
-        return { browserUrl: "https://www.reelier.com/autopilot?mission=mission-autopilot", intent: {} as never };
+        return { browserUrl: "https://www.reelier.com/autopilot?mission=mission-autopilot", pollSecret: "p".repeat(43), intent: {} as never };
       },
       openBrowser: (url) => opened.push(url),
       now: () => new Date("2026-08-24T12:00:00.000Z"),
