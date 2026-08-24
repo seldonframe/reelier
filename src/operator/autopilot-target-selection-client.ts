@@ -12,8 +12,8 @@ export type AutopilotTargetSelectionV1 = Readonly<{
   workspaceId: string;
   teamId: string;
   projectId: string;
-  composite: Readonly<{ issueId: string; preStatusId: string; targetStatusId: string }>;
-  linearOnly: Readonly<{ issueId: string; preStatusId: string; targetStatusId: string }>;
+  composite: Readonly<{ issueId: string; preStatusId: string; preStatusName: string; targetStatusId: string; targetStatusName: string }>;
+  linearOnly: Readonly<{ issueId: string; preStatusId: string; preStatusName: string; targetStatusId: string; targetStatusName: string }>;
 }>;
 
 function exactId(value: unknown, label: string): string {
@@ -29,8 +29,12 @@ function exactRecord(value: unknown, keys: readonly string[], label: string): Re
 }
 
 function operation(value: unknown, label: string) {
-  const row = exactRecord(value, ["issueId", "preStatusId", "targetStatusId"], label);
-  return Object.freeze({ issueId: exactId(row.issueId, `${label} issue`), preStatusId: exactId(row.preStatusId, `${label} pre-status`), targetStatusId: exactId(row.targetStatusId, `${label} target status`) });
+  const row = exactRecord(value, ["issueId", "preStatusId", "preStatusName", "targetStatusId", "targetStatusName"], label);
+  const statusName = (candidate: unknown, field: string) => {
+    if (typeof candidate !== "string" || candidate.length < 1 || candidate.length > 256 || /[\u0000-\u001f\u007f]/u.test(candidate)) throw new TypeError(`${label} ${field} is invalid`);
+    return candidate;
+  };
+  return Object.freeze({ issueId: exactId(row.issueId, `${label} issue`), preStatusId: exactId(row.preStatusId, `${label} pre-status`), preStatusName: statusName(row.preStatusName, "pre-status name"), targetStatusId: exactId(row.targetStatusId, `${label} target status`), targetStatusName: statusName(row.targetStatusName, "target-status name") });
 }
 
 export function parseAutopilotTargetSelectionV1(value: unknown): AutopilotTargetSelectionV1 {

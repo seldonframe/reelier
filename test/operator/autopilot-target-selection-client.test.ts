@@ -17,7 +17,7 @@ test("Operator starts a closed browser selection and claims exact targets once",
     const selection = await waitForAutopilotTargetSelectionV1({ root, missionRef: "mission-1", pollIntervalMs: 1, now: () => new Date("2026-08-24T20:01:00.000Z"), fetch: async () => {
       calls += 1;
       if (calls === 1) return new Response(JSON.stringify({ status: "pending" }));
-      return new Response(JSON.stringify({ status: "selected", selection: { version: "reelier.autopilot-target-selection/v1", missionRef: "mission-1", workspaceId: "workspace-1", teamId: "team-1", projectId: "project-1", composite: { issueId: "issue-1", preStatusId: "state-progress", targetStatusId: "state-done" }, linearOnly: { issueId: "issue-2", preStatusId: "state-todo", targetStatusId: "state-done" } } }));
+      return new Response(JSON.stringify({ status: "selected", selection: { version: "reelier.autopilot-target-selection/v1", missionRef: "mission-1", workspaceId: "workspace-1", teamId: "team-1", projectId: "project-1", composite: { issueId: "issue-1", preStatusId: "state-progress", preStatusName: "In Progress", targetStatusId: "state-done", targetStatusName: "Done" }, linearOnly: { issueId: "issue-2", preStatusId: "state-todo", preStatusName: "Todo", targetStatusId: "state-done", targetStatusName: "Done" } } }));
     } });
     assert.equal(selection.linearOnly.issueId, "issue-2");
     const claimed = JSON.parse(await readFile(path.join(root, ".reelier", "operator", "target-selections", "mission-1.json"), "utf8"));
