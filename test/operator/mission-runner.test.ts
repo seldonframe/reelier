@@ -278,3 +278,32 @@ test("a harness wall-clock timeout is named explicitly without treating it as an
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("exposed usage drives configured attention ceilings without certifying or persisting model output", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "reelier-mission-runner-usage-"));
+  try {
+    const result = await runMissionControlMissionV1({
+      root,
+      cwd: root,
+      harness: "codex",
+      task: "private bounded task",
+      costLimitMicros: 100_000,
+      tokenLimit: 100,
+      contextLimit: 100,
+      now: () => "2026-08-24T12:00:00.000Z",
+      processFactory: fakeProcess([
+        { v: "reelier.operator-event/v1", harness: "codex", sessionId: "owned-session", kind: "tool-completed", payloadDigest: `sha256:${"d".repeat(64)}`, at: "2026-08-24T12:00:01.000Z", usage: { inputTokens: 90, cachedInputTokens: 0, outputTokens: 20, contextUnits: 110, totalCostMicros: 200_000 } },
+        { v: "reelier.operator-event/v1", harness: "codex", sessionId: "owned-session", kind: "completed", payloadDigest: null, at: "2026-08-24T12:00:02.000Z" },
+      ]),
+      observeWorkspace: async () => null,
+    });
+    assert.equal(result.startedAt, "2026-08-24T12:00:00.000Z");
+    assert.deepEqual(result.usage, { inputTokens: 90, cachedInputTokens: 0, outputTokens: 20, contextUnits: 110, totalCostMicros: 200_000 });
+    assert.equal(result.outcomeLifecycle, "completed-unverified");
+    assert.equal(result.attentionState, "required");
+    assert.deepEqual(result.attentionReasons, ["cost-ceiling-exceeded", "token-ceiling-exceeded", "context-growth-threshold-exceeded", "harness-exited-without-evidence"]);
+    assert.doesNotMatch(await readFile(path.join(root, ".reelier", "operator", "events.jsonl"), "utf8"), /private bounded task/i);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
