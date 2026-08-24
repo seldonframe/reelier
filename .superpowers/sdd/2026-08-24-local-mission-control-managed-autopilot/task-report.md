@@ -3,10 +3,10 @@
 ## Scope and identity
 
 - Reviewed Operator base: `f67729f59229675ca0ea945b1da93e1e50181e6a`.
-- Exact production/package implementation head before this report refresh: `0aad54fc`.
+- Exact production/package implementation head before this report refresh: `e5f4a8f5`.
 - Branch: `codex/operator-authority-cell-full`.
 - Draft review: `https://github.com/seldonframe/reelier/pull/130`.
-- Exact changed-file inventory: `git diff --name-only f67729f59229675ca0ea945b1da93e1e50181e6a..0aad54fc`.
+- Exact changed-file inventory: `git diff --name-only f67729f59229675ca0ea945b1da93e1e50181e6a..e5f4a8f5`.
 - The dirty root checkout was not edited. All work was performed in the isolated Operator and Cloud worktrees.
 
 ## Implemented product boundary
@@ -26,20 +26,21 @@
 
 An exact tarball was built and installed outside every repository:
 
-- Tarball: `C:\Users\maxim\AppData\Local\Temp\reelier-beta-pack-0.33.0-beta.0-0aad54fc\reelier-0.33.0-beta.0.tgz`.
-- Tarball SHA-256: `0bd9d823a62973a494f9e0363c9c829e999564f3b2e5b84c810975822087a344`.
-- Disposable consumer: `C:\Users\maxim\AppData\Local\Temp\reelier-packed-customer-0aad54fc-20260824`.
+- Tarball: `C:\Users\maxim\AppData\Local\Temp\reelier-beta-pack-0.33.0-beta.0-e5f4a8f5\reelier-0.33.0-beta.0.tgz`.
+- Tarball SHA-256: `4ac39782504cd2eb4fa3e3329d2c6c4b96e15f91b302272adb322f6a5f157223`.
+- Disposable consumer: `C:\Users\maxim\AppData\Local\Temp\reelier-packed-customer-e5f4a8f5-20260824`.
 - `npm pack` rebuilt production output before packaging and then verified the universal native artifacts; stale `dist` cannot silently enter this release path.
-- The final `0aad54fc` installed package ran `reelier init --no-open --json` in 16.8 seconds and reported both installed product-ready harnesses, 1,805 imported missions, accountless Local Mission Control, and a loopback board. `reelier operator doctor` independently reported a readable journal and that neither an account nor Cloud was required.
+- The final `e5f4a8f5` installed package ran `reelier operator doctor` followed by `reelier init --no-open --json` in 11.5 seconds total and reported both installed product-ready harnesses, 1,805 imported missions, accountless Local Mission Control, and a loopback board. The independent doctor reported a readable journal and that neither an account nor Cloud was required.
 - The installed package exports the Operator, managed handoff, canonical quartet, and genuine host runtime. The canonical quartet remains `reelier_agent_status`, `reelier_outcome_proposal`, `reelier_outcome_request`, and `reelier_outcome_status`.
 - The tarball contains the Linux and Windows bootstrap binaries plus the universal native manifest.
 - The disposable state audit covered 1,792 files / 1,742,946 bytes and found no prompt, reasoning, model output, provider body, credential, API key, bearer token, authorization header, password, or secret record key.
 - A fresh installed-package mission in `C:\Users\maxim\AppData\Local\Temp\reelier-customer1-local-proof-7332fbac` launched the installed Codex harness, created and locally committed only `mission-control-proof.txt` (`57e563b`), and returned `locally-observed` with one independent Git evidence reference. It did not claim a provider Outcome. The real-path run exposed and fixed the public `--harness` parser, two fast-child process races, and Codex's local approval mode before this proof was accepted.
-- The packed Operator journals its target-selection secrets before network dispatch. Exact concurrent retries converge on one Cloud rendezvous, and an expired still-pending rendezvous is refreshed only when the exact original poll and browser secrets are presented. A copied or crossed secret refuses. The installed `0aad54fc` package reopened Customer #1 mission `917a0dd2-0d02-4ced-b44f-245d2d6aa34b` without reminting it and is waiting only for the authenticated browser target selection.
+- The packed Operator journals its target-selection secrets before network dispatch. Exact concurrent retries converge on one Cloud rendezvous, and an expired still-pending rendezvous is refreshed only when the exact original poll and browser secrets are presented. A copied or crossed secret refuses. The installed package reopened Customer #1 mission `917a0dd2-0d02-4ced-b44f-245d2d6aa34b` without reminting it; GitHub identity and Linear Connect now succeed, while target selection correctly waits for a project with two bounded issues.
 
 ## Verification
 
 - Operator-focused matrix: 90 tests, 89 pass, 0 fail, 1 declared Windows-symlink privilege skip.
+- The first Ubuntu release rerun exposed four stale beta-version pins rather than a platform defect: one restart assertion, two portable skill vintages, and the generated Claude plugin manifest. The sources now derive or declare `0.33`, generated packages are synchronized, and the exact focused regression matrix is 14/14 green.
 - Production build: exit 0; 12 packs built.
 - Production TypeScript: exit 0.
 - Test TypeScript: exit 0.
