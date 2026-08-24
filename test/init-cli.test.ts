@@ -214,7 +214,7 @@ test("reelier init my-agent keeps named bootstrap while bare init uses Mission C
     assert.equal(bare.result, 0);
     const namedResult = await capture(() => cmdInit(named("my-agent", ["yes"]), { cwd: root, homedir: root, dependencies: localDependencies(), nativeSessionFactory: filesystemNativeFactory() }));
     assert.equal(namedResult.result, 0);
-    assert.match(namedResult.output, /npx reelier@0\.32\.1 up my-agent/);
+    assert.match(namedResult.output, /npx reelier@0\.33\.0-beta\.0 up my-agent/);
     assert.match(namedResult.output, /Authority absent/);
     assert.match(namedResult.output, /Completeness not-proved/);
     const pointer = JSON.parse(await readFile(path.join(root, ".reelier", "bootstrap", "current.json"), "utf8"));
@@ -311,7 +311,7 @@ test("named init applies one sealed local MCP config transaction idempotently an
     assert.match(first.output, /wrapped=1.*already-wrapped=1.*unwrappable=1.*unsupported=1/i);
     const applied = await readFile(config);
     assert.notDeepEqual(applied, original);
-    assert.deepEqual(JSON.parse(applied.toString()).mcpServers.local.args, ["-y", "reelier@0.32.1", "mcp", "--wrap", "npx -y @example/local"]);
+    assert.deepEqual(JSON.parse(applied.toString()).mcpServers.local.args, ["-y", "reelier@0.33.0-beta.0", "mcp", "--wrap", "npx -y @example/local"]);
     assert.deepEqual(JSON.parse(applied.toString()).mcpServers.remote, { type: "http", url: "https://example.invalid/mcp" });
 
     const second = await capture(() => cmdInit(named("my-agent", ["yes"]), overrides as never));

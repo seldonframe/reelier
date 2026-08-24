@@ -56,7 +56,7 @@ async function withFixture<T>(run: (options: InitializeAgentProjectOptions) => P
   const cwd = path.join(root, "project");
   const homedir = path.join(root, "home");
   await Promise.all([mkdir(cwd), mkdir(homedir)]);
-  try { return await run({ cwd, homedir, agentName: "my-agent", exactVersion: "0.32.1", nativeSessionFactory: recordingNativeFactory([]) }); }
+  try { return await run({ cwd, homedir, agentName: "my-agent", exactVersion: "0.33.0-beta.0", nativeSessionFactory: recordingNativeFactory([]) }); }
   finally { await rm(root, { recursive: true, force: true }); }
 }
 
@@ -79,15 +79,15 @@ test("minimal named preparation freezes the exact descriptor, honest report, and
     assert.deepEqual(Object.keys(persisted).sort(), ["authority", "completeness", "initializedAt", "projectDigest", "recoveryCommand", "state", "up", "v"]);
     assert.equal(project.agentName, "my-agent");
     assert.equal(project.projectRoot, await (await import("node:fs/promises")).realpath(options.cwd));
-    assert.equal(project.reelierVersion, "0.32.1");
+    assert.equal(project.reelierVersion, "0.33.0-beta.0");
     assert.match(project.installedBuildDigest, /^sha256:[0-9a-f]{64}$/);
     assert.equal(project.authority, "absent");
     assert.equal(project.completeness, "not-proved");
     assert.equal(persisted.authority, "absent");
     assert.equal(persisted.completeness, "not-proved");
-    assert.equal(persisted.recoveryCommand, "npx reelier@0.32.1 up my-agent");
-    assert.equal(await readFile(path.join(root, "recovery-command.txt"), "utf8"), "npx reelier@0.32.1 up my-agent\n");
-    assert.equal(report.recoveryCommand, "npx reelier@0.32.1 up my-agent");
+    assert.equal(persisted.recoveryCommand, "npx reelier@0.33.0-beta.0 up my-agent");
+    assert.equal(await readFile(path.join(root, "recovery-command.txt"), "utf8"), "npx reelier@0.33.0-beta.0 up my-agent\n");
+    assert.equal(report.recoveryCommand, "npx reelier@0.33.0-beta.0 up my-agent");
     assert.deepEqual((await readdir(path.join(options.cwd, ".reelier"))).sort(), ["bootstrap"]);
   });
 });
@@ -343,7 +343,7 @@ test("named preparation refuses noncanonical names and linked project roots befo
     const target = path.join(root, "target"), linked = path.join(root, "linked"), homedir = path.join(root, "home");
     await Promise.all([mkdir(target), mkdir(homedir)]);
     await symlink(target, linked, process.platform === "win32" ? "junction" : "dir");
-    await assert.rejects(() => initializeAgentProject({ cwd: linked, homedir, agentName: "agent", exactVersion: "0.32.1" }), /project.*unsafe|linked/i);
+    await assert.rejects(() => initializeAgentProject({ cwd: linked, homedir, agentName: "agent", exactVersion: "0.33.0-beta.0" }), /project.*unsafe|linked/i);
     assert.deepEqual(await readdir(target), []);
   } finally { await rm(root, { recursive: true, force: true }); }
 });

@@ -1,6 +1,6 @@
 {
   "name": "reelier",
-  "version": "0.32.1",
+  "version": "0.33.0-beta.0",
   "mcpName": "io.github.seldonframe/reelier",
   "description": "Local Mission Control for coding agents, with optional managed authority for verified GitHub and Linear Outcomes.",
   "license": "MIT",

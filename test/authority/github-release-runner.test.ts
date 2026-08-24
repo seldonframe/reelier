@@ -72,8 +72,8 @@ function releaseAuthorityFixture(reviewedOperation: "candidatePublish" | "pullRe
   const files = ["CHANGELOG.md", "src/cli.ts", "test/cli-subcommand-help.test.ts"].map((filePath, index) => ({ blobSha: blobSha(contents[index]!), contentDigest: `sha256:${createHash("sha256").update(contents[index]!).digest("hex")}`, mode: "100644" as const, path: filePath }));
   const candidateTreeDigest = authorityDigest({ v: "reelier.release-candidate-tree/v1", files });
   const workflows = [{ digest: digest("3"), path: ".github/workflows/ci.yml" }, { digest: digest("4"), path: ".github/workflows/docker-publish.yml" }, { digest: digest("5"), path: ".github/workflows/mcp-publish.yml" }, { digest: digest("6"), path: ".github/workflows/npm-publish.yml" }];
-  const operationPlan = createSignedReleaseOperationPlanV1({ v: "reelier.release-operation-plan/v1", repository: "seldonframe/reelier", baseCommit: "e600ad5c2dc5e1bde0714915e7a84980c8d5602b", baseTreeSha: gitSha("b"), candidateBranch: "reelier/release/0.32.1", destinationBranch: "main", tag: "v0.32.1", candidateTreeDigest, expectedTreeSha: gitSha("e"), expectedCommitSha: gitSha("a"), files, commit: { author: { name: "SeldonFrame Release", email: "release@seldonframe.com", date: "2026-08-18T05:00:00.000Z" }, committer: { name: "SeldonFrame Release", email: "release@seldonframe.com", date: "2026-08-18T05:00:00.000Z" }, message: "release: v0.32.1", parentSha: "e600ad5c2dc5e1bde0714915e7a84980c8d5602b" }, pullRequest: { base: "main", head: "reelier/release/0.32.1", draft: true, readyForReview: true, title: "Release v0.32.1", body: "Governed release v0.32.1" }, squash: { commitTitle: "Release v0.32.1", commitMessage: "release: v0.32.1" }, requiredChecks: ["coverage", "full-tests", "mutation"], workflowCommitments: workflows, npmPreflight: { packageName: "reelier", version: "0.32.1", versionMustBeAbsent: true } } as any, authoritySigner);
-  const candidateManifest = createSignedStagedCandidateManifestV1({ v: "reelier.staged-candidate-manifest/v1", repository: "seldonframe/reelier", baseCommit: "e600ad5c2dc5e1bde0714915e7a84980c8d5602b", destinationBranch: "main", branch: "reelier/release/0.32.1", tag: "v0.32.1", packageName: "reelier", packageVersion: "0.32.1", candidateCommit: gitSha("a"), candidateTreeDigest, changedBytes: contents.reduce((sum, value) => sum + value.length, 0), changedPaths: files.map(file => file.path), packedTarballDigest: digest("2"), workflowCommitments: workflows, qualityEvidence: { coverageEvidenceDigest: digest("7"), coverageStatus: "non-regressed", fullTestEvidenceDigest: digest("8"), fullTestsStatus: "verified", headCommit: gitSha("a"), mutationEvidenceDigest: digest("9"), mutationScoreBasisPoints: 9_500 } }, authoritySigner);
+  const operationPlan = createSignedReleaseOperationPlanV1({ v: "reelier.release-operation-plan/v1", repository: "seldonframe/reelier", baseCommit: "e600ad5c2dc5e1bde0714915e7a84980c8d5602b", baseTreeSha: gitSha("b"), candidateBranch: "reelier/release/0.33.0-beta.0", destinationBranch: "main", tag: "v0.33.0-beta.0", candidateTreeDigest, expectedTreeSha: gitSha("e"), expectedCommitSha: gitSha("a"), files, commit: { author: { name: "SeldonFrame Release", email: "release@seldonframe.com", date: "2026-08-18T05:00:00.000Z" }, committer: { name: "SeldonFrame Release", email: "release@seldonframe.com", date: "2026-08-18T05:00:00.000Z" }, message: "release: v0.33.0-beta.0", parentSha: "e600ad5c2dc5e1bde0714915e7a84980c8d5602b" }, pullRequest: { base: "main", head: "reelier/release/0.33.0-beta.0", draft: true, readyForReview: true, title: "Release v0.33.0-beta.0", body: "Governed release v0.33.0-beta.0" }, squash: { commitTitle: "Release v0.33.0-beta.0", commitMessage: "release: v0.33.0-beta.0" }, requiredChecks: ["coverage", "full-tests", "mutation"], workflowCommitments: workflows, npmPreflight: { packageName: "reelier", version: "0.33.0-beta.0", versionMustBeAbsent: true } } as any, authoritySigner);
+  const candidateManifest = createSignedStagedCandidateManifestV1({ v: "reelier.staged-candidate-manifest/v1", repository: "seldonframe/reelier", baseCommit: "e600ad5c2dc5e1bde0714915e7a84980c8d5602b", destinationBranch: "main", branch: "reelier/release/0.33.0-beta.0", tag: "v0.33.0-beta.0", packageName: "reelier", packageVersion: "0.33.0-beta.0", candidateCommit: gitSha("a"), candidateTreeDigest, changedBytes: contents.reduce((sum, value) => sum + value.length, 0), changedPaths: files.map(file => file.path), packedTarballDigest: digest("2"), workflowCommitments: workflows, qualityEvidence: { coverageEvidenceDigest: digest("7"), coverageStatus: "non-regressed", fullTestEvidenceDigest: digest("8"), fullTestsStatus: "verified", headCommit: gitSha("a"), mutationEvidenceDigest: digest("9"), mutationScoreBasisPoints: 9_500 } }, authoritySigner);
   const policy = createSignedReleasePolicyV1({ v: "reelier.release-policy/v1", allowedPaths: files.map(file => file.path), destinations: ["ghcr", "mcp-registry", "npm"], effectAllocations: ["candidate-branch", "draft-pr", "exact-sha-merge", "non-force-tag"], expirySeconds: 43_200, forbiddenChangeClasses: ["authority-contract", "credential", "dependency", "generated-contract", "lockfile", "policy", "release-script", "workflow"], maxChangedBytes: 65_536, maxChangedFiles: 3 }, authoritySigner);
   const effects = ["candidate-branch", "draft-pr", "exact-sha-merge", "non-force-tag"] as const;
   const reviewedPack = reviewedPackForPlan(operationPlan.value);
@@ -172,7 +172,7 @@ test("signed reviewed PR and exact-head merge execute through the generic adapte
       getChecks: async () => { counters.checks += 1; return plan.requiredChecks.map((check: string) => ({ name: check, status: "success", workflowDigest: digest("3"), workflowPath: ".github/workflows/ci.yml" })); },
       mergePullRequest: async () => { counters.merge += 1; pullRequest = { ...pullRequest, merged: true, mergeCommitSha: gitSha("9") }; refs.set("heads/main", gitSha("9")); return { merged: true, sha: gitSha("9") }; },
       getCommit: async ({ sha }: any) => { counters.commit += 1; return { sha, parentSha: plan.baseCommit, treeSha: sha === plan.baseCommit ? plan.baseTreeSha : plan.expectedTreeSha }; },
-      readPackageManifest: async () => ({ name: "reelier", version: "0.32.1" }),
+      readPackageManifest: async () => ({ name: "reelier", version: "0.33.0-beta.0" }),
       npmVersionExists: async () => false,
     };
     try {
@@ -587,8 +587,8 @@ test("four-operation release saga converges after ambiguous merge and tag withou
     createBlob: async ({ contentBase64 }: any) => ({ sha: blobSha(Buffer.from(contentBase64, "base64")) }),
     createTree: async ({ baseTreeSha }: any) => { treeBase = baseTreeSha; return { sha: gitSha("e") }; },
     createCommit: async () => ({ sha: gitSha("a") }),
-    getRef: async ({ ref }: any) => { if (ref === "tags/v0.32.1" && loseTagReadback) { loseTagReadback = false; throw { v: "reelier.github-release-provider-fault/v1", kind: "transport-uncertain", reason: "tag readback unavailable" }; } return refs.has(ref) ? { sha: refs.get(ref)! } : null; },
-    createRef: async ({ ref, sha }: any) => { if (refs.has(ref)) throw new Error("exists"); refs.set(ref, sha); if (ref === "tags/v0.32.1") { tagCalls += 1; loseTagReadback = true; throw new Error("socket lost after tag"); } return { sha }; },
+    getRef: async ({ ref }: any) => { if (ref === "tags/v0.33.0-beta.0" && loseTagReadback) { loseTagReadback = false; throw { v: "reelier.github-release-provider-fault/v1", kind: "transport-uncertain", reason: "tag readback unavailable" }; } return refs.has(ref) ? { sha: refs.get(ref)! } : null; },
+    createRef: async ({ ref, sha }: any) => { if (refs.has(ref)) throw new Error("exists"); refs.set(ref, sha); if (ref === "tags/v0.33.0-beta.0") { tagCalls += 1; loseTagReadback = true; throw new Error("socket lost after tag"); } return { sha }; },
     getCommit: async ({ sha }: any) => ({ sha, parentSha: "e600ad5c2dc5e1bde0714915e7a84980c8d5602b", treeSha: sha === "e600ad5c2dc5e1bde0714915e7a84980c8d5602b" ? gitSha("b") : gitSha("e") }),
     findPullRequests: async () => pullRequest ? [pullRequest] : [],
     createPullRequest: async (metadata: any) => (pullRequest = { base: metadata.base, body: metadata.body, draft: metadata.draft, head: metadata.head, headSha: gitSha("a"), mergeCommitSha: null, merged: false, number: 1, title: metadata.title }),
@@ -597,7 +597,7 @@ test("four-operation release saga converges after ambiguous merge and tag withou
     getChecks: async () => ["coverage", "full-tests", "mutation"].map(name => ({ name, status: "success", workflowDigest: digest("3"), workflowPath: ".github/workflows/ci.yml" })),
     mergePullRequest: async () => { mergeCalls += 1; pullRequest = { ...pullRequest, merged: true, mergeCommitSha: gitSha("9") }; refs.set("heads/main", gitSha("9")); loseMergeReadback = true; throw new Error("socket lost after merge"); },
     npmVersionExists: async () => { npmChecks += 1; return npmPublished; },
-    readPackageManifest: async () => ({ name: "reelier", version: "0.32.1" }),
+    readPackageManifest: async () => ({ name: "reelier", version: "0.33.0-beta.0" }),
   };
   try {
     const runner = await createGitHubReleaseRunner({ rootDir: root, journalSigner: { signerId: "release-journal-2026", privateKey: journalKeys.privateKey, publicKey: journalKeys.publicKey }, evidenceSigner: fixture.evidenceSigner, authorizationResolver: async () => fixture.context, provider, now: () => new Date("2026-08-18T06:00:00.000Z") });
@@ -733,7 +733,7 @@ test("intent-only candidate recovery refuses an externally created exact branch"
   const provider = candidateProvider({
     getRef: async ({ ref }: any) => {
       if (ref === "heads/main") return { sha: "e600ad5c2dc5e1bde0714915e7a84980c8d5602b" };
-      if (ref === "heads/reelier/release/0.32.1") {
+      if (ref === "heads/reelier/release/0.33.0-beta.0") {
         candidateReads += 1;
         if (externalBranch) return { sha: gitSha("a") };
         if (candidateReads === 3) throw { v: "reelier.github-release-provider-fault/v1", kind: "transport-uncertain", reason: "crash after branch intent before dispatching" };
@@ -817,7 +817,7 @@ for (const boundary of ["createBlob", "createTree", "createCommit", "createBranc
       findPullRequests: async () => pr ? [pr] : [], createPullRequest: async (metadata: any) => (pr = { base: metadata.base, body: metadata.body, draft: metadata.draft, head: metadata.head, headSha: gitSha("a"), mergeCommitSha: null, merged: false, number: 1, title: metadata.title }), markPullRequestReady: async () => (pr = { ...pr, draft: false }), getPullRequest: async () => pr,
       getChecks: async () => ["coverage", "full-tests", "mutation"].map(name => ({ name, status: "success", workflowDigest: digest("3"), workflowPath: ".github/workflows/ci.yml" })),
       mergePullRequest: async () => { mergeCalls++; pr = { ...pr, merged: true, mergeCommitSha: gitSha("9") }; refs.set("heads/main", gitSha("9")); return { merged: true, sha: gitSha("9") }; },
-      readPackageManifest: async () => ({ name: "reelier", version: "0.32.1" }), npmVersionExists: async () => false,
+      readPackageManifest: async () => ({ name: "reelier", version: "0.33.0-beta.0" }), npmVersionExists: async () => false,
     };
     const method = boundary === "createBranchRef" || boundary === "createTagRef" ? "createRef" : boundary;
     const original = base[method];
@@ -851,7 +851,7 @@ for (const boundary of ["createBlob", "createTree", "createCommit", "createBranc
       getCommit: async ({ sha }: any) => ({ sha, parentSha: "e600ad5c2dc5e1bde0714915e7a84980c8d5602b", treeSha: sha === "e600ad5c2dc5e1bde0714915e7a84980c8d5602b" ? gitSha("b") : gitSha("e") }),
       findPullRequests: async () => pr ? [pr] : [], createPullRequest: async (metadata: any) => (pr = { base: metadata.base, body: metadata.body, draft: metadata.draft, head: metadata.head, headSha: gitSha("a"), mergeCommitSha: null, merged: false, number: 1, title: metadata.title }), markPullRequestReady: async () => (pr = { ...pr, draft: false }), getPullRequest: async () => pr,
       getChecks: async () => ["coverage", "full-tests", "mutation"].map(name => ({ name, status: "success", workflowDigest: digest("3"), workflowPath: ".github/workflows/ci.yml" })),
-      mergePullRequest: async () => { pr = { ...pr, merged: true, mergeCommitSha: gitSha("9") }; refs.set("heads/main", gitSha("9")); return { merged: true, sha: gitSha("9") }; }, readPackageManifest: async () => ({ name: "reelier", version: "0.32.1" }), npmVersionExists: async () => false,
+      mergePullRequest: async () => { pr = { ...pr, merged: true, mergeCommitSha: gitSha("9") }; refs.set("heads/main", gitSha("9")); return { merged: true, sha: gitSha("9") }; }, readPackageManifest: async () => ({ name: "reelier", version: "0.33.0-beta.0" }), npmVersionExists: async () => false,
     };
     const method = boundary === "createBranchRef" || boundary === "createTagRef" ? "createRef" : boundary;
     const original = provider[method];
@@ -887,7 +887,7 @@ for (const scenario of ["base-drift", "branch-conflict", "duplicate-pr", "failed
   test(`deterministic ${scenario} refuses without semantic widening`, async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), `reelier-release-refusal-${scenario}-`));
     const fixture = releaseAuthorityFixture(), keys = generateKeyPairSync("ed25519"), refs = new Map<string, string>([["heads/main", scenario === "base-drift" ? gitSha("7") : "e600ad5c2dc5e1bde0714915e7a84980c8d5602b"]]);
-    if (scenario === "branch-conflict") refs.set("heads/reelier/release/0.32.1", gitSha("8"));
+    if (scenario === "branch-conflict") refs.set("heads/reelier/release/0.33.0-beta.0", gitSha("8"));
     let pr: any = null, mergeCalls = 0, tagCalls = 0;
     const provider: any = {
       createBlob: async ({ contentBase64 }: any) => ({ sha: blobSha(Buffer.from(contentBase64, "base64")) }), createTree: async () => ({ sha: gitSha("e") }), createCommit: async () => ({ sha: gitSha("a") }),
@@ -895,7 +895,7 @@ for (const scenario of ["base-drift", "branch-conflict", "duplicate-pr", "failed
       getCommit: async ({ sha }: any) => ({ sha, parentSha: scenario === "tampered-merge-parent" && sha === gitSha("9") ? gitSha("7") : "e600ad5c2dc5e1bde0714915e7a84980c8d5602b", treeSha: sha === "e600ad5c2dc5e1bde0714915e7a84980c8d5602b" ? gitSha("b") : scenario === "tampered-merge-tree" && sha === gitSha("9") ? gitSha("0") : gitSha("e") }),
       findPullRequests: async () => scenario === "duplicate-pr" && pr ? [pr, { ...pr, number: 2 }] : pr ? [pr] : [], createPullRequest: async (metadata: any) => (pr = { base: metadata.base, body: metadata.body, draft: metadata.draft, head: metadata.head, headSha: gitSha("a"), mergeCommitSha: null, merged: false, number: 1, title: metadata.title }), markPullRequestReady: async () => (pr = { ...pr, draft: false }), getPullRequest: async () => pr,
       getChecks: async () => (scenario === "external-required-check" ? ["coverage", "full-tests"] : ["coverage", "full-tests", "mutation"]).map(name => ({ name, status: scenario === "failed-check" ? "failure" : "success", workflowDigest: digest("3"), workflowPath: scenario === "wrong-check-workflow" ? ".github/workflows/npm-publish.yml" : ".github/workflows/ci.yml" })),
-      mergePullRequest: async () => { mergeCalls++; pr = { ...pr, merged: true, mergeCommitSha: gitSha("9") }; refs.set("heads/main", gitSha("9")); return { merged: true, sha: gitSha("9") }; }, readPackageManifest: async () => ({ name: "reelier", version: "0.32.1" }), npmVersionExists: async () => false,
+      mergePullRequest: async () => { mergeCalls++; pr = { ...pr, merged: true, mergeCommitSha: gitSha("9") }; refs.set("heads/main", gitSha("9")); return { merged: true, sha: gitSha("9") }; }, readPackageManifest: async () => ({ name: "reelier", version: "0.33.0-beta.0" }), npmVersionExists: async () => false,
     };
     try {
       const runner = await createGitHubReleaseRunner({ rootDir: root, journalSigner: { signerId: "release-journal-2026", privateKey: keys.privateKey, publicKey: keys.publicKey }, evidenceSigner: fixture.evidenceSigner, authorizationResolver: async () => fixture.context, provider, now: () => new Date("2026-08-18T06:00:00.000Z") });
@@ -904,13 +904,13 @@ for (const scenario of ["base-drift", "branch-conflict", "duplicate-pr", "failed
         await assert.rejects(() => run("github_release_candidate_publish_v1", "release-candidate-branch-01", `${scenario}_candidate`), /drift|conflict/i);
       } else {
         assert.equal((await run("github_release_candidate_publish_v1", "release-candidate-branch-01", `${scenario}_candidate`)).status, "verified");
-        if (scenario === "duplicate-pr") { pr = { base: "main", body: "Governed release v0.32.1", draft: true, head: "reelier/release/0.32.1", headSha: gitSha("a"), mergeCommitSha: null, merged: false, number: 1, title: "Release v0.32.1" }; await assert.rejects(() => run("github_release_pr_ensure_v1", "release-draft-pr-01", `${scenario}_pr`), /multiple|conflict/i); }
+        if (scenario === "duplicate-pr") { pr = { base: "main", body: "Governed release v0.33.0-beta.0", draft: true, head: "reelier/release/0.33.0-beta.0", headSha: gitSha("a"), mergeCommitSha: null, merged: false, number: 1, title: "Release v0.33.0-beta.0" }; await assert.rejects(() => run("github_release_pr_ensure_v1", "release-draft-pr-01", `${scenario}_pr`), /multiple|conflict/i); }
         else {
           assert.equal((await run("github_release_pr_ensure_v1", "release-draft-pr-01", `${scenario}_pr`)).status, "verified");
           if (scenario === "failed-check" || scenario === "wrong-check-workflow" || scenario === "external-required-check") await assert.rejects(() => run("github_release_pr_merge_v1", "release-exact-sha-merge-01", `${scenario}_merge`), /checks|failed|workflow/i);
           else {
             if (scenario === "tampered-merge-tree" || scenario === "tampered-merge-parent") await assert.rejects(() => run("github_release_pr_merge_v1", "release-exact-sha-merge-01", `${scenario}_merge`), /tree|parent|tamper/i);
-            else { assert.equal((await run("github_release_pr_merge_v1", "release-exact-sha-merge-01", `${scenario}_merge`)).status, "verified"); refs.set("tags/v0.32.1", gitSha("8")); await assert.rejects(() => run("github_release_tag_create_v1", "release-non-force-tag-01", `${scenario}_tag`), /tag.*conflict/i); }
+            else { assert.equal((await run("github_release_pr_merge_v1", "release-exact-sha-merge-01", `${scenario}_merge`)).status, "verified"); refs.set("tags/v0.33.0-beta.0", gitSha("8")); await assert.rejects(() => run("github_release_tag_create_v1", "release-non-force-tag-01", `${scenario}_tag`), /tag.*conflict/i); }
           }
         }
       }

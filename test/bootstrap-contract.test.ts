@@ -16,7 +16,7 @@ import {
 const digest = (char: string) => `sha256:${char.repeat(64)}`;
 const project = () => ({
   v: "reelier.agent-project/v1", agentName: "my-agent", projectId: "project_1", tenant: "tenant_1",
-  reelierVersion: "0.32.1", installedBuildDigest: digest("1"), packageTarballIntegrityDigest: null,
+  reelierVersion: "0.33.0-beta.0", installedBuildDigest: digest("1"), packageTarballIntegrityDigest: null,
   authorityContractDigest: digest("2"), continuityContractDigest: digest("3"), outcomeProfileContractDigest: digest("4"),
   bootstrapContractDigest: digest("5"), initializationReportDigest: digest("6"), runtimeDescriptorDigest: digest("7"),
   routeCoverageDigest: digest("8"), profileGovernanceRef: "governance_1", profileGovernanceManifestDigest: digest("9"),
@@ -48,7 +48,7 @@ test("bootstrap parsers accept closed inert records and return frozen detached v
   assert.deepEqual(parseBootstrapReportV1({
     v: "reelier.bootstrap-report/v1", projectDigest: digest("1"), runtimeDescriptorDigest: digest("2"),
     routeCoverageDigest: digest("3"), initializedAt: "2026-08-15T12:00:00.000Z", canary: "verified",
-    authority: "unavailable", recoveryCommand: "npx reelier@0.32.1 up", completeness: "not-proved",
+    authority: "unavailable", recoveryCommand: "npx reelier@0.33.0-beta.0 up", completeness: "not-proved",
   }).authority, "unavailable");
   assert.equal(parseSupervisorStatusV1({
     v: "reelier.supervisor-status/v1", observedAt: "2026-08-15T12:00:00.000Z",
@@ -88,11 +88,11 @@ test("reports cannot upgrade absent authority, completeness, or canary evidence"
   const base = {
     v: "reelier.bootstrap-report/v1", projectDigest: digest("1"), runtimeDescriptorDigest: digest("2"),
     routeCoverageDigest: digest("3"), initializedAt: "2026-08-15T12:00:00.000Z", canary: "unchecked",
-    authority: "unavailable", recoveryCommand: "npx reelier@0.32.1 up", completeness: "not-proved",
+    authority: "unavailable", recoveryCommand: "npx reelier@0.33.0-beta.0 up", completeness: "not-proved",
   };
   for (const value of [
     { ...base, canary: "certified" }, { ...base, authority: "safe" }, { ...base, completeness: "verified" },
-    { ...base, recoveryCommand: "npx reelier@latest up" }, { ...base, recoveryCommand: "npx reelier@0.32.1 up && whoami" },
+    { ...base, recoveryCommand: "npx reelier@latest up" }, { ...base, recoveryCommand: "npx reelier@0.33.0-beta.0 up && whoami" },
   ]) assert.throws(() => parseBootstrapReportV1(value), TypeError);
 });
 

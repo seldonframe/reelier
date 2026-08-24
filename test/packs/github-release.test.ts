@@ -41,7 +41,7 @@ test("GitHub release registers four isolated empty-choice outcomes with host-own
     const compiled = definition.compile({ contract: {} as never, source: { projection: { authorizationHandle: "release_auth_1" } } as never, choices: {}, policy, now: new Date(0), connectorAccount: { connectorId: "github", accountId: "host" } }) as Record<string, unknown>;
     assert.equal(compiled.endpointId, `github.release.${effect}`);
     assert.equal(JSON.stringify(compiled).includes("seldonframe/reelier"), false);
-    assert.equal(JSON.stringify(compiled).includes("0.32.1"), false);
+    assert.equal(JSON.stringify(compiled).includes("0.33.0-beta.0"), false);
     assert.throws(() => definition.parsePolicy({ ...policy, effect: effect === "candidate-branch" ? "draft-pr" : "candidate-branch" }), /effect|policy/i);
   }
 });

@@ -203,18 +203,18 @@ export async function releaseServeFixture(title = "Governed production release",
     ];
     const quality = { coverageEvidenceDigest: releaseDigest("6"), coverageStatus: "non-regressed" as const, fullTestEvidenceDigest: releaseDigest("7"), fullTestsStatus: "verified" as const, headCommit: releaseCommit("a"), mutationEvidenceDigest: releaseDigest("8"), mutationScoreBasisPoints: 9_137 };
     const operationPlan = createSignedReleaseOperationPlanV1({
-      v: "reelier.release-operation-plan/v1", baseCommit: RELEASE_BASE_COMMIT, baseTreeSha: releaseCommit("b"), candidateBranch: "reelier/release/0.32.1", candidateTreeDigest,
-      commit: { author: { date: "2026-08-18T05:00:00.000Z", email: "release@seldonframe.com", name: "SeldonFrame Release" }, committer: { date: "2026-08-18T05:00:00.000Z", email: "release@seldonframe.com", name: "SeldonFrame Release" }, message: "release: v0.32.1", parentSha: RELEASE_BASE_COMMIT },
+      v: "reelier.release-operation-plan/v1", baseCommit: RELEASE_BASE_COMMIT, baseTreeSha: releaseCommit("b"), candidateBranch: "reelier/release/0.33.0-beta.0", candidateTreeDigest,
+      commit: { author: { date: "2026-08-18T05:00:00.000Z", email: "release@seldonframe.com", name: "SeldonFrame Release" }, committer: { date: "2026-08-18T05:00:00.000Z", email: "release@seldonframe.com", name: "SeldonFrame Release" }, message: "release: v0.33.0-beta.0", parentSha: RELEASE_BASE_COMMIT },
       destinationBranch: "main", expectedCommitSha: releaseCommit("a"), expectedTreeSha: releaseCommit("e"), files,
-      npmPreflight: { packageName: "reelier", version: "0.32.1", versionMustBeAbsent: true },
-      pullRequest: { base: "main", body: "Governed release v0.32.1", draft: true, head: "reelier/release/0.32.1", readyForReview: true, title: "Release v0.32.1" },
+      npmPreflight: { packageName: "reelier", version: "0.33.0-beta.0", versionMustBeAbsent: true },
+      pullRequest: { base: "main", body: "Governed release v0.33.0-beta.0", draft: true, head: "reelier/release/0.33.0-beta.0", readyForReview: true, title: "Release v0.33.0-beta.0" },
       repository, requiredChecks: ["coverage", "full-tests", "mutation"],
-      squash: { commitMessage: "release: v0.32.1", commitTitle: "Release v0.32.1" }, tag: "v0.32.1", workflowCommitments,
+      squash: { commitMessage: "release: v0.33.0-beta.0", commitTitle: "Release v0.33.0-beta.0" }, tag: "v0.33.0-beta.0", workflowCommitments,
     } as never, signer);
     const candidateManifest = createSignedStagedCandidateManifestV1({
-      v: "reelier.staged-candidate-manifest/v1", baseCommit: RELEASE_BASE_COMMIT, branch: "reelier/release/0.32.1", candidateCommit: releaseCommit("a"), candidateTreeDigest,
+      v: "reelier.staged-candidate-manifest/v1", baseCommit: RELEASE_BASE_COMMIT, branch: "reelier/release/0.33.0-beta.0", candidateCommit: releaseCommit("a"), candidateTreeDigest,
       changedBytes: 4_096, changedPaths: ["CHANGELOG.md", "src/cli.ts", "test/cli-subcommand-help.test.ts"], destinationBranch: "main", qualityEvidence: quality,
-      packageName: "reelier", packageVersion: "0.32.1", packedTarballDigest: releaseDigest("2"), repository, tag: "v0.32.1", workflowCommitments,
+      packageName: "reelier", packageVersion: "0.33.0-beta.0", packedTarballDigest: releaseDigest("2"), repository, tag: "v0.33.0-beta.0", workflowCommitments,
     }, signer);
     const policy = createSignedReleasePolicyV1({
       v: "reelier.release-policy/v1", allowedPaths: ["CHANGELOG.md", "src/cli.ts", "test/cli-subcommand-help.test.ts"], destinations: ["ghcr", "mcp-registry", "npm"],

@@ -18,7 +18,7 @@ const integrity = `sha512-${createHash("sha512").update(tarballBytes).digest("ba
 // loop, so every test goes through the same per-request hook.
 async function withRegistry(responder: (requestIndex: number) => { status: number; body: unknown }, run: (origin: string, tarballPath: string, outputPath: string) => Promise<void>): Promise<void> {
   const dir = mkdtempSync(path.join(os.tmpdir(), "reelier-reconcile-"));
-  const tarballPath = path.join(dir, "reelier-0.32.1.tgz");
+  const tarballPath = path.join(dir, "reelier-0.33.0-beta.0.tgz");
   const outputPath = path.join(dir, "github-output.txt");
   writeFileSync(tarballPath, tarballBytes);
   writeFileSync(outputPath, "");
@@ -50,7 +50,7 @@ async function withRegistry(responder: (requestIndex: number) => { status: numbe
 // poll-behavior tests below don't spend real wall-clock time sleeping.
 function invoke(origin: string, tarballPath: string, outputPath: string, extra: string[] = []): Promise<{ status: number | null; stdout: string; stderr: string }> {
   return new Promise(resolve => {
-    const child = spawn(process.execPath, [scriptPath, "--package", "reelier", "--version", "0.32.1", "--tarball", tarballPath, "--registry", origin, ...extra], { env: { ...process.env, GITHUB_OUTPUT: outputPath, RECONCILE_POLL_BACKOFFS_MS: "5,5" } });
+    const child = spawn(process.execPath, [scriptPath, "--package", "reelier", "--version", "0.33.0-beta.0", "--tarball", tarballPath, "--registry", origin, ...extra], { env: { ...process.env, GITHUB_OUTPUT: outputPath, RECONCILE_POLL_BACKOFFS_MS: "5,5" } });
     let stdout = "", stderr = "";
     child.stdout.on("data", chunk => { stdout += chunk; });
     child.stderr.on("data", chunk => { stderr += chunk; });
@@ -67,7 +67,7 @@ test("absent version reconciles to state=absent (exit 0)", async () => {
 });
 
 test("matching published integrity reconciles to state=reconciled (exit 0)", async () => {
-  await withRegistry(() => ({ status: 200, body: { versions: { "0.32.1": { dist: { integrity } } } } }), async (origin, tarball, output) => {
+  await withRegistry(() => ({ status: 200, body: { versions: { "0.33.0-beta.0": { dist: { integrity } } } } }), async (origin, tarball, output) => {
     const result = await invoke(origin, tarball, output);
     assert.equal(result.status, 0, result.stderr);
     assert.match(readFileSync(output, "utf8"), /state=reconciled/);
@@ -75,7 +75,7 @@ test("matching published integrity reconciles to state=reconciled (exit 0)", asy
 });
 
 test("conflicting integrity is terminal (exit 1) and never resent", async () => {
-  await withRegistry(() => ({ status: 200, body: { versions: { "0.32.1": { dist: { integrity: "sha512-QUFB" } } } } }), async (origin, tarball, output) => {
+  await withRegistry(() => ({ status: 200, body: { versions: { "0.33.0-beta.0": { dist: { integrity: "sha512-QUFB" } } } } }), async (origin, tarball, output) => {
     const result = await invoke(origin, tarball, output);
     assert.equal(result.status, 1);
     assert.match(result.stderr, /conflicts with the local tarball/);

@@ -127,8 +127,8 @@ test("the runner operator config gains a github-https union arm closed on its OW
 test("getRef maps 200 to the closed sha record and 404 to null", async () => {
   await withTransport([json(200, { ref: "refs/heads/main", object: { sha: SHA_A, type: "commit" } }), json(404, { message: "Not Found" })], async (provider, calls) => {
     assert.deepEqual(await provider.getRef({ repository: REPOSITORY, ref: "heads/main" }), { sha: SHA_A });
-    assert.equal(await provider.getRef({ repository: REPOSITORY, ref: "tags/v0.32.1" }), null);
-    assert.deepEqual(calls.map(call => call.path), [`/repos/${REPOSITORY}/git/ref/heads/main`, `/repos/${REPOSITORY}/git/ref/tags/v0.32.1`]);
+    assert.equal(await provider.getRef({ repository: REPOSITORY, ref: "tags/v0.33.0-beta.0" }), null);
+    assert.deepEqual(calls.map(call => call.path), [`/repos/${REPOSITORY}/git/ref/heads/main`, `/repos/${REPOSITORY}/git/ref/tags/v0.33.0-beta.0`]);
     assert.ok(calls.every(call => call.kind === "read" && call.method === "GET" && call.endpointId === "github.release.provider"));
     assert.deepEqual(calls[0]!.headers, { accept: "application/vnd.github+json", "user-agent": "reelier-release-provider/1", "x-github-api-version": "2022-11-28" });
   });
@@ -149,7 +149,7 @@ test("createBlob, createTree, and createCommit send closed transport effects and
     const contentBase64 = Buffer.from("hello").toString("base64");
     assert.deepEqual(await provider.createBlob({ repository: REPOSITORY, contentBase64 }), { sha: SHA_B });
     assert.deepEqual(await provider.createTree({ repository: REPOSITORY, baseTreeSha: SHA_A, files: [{ path: "package.json", mode: "100644", blobSha: SHA_B }] }), { sha: SHA_C });
-    assert.deepEqual(await provider.createCommit({ repository: REPOSITORY, treeSha: SHA_C, parentSha: SHA_A, message: "Release v0.32.1", author: { name: "Release Cell", email: "cell@example.test", date: "2026-08-19T00:00:00Z" }, committer: { name: "Release Cell", email: "cell@example.test", date: "2026-08-19T00:00:00Z" } }), { sha: SHA_A });
+    assert.deepEqual(await provider.createCommit({ repository: REPOSITORY, treeSha: SHA_C, parentSha: SHA_A, message: "Release v0.33.0-beta.0", author: { name: "Release Cell", email: "cell@example.test", date: "2026-08-19T00:00:00Z" }, committer: { name: "Release Cell", email: "cell@example.test", date: "2026-08-19T00:00:00Z" } }), { sha: SHA_A });
     assert.deepEqual(calls.map(call => `${call.method} ${call.path}`), [
       `POST /repos/${REPOSITORY}/git/blobs`,
       `POST /repos/${REPOSITORY}/git/trees`,
@@ -157,53 +157,53 @@ test("createBlob, createTree, and createCommit send closed transport effects and
     ]);
     assert.deepEqual(calls[0]!.body, { content: contentBase64, encoding: "base64" });
     assert.deepEqual(calls[1]!.body, { base_tree: SHA_A, tree: [{ path: "package.json", mode: "100644", type: "blob", sha: SHA_B }] });
-    assert.deepEqual(calls[2]!.body, { message: "Release v0.32.1", tree: SHA_C, parents: [SHA_A], author: { name: "Release Cell", email: "cell@example.test", date: "2026-08-19T00:00:00Z" }, committer: { name: "Release Cell", email: "cell@example.test", date: "2026-08-19T00:00:00Z" } });
+    assert.deepEqual(calls[2]!.body, { message: "Release v0.33.0-beta.0", tree: SHA_C, parents: [SHA_A], author: { name: "Release Cell", email: "cell@example.test", date: "2026-08-19T00:00:00Z" }, committer: { name: "Release Cell", email: "cell@example.test", date: "2026-08-19T00:00:00Z" } });
     assert.ok(calls.every(call => call.query === ""));
   });
 });
 
 test("createRef never forces, and getCommit refuses a multi-parent commit", async () => {
-  await withTransport([json(201, { ref: "refs/tags/v0.32.1", object: { sha: SHA_A } }), json(200, { sha: SHA_A, parents: [{ sha: SHA_B }, { sha: SHA_C }], tree: { sha: SHA_C } }), json(404, {}), json(200, { sha: SHA_A, parents: [{ sha: SHA_B }], tree: { sha: SHA_C } })], async (provider, calls) => {
-    assert.deepEqual(await provider.createRef({ repository: REPOSITORY, ref: "tags/v0.32.1", sha: SHA_A, force: false }), { sha: SHA_A });
-    assert.deepEqual(calls[0]!.body, { ref: "refs/tags/v0.32.1", sha: SHA_A });
+  await withTransport([json(201, { ref: "refs/tags/v0.33.0-beta.0", object: { sha: SHA_A } }), json(200, { sha: SHA_A, parents: [{ sha: SHA_B }, { sha: SHA_C }], tree: { sha: SHA_C } }), json(404, {}), json(200, { sha: SHA_A, parents: [{ sha: SHA_B }], tree: { sha: SHA_C } })], async (provider, calls) => {
+    assert.deepEqual(await provider.createRef({ repository: REPOSITORY, ref: "tags/v0.33.0-beta.0", sha: SHA_A, force: false }), { sha: SHA_A });
+    assert.deepEqual(calls[0]!.body, { ref: "refs/tags/v0.33.0-beta.0", sha: SHA_A });
     const multiParent = await refusalOf(provider.getCommit({ repository: REPOSITORY, sha: SHA_A }));
     assert.equal(multiParent.kind, "definitive-refusal");
     assert.match(String(multiParent.reason), /2 parents/);
     assert.equal(await provider.getCommit({ repository: REPOSITORY, sha: SHA_A }), null);
     assert.deepEqual(await provider.getCommit({ repository: REPOSITORY, sha: SHA_A }), { sha: SHA_A, parentSha: SHA_B, treeSha: SHA_C });
-    const forced = await refusalOf(provider.createRef({ repository: REPOSITORY, ref: "tags/v0.32.1", sha: SHA_A, force: true } as never));
+    const forced = await refusalOf(provider.createRef({ repository: REPOSITORY, ref: "tags/v0.33.0-beta.0", sha: SHA_A, force: true } as never));
     assert.deepEqual(forced, { v: "reelier.github-release-provider-fault/v1", kind: "definitive-refusal", reason: "force ref creation is never authorized" });
   });
 });
 
 test("getPullRequest never reports a test-merge SHA on an unmerged pull request", async () => {
-  const detail = { number: 7, node_id: "PR_x", head: { ref: "reelier/release/0.32.1", sha: SHA_A }, base: { ref: "main" }, draft: false, title: "Release v0.32.1", body: "Governed release v0.32.1", merged: false, merged_at: null, merge_commit_sha: SHA_C };
+  const detail = { number: 7, node_id: "PR_x", head: { ref: "reelier/release/0.33.0-beta.0", sha: SHA_A }, base: { ref: "main" }, draft: false, title: "Release v0.33.0-beta.0", body: "Governed release v0.33.0-beta.0", merged: false, merged_at: null, merge_commit_sha: SHA_C };
   await withTransport([json(200, detail), json(200, { ...detail, merged: true, merged_at: "2026-08-19T00:00:00Z" })], async (provider, calls) => {
-    assert.deepEqual(await provider.getPullRequest({ repository: REPOSITORY, number: 7 }), { number: 7, head: "reelier/release/0.32.1", base: "main", draft: false, title: "Release v0.32.1", body: "Governed release v0.32.1", headSha: SHA_A, merged: false, mergeCommitSha: null });
-    assert.deepEqual(await provider.getPullRequest({ repository: REPOSITORY, number: 7 }), { number: 7, head: "reelier/release/0.32.1", base: "main", draft: false, title: "Release v0.32.1", body: "Governed release v0.32.1", headSha: SHA_A, merged: true, mergeCommitSha: SHA_C });
+    assert.deepEqual(await provider.getPullRequest({ repository: REPOSITORY, number: 7 }), { number: 7, head: "reelier/release/0.33.0-beta.0", base: "main", draft: false, title: "Release v0.33.0-beta.0", body: "Governed release v0.33.0-beta.0", headSha: SHA_A, merged: false, mergeCommitSha: null });
+    assert.deepEqual(await provider.getPullRequest({ repository: REPOSITORY, number: 7 }), { number: 7, head: "reelier/release/0.33.0-beta.0", base: "main", draft: false, title: "Release v0.33.0-beta.0", body: "Governed release v0.33.0-beta.0", headSha: SHA_A, merged: true, mergeCommitSha: SHA_C });
     assert.deepEqual(calls.map(call => call.path), [`/repos/${REPOSITORY}/pulls/7`, `/repos/${REPOSITORY}/pulls/7`]);
   });
 });
 
 test("findPullRequests percent-encodes a slashed head branch the driver would otherwise refuse", async () => {
-  const listed = { number: 7, head: { ref: "reelier/release/0.32.1", sha: SHA_A }, base: { ref: "main" }, draft: true, title: "Release v0.32.1", body: "Governed release v0.32.1", merged_at: "2026-08-19T00:00:00Z", merge_commit_sha: SHA_C };
+  const listed = { number: 7, head: { ref: "reelier/release/0.33.0-beta.0", sha: SHA_A }, base: { ref: "main" }, draft: true, title: "Release v0.33.0-beta.0", body: "Governed release v0.33.0-beta.0", merged_at: "2026-08-19T00:00:00Z", merge_commit_sha: SHA_C };
   await withTransport([json(200, [listed])], async (provider, calls) => {
     // The list payload carries NO `merged` field: presence of `merged_at` is the only evidence.
-    assert.deepEqual(await provider.findPullRequests({ repository: REPOSITORY, head: "reelier/release/0.32.1", base: "main" }), [
-      { number: 7, head: "reelier/release/0.32.1", base: "main", draft: true, title: "Release v0.32.1", body: "Governed release v0.32.1", headSha: SHA_A, merged: true, mergeCommitSha: SHA_C },
+    assert.deepEqual(await provider.findPullRequests({ repository: REPOSITORY, head: "reelier/release/0.33.0-beta.0", base: "main" }), [
+      { number: 7, head: "reelier/release/0.33.0-beta.0", base: "main", draft: true, title: "Release v0.33.0-beta.0", body: "Governed release v0.33.0-beta.0", headSha: SHA_A, merged: true, mergeCommitSha: SHA_C },
     ]);
     assert.equal(calls[0]!.path, `/repos/${REPOSITORY}/pulls`);
-    assert.equal(calls[0]!.query, "head=seldonframe-rehearsal%3Areelier%2Frelease%2F0.32.1&base=main&state=all&per_page=100");
+    assert.equal(calls[0]!.query, "head=seldonframe-rehearsal%3Areelier%2Frelease%2F0.33.0-beta.0&base=main&state=all&per_page=100");
     assert.ok(!calls[0]!.query.includes("/"), "the driver refuses any query containing a slash");
   });
 });
 
 test("createPullRequest opens a draft and markPullRequestReady uses the GraphQL mutation with a readback", async () => {
-  const draft = { number: 7, node_id: "PR_x", head: { ref: "reelier/release/0.32.1", sha: SHA_A }, base: { ref: "main" }, draft: true, title: "Release v0.32.1", body: "Governed release v0.32.1", merged: false, merged_at: null, merge_commit_sha: null };
+  const draft = { number: 7, node_id: "PR_x", head: { ref: "reelier/release/0.33.0-beta.0", sha: SHA_A }, base: { ref: "main" }, draft: true, title: "Release v0.33.0-beta.0", body: "Governed release v0.33.0-beta.0", merged: false, merged_at: null, merge_commit_sha: null };
   await withTransport([json(201, draft), json(200, draft), json(200, { data: { markPullRequestReadyForReview: { pullRequest: { number: 7 } } } }), json(200, { ...draft, draft: false })], async (provider, calls) => {
-    const created = await provider.createPullRequest({ repository: REPOSITORY, title: "Release v0.32.1", body: "Governed release v0.32.1", head: "reelier/release/0.32.1", base: "main", draft: true }) as { draft: boolean };
+    const created = await provider.createPullRequest({ repository: REPOSITORY, title: "Release v0.33.0-beta.0", body: "Governed release v0.33.0-beta.0", head: "reelier/release/0.33.0-beta.0", base: "main", draft: true }) as { draft: boolean };
     assert.equal(created.draft, true);
-    assert.deepEqual(calls[0]!.body, { title: "Release v0.32.1", body: "Governed release v0.32.1", head: "reelier/release/0.32.1", base: "main", draft: true });
+    assert.deepEqual(calls[0]!.body, { title: "Release v0.33.0-beta.0", body: "Governed release v0.33.0-beta.0", head: "reelier/release/0.33.0-beta.0", base: "main", draft: true });
     const ready = await provider.markPullRequestReady({ repository: REPOSITORY, number: 7 }) as { draft: boolean };
     assert.equal(ready.draft, false, "ready-for-review is confirmed by an authoritative readback, never by the mutation echo");
     assert.deepEqual(calls.map(call => `${call.method} ${call.path}`), [
@@ -218,7 +218,7 @@ test("createPullRequest opens a draft and markPullRequestReady uses the GraphQL 
 });
 
 test("a GraphQL errors payload on ready-for-review is a definitive refusal, never a pass", async () => {
-  const draft = { number: 7, node_id: "PR_x", head: { ref: "reelier/release/0.32.1", sha: SHA_A }, base: { ref: "main" }, draft: true, title: "t", body: "b", merged: false, merged_at: null, merge_commit_sha: null };
+  const draft = { number: 7, node_id: "PR_x", head: { ref: "reelier/release/0.33.0-beta.0", sha: SHA_A }, base: { ref: "main" }, draft: true, title: "t", body: "b", merged: false, merged_at: null, merge_commit_sha: null };
   await withTransport([json(200, draft), json(200, { data: null, errors: [{ message: "Resource not accessible by integration" }] })], async provider => {
     const fault = await refusalOf(provider.markPullRequestReady({ repository: REPOSITORY, number: 7 }));
     assert.equal(fault.kind, "definitive-refusal");
@@ -308,19 +308,19 @@ test("getChecks never dispatches a check-runs read, so an external app's check c
 
 test("mergePullRequest binds the exact expected head sha and refuses any non-squash method", async () => {
   await withTransport([json(200, { merged: true, sha: SHA_C })], async (provider, calls) => {
-    assert.deepEqual(await provider.mergePullRequest({ repository: REPOSITORY, number: 7, expectedHeadSha: SHA_A, method: "squash", commitTitle: "Release v0.32.1 (#7)", commitMessage: "Governed release" }), { merged: true, sha: SHA_C });
+    assert.deepEqual(await provider.mergePullRequest({ repository: REPOSITORY, number: 7, expectedHeadSha: SHA_A, method: "squash", commitTitle: "Release v0.33.0-beta.0 (#7)", commitMessage: "Governed release" }), { merged: true, sha: SHA_C });
     assert.equal(`${calls[0]!.method} ${calls[0]!.path}`, `PUT /repos/${REPOSITORY}/pulls/7/merge`);
-    assert.deepEqual(calls[0]!.body, { sha: SHA_A, merge_method: "squash", commit_title: "Release v0.32.1 (#7)", commit_message: "Governed release" });
+    assert.deepEqual(calls[0]!.body, { sha: SHA_A, merge_method: "squash", commit_title: "Release v0.33.0-beta.0 (#7)", commit_message: "Governed release" });
     const fault = await refusalOf(provider.mergePullRequest({ repository: REPOSITORY, number: 7, expectedHeadSha: SHA_A, method: "merge", commitTitle: "t", commitMessage: "m" }));
     assert.equal(fault.kind, "definitive-refusal");
   });
 });
 
 test("npmVersionExists reads the registry endpoint and maps absence, presence, and uncertainty", async () => {
-  await withTransport([json(404, {}), json(200, { versions: { "0.32.1": { dist: {} } } }), json(500, {})], async (provider, calls) => {
-    assert.equal(await provider.npmVersionExists({ packageName: "reelier", version: "0.32.1" }), false);
-    assert.equal(await provider.npmVersionExists({ packageName: "reelier", version: "0.32.1" }), true);
-    const fault = await refusalOf(provider.npmVersionExists({ packageName: "reelier", version: "0.32.1" }));
+  await withTransport([json(404, {}), json(200, { versions: { "0.33.0-beta.0": { dist: {} } } }), json(500, {})], async (provider, calls) => {
+    assert.equal(await provider.npmVersionExists({ packageName: "reelier", version: "0.33.0-beta.0" }), false);
+    assert.equal(await provider.npmVersionExists({ packageName: "reelier", version: "0.33.0-beta.0" }), true);
+    const fault = await refusalOf(provider.npmVersionExists({ packageName: "reelier", version: "0.33.0-beta.0" }));
     assert.equal(fault.kind, "transport-uncertain");
     assert.ok(calls.every(call => call.endpointId === "npm.registry.read" && call.path === "/reelier" && call.query === ""));
     // The registry endpoint carries no credential reference at all, so no bearer can be attached.
@@ -329,9 +329,9 @@ test("npmVersionExists reads the registry endpoint and maps absence, presence, a
 });
 
 test("readPackageManifest decodes the base64 manifest at the exact commit", async () => {
-  const manifest = Buffer.from(JSON.stringify({ name: "reelier", version: "0.32.1", scripts: {} }));
+  const manifest = Buffer.from(JSON.stringify({ name: "reelier", version: "0.33.0-beta.0", scripts: {} }));
   await withTransport([json(200, { content: manifest.toString("base64"), encoding: "base64" }), json(200, { content: Buffer.from("not json").toString("base64") })], async (provider, calls) => {
-    assert.deepEqual(await provider.readPackageManifest({ repository: REPOSITORY, sha: SHA_A }), { name: "reelier", version: "0.32.1" });
+    assert.deepEqual(await provider.readPackageManifest({ repository: REPOSITORY, sha: SHA_A }), { name: "reelier", version: "0.33.0-beta.0" });
     assert.equal(`${calls[0]!.path}?${calls[0]!.query}`, `/repos/${REPOSITORY}/contents/package.json?ref=${SHA_A}`);
     const fault = await refusalOf(provider.readPackageManifest({ repository: REPOSITORY, sha: SHA_A }));
     assert.equal(fault.kind, "transport-uncertain");
@@ -345,7 +345,7 @@ test("faults are plain closed DTOs: 422 is definitive-refusal, a transport throw
   });
   try {
     const provider = createGitHubReleaseHttpsProvider(config, secrets);
-    const refused = await refusalOf(provider.createRef({ repository: REPOSITORY, ref: "tags/v0.32.1", sha: SHA_A, force: false }));
+    const refused = await refusalOf(provider.createRef({ repository: REPOSITORY, ref: "tags/v0.33.0-beta.0", sha: SHA_A, force: false }));
     assert.deepEqual(refused, { v: "reelier.github-release-provider-fault/v1", kind: "definitive-refusal", reason: "ref creation refused with HTTP 422" });
     const uncertain = await refusalOf(provider.getRef({ repository: REPOSITORY, ref: "heads/main" }));
     assert.deepEqual(uncertain, { v: "reelier.github-release-provider-fault/v1", kind: "transport-uncertain", reason: "socket hang up" });
@@ -421,23 +421,23 @@ const provider = createGitHubReleaseHttpsProvider(config, { async resolve(refere
 
 const ref = await provider.getRef({ repository: REPOSITORY, ref: "heads/main" });
 const blob = await provider.createBlob({ repository: REPOSITORY, contentBase64: Buffer.from("hello").toString("base64") });
-// The release head branch contains slashes ("reelier/release/0.32.1"). This is the ONE place the
+// The release head branch contains slashes ("reelier/release/0.33.0-beta.0"). This is the ONE place the
 // percent-encoding regression is exercised against the REAL json-https driver (every other
 // findPullRequests coverage runs through the fakeTransport seam, which never touches the driver's
 // own query validation) — the driver refuses ANY unencoded query slash (validateQuery), so this
 // call only succeeds if the provider percent-encoded it first.
-const pulls = await provider.findPullRequests({ repository: REPOSITORY, head: "reelier/release/0.32.1", base: "main" });
+const pulls = await provider.findPullRequests({ repository: REPOSITORY, head: "reelier/release/0.33.0-beta.0", base: "main" });
 // The checks source: the Actions runs listing for the head SHA, then that run's JOBS — never the
 // check-runs API, which a fine-grained PAT cannot read at all. Exercised through the REAL driver so
 // the two request shapes (and their single-page queries) are pinned at the transport boundary.
 const checks = await provider.getChecks({ repository: REPOSITORY, sha: "a".repeat(40) });
-const registry = await provider.npmVersionExists({ packageName: "reelier", version: "0.32.1" });
-let refusal; try { await provider.createRef({ repository: REPOSITORY, ref: "tags/v0.32.1", sha: "a".repeat(40), force: false }); } catch (error) { refusal = error; }
+const registry = await provider.npmVersionExists({ packageName: "reelier", version: "0.33.0-beta.0" });
+let refusal; try { await provider.createRef({ repository: REPOSITORY, ref: "tags/v0.33.0-beta.0", sha: "a".repeat(40), force: false }); } catch (error) { refusal = error; }
 let uncertain; try { await provider.getCommit({ repository: REPOSITORY, sha: "b".repeat(40) }); } catch (error) { uncertain = error; }
 
 assert.deepEqual(ref, { sha: "a".repeat(40) });
 assert.deepEqual(blob, { sha: "b".repeat(40) });
-assert.deepEqual(pulls, [{ number: 7, head: "reelier/release/0.32.1", base: "main", draft: true, title: "Release v0.32.1", body: "Governed release v0.32.1", headSha: "a".repeat(40), merged: true, mergeCommitSha: "c".repeat(40) }]);
+assert.deepEqual(pulls, [{ number: 7, head: "reelier/release/0.33.0-beta.0", base: "main", draft: true, title: "Release v0.33.0-beta.0", body: "Governed release v0.33.0-beta.0", headSha: "a".repeat(40), merged: true, mergeCommitSha: "c".repeat(40) }]);
 assert.equal(registry, true);
 // The Actions JOB name is the check name, verbatim — matrix suffix included.
 assert.deepEqual(checks, [{ name: "test (ubuntu-latest)", status: "success", workflowDigest: "sha256:" + createHash("sha256").update(Buffer.from("name: CI\n")).digest("hex"), workflowPath: ".github/workflows/ci.yml" }]);
@@ -478,11 +478,11 @@ test("the real driver receives the exact request shape and the token appears ONL
   const script: [string, { status: number; body: string }][] = [
     [`GET /repos/${REPOSITORY}/git/ref/heads/main`, { status: 200, body: JSON.stringify({ ref: "refs/heads/main", object: { sha: SHA_A } }) }],
     [`POST /repos/${REPOSITORY}/git/blobs`, { status: 201, body: JSON.stringify({ sha: SHA_B }) }],
-    [`GET /repos/${REPOSITORY}/pulls`, { status: 200, body: JSON.stringify([{ number: 7, head: { ref: "reelier/release/0.32.1", sha: SHA_A }, base: { ref: "main" }, draft: true, title: "Release v0.32.1", body: "Governed release v0.32.1", merged_at: "2026-08-19T00:00:00Z", merge_commit_sha: SHA_C }]) }],
+    [`GET /repos/${REPOSITORY}/pulls`, { status: 200, body: JSON.stringify([{ number: 7, head: { ref: "reelier/release/0.33.0-beta.0", sha: SHA_A }, base: { ref: "main" }, draft: true, title: "Release v0.33.0-beta.0", body: "Governed release v0.33.0-beta.0", merged_at: "2026-08-19T00:00:00Z", merge_commit_sha: SHA_C }]) }],
     [`GET /repos/${REPOSITORY}/actions/runs`, { status: 200, body: JSON.stringify({ workflow_runs: [{ id: 4242, path: ".github/workflows/ci.yml", head_sha: SHA_A }] }) }],
     [`GET /repos/${REPOSITORY}/actions/runs/4242/jobs`, { status: 200, body: JSON.stringify({ jobs: [{ id: 2, name: "test (ubuntu-latest)", status: "completed", conclusion: "success" }] }) }],
     [`GET /repos/${REPOSITORY}/contents/.github/workflows/ci.yml`, { status: 200, body: JSON.stringify({ content: Buffer.from("name: CI\n").toString("base64"), encoding: "base64" }) }],
-    ["GET /reelier", { status: 200, body: JSON.stringify({ versions: { "0.32.1": {} } }) }],
+    ["GET /reelier", { status: 200, body: JSON.stringify({ versions: { "0.33.0-beta.0": {} } }) }],
     [`POST /repos/${REPOSITORY}/git/refs`, { status: 422, body: JSON.stringify({ message: "Validation Failed" }) }],
     [`GET /repos/${REPOSITORY}/git/commits/${SHA_B}`, { status: 500, body: "{}" }],
   ];
@@ -507,7 +507,7 @@ test("the real driver receives the exact request shape and the token appears ONL
   assert.deepEqual(requests.map(entry => `${entry.method} https://${entry.hostname}${entry.path}`), [
     `GET https://api.github.com/repos/${REPOSITORY}/git/ref/heads/main`,
     `POST https://api.github.com/repos/${REPOSITORY}/git/blobs`,
-    `GET https://api.github.com/repos/${REPOSITORY}/pulls?head=${encodeURIComponent(`${REPOSITORY.slice(0, REPOSITORY.indexOf("/"))}:reelier/release/0.32.1`)}&base=main&state=all&per_page=100`,
+    `GET https://api.github.com/repos/${REPOSITORY}/pulls?head=${encodeURIComponent(`${REPOSITORY.slice(0, REPOSITORY.indexOf("/"))}:reelier/release/0.33.0-beta.0`)}&base=main&state=all&per_page=100`,
     `GET https://api.github.com/repos/${REPOSITORY}/actions/runs?head_sha=${SHA_A}&per_page=100`,
     `GET https://api.github.com/repos/${REPOSITORY}/actions/runs/4242/jobs?per_page=100`,
     `GET https://api.github.com/repos/${REPOSITORY}/contents/.github/workflows/ci.yml?ref=${SHA_A}`,
@@ -519,7 +519,7 @@ test("the real driver receives the exact request shape and the token appears ONL
   // exercised elsewhere in this file) refuses ANY query containing a raw slash, so the slashed head
   // branch is only dispatchable at all because the provider percent-encoded it first.
   assert.ok(requests[2]!.path.includes("%2F"), "the real request line must carry the percent-encoded slash");
-  assert.equal(requests[2]!.path.includes("/release/0.32.1"), false, "the head branch's slashes must never appear unencoded in the request line");
+  assert.equal(requests[2]!.path.includes("/release/0.33.0-beta.0"), false, "the head branch's slashes must never appear unencoded in the request line");
   assert.deepEqual(requests[0]!.headerNames, ["accept", "authorization", "user-agent", "x-github-api-version"]);
   assert.deepEqual(requests[1]!.headerNames, ["accept", "authorization", "content-length", "user-agent", "x-github-api-version"]);
   assert.deepEqual(requests[2]!.headerNames, ["accept", "authorization", "user-agent", "x-github-api-version"]);

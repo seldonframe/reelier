@@ -192,10 +192,10 @@ const PARAMETERS_TEMPLATE = `{
   "commit": {
     "author": { "date": "<ISO 8601>", "email": "release@example.com", "name": "Release" },
     "committer": { "date": "<ISO 8601>", "email": "release@example.com", "name": "Release" },
-    "message": "release: v0.32.1"
+    "message": "release: v0.33.0-beta.0"
   },
-  "pullRequest": { "title": "Release v0.32.1", "body": "<PR body>" },
-  "squash": { "commitTitle": "Release v0.32.1", "commitMessage": "<squash body>" },
+  "pullRequest": { "title": "Release v0.33.0-beta.0", "body": "<PR body>" },
+  "squash": { "commitTitle": "Release v0.33.0-beta.0", "commitMessage": "<squash body>" },
   "requiredChecks": ["<sorted unique check names, exactly the CI workflow's check set>"],
 
   "signerIds": {
@@ -624,33 +624,33 @@ try {
   const operationPlan = createSignedReleaseOperationPlanV1({
     baseCommit: parameters.baseCommit,
     baseTreeSha: parameters.baseTreeSha,
-    candidateBranch: "reelier/release/0.32.1",
+    candidateBranch: "reelier/release/0.33.0-beta.0",
     candidateTreeDigest,
     commit: { ...parameters.commit, parentSha: parameters.baseCommit },
     destinationBranch: "main",
     expectedCommitSha: parameters.candidateCommit,
     expectedTreeSha: parameters.expectedTreeSha,
     files: parameters.files,
-    npmPreflight: { packageName: "reelier", version: "0.32.1", versionMustBeAbsent: true },
-    pullRequest: { base: "main", body: parameters.pullRequest.body, draft: true, head: "reelier/release/0.32.1", readyForReview: true, title: parameters.pullRequest.title },
+    npmPreflight: { packageName: "reelier", version: "0.33.0-beta.0", versionMustBeAbsent: true },
+    pullRequest: { base: "main", body: parameters.pullRequest.body, draft: true, head: "reelier/release/0.33.0-beta.0", readyForReview: true, title: parameters.pullRequest.title },
     repository: args.repository,
     requiredChecks: parameters.requiredChecks,
     squash: parameters.squash,
-    tag: "v0.32.1",
+    tag: "v0.33.0-beta.0",
     v: "reelier.release-operation-plan/v1",
     workflowCommitments: workflows,
   }, authorizationSigner);
 
   const candidateManifest = createSignedStagedCandidateManifestV1({
     baseCommit: parameters.baseCommit,
-    branch: "reelier/release/0.32.1",
+    branch: "reelier/release/0.33.0-beta.0",
     candidateCommit: parameters.candidateCommit,
     candidateTreeDigest,
     changedBytes: parameters.changedBytes,
     changedPaths: [...RELEASE_PATHS],
     destinationBranch: "main",
     packageName: "reelier",
-    packageVersion: "0.32.1",
+    packageVersion: "0.33.0-beta.0",
     packedTarballDigest: parameters.packedTarballDigest,
     qualityEvidence: {
       coverageEvidenceDigest: parameters.qualityEvidence.coverageEvidenceDigest,
@@ -664,7 +664,7 @@ try {
     // R3: one value for both artifacts. verifyReleaseAuthorizationBundleV1 refuses a manifest and a
     // plan that name different repositories, so they cannot be composed apart here.
     repository: args.repository,
-    tag: "v0.32.1",
+    tag: "v0.33.0-beta.0",
     v: "reelier.staged-candidate-manifest/v1",
     workflowCommitments: workflows,
   }, authorizationSigner);

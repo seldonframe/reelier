@@ -81,37 +81,37 @@ function buildArtifactSet(options: FixtureOptions = {}): Record<string, string> 
   const operationPlan = createSignedReleaseOperationPlanV1({
     baseCommit,
     baseTreeSha: sha("b"),
-    candidateBranch: "reelier/release/0.32.1",
+    candidateBranch: "reelier/release/0.33.0-beta.0",
     candidateTreeDigest,
     commit: {
       author: { date: issuedAt, email: "release@seldonframe.com", name: "SeldonFrame Release" },
       committer: { date: issuedAt, email: "release@seldonframe.com", name: "SeldonFrame Release" },
-      message: "release: v0.32.1",
+      message: "release: v0.33.0-beta.0",
       parentSha: baseCommit,
     },
     destinationBranch: "main",
     expectedCommitSha: sha("a"),
     expectedTreeSha: sha("e"),
     files,
-    npmPreflight: { packageName: "reelier", version: "0.32.1", versionMustBeAbsent: true },
-    pullRequest: { base: "main", body: "Governed release v0.32.1", draft: true, head: "reelier/release/0.32.1", readyForReview: true, title: "Release v0.32.1" },
+    npmPreflight: { packageName: "reelier", version: "0.33.0-beta.0", versionMustBeAbsent: true },
+    pullRequest: { base: "main", body: "Governed release v0.33.0-beta.0", draft: true, head: "reelier/release/0.33.0-beta.0", readyForReview: true, title: "Release v0.33.0-beta.0" },
     repository: "seldonframe/reelier",
     requiredChecks: ["coverage", "full-tests", "mutation"],
-    squash: { commitMessage: "release: v0.32.1", commitTitle: "Release v0.32.1" },
-    tag: "v0.32.1",
+    squash: { commitMessage: "release: v0.33.0-beta.0", commitTitle: "Release v0.33.0-beta.0" },
+    tag: "v0.33.0-beta.0",
     v: "reelier.release-operation-plan/v1",
     workflowCommitments: workflows,
   }, signer);
   const candidateManifest = createSignedStagedCandidateManifestV1({
     baseCommit,
-    branch: "reelier/release/0.32.1",
+    branch: "reelier/release/0.33.0-beta.0",
     candidateCommit: sha("a"),
     candidateTreeDigest,
     changedBytes: 4_096,
     changedPaths: files.map(file => file.path),
     destinationBranch: "main",
     packageName: "reelier",
-    packageVersion: "0.32.1",
+    packageVersion: "0.33.0-beta.0",
     packedTarballDigest: options.packedTarballDigest ?? digest("2"),
     qualityEvidence: {
       coverageEvidenceDigest: digest("7"),
@@ -123,7 +123,7 @@ function buildArtifactSet(options: FixtureOptions = {}): Record<string, string> 
       mutationScoreBasisPoints: 9_500,
     },
     repository: "seldonframe/reelier",
-    tag: "v0.32.1",
+    tag: "v0.33.0-beta.0",
     v: "reelier.staged-candidate-manifest/v1",
     workflowCommitments: workflows,
   }, signer);
@@ -281,18 +281,18 @@ test("verifier accepts a live artifact directory, checks the tarball, and emits 
     const dir = writeArtifactDir(root, buildArtifactSet({ packedTarballDigest: tarballDigest }));
     const pinPath = path.join(root, "pin.json");
     writeFileSync(pinPath, trustPin(authorityKeys.publicKey), "utf8");
-    const tarballPath = path.join(root, "reelier-0.32.1.tgz");
+    const tarballPath = path.join(root, "reelier-0.33.0-beta.0.tgz");
     writeFileSync(tarballPath, tarballBytes);
     const emitPath = path.join(root, "summary.json");
-    const run = runVerifier(["--dir", dir, "--trust-pin", pinPath, "--tag", "v0.32.1", "--tarball", tarballPath, "--emit", emitPath]);
+    const run = runVerifier(["--dir", dir, "--trust-pin", pinPath, "--tag", "v0.33.0-beta.0", "--tarball", tarballPath, "--emit", emitPath]);
     assert.equal(run.status, 0, run.stderr);
     assert.match(run.stdout, /^release authorization verified: sha256:[0-9a-f]{64} /);
     assert.match(run.stdout, /NOT CHECKED: receipt-graph verification/);
     assert.match(run.stdout, /NOT CHECKED: HEAD/);
     const summary = JSON.parse(readFileSync(emitPath, "utf8"));
     assert.equal(summary.v, "reelier.release-verification-summary/v1");
-    assert.equal(summary.tag, "v0.32.1");
-    assert.equal(summary.packageVersion, "0.32.1");
+    assert.equal(summary.tag, "v0.33.0-beta.0");
+    assert.equal(summary.packageVersion, "0.33.0-beta.0");
     assert.equal(summary.packedTarballDigest, tarballDigest);
     assert.equal(summary.candidateCommit, sha("a"));
     assert.match(summary.authorizationBundleDigest, /^sha256:[0-9a-f]{64}$/);
@@ -312,7 +312,7 @@ test("R2 amendment: the offline verifier accepts a signed artifact set carrying 
     const pinPath = path.join(root, "pin.json");
     writeFileSync(pinPath, trustPin(authorityKeys.publicKey), "utf8");
     const emitPath = path.join(root, "summary.json");
-    const run = runVerifier(["--dir", dir, "--trust-pin", pinPath, "--tag", "v0.32.1", "--emit", emitPath]);
+    const run = runVerifier(["--dir", dir, "--trust-pin", pinPath, "--tag", "v0.33.0-beta.0", "--emit", emitPath]);
     assert.equal(run.status, 0, run.stderr);
     const plan = JSON.parse(readFileSync(path.join(dir, ARTIFACT_FILE_NAMES.operationPlan), "utf8"));
     assert.equal(plan.value.baseCommit, AMENDED_BASE);
@@ -325,14 +325,14 @@ test("verifier reads the out-of-band authorization ref from a real git clone", (
   const root = scratch();
   try {
     const repo = gitRepo(root);
-    const ref = "refs/reelier/release-authorizations/v0.32.1";
+    const ref = "refs/reelier/release-authorizations/v0.33.0-beta.0";
     commitArtifactRef(repo, buildArtifactSet(), ref);
     const pinPath = path.join(root, "pin.json");
     writeFileSync(pinPath, trustPin(authorityKeys.publicKey), "utf8");
-    const run = runVerifier(["--ref", ref, "--trust-pin", pinPath, "--tag", "v0.32.1"], { cwd: repo });
+    const run = runVerifier(["--ref", ref, "--trust-pin", pinPath, "--tag", "v0.33.0-beta.0"], { cwd: repo });
     assert.equal(run.status, 0, run.stderr);
     assert.match(run.stdout, /^release authorization verified: sha256:/);
-    const absent = runVerifier(["--ref", "refs/reelier/release-authorizations/v9.9.9", "--trust-pin", pinPath, "--tag", "v0.32.1"], { cwd: repo });
+    const absent = runVerifier(["--ref", "refs/reelier/release-authorizations/v9.9.9", "--trust-pin", pinPath, "--tag", "v0.33.0-beta.0"], { cwd: repo });
     assert.equal(absent.status, 1);
     assert.match(absent.stderr, /authorization ref .* is absent/i);
   } finally { rmSync(root, { force: true, recursive: true }); }
@@ -344,7 +344,7 @@ test("verifier refuses an artifact set signed by an untrusted signer", () => {
     const dir = writeArtifactDir(root, buildArtifactSet({ signingKey: foreignKeys.privateKey }));
     const pinPath = path.join(root, "pin.json");
     writeFileSync(pinPath, trustPin(authorityKeys.publicKey), "utf8");
-    const run = runVerifier(["--dir", dir, "--trust-pin", pinPath, "--tag", "v0.32.1"]);
+    const run = runVerifier(["--dir", dir, "--trust-pin", pinPath, "--tag", "v0.33.0-beta.0"]);
     assert.equal(run.status, 1);
     assert.match(run.stderr, /refused/i);
     assert.match(run.stderr, /signature is invalid/i);
@@ -359,7 +359,7 @@ test("verifier refuses a tampered canonical artifact string", () => {
     const dir = writeArtifactDir(root, files);
     const pinPath = path.join(root, "pin.json");
     writeFileSync(pinPath, trustPin(authorityKeys.publicKey), "utf8");
-    const run = runVerifier(["--dir", dir, "--trust-pin", pinPath, "--tag", "v0.32.1"]);
+    const run = runVerifier(["--dir", dir, "--trust-pin", pinPath, "--tag", "v0.33.0-beta.0"]);
     assert.equal(run.status, 1);
     assert.match(run.stderr, /refused|invalid|canonical/i);
   } finally { rmSync(root, { force: true, recursive: true }); }
@@ -385,7 +385,7 @@ for (const target of [
       const dir = writeArtifactDir(root, files);
       const pinPath = path.join(root, "pin.json");
       writeFileSync(pinPath, trustPin(authorityKeys.publicKey), "utf8");
-      const run = runVerifier(["--dir", dir, "--trust-pin", pinPath, "--tag", "v0.32.1"]);
+      const run = runVerifier(["--dir", dir, "--trust-pin", pinPath, "--tag", "v0.33.0-beta.0"]);
       assert.equal(run.status, 1, run.stdout);
       assert.match(run.stderr, /canonical/i);
     } finally { rmSync(root, { force: true, recursive: true }); }
@@ -401,7 +401,7 @@ test("verifier refuses a non-canonical encoding of the inner signed quality evid
     const dir = writeArtifactDir(root, files);
     const pinPath = path.join(root, "pin.json");
     writeFileSync(pinPath, trustPin(authorityKeys.publicKey), "utf8");
-    const run = runVerifier(["--dir", dir, "--trust-pin", pinPath, "--tag", "v0.32.1"]);
+    const run = runVerifier(["--dir", dir, "--trust-pin", pinPath, "--tag", "v0.33.0-beta.0"]);
     assert.equal(run.status, 1, run.stdout);
     assert.match(run.stderr, /ci-mutation quality evidence .* is not RFC 8785\/JCS canonical/);
   } finally { rmSync(root, { force: true, recursive: true }); }
@@ -413,7 +413,7 @@ test("verifier refuses an expired authorization with new Date() as the clock", (
     const dir = writeArtifactDir(root, buildArtifactSet({ issuedAtMs: Date.now() - 13 * 3_600_000 }));
     const pinPath = path.join(root, "pin.json");
     writeFileSync(pinPath, trustPin(authorityKeys.publicKey), "utf8");
-    const run = runVerifier(["--dir", dir, "--trust-pin", pinPath, "--tag", "v0.32.1"]);
+    const run = runVerifier(["--dir", dir, "--trust-pin", pinPath, "--tag", "v0.33.0-beta.0"]);
     assert.equal(run.status, 1);
     assert.match(run.stderr, /expired/i);
   } finally { rmSync(root, { force: true, recursive: true }); }
@@ -433,7 +433,7 @@ test("verifier refuses a wrong tag, an absent tag, and a wrong tarball digest", 
     assert.match(noTag.stderr, /release tag name is unavailable/);
     const tarballPath = path.join(root, "other.tgz");
     writeFileSync(tarballPath, Buffer.from("different-bytes"));
-    const wrongTarball = runVerifier(["--dir", dir, "--trust-pin", pinPath, "--tag", "v0.32.1", "--tarball", tarballPath]);
+    const wrongTarball = runVerifier(["--dir", dir, "--trust-pin", pinPath, "--tag", "v0.33.0-beta.0", "--tarball", tarballPath]);
     assert.equal(wrongTarball.status, 1);
     assert.match(wrongTarball.stderr, /packedTarballDigest/);
   } finally { rmSync(root, { force: true, recursive: true }); }
@@ -454,7 +454,7 @@ test("--check-head executes real git readback and refuses a non-matching head", 
     git("add", "."); git("commit", "-m", "one");
     writeFileSync(path.join(repo, "a.txt"), "two");
     git("add", "."); git("commit", "-m", "two");
-    const run = runVerifier(["--dir", dir, "--trust-pin", pinPath, "--tag", "v0.32.1", "--check-head"], { cwd: repo });
+    const run = runVerifier(["--dir", dir, "--trust-pin", pinPath, "--tag", "v0.33.0-beta.0", "--check-head"], { cwd: repo });
     assert.equal(run.status, 1);
     assert.match(run.stderr, /HEAD tree .* does not equal the signed expected tree/);
   } finally { rmSync(root, { force: true, recursive: true }); }
@@ -464,17 +464,17 @@ test("verifier refuses a missing trust pin, a malformed trust pin, and a pin nam
   const root = scratch();
   try {
     const dir = writeArtifactDir(root, buildArtifactSet());
-    const missing = runVerifier(["--dir", dir, "--trust-pin", path.join(root, "absent.json"), "--tag", "v0.32.1"]);
+    const missing = runVerifier(["--dir", dir, "--trust-pin", path.join(root, "absent.json"), "--tag", "v0.33.0-beta.0"]);
     assert.equal(missing.status, 1);
     assert.match(missing.stderr, /trust pin/i);
     const malformed = path.join(root, "malformed.json");
     writeFileSync(malformed, `${JSON.stringify({ publicKeySpkiBase64: spki(authorityKeys.publicKey) })}\n`, "utf8");
-    const bad = runVerifier(["--dir", dir, "--trust-pin", malformed, "--tag", "v0.32.1"]);
+    const bad = runVerifier(["--dir", dir, "--trust-pin", malformed, "--tag", "v0.33.0-beta.0"]);
     assert.equal(bad.status, 1);
     assert.match(bad.stderr, /trust pin/i);
     const wrongSigner = path.join(root, "wrong-signer.json");
     writeFileSync(wrongSigner, trustPin(authorityKeys.publicKey, "release-authority-other"), "utf8");
-    const mismatched = runVerifier(["--dir", dir, "--trust-pin", wrongSigner, "--tag", "v0.32.1"]);
+    const mismatched = runVerifier(["--dir", dir, "--trust-pin", wrongSigner, "--tag", "v0.33.0-beta.0"]);
     assert.equal(mismatched.status, 1);
     assert.match(mismatched.stderr, /signature is invalid/i);
   } finally { rmSync(root, { force: true, recursive: true }); }
@@ -486,7 +486,7 @@ test("verifier refuses environment-supplied signer pins (R4: the pin is file-com
     const dir = writeArtifactDir(root, buildArtifactSet());
     const pinPath = path.join(root, "pin.json");
     writeFileSync(pinPath, trustPin(authorityKeys.publicKey), "utf8");
-    const run = runVerifier(["--dir", dir, "--trust-pin", pinPath, "--tag", "v0.32.1"], { env: { REELIER_RELEASE_SIGNER_ID: "release-authority-2026", REELIER_RELEASE_SIGNER_SPKI: spki(authorityKeys.publicKey) } });
+    const run = runVerifier(["--dir", dir, "--trust-pin", pinPath, "--tag", "v0.33.0-beta.0"], { env: { REELIER_RELEASE_SIGNER_ID: "release-authority-2026", REELIER_RELEASE_SIGNER_SPKI: spki(authorityKeys.publicKey) } });
     assert.equal(run.status, 1);
     assert.match(run.stderr, /REELIER_RELEASE_SIGNER_(ID|SPKI)/);
     assert.match(run.stderr, /trust pin/i);
@@ -501,12 +501,12 @@ test("verifier refuses an artifact set that is missing or over-populated", () =>
     const incomplete = buildArtifactSet();
     delete incomplete[ARTIFACT_FILE_NAMES["ci-mutation"]];
     const missingDir = writeArtifactDir(root, incomplete);
-    const missing = runVerifier(["--dir", missingDir, "--trust-pin", pinPath, "--tag", "v0.32.1"]);
+    const missing = runVerifier(["--dir", missingDir, "--trust-pin", pinPath, "--tag", "v0.33.0-beta.0"]);
     assert.equal(missing.status, 1);
     assert.match(missing.stderr, /quality-evidence-ci-mutation\.json/);
     const extraDir = writeArtifactDir(root, buildArtifactSet(), "over-populated");
     writeFileSync(path.join(extraDir, "notes.txt"), "extra\n", "utf8");
-    const extra = runVerifier(["--dir", extraDir, "--trust-pin", pinPath, "--tag", "v0.32.1"]);
+    const extra = runVerifier(["--dir", extraDir, "--trust-pin", pinPath, "--tag", "v0.33.0-beta.0"]);
     assert.equal(extra.status, 1);
     assert.match(extra.stderr, /notes\.txt/);
   } finally { rmSync(root, { force: true, recursive: true }); }
@@ -519,21 +519,21 @@ test("verifier accepts and refuses the single-file transport envelope on the sam
     writeFileSync(pinPath, trustPin(authorityKeys.publicKey), "utf8");
     const good = path.join(root, "artifact-set.json");
     writeFileSync(good, envelopeText(buildArtifactSet()), "utf8");
-    const run = runVerifier(["--artifact-set", good, "--trust-pin", pinPath, "--tag", "v0.32.1"]);
+    const run = runVerifier(["--artifact-set", good, "--trust-pin", pinPath, "--tag", "v0.33.0-beta.0"]);
     assert.equal(run.status, 0, run.stderr);
     assert.match(run.stdout, /^release authorization verified: sha256:/);
     const widened = JSON.parse(envelopeText(buildArtifactSet()));
     widened.extra = "not in the closed envelope";
     const bad = path.join(root, "widened.json");
     writeFileSync(bad, JSON.stringify(widened), "utf8");
-    const refused = runVerifier(["--artifact-set", bad, "--trust-pin", pinPath, "--tag", "v0.32.1"]);
+    const refused = runVerifier(["--artifact-set", bad, "--trust-pin", pinPath, "--tag", "v0.33.0-beta.0"]);
     assert.equal(refused.status, 1);
     assert.match(refused.stderr, /envelope/i);
   } finally { rmSync(root, { force: true, recursive: true }); }
 });
 
 test("verifier refuses the retired --from-tag carrier and the retired inline signer flags", () => {
-  const retiredCarrier = runVerifier(["--from-tag", "v0.32.1"]);
+  const retiredCarrier = runVerifier(["--from-tag", "v0.33.0-beta.0"]);
   assert.equal(retiredCarrier.status, 1);
   assert.match(retiredCarrier.stderr, /--ref refs\/reelier\/release-authorizations/);
   for (const flag of ["--signer-id", "--signer-spki-base64"]) {
