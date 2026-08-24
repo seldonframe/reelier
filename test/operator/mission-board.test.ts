@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -41,8 +42,30 @@ test("the board binds to loopback and exposes no mission state without its fragm
     assert.equal((await fetch(`${board.origin}/api/state`)).status, 401);
     const authorized = await fetch(`${board.origin}/api/state`, { headers: { authorization: `Bearer ${CAPABILITY}` } });
     assert.equal(authorized.status, 200);
-    const state = await authorized.json() as { missions: Array<{ missionId: string }> };
+    const state = await authorized.json() as { currentWorkspaceDigest: string; missions: Array<{ missionId: string }> };
     assert.deepEqual(state.missions.map((mission) => mission.missionId), ["mission-board"]);
+    assert.equal(state.currentWorkspaceDigest, `sha256:${createHash("sha256").update(path.resolve(root), "utf8").digest("hex")}`);
+  } finally {
+    await board.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("the board orders current-repository work first and exposes a local/global switcher", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "reelier-mission-board-current-"));
+  const currentWorkspaceDigest = `sha256:${createHash("sha256").update(path.resolve(root), "utf8").digest("hex")}`;
+  const journal = await createMissionControlJournalV1({ root });
+  const record = (missionId: string, workspaceDigest: string) => ({ v: "reelier.mission-control-mission/v1" as const, missionId, workspaceDigest, harness: "codex" as const, harnessLifecycle: "discovered" as const, outcomeLifecycle: "unrequested" as const, attentionState: "none" as const, attentionReasons: [], evidenceRefs: [], processOwnership: "external" as const, imported: true, updatedAt: "2026-08-24T12:00:00.000Z" });
+  await journal.appendMission(record("mission-other", `sha256:${"f".repeat(64)}`));
+  await journal.appendMission(record("mission-current", currentWorkspaceDigest));
+  const board = await createMissionControlBoardV1({ root, capability: CAPABILITY, now: () => Date.parse("2026-08-24T12:30:00.000Z"), expiresAt: "2026-08-24T13:00:00.000Z" });
+  try {
+    const response = await fetch(`${board.origin}/api/state`, { headers: { authorization: `Bearer ${CAPABILITY}` } });
+    const state = await response.json() as { missions: Array<{ missionId: string }> };
+    assert.deepEqual(state.missions.map((mission) => mission.missionId), ["mission-current", "mission-other"]);
+    const html = await (await fetch(board.origin)).text();
+    assert.match(html, /Current repository/);
+    assert.match(html, /All work/);
   } finally {
     await board.close();
     await rm(root, { recursive: true, force: true });
