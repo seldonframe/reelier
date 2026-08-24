@@ -178,6 +178,7 @@ test("init help documents the managed local preview without implying authorizati
   assert.match(result.stdout, /Local Mission Control/i);
   assert.match(result.stdout, /reelier operator init/);
   assert.match(result.stdout, /account.*not required/i);
+  assert.doesNotMatch(result.stdout, /â|Ã/, "top-level help must not ship mojibake");
   assert.doesNotMatch(result.stdout, /^\s*init\s+- reelier init \[--dry-run\]: checkpointed local inspection/m);
   assert.match(result.stdout, /init --managed \[--dry-run\]/);
   assert.match(result.stdout, /local preview/i);
