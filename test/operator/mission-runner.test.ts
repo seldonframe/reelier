@@ -331,9 +331,22 @@ test("exposed usage drives configured attention ceilings without certifying or p
     });
     assert.equal(result.startedAt, "2026-08-24T12:00:00.000Z");
     assert.deepEqual(result.usage, { inputTokens: 90, cachedInputTokens: 0, outputTokens: 20, contextUnits: 110, totalCostMicros: 200_000 });
+    assert.deepEqual((result as typeof result & { readonly attentionLimits?: unknown }).attentionLimits, { costLimitMicros: 100_000, tokenLimit: 100, contextLimit: 100 });
     assert.equal(result.outcomeLifecycle, "completed-unverified");
     assert.equal(result.attentionState, "required");
     assert.deepEqual(result.attentionReasons, ["cost-ceiling-exceeded", "token-ceiling-exceeded", "context-growth-threshold-exceeded", "harness-exited-without-evidence"]);
+    const resumed = await resumeMissionControlMissionV1({
+      root,
+      cwd: root,
+      missionId: "owned-session",
+      now: () => "2026-08-24T12:01:00.000Z",
+      processFactory: fakeProcess([
+        { v: "reelier.operator-event/v1", harness: "codex", sessionId: "owned-session", kind: "tool-completed", payloadDigest: null, at: "2026-08-24T12:01:01.000Z", usage: { inputTokens: 90, cachedInputTokens: 0, outputTokens: 20, contextUnits: 110, totalCostMicros: 200_000 } },
+        { v: "reelier.operator-event/v1", harness: "codex", sessionId: "owned-session", kind: "completed", payloadDigest: null, at: "2026-08-24T12:01:02.000Z" },
+      ]),
+      observeWorkspace: async () => null,
+    });
+    assert.deepEqual(resumed.attentionReasons, ["cost-ceiling-exceeded", "token-ceiling-exceeded", "context-growth-threshold-exceeded", "harness-exited-without-evidence"]);
     assert.doesNotMatch(await readFile(path.join(root, ".reelier", "operator", "events.jsonl"), "utf8"), /private bounded task/i);
   } finally {
     await rm(root, { recursive: true, force: true });
