@@ -132,3 +132,52 @@ This checkpoint supersedes the earlier release-candidate status without changing
 - No npm beta publication.
 - No no-help external user activation or repeat-use evidence.
 - No measured reduction in active human attention and no 10x or 100x claim.
+
+## Final bounded checkpoint — hosted RC foundation
+
+This section supersedes only the earlier hosted-Linux residual and RC decision. It does not supersede the explicit product non-claims above.
+
+### Exact tested identities
+
+- Exact OSS implementation and evidence head: `e03482b521b3830ab99a0d9d14acb43bb860e42a`.
+- Exact Cloud implementation head remains `b86cdd63a509529257a90888663e7dedf28fc1ce`.
+- Exact hosted OSS run: `https://github.com/seldonframe/reelier/actions/runs/32798819294`.
+- Every job in that run passed: Windows and Linux native builds, universal artifact assembly, packed authority boundary, public authority-factory evidence, Windows client tests, and Ubuntu host tests.
+- Ubuntu aggregate: 3,887 tests; 3,880 pass; 0 fail; 7 declared skips; duration 531,219.943218 ms. The committed README badge independently matches the captured immutable test artifact.
+
+### Linux continuity root cause and bounded repair
+
+- The earlier hosted failure occurred before any durable reservation or provider dispatch. It was fail-closed but prevented the crash-boundary test from reaching its intended effect.
+- Path C ingress now retries a runner failure at most once and only when refreshed durable truth still reports zero budget reservations and zero provider dispatches.
+- Once either a reservation or provider dispatch exists, ingress never performs an internal retry. Existing post-budget and post-apply scenarios assert one runner attempt for the failed request; a later explicit client retry remains a distinct second attempt and reconciles without a duplicate provider action.
+- Deterministic RED/GREEN tests cover transient pre-dispatch recovery and bounded persistent pre-dispatch refusal. Linux-container repetitions passed the complete Path C file five times before the exact hosted matrix passed.
+
+### Exact installed beta checkpoint artifact
+
+- Version: `0.33.0-beta.0`.
+- Tarball: `C:\Users\maxim\AppData\Local\Temp\reelier-beta-rc-e03482b5-20260824\reelier-0.33.0-beta.0.tgz`.
+- SHA-256: `AD1481B9DE25120AD2AFCC82F7A7415AF9BD8119A7AF6B17EF1BE1E01A82256D`.
+- npm SHA-1: `6626c331248e551c28265b878974f58cb0a58645`.
+- npm integrity: `sha512-QQf7qll4YTTAZTf7r4nbpG4iI4bC8QT/LdmpP0VPUbxvqnkX+8LffxBPboo0l7+17+uPyPyrdtMuu0ptm9UFGQ==`.
+- Packed size: 1,777,503 bytes; unpacked size: 6,633,918 bytes; 743 entries.
+- Disposable consumer: `C:\Users\maxim\AppData\Local\Temp\reelier-beta-customer-e03482b5-20260824`.
+- The installed package reports Mission Control ready, detects Codex and Claude Code, imports 1,806 missions, reconstructs a readable journal, and requires neither an account nor Cloud.
+- Its generated state contains 1,808 files / 1,757,842 bytes and zero forbidden prompt, reasoning, model-output, provider-body, credential, API-key, bearer, authorization, password, or secret record keys.
+- The installed package exposes the Operator, signed managed handoff, canonical authority tools, reviewed host runtime, and matching Windows/Linux native artifacts.
+- npm `latest` remains `0.32.0`. This tarball was not published to either `beta` or `latest`.
+
+### Product-direction checkpoint
+
+- Completed RLS, journal, recovery, telemetry, exception routing, bounded authority, provider reconciliation, credential isolation, and four-state honesty work remains aligned with the narrowed product direction.
+- The one current conflict is onboarding composition: the Cloud state machine still requires Linear before harness linking, while the first real-user proof must be GitHub-only.
+- The smallest next product change is a closed GitHub-only onboarding transition and three-effect pack using the reviewed candidate-publish, PR-ensure, and exact-SHA-merge definitions. Linear remains optional and the reviewed seven-definition inventory remains intact.
+- After that change, the next acceptance boundary is one tenant-scoped authoritative GitHub Outcome with matching provider readback, receipt publication, zero duplicate effects, and zero unauthorized effects.
+- Only after that Outcome should this candidate be published under the npm `beta` tag. `latest` must remain unchanged.
+
+### Still absent at this final checkpoint
+
+- No GitHub-only managed onboarding path.
+- No ready tenant-scoped managed Cell.
+- No completed authoritative GitHub provider Outcome.
+- No npm beta publication.
+- No no-help Codex/Claude external-user activation, repeat use, or measured accepted-Outcomes-per-active-human-minute improvement.
