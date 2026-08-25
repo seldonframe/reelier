@@ -122,14 +122,17 @@ for (const [mode, expected] of [
   ["cut-after-apply", { providerDispatches: 1, reservations: 1 }],
 ] as const) test(`${mode} failure counters expose real effects without duplicate action`, async () => {
   const fixture = await createGitHubIssueLabelsFixture(mode as never);
-  const port = await startPathCConformancePort({ fixture });
+  let runnerAttempts = 0;
+  const port = await startPathCConformancePort({ fixture, beforeRunnerAttemptForTest: () => { runnerAttempts += 1; } });
   try {
     const headers = { authorization: `Bearer ${port.clientToken}`, "content-type": "application/json" };
     const response = await fetch(`${port.url}/outcomes`, { method: "POST", headers, body: outcomeBody(`request_${mode}`) });
     assert.equal(response.status, 500);
+    assert.equal(runnerAttempts, 1);
     assert.deepEqual(port.counters(), { outcomeRequests: 1, statusReads: 0, ...expected });
     const retry = await fetch(`${port.url}/outcomes`, { method: "POST", headers, body: outcomeBody(`request_${mode}`) });
     assert.equal(retry.status, 202);
+    assert.equal(runnerAttempts, 2);
     assert.deepEqual(port.counters(), { outcomeRequests: 2, statusReads: 0, ...expected });
   } finally {
     await port.close();
