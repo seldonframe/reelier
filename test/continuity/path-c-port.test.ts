@@ -73,6 +73,50 @@ test("loopback Path C binds a request ID to canonical request bytes before runne
   }
 });
 
+test("loopback Path C retries one pre-dispatch failure only while durable truth shows zero effects", async () => {
+  const fixture = await createGitHubIssueLabelsFixture();
+  let attempts = 0;
+  const port = await startPathCConformancePort({
+    fixture,
+    beforeRunnerAttemptForTest: () => {
+      attempts += 1;
+      if (attempts === 1) throw new Error("synthetic pre-dispatch unavailability");
+    },
+  });
+  try {
+    const headers = { authorization: `Bearer ${port.clientToken}`, "content-type": "application/json" };
+    const response = await fetch(`${port.url}/outcomes`, { method: "POST", headers, body: outcomeBody("request_predispatch_retry") });
+    assert.equal(response.status, 202);
+    assert.equal(attempts, 2);
+    assert.deepEqual(port.counters(), { outcomeRequests: 1, statusReads: 0, providerDispatches: 1, reservations: 1 });
+  } finally {
+    await port.close();
+    await fixture.close();
+  }
+});
+
+test("loopback Path C bounds persistent pre-dispatch failure to two attempts and zero effects", async () => {
+  const fixture = await createGitHubIssueLabelsFixture();
+  let attempts = 0;
+  const port = await startPathCConformancePort({
+    fixture,
+    beforeRunnerAttemptForTest: () => {
+      attempts += 1;
+      throw new Error("synthetic persistent pre-dispatch unavailability");
+    },
+  });
+  try {
+    const headers = { authorization: `Bearer ${port.clientToken}`, "content-type": "application/json" };
+    const response = await fetch(`${port.url}/outcomes`, { method: "POST", headers, body: outcomeBody("request_predispatch_bounded") });
+    assert.equal(response.status, 500);
+    assert.equal(attempts, 2);
+    assert.deepEqual(port.counters(), { outcomeRequests: 1, statusReads: 0, providerDispatches: 0, reservations: 0 });
+  } finally {
+    await port.close();
+    await fixture.close();
+  }
+});
+
 for (const [mode, expected] of [
   ["cut-after-budget", { providerDispatches: 0, reservations: 1 }],
   ["cut-after-apply", { providerDispatches: 1, reservations: 1 }],
