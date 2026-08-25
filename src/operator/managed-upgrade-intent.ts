@@ -29,6 +29,7 @@ const KEYS = Object.freeze(["version", "missionRef", "localEvidenceDigest", "req
 const KEY_SET = new Set<string>(KEYS);
 const DIGEST = /^sha256:[0-9a-f]{64}$/;
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/;
+const SIGNATURE = /^[A-Za-z0-9_-]{1,512}$/;
 const OPERATIONS = new Set<ReviewedConsequentialOperationV1>([
   "github_release_candidate_publish_v1",
   "github_release_pr_ensure_v1",
@@ -62,6 +63,11 @@ function boundedIdentifier(value: unknown, name: string): string {
 
 function digestValue(value: unknown, name: string): string {
   if (typeof value !== "string" || !DIGEST.test(value)) throw new TypeError(`managed upgrade intent ${name} is invalid`);
+  return value;
+}
+
+function signatureValue(value: unknown): string {
+  if (typeof value !== "string" || !SIGNATURE.test(value)) throw new TypeError("managed upgrade intent signature is invalid");
   return value;
 }
 
@@ -118,7 +124,7 @@ export function parseManagedUpgradeIntentV1(value: unknown): ManagedUpgradeInten
     issuedAt: timestamp(record.issuedAt, "issuedAt"),
     expiresAt: timestamp(record.expiresAt, "expiresAt"),
     nonce: boundedIdentifier(record.nonce, "nonce"),
-    signature: boundedIdentifier(record.signature, "signature"),
+    signature: signatureValue(record.signature),
   });
   if (Date.parse(intent.expiresAt) <= Date.parse(intent.issuedAt) || Date.parse(intent.expiresAt) - Date.parse(intent.issuedAt) > 15 * 60_000) throw new TypeError("managed upgrade intent validity window is invalid");
   return intent;
