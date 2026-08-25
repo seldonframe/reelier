@@ -70,3 +70,65 @@ An exact tarball was built and installed outside every repository:
 - Stripe payment, GitHub/Linear provider writes, Fly Cell promotion to `ready`, and cleanup remain explicit ceremonies. None was simulated or claimed complete.
 - No 10x or 100x product claim is made. The implementation can record the measurements, but the matched ten-session, ten-Outcome, and 100-Outcome experiments have not been run.
 - Free Mission Control observes only supported local surfaces. Invisible direct shell/provider writes remain unknown coverage, never governed or complete.
+
+## Beta evidence checkpoint — 2026-08-24
+
+This checkpoint supersedes the earlier release-candidate status without changing its historical evidence.
+
+### Exact identities
+
+- Exact tested OSS implementation head: `a3aefe94ab7eaa4dd6aa5f1c0393e7a77a78590e`.
+- Exact reviewed Cloud implementation head: `b86cdd63a509529257a90888663e7dedf28fc1ce`.
+- OSS review: `https://github.com/seldonframe/reelier/pull/130`.
+- Cloud review: `https://github.com/seldonframe/reelier-cloud/pull/72`.
+- npm `latest` remains `0.32.0`. No `beta` or `latest` publication was performed.
+
+### Exact beta artifact
+
+- Version: `0.33.0-beta.0`.
+- Tarball: `C:\Users\maxim\AppData\Local\Temp\reelier-beta-checkpoint-a3aefe94-20260824\reelier-0.33.0-beta.0.tgz`.
+- SHA-256: `DCA08C69A3D7263718E4F843D7AB5EB6D2204C453855FC49D8DF6C653AD0BADD`.
+- npm SHA-1: `41ce48b7f1bda5cc2cb91bd78e30133c348e016a`.
+- npm integrity: `sha512-F7drKpUnKqCmMOyX8egkP6sUmsNcEko68XrJPFVz/g0Fer7vCzFIE2oOkGEnkMOA7o+0r4Vt2z5GKkt+aLQS2g==`.
+- Disposable installed consumer: `C:\Users\maxim\AppData\Local\Temp\reelier-beta-install-a3aefe94-20260824`.
+- The installed package reports Local Mission Control ready, detects Codex and Claude Code, imports 1,806 missions, requires neither an account nor Cloud, and reconstructs a readable journal.
+- The installed `reelier init --no-open --json` result is `ready`; the state audit covered 1,808 files / 1,757,841 bytes and found none of the forbidden prompt, reasoning, model-output, provider-body, credential, API-key, bearer, authorization, password, or secret record keys.
+
+### Independently demonstrated capabilities
+
+- The exact Cloud head is green across browser, unit/build, four mutation partitions, test, and Vercel deployment checks.
+- The live disposable Neon schema contains 76 tables / 836 columns; the catalog proof found 25/25 expected managed tables with forced tenant/trust-domain RLS and scoped policies.
+- The fresh `iad` Fly Cell refuses unauthenticated health and remains honestly `certifying` because no tenant activation or provider binding was fabricated.
+- The exact OSS head builds and packs the universal Windows/Linux native bootstrap artifacts, authority host boundary, public authority-factory evidence, Operator exports, canonical quartet, and managed handoff.
+- Hosted Windows CI is green on the exact OSS head. Linux-container repetitions passed the N100 convergence gate three times and the complete Path C continuity file five times; the exact cut-after-apply scenario passed six focused repetitions.
+
+### Hosted Linux residual and RC decision
+
+- Hosted run `https://github.com/seldonframe/reelier/actions/runs/32795171216` is not a clean release gate.
+- Its first Ubuntu attempt cancelled the isolated N100 convergence test at the 120-second test ceiling. The same exact build passed that gate on rerun and in three Linux-container repetitions in approximately 25–27 seconds.
+- The rerun then completed the ordinary suite with 3,885 tests: 3,877 pass, 1 fail, 7 honest skips. The sole failure was `cut-after-apply failure counters expose real effects without duplicate action` after 30.122 seconds.
+- The failure was fail-closed: one Outcome request, zero reservations, zero provider dispatches, and zero status reads. It did not duplicate or authorize an effect, but it failed to reach the intended crash boundary.
+- Because the exact hosted Linux gate is retry-dependent, `0.33.0-beta.0` is an installable candidate, not a stable beta RC, and must not be published yet.
+
+### Product-direction reconciliation
+
+- The new GitHub-first direction does not conflict with completed RLS, journal, recovery, telemetry, exception, bounded-authority, credential-isolation, reconciliation, or four-state-honesty work.
+- It supersedes the current first-user activation sequence that requires `github-selected -> linear-connected -> harness-linked`, and it supersedes treating the five-effect GitHub+Linear composite as the first customer proof.
+- Linear remains a reviewed optional expansion. It must not block the first activation, first checked provider Outcome, or initial Codex/Claude cohort.
+
+### Smallest completion path from this checkpoint
+
+1. Make the Linux continuity gate deterministic without skipping it or weakening its zero-duplicate/zero-unauthorized-effect assertions.
+2. Add a GitHub-only onboarding transition and a three-effect GitHub pack using the already reviewed candidate, PR, and exact-SHA merge definitions; preserve the seven-definition inventory for optional Linear use.
+3. Complete one tenant-scoped activation and one authoritative GitHub Outcome with provider readback, receipt publication, and zero duplicate or unauthorized effects.
+4. Pack, install, and publish the exact artifact only to the npm `beta` tag. Leave `latest` unchanged.
+5. Freeze features except for activation blockers, false Outcome claims, unauthorized/duplicate-effect risks, crashes, or defects that materially increase supervision.
+6. Run a no-help external Codex/Claude cohort on user-owned repositories and measure accepted Outcomes per active human minute, including setup, prompting, approval, checking, review, and rescue.
+
+### Still absent
+
+- No ready tenant-scoped managed Cell.
+- No completed real GitHub provider Outcome.
+- No npm beta publication.
+- No no-help external user activation or repeat-use evidence.
+- No measured reduction in active human attention and no 10x or 100x claim.
