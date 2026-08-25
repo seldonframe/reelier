@@ -181,3 +181,43 @@ This section supersedes only the earlier hosted-Linux residual and RC decision. 
 - No completed authoritative GitHub provider Outcome.
 - No npm beta publication.
 - No no-help Codex/Claude external-user activation, repeat use, or measured accepted-Outcomes-per-active-human-minute improvement.
+
+## GitHub-only customer-entry checkpoint — 2026-08-25
+
+This section supersedes the earlier beta artifact and the statement that the packaged Operator still requires Linear. It does not supersede any absent real-provider or external-user Outcome.
+
+### Product-direction compatibility
+
+- The narrowed GitHub-first direction does not conflict with the durable journal, crash recovery, bounded authority, credential isolation, four-state honesty, reconciliation, exception routing, or attention telemetry already implemented.
+- The actual conflict was at the customer entry point: Cloud accepted the GitHub-only v3 target, but `reelier operator autopilot` still opened mandatory Linear target selection and compiled the seven-definition v2 bundle.
+- The packaged Operator now compiles and signs the same closed GitHub-only v3 target Cloud accepts: candidate publish, PR ensure, exact-SHA merge, maximum three writes, no Linear target, and no Linear authority.
+- The existing seven-definition compiler remains available for the optional GitHub+Linear expansion. No reviewed ABI, definition alias, or seven-definition pack digest changed.
+
+### Exact implementation and release-candidate evidence
+
+- RED commit: `797b687e0b80d7e5c6056ee9d280898d44ac7b61`.
+- GREEN implementation head: `90858491863613beeaccf5d534c36610b822bd77`.
+- Exact release-candidate package head: `9f91fb56351990b4497002202b26740f56bc7267` (the implementation head plus the independently reproduced Linux badge correction).
+- Focused GitHub-only parsing, compilation, staging, handoff, and CLI tests: 22 pass, 0 fail.
+- Packed-consumer contract: pass; an installed package exposes the GitHub-only compiler, parses the v3 target, proves exactly three writes, and has no Linear field.
+- Exact full local aggregate: 3,890 tests; 3,870 pass; 0 fail; 20 explicit platform/prerequisite skips; duration 776,587.4962 ms.
+- Exact-head hosted CI: [run 32807161506](https://github.com/seldonframe/reelier/actions/runs/32807161506), attempt 2, success. Linux and Windows native builds, universal assembly, packed Authority boundary, public factory evidence, Windows tests, and Ubuntu tests all passed.
+- Ubuntu aggregate from the exact hosted artifact: 3,890 tests; 3,883 pass; 0 fail; 0 cancelled; 7 explicit skips; duration 527,933.950247 ms. The README badge check passed against that same artifact.
+- Attempt 1 reached 2,313 passes with 0 assertion failures before the CI wrapper terminated it at 20 minutes (`exit 124`); rerunning only the failed Ubuntu job on the same commit completed successfully. No timeout or test scope was changed.
+- Exact-head DeepSec: [run 32807161518](https://github.com/seldonframe/reelier/actions/runs/32807161518), success.
+- Fresh tarball: `C:\Users\maxim\AppData\Local\Temp\reelier-beta-rc-9f91fb56-20260825\reelier-0.33.0-beta.0.tgz`.
+- SHA-256: `57CF4CD183A412A731F8B17CE78DEEA1382C5A6DDE27083CBA4771B0271619BA`.
+- npm SHA-1: `deec20e3ef66264b83c598423161b66b7d584a1e`.
+- npm integrity: `sha512-ggKvaw6wGpGZjKGT+qlk0MMEfu10AxuACjI5YcUjZuzX//GKSU6WCr6zy/7m7Kf5LTZtFib4QsCIA6PSX4wwzg==`.
+- Packed size: 1,778,139 bytes; unpacked size: 6,639,331 bytes; 743 entries.
+- Disposable install: `C:\Users\maxim\AppData\Local\Temp\reelier-beta-installed-9f91fb56-20260825`.
+- The installed binary reported `0.33.0-beta.0`, detected Codex and Claude Code, imported 1,806 missions, returned accountless `ready`, and bound its board to loopback.
+- The installed state audit covered 1,808 files / 1,757,863 bytes and found zero forbidden prompt, reasoning, model-output, provider-body, credential, API-key, bearer, authorization, password, or secret fields. The exact test-owned loopback board process was stopped and its port released.
+- npm `latest` remains outside this ceremony. This artifact has not been published to either `beta` or `latest`.
+
+### Remaining beta proof, deliberately not inferred
+
+- No tenant-scoped Cell is Ready.
+- No real GitHub provider Outcome, authoritative provider readback, receipt, or offline-verified real-user reconciliation exists.
+- No no-help Codex/Claude cohort has activated or repeated the product.
+- Accepted Outcomes per active human minute has not been measured, so no 10x or 100x claim is supported.
