@@ -20,7 +20,11 @@ export interface PathCConformancePort {
   close(): Promise<void>;
 }
 
-export async function startPathCConformancePort(options: Readonly<{ fixture: GitHubIssueLabelsFixture; fault?: PathCFault }>): Promise<PathCConformancePort> {
+export async function startPathCConformancePort(options: Readonly<{
+  fixture: GitHubIssueLabelsFixture;
+  fault?: PathCFault;
+  beforeRunnerAttemptForTest?: (attempt: 1 | 2) => void | Promise<void>;
+}>): Promise<PathCConformancePort> {
   const { fixture } = options;
   const clientToken = randomBytes(32).toString("base64url");
   const requestBindings = new Map<string, string>();
@@ -58,8 +62,21 @@ export async function startPathCConformancePort(options: Readonly<{ fixture: Git
       if (prior !== undefined && prior !== canonicalBase64) return write(response, 409, refused(body.requestId, "request-id-conflict", "conflict"));
       requestBindings.set(body.requestId, canonicalBase64);
       let result: GitHubHermeticRunnerResult;
-      try { result = await fixture.runner.run({ bearerToken: fixture.credential.token, requestId: body.requestId }); }
-      catch (error) { await refreshTruthAfterFailure(body.requestId); throw error; }
+      let attempt: 1 | 2 = 1;
+      for (;;) {
+        try {
+          await options.beforeRunnerAttemptForTest?.(attempt);
+          result = await fixture.runner.run({ bearerToken: fixture.credential.token, requestId: body.requestId });
+          break;
+        } catch (error) {
+          await refreshTruthAfterFailure(body.requestId);
+          if (attempt === 1 && providerDispatches === 0 && reservations === 0) {
+            attempt = 2;
+            continue;
+          }
+          throw error;
+        }
+      }
       await refreshTruth(result);
       if (options.fault === "after-provider-apply-before-response" && !faultUsed) {
         faultUsed = true;

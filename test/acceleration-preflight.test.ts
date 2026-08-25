@@ -27,14 +27,16 @@ function captureSpawn(calls: SpawnCall[]) {
   };
 }
 
-test("built pack index contains eleven unique manifests and one closed four-definition release pack", () => {
+test("built pack index contains twelve unique manifests and only the closed GitHub and Linear multi-definition packs", () => {
   const index = JSON.parse(readFileSync(path.resolve("dist/packs/manifests.json"), "utf8")) as { v: string; packs: Array<{ packId: string; definitions: string[] }> };
   assert.equal(index.v, "reelier.pack-index/v1");
-  assert.equal(index.packs.length, 11);
-  assert.equal(new Set(index.packs.map(pack => pack.packId)).size, 11);
+  assert.equal(index.packs.length, 12);
+  assert.equal(new Set(index.packs.map(pack => pack.packId)).size, 12);
   const release = index.packs.find(pack => pack.packId === "github_release");
   assert.deepEqual(release?.definitions, ["github_release_candidate_publish_v1", "github_release_pr_ensure_v1", "github_release_pr_merge_v1", "github_release_tag_create_v1"]);
-  assert.equal(index.packs.filter(pack => pack.packId !== "github_release").every(pack => pack.definitions.length === 1), true);
+  const linear = index.packs.find(pack => pack.packId === "linear_outcomes");
+  assert.deepEqual(linear?.definitions, ["linear_evidence_comment_v1", "linear_status_transition_v1", "linear_only_evidence_comment_v1", "linear_only_status_transition_v1"]);
+  assert.equal(index.packs.filter(pack => !["github_release", "linear_outcomes"].includes(pack.packId)).every(pack => pack.definitions.length === 1), true);
 });
 
 test("each preflight profile dispatches its closed local Node commands with a controlled environment", () => {

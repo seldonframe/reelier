@@ -4,15 +4,15 @@
 
 # Reelier
 
-### Let your agents write. Keep the receipts.
+### Free Local Mission Control. Paid Managed Autopilot.
 
-*Your agents worked all night. Here's exactly what changed.*
+*Run Codex and Claude without making yourself the supervisor of every session.*
 
-Reelier records the run that worked, freezes it as a replayable skill, and replays it deterministically — every run comes back as a receipt: proof of what the agent did and what changed because of it. **Agents make claims. Reelier writes receipts.**
+Reelier gives local agent work one truthful control room: what is running, stalled, failed, drifting, or complete without evidence. **Harness completion is not Outcome completion.** When a mission reaches an exact GitHub or Linear consequence, optional Managed Autopilot can execute it with bounded authority, read the provider back, recover uncertainty without duplicate sends, and write a portable receipt.
 
 [![npm version](https://img.shields.io/npm/v/reelier.svg?color=blue)](https://www.npmjs.com/package/reelier)
 [![CI](https://github.com/seldonframe/reelier/actions/workflows/ci.yml/badge.svg)](https://github.com/seldonframe/reelier/actions/workflows/ci.yml)
-[![tests](https://img.shields.io/badge/tests-3621%20passing-brightgreen.svg)](./test)
+[![tests](https://img.shields.io/badge/tests-3883%20passing-brightgreen.svg)](./test)
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 [![Discord](https://img.shields.io/badge/Discord-join-5865F2?logo=discord&logoColor=white)](https://discord.gg/nSp5sd4v)
 [![stars](https://img.shields.io/github/stars/seldonframe/reelier?style=social)](https://github.com/seldonframe/reelier)
@@ -26,6 +26,29 @@ Reelier records the run that worked, freezes it as a replayable skill, and repla
 <a href="https://glama.ai/mcp/servers/seldonframe/reelier"><img width="380" height="200" src="https://glama.ai/mcp/servers/seldonframe/reelier/badge" alt="Reelier MCP server on Glama" /></a>
 
 </div>
+
+---
+
+## Start in under a minute
+
+```sh
+npx reelier@latest init
+```
+
+That command detects installed Codex and Claude Code sessions, imports bounded local metadata, prints a compact summary, and opens a loopback-only Mission Control board. It needs no account, model key, or infrastructure setup. Local state stays under `.reelier/operator/`; prompts, reasoning, credentials, and provider bodies do not.
+
+```sh
+reelier operator run --harness codex "<bounded task>"
+reelier operator list
+reelier operator status <mission-ref>
+reelier operator stop <mission-ref>
+reelier operator resume <mission-ref>
+reelier operator review --open
+```
+
+Local Mission Control is free, accountless, and unlimited. It can independently observe exact local Git, diff, test, build, and artifact evidence, but never calls an agent's own completion claim a reconciled Outcome.
+
+At an exact reviewed external consequence, Reelier offers one quiet choice: continue natively, or run `reelier operator autopilot <mission-ref>`. Native execution remains available. Managed Personal is **$49/month** for one protected authority domain, up to ten concurrent governed executions, certified GitHub and Linear Outcomes, restart-safe reconciliation, and unlimited receipt verification. Reelier charges for managed authority—not model inference or Outcome count.
 
 ---
 
@@ -47,7 +70,9 @@ Agent-authored PRs (Dependabot, Claude, Codex, Cursor, …) get a receipt commen
 
 ## Why
 
-AI agents are non-deterministic — the same prompt, a different result every run — and they'll claim they did the work whether they did or not. Reelier records the run that worked, replays it deterministically, and writes a signed receipt that proves it. Point it at your existing CI in one workflow — it adds a verifiable receipt, it doesn't replace your stack.
+Running more agents does not help when human attention grows with every session. Agents accumulate hidden state, fail without stopping, and may claim completion before the real task is finished. Reelier separates process truth from Outcome truth, routes exceptions to one local inbox, and keeps consequential execution behind exact authority and provider readback.
+
+Record/replay remains an expert capability for repeatable MCP workflows. On its published benchmark, the same frozen workflow and data produced:
 
 Measured on a real head-to-head benchmark, same task, same data ([full method](./docs/REFERENCE.md#benchmark-method)):
 
@@ -57,7 +82,7 @@ Measured on a real head-to-head benchmark, same task, same data ([full method](.
 
 Deterministic replay is also [~50× cheaper and ~59× faster than re-running the agent, on the same benchmark](./docs/REFERENCE.md#benchmark-method).
 
-## Install
+## Install and compatibility
 
 ```sh
 npm i -g reelier && reelier init
@@ -68,7 +93,18 @@ npm i -g reelier && reelier init
 docker run --rm ghcr.io/seldonframe/reelier --help
 ```
 
-`reelier init [--dry-run]` performs one checkpointed local inspection across all three Reelier paths: Path A observation coverage, Path B replay/freeze candidates, and Path C boundable/outcome-capable/shadow-only/unsupported connections and candidates. It does not deploy, gate, dispatch, upload, copy credentials, or rewrite host configuration. `--dry-run` writes nothing; the normal command writes only sanitized artifacts below `.reelier/init/`.
+Bare `reelier init` starts Local Mission Control. Existing expert forms remain available: `reelier init <agent-name> --yes` performs named local preparation, `reelier init --managed` previews the managed descriptor without authorizing anything, and `reelier init --signing` manages the local signing key. None of these copy provider credentials into agent context.
+
+The Operator uses the user's installed harness session rather than asking for a model API key:
+
+```sh
+npx reelier@latest init
+reelier operator status
+reelier operator list
+reelier operator status <session-id>
+```
+
+Local evidence never implies provider completion. A Managed Cell-backed Outcome requires exact authority, brokered execution, authoritative provider readback, and a reconciled receipt. Receipts and offline verification are never metered.
 
 ### As an agent plugin
 

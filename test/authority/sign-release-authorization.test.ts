@@ -13,7 +13,7 @@ const materializeScript = path.resolve("scripts/materialize-release-runner-autho
 const rehearsalKeyScript = path.resolve("scripts/generate-release-rehearsal-keys.mjs");
 const barrelUrl = pathToFileURL(path.resolve("dist-test/src/authority/index.js")).href;
 const repoRoot = path.resolve(".");
-const TARBALL_BYTES = Buffer.from("reviewed reelier 0.32.1 tarball fixture\n", "utf8");
+const TARBALL_BYTES = Buffer.from("reviewed reelier 0.33.0-beta.0 tarball fixture\n", "utf8");
 const TARBALL_DIGEST = `sha256:${createHash("sha256").update(TARBALL_BYTES).digest("hex")}`;
 
 const digest = (character: string): string => `sha256:${character.repeat(64)}`;
@@ -64,10 +64,10 @@ function baseParameters(): Record<string, unknown> {
     commit: {
       author: { date: "2026-08-19T05:00:00.000Z", email: "release@seldonframe.com", name: "SeldonFrame Release" },
       committer: { date: "2026-08-19T05:00:00.000Z", email: "release@seldonframe.com", name: "SeldonFrame Release" },
-      message: "release: v0.32.1",
+      message: "release: v0.33.0-beta.0",
     },
-    pullRequest: { title: "Release v0.32.1", body: "Governed release v0.32.1" },
-    squash: { commitTitle: "Release v0.32.1", commitMessage: "release: v0.32.1" },
+    pullRequest: { title: "Release v0.33.0-beta.0", body: "Governed release v0.33.0-beta.0" },
+    squash: { commitTitle: "Release v0.33.0-beta.0", commitMessage: "release: v0.33.0-beta.0" },
     requiredChecks: ["coverage", "full-tests", "mutation"],
     signerIds: { authorization: "release-authority-2026", evidence: "release-evidence-2026", graphMaker: "release-graph-maker-2026" },
     digests: {
@@ -98,7 +98,7 @@ function workspace(patch: (parameters: Record<string, any>) => void = () => {}, 
   patch(parameters);
   const parametersFile = path.join(root, "parameters.json");
   writeFileSync(parametersFile, `${JSON.stringify(parameters, null, 2)}\n`, "utf8");
-  const tarballFile = path.join(root, "reelier-0.32.1.tgz");
+  const tarballFile = path.join(root, "reelier-0.33.0-beta.0.tgz");
   writeFileSync(tarballFile, TARBALL_BYTES);
   const trustPinFile = path.join(root, "trust-pin.json");
   writeFileSync(trustPinFile, `${JSON.stringify({
@@ -135,7 +135,7 @@ test("the signing ceremony writes a seven-file set the production verifier accep
     assert.equal(signed.stderr.includes("PRIVATE KEY"), false);
 
     const verified = spawnSync(process.execPath, [
-      verifyScript, "--dir", space.outDir, "--trust-pin", space.trustPinFile, "--tag", "v0.32.1",
+      verifyScript, "--dir", space.outDir, "--trust-pin", space.trustPinFile, "--tag", "v0.33.0-beta.0",
     ], { encoding: "utf8", env: { ...process.env, REELIER_RELEASE_BARREL: barrelUrl } });
     assert.equal(verified.status, 0, `${verified.stdout}\n${verified.stderr}`);
     assert.match(verified.stdout, /release authorization verified: sha256:[0-9a-f]{64}/);
@@ -242,7 +242,7 @@ test("unsorted required checks and out-of-order release paths refuse", () => {
 test("--tarball measures the artifact instead of trusting the parameters file", () => {
   const space = workspace();
   try {
-    const tarball = path.join(space.root, "reelier-0.32.1.tgz");
+    const tarball = path.join(space.root, "reelier-0.33.0-beta.0.tgz");
     writeFileSync(tarball, "not the signed tarball");
     const mismatch = runSigner(space, ["--tarball", tarball]);
     assert.equal(mismatch.status, 1);
@@ -265,7 +265,7 @@ test("--envelope writes the transport form the verifier reads with --artifact-se
     const envelope = path.join(space.root, "artifact-set.json");
     assert.equal(runSigner(space, ["--envelope", envelope]).status, 0);
     const verified = spawnSync(process.execPath, [
-      verifyScript, "--artifact-set", envelope, "--trust-pin", space.trustPinFile, "--tag", "v0.32.1",
+      verifyScript, "--artifact-set", envelope, "--trust-pin", space.trustPinFile, "--tag", "v0.33.0-beta.0",
     ], { encoding: "utf8", env: { ...process.env, REELIER_RELEASE_BARREL: barrelUrl } });
     assert.equal(verified.status, 0, `${verified.stdout}\n${verified.stderr}`);
   } finally { rmSync(space.root, { force: true, recursive: true }); }
@@ -317,7 +317,7 @@ test("the verified transport envelope materializes into the Cell's closed runner
       "--artifact-set", envelope,
       "--repo", repoRoot,
       "--trust-pin", space.trustPinFile,
-      "--tag", "v0.32.1",
+      "--tag", "v0.33.0-beta.0",
       "--out", bundle,
     ], { encoding: "utf8", env: { ...process.env, REELIER_RELEASE_BARREL: barrelUrl } });
     assert.equal(materialized.status, 0, `${materialized.stdout}\n${materialized.stderr}`);
@@ -351,7 +351,7 @@ test("runner-bundle materialization refuses signed file claims that do not match
       "--artifact-set", envelope,
       "--repo", repoRoot,
       "--trust-pin", space.trustPinFile,
-      "--tag", "v0.32.1",
+      "--tag", "v0.33.0-beta.0",
       "--out", bundle,
     ], { encoding: "utf8", env: { ...process.env, REELIER_RELEASE_BARREL: barrelUrl } });
     assert.equal(materialized.status, 1);
@@ -375,16 +375,16 @@ test("--repository signs a rehearsal-scoped set both artifacts agree on, and the
     assert.equal(manifest.value.repository, rehearsal);
     assert.equal(plan.value.repository, rehearsal);
     // The rest of the release identity is NOT unpinned along with the repository.
-    assert.equal(manifest.value.branch, "reelier/release/0.32.1");
-    assert.equal(manifest.value.tag, "v0.32.1");
-    assert.equal(manifest.value.packageVersion, "0.32.1");
-    assert.equal(plan.value.candidateBranch, "reelier/release/0.32.1");
+    assert.equal(manifest.value.branch, "reelier/release/0.33.0-beta.0");
+    assert.equal(manifest.value.tag, "v0.33.0-beta.0");
+    assert.equal(manifest.value.packageVersion, "0.33.0-beta.0");
+    assert.equal(plan.value.candidateBranch, "reelier/release/0.33.0-beta.0");
     assert.match(signed.stdout, new RegExp(`repository ${rehearsal}`));
     assert.match(signed.stdout, /NOT CHECKED: that seldonframe\/reelier-release-rehearsal is the repository your runner config names/);
 
     // The set the production verifier reads is the set that was signed.
     const verified = spawnSync(process.execPath, [
-      verifyScript, "--dir", space.outDir, "--trust-pin", space.trustPinFile, "--tag", "v0.32.1",
+      verifyScript, "--dir", space.outDir, "--trust-pin", space.trustPinFile, "--tag", "v0.33.0-beta.0",
     ], { encoding: "utf8", env: { ...process.env, REELIER_RELEASE_BARREL: barrelUrl } });
     assert.equal(verified.status, 0, `${verified.stdout}\n${verified.stderr}`);
   } finally { rmSync(space.root, { force: true, recursive: true }); }
@@ -513,7 +513,7 @@ test("a rehearsal --repository prints the carrier-ref collision warning; the def
     const rehearsalRun = runSigner(rehearsalSpace, ["--repository", rehearsal]);
     assert.equal(rehearsalRun.status, 0, `${rehearsalRun.stdout}\n${rehearsalRun.stderr}`);
     assert.match(rehearsalRun.stdout, /WARNING: --repository seldonframe\/reelier-release-rehearsal differs from the production repository seldonframe\/reelier/);
-    assert.match(rehearsalRun.stdout, /refs\/reelier\/release-authorizations\/v0\.32\.1/);
+    assert.match(rehearsalRun.stdout, /refs\/reelier\/release-authorizations\/v0\.33\.0-beta\.0/);
   } finally { rmSync(rehearsalSpace.root, { force: true, recursive: true }); }
 
   const productionSpace = workspace();

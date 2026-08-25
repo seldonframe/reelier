@@ -1,8 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createAuthorityHostServer, createPrincipalRegistry } from "reelier/authority/host";
+import { createAuthorityHostServer } from "../../src/authority/host/server.js";
+import { createPrincipalRegistry } from "../../src/authority/host/principal-registry.js";
+import { __testSetAuthorityCellHostPlatform } from "../../src/authority/host/platform.js";
 
 test("common host serves the same closed outcome over HTTP", async () => {
+  const restorePlatform = __testSetAuthorityCellHostPlatform("linux");
+  try {
   const principals = createPrincipalRegistry({ tenant: "tenant_1" });
   const credential = await principals.issue({ principalId: "agent_1", taskId: "task_1", grantId: "grant_1", grantDigest: `sha256:${"a".repeat(64)}`, allocationId: "allocation_1", runtimeSessionId: "session_1", jobId: "gmail_reply_send_v1", authorityCellId: "cell_1", expiresAt: "2099-01-01T00:00:00.000Z" });
   const server = createAuthorityHostServer(
@@ -27,9 +31,12 @@ test("common host serves the same closed outcome over HTTP", async () => {
   assert.equal(response.status, 202);
   assert.equal((await response.json() as { lifecycleState: string }).lifecycleState, "reserved");
   await server.close();
+  } finally { restorePlatform(); }
 });
 
 test("HTTP never substitutes the configured requester when no scoped principal registry is present", async () => {
+  const restorePlatform = __testSetAuthorityCellHostPlatform("linux");
+  try {
   const server = createAuthorityHostServer(
     { version: 1, tenant: "tenant_1", requester: "operator_1", definitions: [], ledgerDir: ".", decisionDir: ".", receiptDir: ".", endpoints: [] },
     { async outcome() { throw new Error("must not run"); }, async status() { throw new Error("must not run"); } },
@@ -41,4 +48,5 @@ test("HTTP never substitutes the configured requester when no scoped principal r
     const response = await fetch(`http://127.0.0.1:${address.port}/v1/outcomes/example`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ requestId: "r1" }) });
     assert.equal(response.status, 401);
   } finally { await server.close(); }
+  } finally { restorePlatform(); }
 });

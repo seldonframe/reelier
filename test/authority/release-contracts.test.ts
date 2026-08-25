@@ -87,24 +87,24 @@ function releaseInputs(
     v: "reelier.release-operation-plan/v1",
     baseCommit: planBase,
     baseTreeSha: sha("b"),
-    candidateBranch: "reelier/release/0.32.1",
+    candidateBranch: "reelier/release/0.33.0-beta.0",
     candidateTreeDigest,
     commit: {
       author: { date: "2026-08-18T05:00:00.000Z", email: "release@seldonframe.com", name: "SeldonFrame Release" },
       committer: { date: "2026-08-18T05:00:00.000Z", email: "release@seldonframe.com", name: "SeldonFrame Release" },
-      message: "release: v0.32.1",
+      message: "release: v0.33.0-beta.0",
       parentSha: planBase,
     },
     destinationBranch: "main",
     expectedCommitSha: sha("a"),
     expectedTreeSha: sha("e"),
     files: operationFiles,
-    npmPreflight: { packageName: "reelier", version: "0.32.1", versionMustBeAbsent: true },
-    pullRequest: { base: "main", body: "Governed release v0.32.1", draft: true, head: "reelier/release/0.32.1", readyForReview: true, title: "Release v0.32.1" },
+    npmPreflight: { packageName: "reelier", version: "0.33.0-beta.0", versionMustBeAbsent: true },
+    pullRequest: { base: "main", body: "Governed release v0.33.0-beta.0", draft: true, head: "reelier/release/0.33.0-beta.0", readyForReview: true, title: "Release v0.33.0-beta.0" },
     repository: planRepository,
     requiredChecks: ["coverage", "full-tests", "mutation"],
-    squash: { commitMessage: "release: v0.32.1", commitTitle: "Release v0.32.1" },
-    tag: "v0.32.1",
+    squash: { commitMessage: "release: v0.33.0-beta.0", commitTitle: "Release v0.33.0-beta.0" },
+    tag: "v0.33.0-beta.0",
     workflowCommitments: [
       { digest: digest("3"), path: ".github/workflows/ci.yml" },
       { digest: digest("4"), path: ".github/workflows/docker-publish.yml" },
@@ -115,7 +115,7 @@ function releaseInputs(
   const candidateManifest = createSignedStagedCandidateManifestV1({
     v: "reelier.staged-candidate-manifest/v1",
     baseCommit: manifestBase,
-    branch: "reelier/release/0.32.1",
+    branch: "reelier/release/0.33.0-beta.0",
     candidateCommit: sha("a"),
     candidateTreeDigest,
     changedBytes: 4096,
@@ -131,10 +131,10 @@ function releaseInputs(
       mutationScoreBasisPoints: 9_137,
     },
     packageName: "reelier",
-    packageVersion: "0.32.1",
+    packageVersion: "0.33.0-beta.0",
     packedTarballDigest: digest("2"),
     repository: manifestRepository,
-    tag: "v0.32.1",
+    tag: "v0.33.0-beta.0",
     workflowCommitments: [
       { digest: digest("3"), path: ".github/workflows/ci.yml" },
       { digest: digest("4"), path: ".github/workflows/docker-publish.yml" },
@@ -346,13 +346,13 @@ test("R2 amendment: a signed, internally consistent base commit other than the r
   assert.equal(verified.operationPlan.value.commit.parentSha, AMENDED_BASE);
   assert.notEqual(AMENDED_BASE, REVIEWED_BASE);
 
-  assert.equal(verified.candidateManifest.value.branch, "reelier/release/0.32.1");
-  assert.equal(verified.operationPlan.value.candidateBranch, "reelier/release/0.32.1");
-  assert.equal(verified.candidateManifest.value.tag, "v0.32.1");
-  assert.equal(verified.operationPlan.value.tag, "v0.32.1");
+  assert.equal(verified.candidateManifest.value.branch, "reelier/release/0.33.0-beta.0");
+  assert.equal(verified.operationPlan.value.candidateBranch, "reelier/release/0.33.0-beta.0");
+  assert.equal(verified.candidateManifest.value.tag, "v0.33.0-beta.0");
+  assert.equal(verified.operationPlan.value.tag, "v0.33.0-beta.0");
   assert.equal(verified.candidateManifest.value.packageName, "reelier");
-  assert.equal(verified.candidateManifest.value.packageVersion, "0.32.1");
-  assert.deepEqual(verified.operationPlan.value.npmPreflight, { packageName: "reelier", version: "0.32.1", versionMustBeAbsent: true });
+  assert.equal(verified.candidateManifest.value.packageVersion, "0.33.0-beta.0");
+  assert.deepEqual(verified.operationPlan.value.npmPreflight, { packageName: "reelier", version: "0.33.0-beta.0", versionMustBeAbsent: true });
   assert.deepEqual(verified.candidateManifest.value.changedPaths, ["CHANGELOG.md", "src/cli.ts", "test/cli-subcommand-help.test.ts"]);
   assert.deepEqual(verified.operationPlan.value.workflowCommitments.map(item => item.path), [".github/workflows/ci.yml", ".github/workflows/docker-publish.yml", ".github/workflows/mcp-publish.yml", ".github/workflows/npm-publish.yml"]);
 
@@ -405,16 +405,16 @@ test("R3 amendment: a signed, internally consistent rehearsal repository verifie
   assert.notEqual(REHEARSAL_REPOSITORY, REVIEWED_REPOSITORY);
 
   // Everything else the contract freezes is unmoved by this amendment.
-  assert.equal(verified.candidateManifest.value.branch, "reelier/release/0.32.1");
-  assert.equal(verified.operationPlan.value.candidateBranch, "reelier/release/0.32.1");
-  assert.equal(verified.operationPlan.value.pullRequest.head, "reelier/release/0.32.1");
-  assert.equal(verified.candidateManifest.value.tag, "v0.32.1");
-  assert.equal(verified.operationPlan.value.tag, "v0.32.1");
+  assert.equal(verified.candidateManifest.value.branch, "reelier/release/0.33.0-beta.0");
+  assert.equal(verified.operationPlan.value.candidateBranch, "reelier/release/0.33.0-beta.0");
+  assert.equal(verified.operationPlan.value.pullRequest.head, "reelier/release/0.33.0-beta.0");
+  assert.equal(verified.candidateManifest.value.tag, "v0.33.0-beta.0");
+  assert.equal(verified.operationPlan.value.tag, "v0.33.0-beta.0");
   assert.equal(verified.candidateManifest.value.destinationBranch, "main");
   assert.equal(verified.operationPlan.value.destinationBranch, "main");
   assert.equal(verified.candidateManifest.value.packageName, "reelier");
-  assert.equal(verified.candidateManifest.value.packageVersion, "0.32.1");
-  assert.deepEqual(verified.operationPlan.value.npmPreflight, { packageName: "reelier", version: "0.32.1", versionMustBeAbsent: true });
+  assert.equal(verified.candidateManifest.value.packageVersion, "0.33.0-beta.0");
+  assert.deepEqual(verified.operationPlan.value.npmPreflight, { packageName: "reelier", version: "0.33.0-beta.0", versionMustBeAbsent: true });
   assert.deepEqual(verified.candidateManifest.value.changedPaths, ["CHANGELOG.md", "src/cli.ts", "test/cli-subcommand-help.test.ts"]);
   assert.deepEqual(verified.operationPlan.value.workflowCommitments.map(item => item.path), [".github/workflows/ci.yml", ".github/workflows/docker-publish.yml", ".github/workflows/mcp-publish.yml", ".github/workflows/npm-publish.yml"]);
 

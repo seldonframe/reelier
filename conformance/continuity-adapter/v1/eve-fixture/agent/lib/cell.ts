@@ -16,6 +16,7 @@
 // WHAT IT DOES NOT DO. No Outcome is requested, no artifact is staged, no delegation is minted.
 // `jobs.search` and `job load` are the entire surface; both are reads.
 import { ContinuityConfigurationError } from "./faults.js";
+import { parseAgentToolOutputV1 } from "./agent-tool-schema.js";
 
 /** A single opaque catalogue entry. `jobRef` is the Cell's opaque reference; `alias` appears only on
  * single-definition deployments, never on a signed multi-definition Job Card. */
@@ -35,6 +36,19 @@ export type CellJobLoadV1 = Readonly<{
   jobRef?: string;
   alias?: string;
 }>;
+export type CellHarnessCapabilityV1 = Readonly<{
+  v: "reelier.harness-capability/v1";
+  harnessId: "eve" | "codex" | "claude-code" | "cursor" | "grok" | "hermes" | null;
+  harnessVersion: string | null;
+  abiDigest: string;
+  protocolCompatibility: "compatible";
+  transports: readonly ["mcp", "http", "openapi"];
+  fixtureStatus: "passed" | "not-passed";
+  liveTested: boolean;
+  providerCertification: "not-claimed";
+}>;
+export type CellAgentStatusV1 = Readonly<{ requestId: string; verdict: "accepted" | "refused"; reasonCode: string; lifecycleState: string; outcomeRefs: readonly string[]; capability: CellHarnessCapabilityV1 }>;
+export type CellOutcomeProposalV1 = Readonly<{ requestId: string; verdict: "accepted" | "refused"; reasonCode: string; lifecycleState: string; outcomeRef?: string }>;
 
 /** A Cell that answered, but not with a usable 2xx, or a Cell that could not be reached at all.
  * Distinct from `ContinuityConfigurationError`, which means the operator's environment is wrong. */
@@ -51,6 +65,10 @@ const MAX_CATALOGUE_ENTRIES = 256;
 const CATALOG_FIELDS = new Set(["requestId", "verdict", "reasonCode", "lifecycleState", "jobs"]);
 const JOB_FIELDS = new Set(["jobRef", "jobId", "alias"]);
 const LOAD_FIELDS = new Set(["requestId", "verdict", "reasonCode", "lifecycleState", "jobRef", "alias"]);
+const AGENT_STATUS_FIELDS = new Set(["requestId", "verdict", "reasonCode", "lifecycleState", "outcomeRefs", "capability"]);
+const OUTCOME_PROPOSAL_FIELDS = new Set(["requestId", "verdict", "reasonCode", "lifecycleState", "outcomeRef"]);
+const CAPABILITY_FIELDS = new Set(["v", "harnessId", "harnessVersion", "abiDigest", "protocolCompatibility", "transports", "fixtureStatus", "liveTested", "providerCertification"]);
+const OPAQUE_OUTCOME_REF = /^(?:jobref|outcomeref)_[0-9a-f]{64}$/;
 
 /** True when the operator has named a remote Cell. Callers use this to keep loopback-only runs on
  * the loopback path instead of discovering the missing variable through a thrown error. */
@@ -178,6 +196,24 @@ export function readCellJobLoad(value: unknown): CellJobLoadV1 {
   });
 }
 
+export function readCellAgentStatus(value: unknown): CellAgentStatusV1 {
+  try { return parseAgentToolOutputV1("reelier_agent_status", value) as CellAgentStatusV1; }
+  catch (error) { throw new AuthorityCellError(`the agent status response violates the canonical closed contract: ${error instanceof Error ? error.message : String(error)}`); }
+}
+
+export function readCellOutcomeProposal(value: unknown): CellOutcomeProposalV1 {
+  try { return parseAgentToolOutputV1("reelier_outcome_proposal", value) as CellOutcomeProposalV1; }
+  catch (error) { throw new AuthorityCellError(`the Outcome proposal response violates the canonical closed contract: ${error instanceof Error ? error.message : String(error)}`); }
+}
+
+function readHarnessCapability(value: unknown): CellHarnessCapabilityV1 {
+  const record = inertRecord(value, "the harness capability descriptor");
+  closedKeys(record, CAPABILITY_FIELDS, "the harness capability descriptor");
+  const harnesses = ["eve", "codex", "claude-code", "cursor", "grok", "hermes"];
+  if (record.v !== "reelier.harness-capability/v1" || !(record.harnessId === null || typeof record.harnessId === "string" && harnesses.includes(record.harnessId)) || !(record.harnessVersion === null || typeof record.harnessVersion === "string") || typeof record.abiDigest !== "string" || !/^sha256:[0-9a-f]{64}$/.test(record.abiDigest) || record.protocolCompatibility !== "compatible" || !Array.isArray(record.transports) || record.transports.length !== 3 || record.transports[0] !== "mcp" || record.transports[1] !== "http" || record.transports[2] !== "openapi" || (record.fixtureStatus !== "passed" && record.fixtureStatus !== "not-passed") || typeof record.liveTested !== "boolean" || record.providerCertification !== "not-claimed" || (record.liveTested && (record.fixtureStatus !== "passed" || record.harnessId === null || record.harnessVersion === null))) throw new AuthorityCellError("the harness capability descriptor is invalid or overclaims fixture evidence");
+  return Object.freeze({ v: "reelier.harness-capability/v1", harnessId: record.harnessId as CellHarnessCapabilityV1["harnessId"], harnessVersion: record.harnessVersion as string | null, abiDigest: record.abiDigest, protocolCompatibility: "compatible", transports: Object.freeze(["mcp", "http", "openapi"] as const), fixtureStatus: record.fixtureStatus, liveTested: record.liveTested, providerCertification: "not-claimed" });
+}
+
 /** The ONE place a request leaves this fixture for a remote Cell. Every failure — refused transport,
  * non-2xx, unparsable body — throws loudly and scrubbed; nothing here degrades to an empty result. */
 async function cellRequest(target: URL, init: Readonly<{ method: "GET" | "POST"; body?: string }>): Promise<unknown> {
@@ -223,4 +259,23 @@ export async function loadCellJob(jobRef: string): Promise<CellJobLoadV1> {
   if (typeof jobRef !== "string" || jobRef.length === 0 || jobRef.length > 128) throw new AuthorityCellError("the job reference must be a non-empty string of at most 128 characters");
   const target = new URL(`/v1/jobs/${encodeURIComponent(jobRef)}/load`, cellEndpoint());
   return readCellJobLoad(await cellRequest(target, { method: "POST", body: "{}" }));
+}
+
+/** Canonical quartet reads. These coexist with the legacy job routes until their separate removal. */
+export async function readRemoteAgentStatus(): Promise<CellAgentStatusV1> {
+  return readCellAgentStatus(await cellRequest(new URL("/v1/agent/status", cellEndpoint()), { method: "GET" }));
+}
+
+export async function proposeRemoteOutcome(outcomeRef: string): Promise<CellOutcomeProposalV1> {
+  if (typeof outcomeRef !== "string" || !OPAQUE_OUTCOME_REF.test(outcomeRef)) throw new AuthorityCellError("the Outcome proposal requires an authenticated opaque reference");
+  return readCellOutcomeProposal(await cellRequest(new URL("/v1/outcome-proposals", cellEndpoint()), { method: "POST", body: JSON.stringify({ outcomeRef }) }));
+}
+
+export async function requestRemoteOutcome(input: Readonly<{ outcomeRef:string;requestId:string;sourceRefs:Readonly<Record<string,string>>;choices:Readonly<Record<string,string|number|boolean|null>> }>): Promise<unknown> {
+  return parseAgentToolOutputV1("reelier_outcome_request", await cellRequest(new URL("/v1/outcome-requests", cellEndpoint()), { method: "POST", body: JSON.stringify(input) }));
+}
+
+export async function statusRemoteOutcome(requestId: string): Promise<unknown> {
+  if (typeof requestId !== "string" || requestId.length < 1 || requestId.length > 256) throw new AuthorityCellError("the Outcome status requires a bounded request ID");
+  return parseAgentToolOutputV1("reelier_outcome_status", await cellRequest(new URL(`/v1/outcome-status/${encodeURIComponent(requestId)}`, cellEndpoint()), { method: "GET" }));
 }

@@ -1,4 +1,8 @@
 import type { OutcomeContract, SourceBundle, TransportEffect } from "./types.js";
+import type { ProviderOutcomePackV1 } from "./tool-effect-contract.js";
+
+/** Metadata-only neutral pack seam. Existing static packs continue to emit TransportEffect unchanged. */
+export type ProviderOutcomePackMetadata = ProviderOutcomePackV1;
 import type { RegisteredDefinitionDigests } from "./contract.js";
 import { authorityDigest } from "./wire.js";
 import * as utilTypes from "node:util/types";
@@ -116,15 +120,21 @@ const FORBIDDEN_SOURCE_PATTERNS: readonly [RegExp, string][] = [
 
 const STATIC_RUNTIME_SPECIFIER_ALLOWLIST: Readonly<Record<string, ReadonlySet<string>>> = Object.freeze({
   "src/authority/compile.ts": new Set(["node:crypto", "./types.js", "./wire.js", "./contract.js", "./source.js", "./pack.js", "./errors.js"]),
+  "src/authority/packs/github-linear-outcomes.ts": new Set(["node:util/types", "../tool-effect-contract.js", "../wire.js"]),
   "src/packs/github/manifest.ts": new Set(["../../authority/wire.js"]),
   "src/packs/github/source.ts": new Set(["../../authority/source.js", "../../authority/wire.js", "./manifest.js"]),
   "src/packs/github/compile.ts": new Set(["../../authority/wire.js", "./manifest.js"]),
   "src/packs/github/reconcile.ts": new Set(["../../authority/wire.js", "./manifest.js", "../types.js"]),
   "src/packs/github-release/manifest.ts": new Set(["../../authority/wire.js"]),
   "src/packs/github-release/source.ts": new Set(["../../authority/wire.js", "./manifest.js"]),
-  "src/packs/github-release/compile.ts": new Set(["../../authority/pack.js", "../../authority/wire.js", "./manifest.js"]),
+  "src/packs/github-release/compile.ts": new Set(["../../authority/governed-effect-commitment.js", "../../authority/pack.js", "../../authority/wire.js", "./manifest.js"]),
   "src/packs/github-release/reconcile.ts": new Set(["../../authority/pack.js", "../../authority/wire.js", "../types.js", "./manifest.js"]),
   "src/packs/github-release/index.ts": new Set(["./manifest.js", "./compile.js", "./source.js", "./reconcile.js"]),
+  "src/packs/linear-outcomes/manifest.ts": new Set(["../../authority/wire.js"]),
+  "src/packs/linear-outcomes/source.ts": new Set(["../../authority/wire.js", "./manifest.js"]),
+  "src/packs/linear-outcomes/compile.ts": new Set(["../../authority/governed-effect-commitment.js", "../../authority/pack.js", "../../authority/wire.js", "./manifest.js"]),
+  "src/packs/linear-outcomes/reconcile.ts": new Set(["../../authority/pack.js", "../../authority/wire.js", "../types.js", "./manifest.js"]),
+  "src/packs/linear-outcomes/index.ts": new Set(["./manifest.js", "./compile.js", "./source.js", "./reconcile.js"]),
   "src/packs/slack-topic/manifest.ts": new Set(["../../authority/wire.js"]),
   "src/packs/slack-topic/source.ts": new Set(["../../authority/source.js", "../../authority/wire.js", "./manifest.js"]),
   "src/packs/slack-topic/compile.ts": new Set(["../../authority/wire.js", "./manifest.js"]),
@@ -160,7 +170,7 @@ const STATIC_RUNTIME_SPECIFIER_ALLOWLIST: Readonly<Record<string, ReadonlySet<st
   "src/packs/information-flow/compile.ts": new Set(["../../authority/wire.js", "./manifest.js"]),
   "src/packs/information-flow/reconcile.ts": new Set(["../../authority/wire.js", "./manifest.js", "./compile.js", "../types.js"]),
   "src/packs/information-flow/index.ts": new Set(["./manifest.js", "./source.js", "./compile.js", "./reconcile.js"]),
-  "src/packs/index.ts": new Set(["../authority/pack.js", "../authority/source.js", "./github/compile.js", "./github/manifest.js", "./github/source.js", "./github/reconcile.js", "./github/index.js", "./github-release/index.js", "./slack-topic/compile.js", "./slack-topic/manifest.js", "./slack-topic/source.js", "./slack-topic/reconcile.js", "./slack-topic/index.js", "./gmail/index.js", "./stripe/index.js", "./vercel/index.js", "./cloudflare/index.js", "./neon/index.js", "./cloudflare-token/index.js", "./cloudflare-token/create.js", "./vercel-environment-secret/index.js", "./information-flow/index.js"]),
+  "src/packs/index.ts": new Set(["../authority/pack.js", "../authority/source.js", "../authority/packs/github-linear-outcomes.js", "./github/compile.js", "./github/manifest.js", "./github/source.js", "./github/reconcile.js", "./github/index.js", "./github-release/index.js", "./linear-outcomes/index.js", "./slack-topic/compile.js", "./slack-topic/manifest.js", "./slack-topic/source.js", "./slack-topic/reconcile.js", "./slack-topic/index.js", "./gmail/index.js", "./stripe/index.js", "./vercel/index.js", "./cloudflare/index.js", "./neon/index.js", "./cloudflare-token/index.js", "./cloudflare-token/create.js", "./vercel-environment-secret/index.js", "./information-flow/index.js"]),
 });
 const STATIC_RUNTIME_SPECIFIER = /\b(?:import|export)\s+(?!type\b)(?:(?:[^"'`;]*?\bfrom\s*)?["']([^"']+)["'])/gs;
 

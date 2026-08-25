@@ -8,12 +8,16 @@ import path from "node:path";
 import { authorityDigest } from "../../src/authority/wire.js";
 import { createSignedJournal } from "../../src/authority/host/signed-journal.js";
 import { createGitHubReleaseHostComposition, createGitHubReleaseRunner } from "../../src/authority/host/github-release-runner.js";
+import { createGitHubReleaseOutcomeExecutorV1 } from "../../src/authority/host/github-release-runner.js";
+import { compileGovernedEffectTransportV1 as compileEffectTransportV1 } from "../../src/authority/host/effect-transports.js";
+import { createGitHubLinearOutcomePackV1, githubReviewedOutcomePolicyDigestV1, githubReviewedReleasePackDigestV1 } from "../../src/authority/packs/github-linear-outcomes.js";
 import { createDispatchCoordinator } from "../../src/authority/host/dispatch.js";
 import { createDispatchCommitLease, createPreparedDispatch, consumePreparedDispatch } from "../../src/authority/host/prepared-dispatch.js";
 import { createReservedDispatchHandle } from "../../src/authority/gate.js";
 import { __testSetAuthorityCellHostPlatform } from "../../src/authority/host/platform.js";
 import { materializedHttpRequestDigest } from "../../src/authority/host/http-response-semantics.js";
 import { createJsonHttpsDispatchAdapter } from "../../src/authority/host/json-https-connector.js";
+import { assertGitHubReleaseHostedAuthorityBindingV1, createGitHubReleaseHostedAuthorityBindingV1 } from "../../src/authority/host/github-release-hosted-authority.js";
 import { createSignedReleaseAuthorizationBundleV1, createSignedReleaseOperationPlanV1, createSignedReleasePolicyV1, createSignedReleaseVerifierEvidenceV1, createSignedStagedCandidateManifestV1, verifyReleaseAuthorizationBundleV1, type ReleaseEvidenceLaneV1 } from "../../src/authority/release-contracts.js";
 
 const digest = (seed: string) => `sha256:${seed.repeat(64).slice(0, 64)}`;
@@ -28,7 +32,39 @@ const createGitHubReleaseReceiptPublication = (input: any) => createGitHubReleas
 const governedRequests = new WeakMap<object, Map<string, { alias: any; allocationId: string; authorizationHandle: string; requestId: string; semanticsDigest: string }>>();
 const allLanes: ReleaseEvidenceLaneV1[] = ["ci-coverage", "ci-full-tests", "ci-mutation", "candidate-branch", "candidate-pull-request", "ghcr-immutable-manifest", "ghcr-tags", "human-authorization", "human-exceptions", "human-interruptions", "human-post-release-review", "installed-linux", "installed-windows", "mcp-registry-version", "merge-exact-sha", "npm-integrity", "npm-provenance", "tag-immutable-ref"];
 
-function releaseAuthorityFixture() {
+async function dispatchReviewedThroughCoordinator(compiled: ReturnType<typeof compileEffectTransportV1>, state: any) {
+  const refuses = async (operation: Promise<any>, label: string) => {
+    try { assert.equal((await operation).kind, "definitive-failure", label); }
+    catch (error) { assert.match(String(error), /boundary|refus|authority/i, label); }
+  };
+  await refuses(compiled.adapter.dispatch(state), "direct branded GitHub invocation is unarmed");
+  let reservation = { ...state.reservation, state: "reserved", intent: { ...state.reservation.intent, effectCanonicalBase64: state.effectCanonicalBase64 } };
+  const ledger: any = { async getReservation(id: string) { return id === reservation.reservationId ? reservation : null; }, async transition(id: string, expected: string, event: any) { if (id !== reservation.reservationId || reservation.state !== expected) return { ok: false, reason: "state-conflict" }; reservation = { ...reservation, state: event.to, ...(event.resultDigest ? { resultDigest: event.resultDigest } : {}) }; return { ok: true, status: "transitioned", reservation }; }, async recover() { return { ok: true, reservations: [reservation] }; } };
+  const adversarial = {
+    async dispatch(current: any, call: any) {
+      await refuses(compiled.adapter.dispatch(current, Object.freeze({ ...call }) as any), "copied coordinator call is unarmed");
+      const authorized = await compiled.adapter.dispatch(current, call);
+      await refuses(compiled.adapter.dispatch(current, call), "consumed coordinator call cannot be replayed");
+      return authorized;
+    },
+    reconcile: compiled.adapter.reconcile,
+  };
+  const restore = __testSetAuthorityCellHostPlatform("linux");
+  try { return await createDispatchCoordinator(ledger, adversarial).dispatch(createReservedDispatchHandle({ ...state, reservation })); }
+  finally { restore(); }
+}
+
+test("release composition forwards the exact coordinator call through a prepared fallback", async () => {
+  const restore = __testSetAuthorityCellHostPlatform("linux"), effect = Object.freeze({ endpointId: "linear.outcomes.evidence-comment" }), effectDigest = authorityDigest(effect);
+  let reservation: any = { reservationId: digest("1"), state: "reserved", intent: { tenant: "tenant", requestDigest: digest("2"), capabilityDigest: digest("3"), effectDigest, effectCanonicalBase64: Buffer.from(JSON.stringify(effect)).toString("base64"), authorityStateDigest: digest("4"), executionContext: { allocationId: "allocation_1" } }, limitAssignments: [], sequence: 0, updatedAt: new Date().toISOString() };
+  let sawCall = false;
+  const adapter = createGitHubReleaseDispatchAdapter({ runner: null, fallback: { async dispatch() { throw new Error("legacy fallback must not run"); }, async prepare(_state: any, call: unknown) { sawCall = Boolean(call); const projection = { v: "reelier.prepared-effect-projection/v1" as const, transport: "mcp", operationDigest: digest("5"), requestDigest: digest("6") }, preparedDigest = authorityDigest(projection); return createPreparedDispatch({ description: { v: "reelier.prepared-dispatch-description/v1", routeDigest: digest("7"), materializedRequestDigest: preparedDigest, projection, authorityGeneration: digest("4"), authorityExpiresAt: "2099-01-01T00:00:00.000Z", absoluteDeadlineMs: performance.now() + 60_000, reservationId: reservation.reservationId, allocationId: "allocation_1" }, send: async () => ({ kind: "acknowledged", resultDigest: digest("8") }), requireCoordinatorCommit: true }); } } });
+  const ledger: any = { async getReservation() { return reservation; }, async commitPreparedDispatch(input: any) { reservation = { ...reservation, state: "dispatched", sendStarted: true }; return createDispatchCommitLease({ reservationId: input.reservationId, allocationId: input.allocationId, preparedDigest: input.preparedDescription.materializedRequestDigest, authorityGeneration: input.expectedAuthorityGeneration, authorityExpiresAt: input.preparedDescription.authorityExpiresAt, absoluteDeadlineMs: input.absoluteDeadlineMs, commitGeneration: "commit_1" }); }, async transition(_id: string, expected: string, event: any) { if (reservation.state !== expected) return { ok: false, reason: "state-conflict" }; reservation = { ...reservation, state: event.to }; return { ok: true, reservation }; }, async recover() { return { ok: true, reservations: [reservation] }; } };
+  try { const outcome = await createDispatchCoordinator(ledger, adapter).dispatch(createReservedDispatchHandle({ reservation, effect, effectDigest, effectCanonicalBase64: reservation.intent.effectCanonicalBase64 })); assert.deepEqual({ sawCall, kind: outcome.kind }, { sawCall: true, kind: "acknowledged" }); }
+  finally { restore(); }
+});
+
+function releaseAuthorityFixture(reviewedOperation: "candidatePublish" | "pullRequestEnsure" | "exactHeadMerge" = "candidatePublish") {
   const authorityKeys = generateKeyPairSync("ed25519"), evidenceKeys = generateKeyPairSync("ed25519"), graphKeys = generateKeyPairSync("ed25519");
   const authoritySigner = { signerId: "release-authority-2026", privateKey: authorityKeys.privateKey };
   const evidenceSigner = { signerId: "release-provider-verifier", privateKey: evidenceKeys.privateKey };
@@ -36,15 +72,20 @@ function releaseAuthorityFixture() {
   const files = ["CHANGELOG.md", "src/cli.ts", "test/cli-subcommand-help.test.ts"].map((filePath, index) => ({ blobSha: blobSha(contents[index]!), contentDigest: `sha256:${createHash("sha256").update(contents[index]!).digest("hex")}`, mode: "100644" as const, path: filePath }));
   const candidateTreeDigest = authorityDigest({ v: "reelier.release-candidate-tree/v1", files });
   const workflows = [{ digest: digest("3"), path: ".github/workflows/ci.yml" }, { digest: digest("4"), path: ".github/workflows/docker-publish.yml" }, { digest: digest("5"), path: ".github/workflows/mcp-publish.yml" }, { digest: digest("6"), path: ".github/workflows/npm-publish.yml" }];
-  const operationPlan = createSignedReleaseOperationPlanV1({ v: "reelier.release-operation-plan/v1", repository: "seldonframe/reelier", baseCommit: "e600ad5c2dc5e1bde0714915e7a84980c8d5602b", baseTreeSha: gitSha("b"), candidateBranch: "reelier/release/0.32.1", destinationBranch: "main", tag: "v0.32.1", candidateTreeDigest, expectedTreeSha: gitSha("e"), expectedCommitSha: gitSha("a"), files, commit: { author: { name: "SeldonFrame Release", email: "release@seldonframe.com", date: "2026-08-18T05:00:00.000Z" }, committer: { name: "SeldonFrame Release", email: "release@seldonframe.com", date: "2026-08-18T05:00:00.000Z" }, message: "release: v0.32.1", parentSha: "e600ad5c2dc5e1bde0714915e7a84980c8d5602b" }, pullRequest: { base: "main", head: "reelier/release/0.32.1", draft: true, readyForReview: true, title: "Release v0.32.1", body: "Governed release v0.32.1" }, squash: { commitTitle: "Release v0.32.1", commitMessage: "release: v0.32.1" }, requiredChecks: ["coverage", "full-tests", "mutation"], workflowCommitments: workflows, npmPreflight: { packageName: "reelier", version: "0.32.1", versionMustBeAbsent: true } } as any, authoritySigner);
-  const candidateManifest = createSignedStagedCandidateManifestV1({ v: "reelier.staged-candidate-manifest/v1", repository: "seldonframe/reelier", baseCommit: "e600ad5c2dc5e1bde0714915e7a84980c8d5602b", destinationBranch: "main", branch: "reelier/release/0.32.1", tag: "v0.32.1", packageName: "reelier", packageVersion: "0.32.1", candidateCommit: gitSha("a"), candidateTreeDigest, changedBytes: contents.reduce((sum, value) => sum + value.length, 0), changedPaths: files.map(file => file.path), packedTarballDigest: digest("2"), workflowCommitments: workflows, qualityEvidence: { coverageEvidenceDigest: digest("7"), coverageStatus: "non-regressed", fullTestEvidenceDigest: digest("8"), fullTestsStatus: "verified", headCommit: gitSha("a"), mutationEvidenceDigest: digest("9"), mutationScoreBasisPoints: 9_500 } }, authoritySigner);
+  const operationPlan = createSignedReleaseOperationPlanV1({ v: "reelier.release-operation-plan/v1", repository: "seldonframe/reelier", baseCommit: "e600ad5c2dc5e1bde0714915e7a84980c8d5602b", baseTreeSha: gitSha("b"), candidateBranch: "reelier/release/0.33.0-beta.0", destinationBranch: "main", tag: "v0.33.0-beta.0", candidateTreeDigest, expectedTreeSha: gitSha("e"), expectedCommitSha: gitSha("a"), files, commit: { author: { name: "SeldonFrame Release", email: "release@seldonframe.com", date: "2026-08-18T05:00:00.000Z" }, committer: { name: "SeldonFrame Release", email: "release@seldonframe.com", date: "2026-08-18T05:00:00.000Z" }, message: "release: v0.33.0-beta.0", parentSha: "e600ad5c2dc5e1bde0714915e7a84980c8d5602b" }, pullRequest: { base: "main", head: "reelier/release/0.33.0-beta.0", draft: true, readyForReview: true, title: "Release v0.33.0-beta.0", body: "Governed release v0.33.0-beta.0" }, squash: { commitTitle: "Release v0.33.0-beta.0", commitMessage: "release: v0.33.0-beta.0" }, requiredChecks: ["coverage", "full-tests", "mutation"], workflowCommitments: workflows, npmPreflight: { packageName: "reelier", version: "0.33.0-beta.0", versionMustBeAbsent: true } } as any, authoritySigner);
+  const candidateManifest = createSignedStagedCandidateManifestV1({ v: "reelier.staged-candidate-manifest/v1", repository: "seldonframe/reelier", baseCommit: "e600ad5c2dc5e1bde0714915e7a84980c8d5602b", destinationBranch: "main", branch: "reelier/release/0.33.0-beta.0", tag: "v0.33.0-beta.0", packageName: "reelier", packageVersion: "0.33.0-beta.0", candidateCommit: gitSha("a"), candidateTreeDigest, changedBytes: contents.reduce((sum, value) => sum + value.length, 0), changedPaths: files.map(file => file.path), packedTarballDigest: digest("2"), workflowCommitments: workflows, qualityEvidence: { coverageEvidenceDigest: digest("7"), coverageStatus: "non-regressed", fullTestEvidenceDigest: digest("8"), fullTestsStatus: "verified", headCommit: gitSha("a"), mutationEvidenceDigest: digest("9"), mutationScoreBasisPoints: 9_500 } }, authoritySigner);
   const policy = createSignedReleasePolicyV1({ v: "reelier.release-policy/v1", allowedPaths: files.map(file => file.path), destinations: ["ghcr", "mcp-registry", "npm"], effectAllocations: ["candidate-branch", "draft-pr", "exact-sha-merge", "non-force-tag"], expirySeconds: 43_200, forbiddenChangeClasses: ["authority-contract", "credential", "dependency", "generated-contract", "lockfile", "policy", "release-script", "workflow"], maxChangedBytes: 65_536, maxChangedFiles: 3 }, authoritySigner);
   const effects = ["candidate-branch", "draft-pr", "exact-sha-merge", "non-force-tag"] as const;
-  const authorization = createSignedReleaseAuthorizationBundleV1({ v: "reelier.release-authorization-bundle/v1", authorityCellDigest: digest("a"), effectAllocations: effects.map((effect, index) => ({ allocationDigest: digest(String(index + 1)), allocationId: `release-${effect}-01`, effect, maxEffects: 1 as const })), evidenceVerifierBindings: allLanes.map(lane => ({ lane, signerId: evidenceSigner.signerId, publicKeySpkiDigest: spkiDigest(evidenceKeys.publicKey) })), expiresAt: "2026-08-18T17:00:00.000Z", issuedAt: "2026-08-18T05:00:00.000Z", jobCardDigest: digest("b"), missionDigest: digest("c"), operationPlanDigest: operationPlan.digest, packDigest: digest("d"), policyDigest: policy.digest, receiptGraphMakerBinding: { signerId: "release-graph-maker-2026", publicKeySpkiDigest: spkiDigest(graphKeys.publicKey) }, rootGrantDigest: digest("e"), stagedCandidateManifestDigest: candidateManifest.digest, taskDigest: digest("f") }, authoritySigner);
+  const reviewedPack = reviewedPackForPlan(operationPlan.value);
+  void reviewedOperation;
+  const packDigest = githubReviewedReleasePackDigestV1(reviewedPack);
+  const authorization = createSignedReleaseAuthorizationBundleV1({ v: "reelier.release-authorization-bundle/v1", authorityCellDigest: digest("a"), effectAllocations: effects.map((effect, index) => ({ allocationDigest: digest(String(index + 1)), allocationId: `release-${effect}-01`, effect, maxEffects: 1 as const })), evidenceVerifierBindings: allLanes.map(lane => ({ lane, signerId: evidenceSigner.signerId, publicKeySpkiDigest: spkiDigest(evidenceKeys.publicKey) })), expiresAt: "2026-08-18T17:00:00.000Z", issuedAt: "2026-08-18T05:00:00.000Z", jobCardDigest: digest("b"), missionDigest: digest("c"), operationPlanDigest: operationPlan.digest, packDigest, policyDigest: policy.digest, receiptGraphMakerBinding: { signerId: "release-graph-maker-2026", publicKeySpkiDigest: spkiDigest(graphKeys.publicKey) }, rootGrantDigest: digest("e"), stagedCandidateManifestDigest: candidateManifest.digest, taskDigest: digest("f") }, authoritySigner);
   const evidence = [["ci-coverage", digest("7"), 1], ["ci-full-tests", digest("8"), 1], ["ci-mutation", digest("9"), 9_500]].map(([lane, subjectDigest, resultValue]) => ({ evidence: createSignedReleaseVerifierEvidenceV1({ v: "reelier.release-verifier-evidence/v1", authorizationBundleDigest: null, candidateCommit: gitSha("a"), count: null, freshUntil: null, lane: lane as ReleaseEvidenceLaneV1, observation: "workflow-run", observedAt: "2026-08-18T05:30:00.000Z", resultValue: resultValue as number, status: "verified", subjectDigest: subjectDigest as string, workflowDigest: digest("3"), workflowPath: ".github/workflows/ci.yml" }, evidenceSigner), verifier: { signerId: evidenceSigner.signerId, publicKeySpkiBase64: spki(evidenceKeys.publicKey) } }));
   const verified = verifyReleaseAuthorizationBundleV1({ authorization, candidateManifest, operationPlan, policy }, { signerId: authoritySigner.signerId, publicKeySpkiBase64: spki(authorityKeys.publicKey) }, new Date("2026-08-18T06:00:00.000Z"), evidence);
-  return { context: { authorization: verified, fileContents: files.map((file, index) => ({ path: file.path, bytesBase64: contents[index]!.toString("base64") })) }, evidenceSigner };
+  return { context: { authorization: verified, fileContents: files.map((file, index) => ({ path: file.path, bytesBase64: contents[index]!.toString("base64") })) }, evidenceSigner, reviewedPack };
 }
+
+function reviewedPackForPlan(plan: any) { return createGitHubLinearOutcomePackV1({ v: "reelier.github-linear-reviewed-authority/v1", github: { repository: plan.repository, baseBranch: plan.destinationBranch, baseSha: plan.baseCommit, headBranch: plan.candidateBranch, headSha: plan.expectedCommitSha, candidateDigest: plan.candidateTreeDigest, workflowPath: ".github/workflows/ci.yml", workflowDigest: plan.workflowCommitments.find((item: any) => item.path === ".github/workflows/ci.yml")!.digest, requiredChecks: plan.requiredChecks, mergeMethod: "squash", postMergeTreeSha: plan.expectedTreeSha, accountRef: "github_account_ref", destinationRef: "github_repository_ref", credentialRef: "github_credential_ref", limitRef: "github_release_policy_ref" }, linear: { workspace: "workspace_01", team: "team_01", project: "project_01", issue: "REEL-TEST-1", preStatus: "In Progress", targetStatus: "Done", commentMarker: "reelier:evidence:generic_pack", evidenceUrl: "https://www.reelier.com/r/receipt_01", evidenceContentDigest: digest("f"), accountRef: "linear_account_ref", destinationRef: "linear_issue_ref", credentialRef: "linear_credential_ref", limitRef: "linear_transition_policy_ref" } }); }
 
 function candidateProvider(overrides: Record<string, unknown> = {}) {
   const refs = new Map<string, string>([["heads/main", "e600ad5c2dc5e1bde0714915e7a84980c8d5602b"]]);
@@ -57,6 +98,104 @@ function candidateProvider(overrides: Record<string, unknown> = {}) {
     ...overrides,
   } as any;
 }
+
+test("generic reviewed pack delegates candidate publication into the existing branded release saga", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "reelier-release-generic-pack-"));
+  const fixture = releaseAuthorityFixture(), keys = generateKeyPairSync("ed25519"), plan = fixture.context.authorization.operationPlan.value;
+  try {
+    const provider = candidateProvider(), getRef = provider.getRef.bind(provider);
+    let providerCalls = 0;
+    provider.getRef = async (input: any) => { providerCalls += 1; return getRef(input); };
+    const runner = await createGitHubReleaseRunner({ rootDir: root, journalSigner: { signerId: "release-journal-2026", ...keys }, evidenceSigner: fixture.evidenceSigner, authorizationResolver: async () => fixture.context, provider, now: () => new Date("2026-08-18T06:00:00.000Z") });
+    const pack = fixture.reviewedPack;
+    const reviewed = pack.operations.candidatePublish, executor = createGitHubReleaseOutcomeExecutorV1(runner, pack);
+    assert.equal(pack.githubPolicyDigest, githubReviewedOutcomePolicyDigestV1({ repository: plan.repository, baseBranch: plan.destinationBranch, baseSha: plan.baseCommit, headBranch: plan.candidateBranch, headSha: plan.expectedCommitSha, candidateDigest: plan.candidateTreeDigest, workflowPath: ".github/workflows/ci.yml", workflowDigest: plan.workflowCommitments.find(item => item.path === ".github/workflows/ci.yml")!.digest, requiredChecks: plan.requiredChecks, mergeMethod: "squash", postMergeTreeSha: plan.expectedTreeSha }));
+    assert.deepEqual(Object.keys(executor), []);
+    const compile = (requestId: string, policyDigest: string, contract = reviewed.contract) => compileEffectTransportV1({ contract, binding: reviewed.binding, modelInput: { authorizationHandle: "release_auth_1", requestId }, observationAuthKey: "a".repeat(64), resolveHostBindings: async () => ({ credential: "host-only-secret", account: "seldonframe/reelier", destination: plan.candidateBranch, limit: policyDigest }), executor });
+    const wrong = compile("generic_candidate_wrong_policy", digest("0"));
+    await assert.rejects(() => wrong.adapter.dispatch({ reservation: { reservationId: "generic_candidate_wrong_policy", state: "dispatched", intent: { requestId: "generic_candidate_wrong_policy", effectDigest: authorityDigest(reviewed.contract) } }, effect: wrong.effect, effectDigest: authorityDigest(reviewed.contract), effectCanonicalBase64: Buffer.from(JSON.stringify(wrong.effect)).toString("base64") } as any), /boundary|failed/i);
+    assert.equal(providerCalls, 0);
+    const mismatchedContract = { ...reviewed.contract, contractId: "reviewed.github.candidate-publish.substituted.v1" };
+    const mismatched = compile("generic_candidate_wrong_contract", reviewed.contract.policyDigest, mismatchedContract);
+    await assert.rejects(() => mismatched.adapter.dispatch({ reservation: { reservationId: "generic_candidate_wrong_contract", state: "dispatched", intent: { requestId: "generic_candidate_wrong_contract", effectDigest: authorityDigest(mismatchedContract) } }, effect: mismatched.effect, effectDigest: authorityDigest(mismatchedContract), effectCanonicalBase64: Buffer.from(JSON.stringify(mismatched.effect)).toString("base64") } as any), /boundary|failed/i);
+    assert.equal(providerCalls, 0);
+    const otherPack = reviewedPackForPlan({ ...plan, candidateBranch: "reelier/release/substituted" });
+    const other = otherPack.operations.candidatePublish, crossPack = compileEffectTransportV1({ contract: other.contract, binding: other.binding, modelInput: { authorizationHandle: "release_auth_1", requestId: "generic_candidate_cross_pack" }, observationAuthKey: "a".repeat(64), resolveHostBindings: async () => ({ credential: "host-only-secret", account: plan.repository, destination: "reelier/release/substituted", limit: otherPack.githubPolicyDigest }), executor });
+    await assert.rejects(() => crossPack.adapter.dispatch({ reservation: { reservationId: "generic_candidate_cross_pack", state: "dispatched", intent: { requestId: "generic_candidate_cross_pack", effectDigest: authorityDigest(other.contract) } }, effect: crossPack.effect, effectDigest: authorityDigest(other.contract), effectCanonicalBase64: Buffer.from(JSON.stringify(crossPack.effect)).toString("base64") } as any), /boundary|failed/i);
+    assert.equal(providerCalls, 0);
+    const compiled = compile("authenticated_candidate_publish", reviewed.contract.policyDigest);
+    const outcome = await dispatchReviewedThroughCoordinator(compiled, { reservation: { reservationId: "durable_candidate_reservation", state: "reserved", intent: { requestId: "authenticated_candidate_publish", effectDigest: authorityDigest(reviewed.contract) } }, effect: compiled.effect, effectDigest: authorityDigest(reviewed.contract), effectCanonicalBase64: Buffer.from(JSON.stringify(compiled.effect)).toString("base64") } as any);
+    assert.equal(outcome.kind, "acknowledged");
+    assert.equal(JSON.stringify({ pack, compiled: compiled.evidence, outcome }).includes("host-only-secret"), false);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("generic reviewed executor refuses unsigned PR, merge, and unreviewed tag before provider calls", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "reelier-release-generic-refusal-"));
+  const fixture = releaseAuthorityFixture(), keys = generateKeyPairSync("ed25519"), plan = fixture.context.authorization.operationPlan.value;
+  let providerCalls = 0;
+  const refuseCall = async () => { providerCalls += 1; throw new Error("provider must remain unreachable"); };
+  try {
+    const runner = await createGitHubReleaseRunner({ rootDir: root, journalSigner: { signerId: "release-journal-2026", ...keys }, evidenceSigner: fixture.evidenceSigner, authorizationResolver: async () => fixture.context, provider: candidateProvider({ findPullRequests: refuseCall, createPullRequest: refuseCall, markPullRequestReady: refuseCall, getPullRequest: refuseCall, getChecks: refuseCall, mergePullRequest: refuseCall }), now: () => new Date("2026-08-18T06:00:00.000Z") });
+    const executor = createGitHubReleaseOutcomeExecutorV1(runner, fixture.reviewedPack);
+    for (const [name, requestId] of [["pullRequestEnsure", "unsigned_pr"], ["exactHeadMerge", "unsigned_merge"]] as const) {
+      const operation = fixture.reviewedPack.operations[name];
+      const compiled = compileEffectTransportV1({ contract: operation.contract, binding: operation.binding, modelInput: { authorizationHandle: "release_auth_1", requestId }, observationAuthKey: "f".repeat(64), resolveHostBindings: async () => ({ credential: "secret", account: plan.repository, destination: plan.candidateBranch, limit: fixture.reviewedPack.githubPolicyDigest }), executor });
+      const state = { reservation: { reservationId: requestId, state: "dispatched", intent: { requestId, effectDigest: authorityDigest(operation.contract) } }, effect: compiled.effect, effectDigest: authorityDigest(operation.contract), effectCanonicalBase64: Buffer.from(JSON.stringify(compiled.effect)).toString("base64") } as any;
+      await assert.rejects(() => compiled.adapter.dispatch(state), /boundary|failed/i);
+      assert.equal(providerCalls, 0);
+    }
+
+    const candidate = fixture.reviewedPack.operations.candidatePublish, tagBinding = { ...(candidate.binding as any), operation: "github.tag.v1", tool: "github_release_tag_create_v1", toolSchemaDigest: digest("e"), readback: null };
+    const tagContract = { ...candidate.contract, contractId: "reviewed.github.tag.v1", operation: "github.tag.v1", operationDigest: authorityDigest(tagBinding), schemaDigest: tagBinding.toolSchemaDigest, readback: null, maximumEvidenceGrade: "absent" as const };
+    const tag = compileEffectTransportV1({ contract: tagContract, binding: tagBinding, modelInput: { authorizationHandle: "release_auth_1", requestId: "unreviewed_tag" }, observationAuthKey: "f".repeat(64), resolveHostBindings: async () => ({ credential: "secret", account: plan.repository, destination: plan.candidateBranch, limit: fixture.reviewedPack.githubPolicyDigest }), executor });
+    const tagState = { reservation: { reservationId: "unreviewed_tag", state: "dispatched", intent: { requestId: "unreviewed_tag", effectDigest: authorityDigest(tagContract) } }, effect: tag.effect, effectDigest: authorityDigest(tagContract), effectCanonicalBase64: Buffer.from(JSON.stringify(tag.effect)).toString("base64") } as any;
+    await assert.rejects(() => tag.adapter.dispatch(tagState), /schema|transport|boundary|drift/i);
+    assert.equal(providerCalls, 0);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("signed reviewed PR and exact-head merge execute through the generic adapter with exact readback", async () => {
+  for (const name of ["pullRequestEnsure", "exactHeadMerge"] as const) {
+    const root = await mkdtemp(path.join(os.tmpdir(), `reelier-release-reviewed-${name}-`));
+    const fixture = releaseAuthorityFixture(name), keys = generateKeyPairSync("ed25519"), plan = fixture.context.authorization.operationPlan.value;
+    const refs = new Map<string, string>([["heads/main", plan.baseCommit]]), counters = { find: 0, create: 0, ready: 0, read: 0, checks: 0, merge: 0, commit: 0 };
+    let pullRequest: any = null;
+    const provider: any = {
+      ...candidateProvider(),
+      getRef: async ({ ref }: any) => refs.has(ref) ? { sha: refs.get(ref)! } : null,
+      createRef: async ({ ref, sha }: any) => { refs.set(ref, sha); return { sha }; },
+      findPullRequests: async () => { counters.find += 1; return pullRequest ? [pullRequest] : []; },
+      createPullRequest: async (metadata: any) => { counters.create += 1; return (pullRequest = { base: metadata.base, body: metadata.body, draft: metadata.draft, head: metadata.head, headSha: plan.expectedCommitSha, mergeCommitSha: null, merged: false, number: 17, title: metadata.title }); },
+      markPullRequestReady: async () => { counters.ready += 1; return (pullRequest = { ...pullRequest, draft: false }); },
+      getPullRequest: async () => { counters.read += 1; return pullRequest; },
+      getChecks: async () => { counters.checks += 1; return plan.requiredChecks.map((check: string) => ({ name: check, status: "success", workflowDigest: digest("3"), workflowPath: ".github/workflows/ci.yml" })); },
+      mergePullRequest: async () => { counters.merge += 1; pullRequest = { ...pullRequest, merged: true, mergeCommitSha: gitSha("9") }; refs.set("heads/main", gitSha("9")); return { merged: true, sha: gitSha("9") }; },
+      getCommit: async ({ sha }: any) => { counters.commit += 1; return { sha, parentSha: plan.baseCommit, treeSha: sha === plan.baseCommit ? plan.baseTreeSha : plan.expectedTreeSha }; },
+      readPackageManifest: async () => ({ name: "reelier", version: "0.33.0-beta.0" }),
+      npmVersionExists: async () => false,
+    };
+    try {
+      const runner = await createGitHubReleaseRunner({ rootDir: root, journalSigner: { signerId: "release-journal-2026", ...keys }, evidenceSigner: fixture.evidenceSigner, authorizationResolver: async () => fixture.context, provider, now: () => new Date("2026-08-18T06:00:00.000Z") });
+      const seed = async (alias: any, allocationId: string, requestId: string) => {
+        const result = await governedRun(runner, { alias, allocationId, authorizationHandle: "release_auth_1", requestId, semanticsDigest: authorityDigest({ alias, requestId }) });
+        await confirmTestPublication(runner, requestId, result);
+        assert.equal(result.status, "verified");
+      };
+      await seed("github_release_candidate_publish_v1", "release-candidate-branch-01", `${name}_seed_candidate`);
+      if (name === "exactHeadMerge") await seed("github_release_pr_ensure_v1", "release-draft-pr-01", `${name}_seed_pr`);
+      for (const key of Object.keys(counters) as (keyof typeof counters)[]) counters[key] = 0;
+
+      const operation = fixture.reviewedPack.operations[name], requestId = `${name}_reviewed`;
+      const compiled = compileEffectTransportV1({ contract: operation.contract, binding: operation.binding, modelInput: { authorizationHandle: "release_auth_1", requestId }, observationAuthKey: "7".repeat(64), resolveHostBindings: async () => ({ credential: "secret", account: plan.repository, destination: plan.candidateBranch, limit: fixture.reviewedPack.githubPolicyDigest }), executor: createGitHubReleaseOutcomeExecutorV1(runner, fixture.reviewedPack) });
+      const state = { reservation: { reservationId: requestId, state: "reserved", intent: { requestId, effectDigest: authorityDigest(operation.contract) } }, effect: compiled.effect, effectDigest: authorityDigest(operation.contract), effectCanonicalBase64: Buffer.from(JSON.stringify(compiled.effect)).toString("base64") } as any;
+      assert.equal((await dispatchReviewedThroughCoordinator(compiled, state)).kind, "acknowledged");
+      assert.deepEqual(counters, name === "pullRequestEnsure"
+        ? { find: 4, create: 1, ready: 1, read: 3, checks: 0, merge: 0, commit: 0 }
+        : { find: 1, create: 0, ready: 0, read: 3, checks: 3, merge: 1, commit: 1 });
+    } finally { await rm(root, { recursive: true, force: true }); }
+  }
+});
 
 async function confirmTestPublication(runner: Awaited<ReturnType<typeof createGitHubReleaseRunner>>, requestId: string, result: { status: string; evidenceDigest: string | null }, phase: "dispatch" | "reconcile" = "dispatch"): Promise<void> {
   if (result.status === "verified" && result.evidenceDigest) {
@@ -112,6 +251,43 @@ async function governedRun(runner: Awaited<ReturnType<typeof createGitHubRelease
   if (outcome.kind === "definitive-failure") throw new TypeError(`${outcome.reason ?? "release operation refused"} [${outcome.reconciliationStatus ?? "unknown"}]`);
   return outcome.kind === "acknowledged" ? { status: "verified", phase: "verified", evidenceDigest: outcome.resultDigest } : { status: "pending-reconciliation", phase: "pending", evidenceDigest: null };
 }
+
+test("release runner refuses an unrecognized hosted authority binding before provider dispatch", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "reelier-release-hosted-authority-"));
+  const fixture = releaseAuthorityFixture();
+  let providerCalls = 0;
+  try {
+    const runner = await createGitHubReleaseRunner({ rootDir: root, journalSigner: { signerId: "release-journal-2026", ...generateKeyPairSync("ed25519") }, evidenceSigner: fixture.evidenceSigner, authorizationResolver: async () => ({ ...fixture.context, hostedAuthority: {} as ReturnType<typeof createGitHubReleaseHostedAuthorityBindingV1> }), provider: candidateProvider({ getRef: async () => { providerCalls += 1; return null; } }), now: () => new Date("2026-08-18T06:00:00.000Z") });
+    await assert.rejects(() => governedRun(runner, { alias: "github_release_candidate_publish_v1", allocationId: "release-candidate-branch-01", authorizationHandle: "release_auth_1", requestId: "unrecognized_hosted_authority", semanticsDigest: authorityDigest({ hosted: "unrecognized" }) }), /hosted.*authority/i);
+    assert.equal(providerCalls, 0);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("hosted release authority rejects non-canonical validity timestamps", () => {
+  const fixture = releaseAuthorityFixture();
+  const binding = createGitHubReleaseHostedAuthorityBindingV1({ domain: {}, proof: { issuedAt: "not-a-date", expiresAt: "2026-08-18T12:00:00.000Z" }, standing: {}, hosted: {}, mission: { connector: { connectorId: "github", accountId: "seldonframe/reelier" }, authorityDigest: digest("a"), hostedAuthorityDigest: digest("b"), standingAuthorityDigest: digest("c"), trustDomainDigest: digest("d"), validFrom: "2026-08-18T01:00:00.000Z", validUntil: "2026-08-18T12:00:00.000Z" } } as any);
+  assert.throws(() => assertGitHubReleaseHostedAuthorityBindingV1(binding, fixture.context.authorization, new Date("2026-08-18T06:00:00.000Z")), /customer approval/i);
+});
+
+test("hosted authority binding digest is carried by signed provider evidence", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "reelier-release-hosted-evidence-"));
+  const fixture = releaseAuthorityFixture(), journalKeys = generateKeyPairSync("ed25519");
+  const hostedAuthority = createGitHubReleaseHostedAuthorityBindingV1({ domain: {}, proof: { issuedAt: "2026-08-18T00:00:00.000Z", expiresAt: "2026-08-18T12:00:00.000Z" }, standing: { validFrom: "2026-08-18T00:30:00.000Z", validUntil: "2026-08-18T11:30:00.000Z" }, hosted: { validFrom: "2026-08-18T01:00:00.000Z", validUntil: "2026-08-18T11:00:00.000Z" }, mission: { connector: { connectorId: "github", accountId: "seldonframe/reelier" }, authorityDigest: digest("a"), hostedAuthorityDigest: digest("b"), standingAuthorityDigest: digest("c"), trustDomainDigest: digest("d"), validFrom: "2026-08-18T01:30:00.000Z", validUntil: "2026-08-18T10:00:00.000Z" } } as any);
+  const request = { alias: "github_release_candidate_publish_v1" as const, allocationId: "release-candidate-branch-01", authorizationHandle: "release_auth_1", requestId: "hosted_evidence_binding", semanticsDigest: authorityDigest({ hosted: "evidence" }) };
+  try {
+    const runner = await createGitHubReleaseRunner({ rootDir: root, journalSigner: { signerId: "release-journal-2026", privateKey: journalKeys.privateKey, publicKey: journalKeys.publicKey }, evidenceSigner: fixture.evidenceSigner, authorizationResolver: async () => ({ ...fixture.context, hostedAuthority }), provider: candidateProvider(), now: () => new Date("2026-08-18T06:00:00.000Z") });
+    const result = await governedRun(runner, request);
+    assert.equal(result.status, "verified");
+    const bindingDigest = assertGitHubReleaseHostedAuthorityBindingV1(hostedAuthority, fixture.context.authorization, new Date("2026-08-18T06:00:00.000Z"));
+    const providerReadbackDigest = authorityDigest({ ref: { sha: gitSha("a") }, commit: { sha: gitSha("a"), parentSha: "e600ad5c2dc5e1bde0714915e7a84980c8d5602b", treeSha: gitSha("e") } });
+    const expectedSubjectDigest = authorityDigest({ v: "reelier.github-release-provider-readback/v1", hostedAuthorityBindingDigest: bindingDigest, providerReadbackDigest });
+    const journal = await createSignedJournal({ rootDir: path.join(root, "journal"), journalId: "github-release", signerId: "release-journal-2026", privateKey: journalKeys.privateKey, publicKey: journalKeys.publicKey });
+    const terminal = (await journal.load(request.requestId)).find(event => event.phase === "candidate-verified");
+    assert.equal(terminal?.data.hostedAuthorityBindingDigest, bindingDigest);
+    assert.equal(terminal?.data.subjectDigest, expectedSubjectDigest);
+    assert.equal((terminal?.data.evidence as any)?.value?.subjectDigest, expectedSubjectDigest);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
 
 test("signed journal detects tamper and atomic-head rollback", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "reelier-release-journal-"));
@@ -345,6 +521,8 @@ test("runner does not expose a forgeable receipt-publication confirmation method
 test("restart confirms an authoritative terminal receipt committed before the publication callback crashed", async () => {
   const restore = __testSetAuthorityCellHostPlatform("linux"), root = await mkdtemp(path.join(os.tmpdir(), "reelier-release-post-publication-cut-"));
   const fixture = releaseAuthorityFixture(), journalKeys = generateKeyPairSync("ed25519");
+  const hostedAuthority = createGitHubReleaseHostedAuthorityBindingV1({ domain: {}, proof: { issuedAt: "2026-08-18T00:00:00.000Z", expiresAt: "2026-08-18T12:00:00.000Z" }, standing: { validFrom: "2026-08-18T00:30:00.000Z", validUntil: "2026-08-18T11:30:00.000Z" }, hosted: { validFrom: "2026-08-18T01:00:00.000Z", validUntil: "2026-08-18T11:00:00.000Z" }, mission: { connector: { connectorId: "github", accountId: "seldonframe/reelier" }, authorityDigest: digest("a"), hostedAuthorityDigest: digest("b"), standingAuthorityDigest: digest("c"), trustDomainDigest: digest("d"), validFrom: "2026-08-18T01:30:00.000Z", validUntil: "2026-08-18T10:00:00.000Z" } } as any);
+  let includeHostedAuthority = true;
   let blobWrites = 0, pullRequest: any = null;
   const provider = candidateProvider({
     createBlob: async ({ contentBase64 }: any) => { blobWrites += 1; return { sha: blobSha(Buffer.from(contentBase64, "base64")) }; },
@@ -354,7 +532,7 @@ test("restart confirms an authoritative terminal receipt committed before the pu
     getPullRequest: async () => pullRequest,
   });
   try {
-    const createRunner = () => createGitHubReleaseRunner({ rootDir: path.join(root, "runner"), journalSigner: { signerId: "release-journal-2026", privateKey: journalKeys.privateKey, publicKey: journalKeys.publicKey }, evidenceSigner: fixture.evidenceSigner, authorizationResolver: async () => fixture.context, provider, now: () => new Date("2026-08-18T06:00:00.000Z") });
+    const createRunner = () => createGitHubReleaseRunner({ rootDir: path.join(root, "runner"), journalSigner: { signerId: "release-journal-2026", privateKey: journalKeys.privateKey, publicKey: journalKeys.publicKey }, evidenceSigner: fixture.evidenceSigner, authorizationResolver: async () => includeHostedAuthority ? { ...fixture.context, hostedAuthority } : fixture.context, provider, now: () => new Date("2026-08-18T06:00:00.000Z") });
     const firstRunner = await createRunner();
     const request = { alias: "github_release_candidate_publish_v1" as const, allocationId: "release-candidate-branch-01", authorizationHandle: "release_auth_1", requestId: "candidate_post_publication_cut", semanticsDigest: authorityDigest({ request: "candidate_post_publication_cut" }) };
     const terminal = await governedRun(firstRunner, request);
@@ -385,12 +563,17 @@ test("restart confirms an authoritative terminal receipt committed before the pu
     assert.equal(reservation.state, "ambiguous");
     assert.equal(head.phase, "reconcile");
 
+    includeHostedAuthority = false;
     const restartedRunner = await createRunner(), restartedHost = createGitHubReleaseHostComposition({ runner: restartedRunner, fallback: testFallback, publication: store });
-    await createDispatchCoordinator(ledger, restartedHost.adapter, undefined, restartedHost.publication).recover();
+    await assert.rejects(() => createDispatchCoordinator(ledger, restartedHost.adapter, undefined, restartedHost.publication).recover(), /authority binding/i);
+    assert.equal(reservation.state, "ambiguous", "restart must not adopt a durable head whose hosted binding cannot be revalidated");
+    includeHostedAuthority = true;
+    const verifiedRestartRunner = await createRunner(), verifiedRestartHost = createGitHubReleaseHostComposition({ runner: verifiedRestartRunner, fallback: testFallback, publication: store });
+    await createDispatchCoordinator(ledger, verifiedRestartHost.adapter, undefined, verifiedRestartHost.publication).recover();
     assert.equal(reservation.state, "reconciled");
     assert.equal(terminalPublications, 1, "recovery must adopt the exact durable head without republishing");
     assert.equal(blobWrites, 3, "recovery must not resend any provider write");
-    const successor = await governedRun(restartedRunner, { alias: "github_release_pr_ensure_v1", allocationId: "release-draft-pr-01", authorizationHandle: "release_auth_1", requestId: "pr_after_post_publication_cut", semanticsDigest: authorityDigest({ request: "pr_after_post_publication_cut" }) });
+    const successor = await governedRun(verifiedRestartRunner, { alias: "github_release_pr_ensure_v1", allocationId: "release-draft-pr-01", authorizationHandle: "release_auth_1", requestId: "pr_after_post_publication_cut", semanticsDigest: authorityDigest({ request: "pr_after_post_publication_cut" }) });
     assert.equal(successor.status, "verified", "the confirmed predecessor must unlock its successor after restart");
   } finally { restore(); await rm(root, { recursive: true, force: true }); }
 });
@@ -404,8 +587,8 @@ test("four-operation release saga converges after ambiguous merge and tag withou
     createBlob: async ({ contentBase64 }: any) => ({ sha: blobSha(Buffer.from(contentBase64, "base64")) }),
     createTree: async ({ baseTreeSha }: any) => { treeBase = baseTreeSha; return { sha: gitSha("e") }; },
     createCommit: async () => ({ sha: gitSha("a") }),
-    getRef: async ({ ref }: any) => { if (ref === "tags/v0.32.1" && loseTagReadback) { loseTagReadback = false; throw { v: "reelier.github-release-provider-fault/v1", kind: "transport-uncertain", reason: "tag readback unavailable" }; } return refs.has(ref) ? { sha: refs.get(ref)! } : null; },
-    createRef: async ({ ref, sha }: any) => { if (refs.has(ref)) throw new Error("exists"); refs.set(ref, sha); if (ref === "tags/v0.32.1") { tagCalls += 1; loseTagReadback = true; throw new Error("socket lost after tag"); } return { sha }; },
+    getRef: async ({ ref }: any) => { if (ref === "tags/v0.33.0-beta.0" && loseTagReadback) { loseTagReadback = false; throw { v: "reelier.github-release-provider-fault/v1", kind: "transport-uncertain", reason: "tag readback unavailable" }; } return refs.has(ref) ? { sha: refs.get(ref)! } : null; },
+    createRef: async ({ ref, sha }: any) => { if (refs.has(ref)) throw new Error("exists"); refs.set(ref, sha); if (ref === "tags/v0.33.0-beta.0") { tagCalls += 1; loseTagReadback = true; throw new Error("socket lost after tag"); } return { sha }; },
     getCommit: async ({ sha }: any) => ({ sha, parentSha: "e600ad5c2dc5e1bde0714915e7a84980c8d5602b", treeSha: sha === "e600ad5c2dc5e1bde0714915e7a84980c8d5602b" ? gitSha("b") : gitSha("e") }),
     findPullRequests: async () => pullRequest ? [pullRequest] : [],
     createPullRequest: async (metadata: any) => (pullRequest = { base: metadata.base, body: metadata.body, draft: metadata.draft, head: metadata.head, headSha: gitSha("a"), mergeCommitSha: null, merged: false, number: 1, title: metadata.title }),
@@ -414,7 +597,7 @@ test("four-operation release saga converges after ambiguous merge and tag withou
     getChecks: async () => ["coverage", "full-tests", "mutation"].map(name => ({ name, status: "success", workflowDigest: digest("3"), workflowPath: ".github/workflows/ci.yml" })),
     mergePullRequest: async () => { mergeCalls += 1; pullRequest = { ...pullRequest, merged: true, mergeCommitSha: gitSha("9") }; refs.set("heads/main", gitSha("9")); loseMergeReadback = true; throw new Error("socket lost after merge"); },
     npmVersionExists: async () => { npmChecks += 1; return npmPublished; },
-    readPackageManifest: async () => ({ name: "reelier", version: "0.32.1" }),
+    readPackageManifest: async () => ({ name: "reelier", version: "0.33.0-beta.0" }),
   };
   try {
     const runner = await createGitHubReleaseRunner({ rootDir: root, journalSigner: { signerId: "release-journal-2026", privateKey: journalKeys.privateKey, publicKey: journalKeys.publicKey }, evidenceSigner: fixture.evidenceSigner, authorizationResolver: async () => fixture.context, provider, now: () => new Date("2026-08-18T06:00:00.000Z") });
@@ -550,7 +733,7 @@ test("intent-only candidate recovery refuses an externally created exact branch"
   const provider = candidateProvider({
     getRef: async ({ ref }: any) => {
       if (ref === "heads/main") return { sha: "e600ad5c2dc5e1bde0714915e7a84980c8d5602b" };
-      if (ref === "heads/reelier/release/0.32.1") {
+      if (ref === "heads/reelier/release/0.33.0-beta.0") {
         candidateReads += 1;
         if (externalBranch) return { sha: gitSha("a") };
         if (candidateReads === 3) throw { v: "reelier.github-release-provider-fault/v1", kind: "transport-uncertain", reason: "crash after branch intent before dispatching" };
@@ -634,7 +817,7 @@ for (const boundary of ["createBlob", "createTree", "createCommit", "createBranc
       findPullRequests: async () => pr ? [pr] : [], createPullRequest: async (metadata: any) => (pr = { base: metadata.base, body: metadata.body, draft: metadata.draft, head: metadata.head, headSha: gitSha("a"), mergeCommitSha: null, merged: false, number: 1, title: metadata.title }), markPullRequestReady: async () => (pr = { ...pr, draft: false }), getPullRequest: async () => pr,
       getChecks: async () => ["coverage", "full-tests", "mutation"].map(name => ({ name, status: "success", workflowDigest: digest("3"), workflowPath: ".github/workflows/ci.yml" })),
       mergePullRequest: async () => { mergeCalls++; pr = { ...pr, merged: true, mergeCommitSha: gitSha("9") }; refs.set("heads/main", gitSha("9")); return { merged: true, sha: gitSha("9") }; },
-      readPackageManifest: async () => ({ name: "reelier", version: "0.32.1" }), npmVersionExists: async () => false,
+      readPackageManifest: async () => ({ name: "reelier", version: "0.33.0-beta.0" }), npmVersionExists: async () => false,
     };
     const method = boundary === "createBranchRef" || boundary === "createTagRef" ? "createRef" : boundary;
     const original = base[method];
@@ -668,7 +851,7 @@ for (const boundary of ["createBlob", "createTree", "createCommit", "createBranc
       getCommit: async ({ sha }: any) => ({ sha, parentSha: "e600ad5c2dc5e1bde0714915e7a84980c8d5602b", treeSha: sha === "e600ad5c2dc5e1bde0714915e7a84980c8d5602b" ? gitSha("b") : gitSha("e") }),
       findPullRequests: async () => pr ? [pr] : [], createPullRequest: async (metadata: any) => (pr = { base: metadata.base, body: metadata.body, draft: metadata.draft, head: metadata.head, headSha: gitSha("a"), mergeCommitSha: null, merged: false, number: 1, title: metadata.title }), markPullRequestReady: async () => (pr = { ...pr, draft: false }), getPullRequest: async () => pr,
       getChecks: async () => ["coverage", "full-tests", "mutation"].map(name => ({ name, status: "success", workflowDigest: digest("3"), workflowPath: ".github/workflows/ci.yml" })),
-      mergePullRequest: async () => { pr = { ...pr, merged: true, mergeCommitSha: gitSha("9") }; refs.set("heads/main", gitSha("9")); return { merged: true, sha: gitSha("9") }; }, readPackageManifest: async () => ({ name: "reelier", version: "0.32.1" }), npmVersionExists: async () => false,
+      mergePullRequest: async () => { pr = { ...pr, merged: true, mergeCommitSha: gitSha("9") }; refs.set("heads/main", gitSha("9")); return { merged: true, sha: gitSha("9") }; }, readPackageManifest: async () => ({ name: "reelier", version: "0.33.0-beta.0" }), npmVersionExists: async () => false,
     };
     const method = boundary === "createBranchRef" || boundary === "createTagRef" ? "createRef" : boundary;
     const original = provider[method];
@@ -704,7 +887,7 @@ for (const scenario of ["base-drift", "branch-conflict", "duplicate-pr", "failed
   test(`deterministic ${scenario} refuses without semantic widening`, async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), `reelier-release-refusal-${scenario}-`));
     const fixture = releaseAuthorityFixture(), keys = generateKeyPairSync("ed25519"), refs = new Map<string, string>([["heads/main", scenario === "base-drift" ? gitSha("7") : "e600ad5c2dc5e1bde0714915e7a84980c8d5602b"]]);
-    if (scenario === "branch-conflict") refs.set("heads/reelier/release/0.32.1", gitSha("8"));
+    if (scenario === "branch-conflict") refs.set("heads/reelier/release/0.33.0-beta.0", gitSha("8"));
     let pr: any = null, mergeCalls = 0, tagCalls = 0;
     const provider: any = {
       createBlob: async ({ contentBase64 }: any) => ({ sha: blobSha(Buffer.from(contentBase64, "base64")) }), createTree: async () => ({ sha: gitSha("e") }), createCommit: async () => ({ sha: gitSha("a") }),
@@ -712,7 +895,7 @@ for (const scenario of ["base-drift", "branch-conflict", "duplicate-pr", "failed
       getCommit: async ({ sha }: any) => ({ sha, parentSha: scenario === "tampered-merge-parent" && sha === gitSha("9") ? gitSha("7") : "e600ad5c2dc5e1bde0714915e7a84980c8d5602b", treeSha: sha === "e600ad5c2dc5e1bde0714915e7a84980c8d5602b" ? gitSha("b") : scenario === "tampered-merge-tree" && sha === gitSha("9") ? gitSha("0") : gitSha("e") }),
       findPullRequests: async () => scenario === "duplicate-pr" && pr ? [pr, { ...pr, number: 2 }] : pr ? [pr] : [], createPullRequest: async (metadata: any) => (pr = { base: metadata.base, body: metadata.body, draft: metadata.draft, head: metadata.head, headSha: gitSha("a"), mergeCommitSha: null, merged: false, number: 1, title: metadata.title }), markPullRequestReady: async () => (pr = { ...pr, draft: false }), getPullRequest: async () => pr,
       getChecks: async () => (scenario === "external-required-check" ? ["coverage", "full-tests"] : ["coverage", "full-tests", "mutation"]).map(name => ({ name, status: scenario === "failed-check" ? "failure" : "success", workflowDigest: digest("3"), workflowPath: scenario === "wrong-check-workflow" ? ".github/workflows/npm-publish.yml" : ".github/workflows/ci.yml" })),
-      mergePullRequest: async () => { mergeCalls++; pr = { ...pr, merged: true, mergeCommitSha: gitSha("9") }; refs.set("heads/main", gitSha("9")); return { merged: true, sha: gitSha("9") }; }, readPackageManifest: async () => ({ name: "reelier", version: "0.32.1" }), npmVersionExists: async () => false,
+      mergePullRequest: async () => { mergeCalls++; pr = { ...pr, merged: true, mergeCommitSha: gitSha("9") }; refs.set("heads/main", gitSha("9")); return { merged: true, sha: gitSha("9") }; }, readPackageManifest: async () => ({ name: "reelier", version: "0.33.0-beta.0" }), npmVersionExists: async () => false,
     };
     try {
       const runner = await createGitHubReleaseRunner({ rootDir: root, journalSigner: { signerId: "release-journal-2026", privateKey: keys.privateKey, publicKey: keys.publicKey }, evidenceSigner: fixture.evidenceSigner, authorizationResolver: async () => fixture.context, provider, now: () => new Date("2026-08-18T06:00:00.000Z") });
@@ -721,13 +904,13 @@ for (const scenario of ["base-drift", "branch-conflict", "duplicate-pr", "failed
         await assert.rejects(() => run("github_release_candidate_publish_v1", "release-candidate-branch-01", `${scenario}_candidate`), /drift|conflict/i);
       } else {
         assert.equal((await run("github_release_candidate_publish_v1", "release-candidate-branch-01", `${scenario}_candidate`)).status, "verified");
-        if (scenario === "duplicate-pr") { pr = { base: "main", body: "Governed release v0.32.1", draft: true, head: "reelier/release/0.32.1", headSha: gitSha("a"), mergeCommitSha: null, merged: false, number: 1, title: "Release v0.32.1" }; await assert.rejects(() => run("github_release_pr_ensure_v1", "release-draft-pr-01", `${scenario}_pr`), /multiple|conflict/i); }
+        if (scenario === "duplicate-pr") { pr = { base: "main", body: "Governed release v0.33.0-beta.0", draft: true, head: "reelier/release/0.33.0-beta.0", headSha: gitSha("a"), mergeCommitSha: null, merged: false, number: 1, title: "Release v0.33.0-beta.0" }; await assert.rejects(() => run("github_release_pr_ensure_v1", "release-draft-pr-01", `${scenario}_pr`), /multiple|conflict/i); }
         else {
           assert.equal((await run("github_release_pr_ensure_v1", "release-draft-pr-01", `${scenario}_pr`)).status, "verified");
           if (scenario === "failed-check" || scenario === "wrong-check-workflow" || scenario === "external-required-check") await assert.rejects(() => run("github_release_pr_merge_v1", "release-exact-sha-merge-01", `${scenario}_merge`), /checks|failed|workflow/i);
           else {
             if (scenario === "tampered-merge-tree" || scenario === "tampered-merge-parent") await assert.rejects(() => run("github_release_pr_merge_v1", "release-exact-sha-merge-01", `${scenario}_merge`), /tree|parent|tamper/i);
-            else { assert.equal((await run("github_release_pr_merge_v1", "release-exact-sha-merge-01", `${scenario}_merge`)).status, "verified"); refs.set("tags/v0.32.1", gitSha("8")); await assert.rejects(() => run("github_release_tag_create_v1", "release-non-force-tag-01", `${scenario}_tag`), /tag.*conflict/i); }
+            else { assert.equal((await run("github_release_pr_merge_v1", "release-exact-sha-merge-01", `${scenario}_merge`)).status, "verified"); refs.set("tags/v0.33.0-beta.0", gitSha("8")); await assert.rejects(() => run("github_release_tag_create_v1", "release-non-force-tag-01", `${scenario}_tag`), /tag.*conflict/i); }
           }
         }
       }

@@ -5,12 +5,15 @@ import path from "node:path";
 import { isProxy } from "node:util/types";
 import { authorityDigest } from "../wire.js";
 import { assertVerifiedReleaseAuthorizationV1, type ReleaseContractSignerV1, type ReleaseProviderEffectV1, type VerifiedReleaseAuthorizationV1 } from "../release-contracts.js";
-import { consumeCoordinatorPublicationCall, type DispatchAdapter, type DispatchOutcome, type DispatchPublication, type DispatchRequestState, type DurableDispatchPublicationHeadV1, type DurableDispatchPublicationQueryV1 } from "./dispatch.js";
+import { consumeCoordinatorDispatchCallDelegateV1, consumeCoordinatorPublicationCall, type DispatchAdapter, type DispatchOutcome, type DispatchPublication, type DispatchRequestState, type DurableDispatchPublicationHeadV1, type DurableDispatchPublicationQueryV1 } from "./dispatch.js";
 import { consumeCoordinatorReconciliation, createPreparedDispatch } from "./prepared-dispatch.js";
 import { materializedHttpRequestDigest } from "./http-response-semantics.js";
 import { normalizeReservationPublicationId } from "./reservation-identity.js";
 import { createSignedJournal, type SignedJournal, type SignedJournalEventV1 } from "./signed-journal.js";
 import { createGitHubReleaseProviderEvidence } from "./github-release-evidence.js";
+import { assertGitHubReleaseHostedAuthorityBindingV1, type GitHubReleaseHostedAuthorityBindingV1 } from "./github-release-hosted-authority.js";
+import { mintGovernedEffectTransportExecutorV1, type GovernedEffectTransportExecutorV1 } from "./effect-transports.js";
+import { GITHUB_RELEASE_OUTCOME_SERVER_SCHEMA_DIGEST_V1, assertGitHubReviewedReleasePackMemberV1, githubReleaseOutcomeBindingDigestV1, githubReleaseOutcomeToolSchemaDigestV1, githubReviewedOutcomePolicyDigestV1, githubReviewedReleasePackDigestV1, type GitHubLinearOutcomePackV1 } from "../packs/github-linear-outcomes.js";
 
 const ALIASES = Object.freeze({ github_release_candidate_publish_v1: "candidate-branch", github_release_pr_ensure_v1: "draft-pr", github_release_pr_merge_v1: "exact-sha-merge", github_release_tag_create_v1: "non-force-tag" } satisfies Record<string, ReleaseProviderEffectV1>);
 const ENDPOINTS = Object.freeze(Object.fromEntries(Object.entries(ALIASES).map(([alias, effect]) => [`github.release.${effect}`, alias])) as Record<string, GitHubReleaseAliasV1>);
@@ -32,7 +35,7 @@ class ProviderDefinitiveRefusal extends TypeError {}
 class ReleaseRunFailure extends Error { constructor(message: string, readonly effectPossible: boolean, readonly deterministic: boolean) { super(message); } }
 
 export type GitHubReleaseAliasV1 = keyof typeof ALIASES;
-export interface GitHubReleaseAuthorizationContextV1 { readonly authorization: VerifiedReleaseAuthorizationV1; readonly fileContents: readonly Readonly<{ path: string; bytesBase64: string }>[] }
+export interface GitHubReleaseAuthorizationContextV1 { readonly authorization: VerifiedReleaseAuthorizationV1; readonly fileContents: readonly Readonly<{ path: string; bytesBase64: string }>[]; readonly hostedAuthority?: GitHubReleaseHostedAuthorityBindingV1 }
 export interface GitHubReleasePullRequestV1 { readonly number: number; readonly head: string; readonly base: string; readonly draft: boolean; readonly title: string; readonly body: string; readonly headSha: string; readonly merged: boolean; readonly mergeCommitSha: string | null }
 export interface GitHubReleaseProviderV1 {
   createBlob(input: Readonly<{ repository: string; contentBase64: string }>): Promise<unknown>;
@@ -52,18 +55,44 @@ export interface GitHubReleaseProviderV1 {
 }
 export interface GitHubReleaseProviderFaultV1 { readonly v: "reelier.github-release-provider-fault/v1"; readonly kind: "transport-uncertain" | "definitive-refusal"; readonly reason: string }
 export interface GitHubReleaseRunRequestV1 { readonly alias: GitHubReleaseAliasV1; readonly allocationId: string; readonly authorizationHandle: string; readonly requestId: string; readonly semanticsDigest: string }
-interface GitHubReleaseInvocationV1 { readonly alias: GitHubReleaseAliasV1; readonly authorizationHandle: string; readonly requestId: string; readonly semanticsDigest: string }
+interface GitHubReleaseInvocationV1 { readonly alias: GitHubReleaseAliasV1; readonly authorizationHandle: string; readonly requestId: string; readonly semanticsDigest: string; readonly reviewedHost?: Readonly<{ account: string; destination: string; limit: string }>; readonly reviewedPackDigest?: string }
 export interface GitHubReleaseRunResultV1 { readonly status: "verified" | "pending-reconciliation" | "refused"; readonly phase: string; readonly evidenceDigest: string | null }
 export interface GitHubReleasePublicationConfirmationV1 { readonly requestId: string; readonly providerEvidenceDigest: string; readonly receiptRef: string; readonly receiptEvidenceDigest: string }
 export interface GitHubReleaseRunnerV1 { run(input: GitHubReleaseRunRequestV1): Promise<GitHubReleaseRunResultV1>; recover(): Promise<readonly string[]> }
 
 const publicationConfirmers = new WeakMap<GitHubReleaseRunnerV1, (input: GitHubReleasePublicationConfirmationV1) => Promise<void>>();
+const publicationEvidenceResolvers = new WeakMap<GitHubReleaseRunnerV1, (requestId: string) => Promise<string>>();
 const authoritativeHeadConfirmers = new WeakMap<GitHubReleaseRunnerV1, (query: DurableDispatchPublicationQueryV1, head: DurableDispatchPublicationHeadV1) => Promise<boolean>>();
 const runnerControllers = new WeakMap<GitHubReleaseRunnerV1, Readonly<{ execute(input: GitHubReleaseInvocationV1): Promise<GitHubReleaseRunResultV1>; reconcile(input: GitHubReleaseInvocationV1): Promise<GitHubReleaseRunResultV1>; recover(): Promise<readonly string[]> }>>();
+const outcomeExecutors = new WeakMap<GitHubReleaseRunnerV1, GovernedEffectTransportExecutorV1>();
+const outcomeExecutorFactories = new WeakMap<GitHubReleaseRunnerV1, (pack: GitHubLinearOutcomePackV1) => GovernedEffectTransportExecutorV1>();
+const brandedPreparedFallbacks = new WeakSet<object>();
+
+/** @internal Marks the genuine outcome runtime's prepared adapter as the GitHub execution owner. */
+export function bindGitHubReleasePreparedFallbackV1(adapter: DispatchAdapter): DispatchAdapter {
+  if (!adapter || typeof adapter !== "object" || typeof adapter.prepare !== "function") throw new TypeError("GitHub release prepared fallback is invalid");
+  brandedPreparedFallbacks.add(adapter as object);
+  return adapter;
+}
 
 /** @internal Host composition brand check. Deliberately absent from the public package barrel. */
 export function assertGitHubReleaseRunnerCapability(value: GitHubReleaseRunnerV1): void {
-  if (!value || !runnerControllers.has(value) || !publicationConfirmers.has(value) || !authoritativeHeadConfirmers.has(value)) throw new TypeError("GitHub release runner capability is absent or unrecognized");
+  if (!value || !runnerControllers.has(value) || !publicationConfirmers.has(value) || !publicationEvidenceResolvers.has(value) || !authoritativeHeadConfirmers.has(value)) throw new TypeError("GitHub release runner capability is absent or unrecognized");
+}
+
+/** Adapts the reviewed candidate/PR/merge pack tools to the existing branded release saga.
+ * The executor remains callback-only and carries no provider credential or release authority. */
+export function createGitHubReleaseOutcomeExecutorV1(runner: GitHubReleaseRunnerV1, pack?: GitHubLinearOutcomePackV1): GovernedEffectTransportExecutorV1 {
+  assertGitHubReleaseRunnerCapability(runner);
+  if (pack) {
+    githubReviewedReleasePackDigestV1(pack);
+    const factory = outcomeExecutorFactories.get(runner);
+    if (!factory) throw new TypeError("GitHub release outcome executor capability is unavailable");
+    return factory(pack);
+  }
+  const executor = outcomeExecutors.get(runner);
+  if (!executor) throw new TypeError("GitHub release outcome executor capability is unavailable");
+  return executor;
 }
 
 export async function createGitHubReleaseRunner(input: Readonly<{ rootDir: string; journalSigner: Readonly<{ signerId: string; privateKey: KeyObject; publicKey: KeyObject }>; evidenceSigner: ReleaseContractSignerV1; authorizationResolver: (handle: string) => Promise<GitHubReleaseAuthorizationContextV1 | VerifiedReleaseAuthorizationV1>; provider: GitHubReleaseProviderV1; now: () => Date }>): Promise<GitHubReleaseRunnerV1> {
@@ -77,10 +106,15 @@ export async function createGitHubReleaseRunner(input: Readonly<{ rootDir: strin
     const context = normalizeContext(resolved);
     const authorization = context.authorization;
     assertVerifiedReleaseAuthorizationV1(authorization);
+    if (invocation.reviewedHost) {
+      try { assertReviewedHost(invocation.reviewedHost, authorization.operationPlan.value, invocation.semanticsDigest, authorization.authorization.value.packDigest, invocation.reviewedPackDigest); }
+      catch (error) { if (error instanceof TypeError) return Object.freeze({ status: "refused", phase: "reviewed-policy-refused", evidenceDigest: null }); throw error; }
+    }
+    const hostedAuthorityBindingDigest = context.hostedAuthority ? assertGitHubReleaseHostedAuthorityBindingV1(context.hostedAuthority, authorization, input.now()) : null;
     const effect = ALIASES[invocation.alias];
     const allocation = authorization.authorization.value.effectAllocations.find(candidate => candidate.effect === effect);
     if (!allocation || allocation.maxEffects !== 1 || !DIGEST.test(allocation.allocationDigest)) throw new TypeError("release alias does not have the authenticated exact one-effect allocation");
-    const request: GitHubReleaseRunRequestV1 = Object.freeze({ ...invocation, allocationId: allocation.allocationId });
+    const request: GitHubReleaseRunRequestV1 = Object.freeze({ alias: invocation.alias, authorizationHandle: invocation.authorizationHandle, requestId: invocation.requestId, semanticsDigest: invocation.semanticsDigest, allocationId: allocation.allocationId });
     validateRequest(request);
     return journal.withLease(`authorization-${authorization.authorization.digest.slice(7)}`, async () => {
       let events = await journal.load(request.requestId);
@@ -88,7 +122,7 @@ export async function createGitHubReleaseRunner(input: Readonly<{ rootDir: strin
       if (events.length > 0) {
         if (events[0].semanticsDigest !== request.semanticsDigest) throw new TypeError("release requestId semantic reuse is forbidden before dispatch");
         const root = events[0].data;
-        if (root.alias !== request.alias || root.authorizationHandle !== request.authorizationHandle || root.authorizationDigest !== authorization.authorization.digest || root.allocationId !== allocation.allocationId || root.allocationDigest !== allocation.allocationDigest || root.effect !== effect) throw new TypeError("release journal authority binding is inconsistent");
+        if (root.alias !== request.alias || root.authorizationHandle !== request.authorizationHandle || root.authorizationDigest !== authorization.authorization.digest || root.allocationId !== allocation.allocationId || root.allocationDigest !== allocation.allocationDigest || root.effect !== effect || (root.hostedAuthorityBindingDigest ?? null) !== hostedAuthorityBindingDigest) throw new TypeError("release journal authority binding is inconsistent");
         const terminal = [...events].reverse().find(event => TERMINAL.has(event.phase));
         if (terminal) return Object.freeze({ status: "verified", phase: terminal.phase, evidenceDigest: String(terminal.data.evidenceDigest) });
         if (events.at(-1)?.phase === "expired-refused") throw new TypeError("release authorization expired after durable intent; provider dispatch is refused");
@@ -102,14 +136,14 @@ export async function createGitHubReleaseRunner(input: Readonly<{ rootDir: strin
           const first = (await journal.load(priorRequestId))[0];
           if (first?.data.authorizationDigest === authorization.authorization.digest && first.data.allocationId === allocation.allocationId) throw new TypeError("release one-effect allocation was already used by another request");
         }
-        await journal.append(request.requestId, request.semanticsDigest, "authorized", { alias: request.alias, allocationDigest: allocation.allocationDigest, allocationId: allocation.allocationId, authorizationDigest: authorization.authorization.digest, authorizationHandle: request.authorizationHandle, effect });
+        await journal.append(request.requestId, request.semanticsDigest, "authorized", { alias: request.alias, allocationDigest: allocation.allocationDigest, allocationId: allocation.allocationId, authorizationDigest: authorization.authorization.digest, authorizationHandle: request.authorizationHandle, effect, hostedAuthorityBindingDigest });
         events = await journal.load(request.requestId);
       }
       try {
-        if (effect === "candidate-branch") return await candidate(request, context, events, journal, provider, input.evidenceSigner, input.now);
-        if (effect === "draft-pr") return await pullRequest(request, authorization, events, journal, provider, input.evidenceSigner, input.now);
-        if (effect === "exact-sha-merge") return await merge(request, authorization, events, journal, provider, input.evidenceSigner, input.now);
-        return await tag(request, authorization, events, journal, provider, input.evidenceSigner, input.now);
+        if (effect === "candidate-branch") return await candidate(request, context, events, journal, provider, input.evidenceSigner, input.now, hostedAuthorityBindingDigest);
+        if (effect === "draft-pr") return await pullRequest(request, authorization, events, journal, provider, input.evidenceSigner, input.now, hostedAuthorityBindingDigest);
+        if (effect === "exact-sha-merge") return await merge(request, authorization, events, journal, provider, input.evidenceSigner, input.now, hostedAuthorityBindingDigest);
+        return await tag(request, authorization, events, journal, provider, input.evidenceSigner, input.now, hostedAuthorityBindingDigest);
       } catch (error) {
         const latest = await journal.load(request.requestId);
         if (error instanceof ProviderDefinitiveRefusal) {
@@ -163,6 +197,8 @@ export async function createGitHubReleaseRunner(input: Readonly<{ rootDir: strin
     const context = normalizeContext(await input.authorizationResolver(String(first.data.authorizationHandle))), authorization = context.authorization;
     assertVerifiedReleaseAuthorizationV1(authorization);
     if (authorization.authorization.digest !== first.data.authorizationDigest) throw new TypeError("release durable head authorization binding conflicts");
+    const hostedAuthorityBindingDigest = context.hostedAuthority ? assertGitHubReleaseHostedAuthorityBindingV1(context.hostedAuthority, authorization, input.now()) : null;
+    if ((first.data.hostedAuthorityBindingDigest ?? null) !== hostedAuthorityBindingDigest) throw new TypeError("release durable head hosted authority binding conflicts");
     const allocation = authorization.authorization.value.effectAllocations.find(candidate => candidate.effect === effect);
     if (!allocation || allocation.maxEffects !== 1 || allocation.allocationId !== first.data.allocationId || allocation.allocationDigest !== first.data.allocationDigest) throw new TypeError("release durable head allocation binding conflicts");
     const terminal = [...events].reverse().find(event => TERMINAL.has(event.phase));
@@ -175,14 +211,76 @@ export async function createGitHubReleaseRunner(input: Readonly<{ rootDir: strin
     async recover(): Promise<readonly string[]> { throw new TypeError("release recovery requires the coordinator reconciliation capability"); },
   });
   publicationConfirmers.set(runner, confirmPublication);
+  publicationEvidenceResolvers.set(runner, async requestId => {
+    const terminal = [...await journal.load(requestId)].reverse().find(event => TERMINAL.has(event.phase));
+    const evidenceDigest = terminal?.data.evidenceDigest;
+    if (typeof evidenceDigest !== "string" || !DIGEST.test(evidenceDigest)) throw new TypeError("release provider evidence is absent from the signed runner journal");
+    return evidenceDigest;
+  });
   authoritativeHeadConfirmers.set(runner, confirmAuthoritativeHead);
   runnerControllers.set(runner, Object.freeze({ execute: run, reconcile: request => runOnce(request, true), recover }));
+  const tools = Object.freeze({
+    github_release_candidate_publish_v1: Object.freeze({ alias: "github_release_candidate_publish_v1" as const, reconcile: false }),
+    github_release_candidate_publish_readback_v1: Object.freeze({ alias: "github_release_candidate_publish_v1" as const, reconcile: true }),
+    github_release_pr_ensure_v1: Object.freeze({ alias: "github_release_pr_ensure_v1" as const, reconcile: false }),
+    github_release_pr_ensure_readback_v1: Object.freeze({ alias: "github_release_pr_ensure_v1" as const, reconcile: true }),
+    github_release_pr_merge_v1: Object.freeze({ alias: "github_release_pr_merge_v1" as const, reconcile: false }),
+    github_release_pr_merge_readback_v1: Object.freeze({ alias: "github_release_pr_merge_v1" as const, reconcile: true }),
+  });
+  const mintOutcomeExecutor = (reviewedPack: GitHubLinearOutcomePackV1 | null): GovernedEffectTransportExecutorV1 => mintGovernedEffectTransportExecutorV1({ mcp: {
+    inspectSchemas(request, sink): void {
+      try {
+        if (request.server !== "reelier.github.outcomes") throw new TypeError("GitHub release pack server is invalid");
+        sink.success(JSON.stringify({ serverSchemaDigest: GITHUB_RELEASE_OUTCOME_SERVER_SCHEMA_DIGEST_V1, toolSchemaDigest: githubReleaseOutcomeToolSchemaDigestV1(request.tool) }));
+      } catch { sink.failure(); }
+    },
+    call(request, sink): void {
+      let selected: (typeof tools)[keyof typeof tools], invocation: GitHubReleaseInvocationV1;
+      try {
+        if (request.server !== "reelier.github.outcomes" || request.serverSchemaDigest !== GITHUB_RELEASE_OUTCOME_SERVER_SCHEMA_DIGEST_V1 || request.toolSchemaDigest !== githubReleaseOutcomeToolSchemaDigestV1(request.tool)) throw new TypeError("GitHub release pack transport binding is invalid");
+        selected = tools[request.tool as keyof typeof tools];
+        if (!selected) throw new TypeError("GitHub release pack tool is not reviewed");
+        if (request.authority.bindingDigest !== githubReleaseOutcomeBindingDigestV1(request.tool)) throw new TypeError("GitHub release pack compiler binding is invalid");
+        const reviewedPackDigest = reviewedPack === null ? undefined : githubReviewedReleasePackDigestV1(reviewedPack);
+        if (reviewedPack) assertGitHubReviewedReleasePackMemberV1(reviewedPack, request.tool, request.authority.contractDigest, request.authority.bindingDigest, request.arguments.host.limit);
+        if (typeof request.authority.requestId !== "string" || typeof request.authority.governedEffectDigest !== "string") throw new TypeError("GitHub release write requires authenticated governed authority");
+        if (!selected.reconcile && !consumeCoordinatorDispatchCallDelegateV1(request.authority, { reservationId: request.authority.reservationId, effectDigest: request.authority.governedEffectDigest })) throw new TypeError("GitHub release write requires the exact coordinator call capability");
+        const model = exactRecord(request.arguments.model, ["authorizationHandle", "requestId"], "GitHub release pack model input");
+        if (model.requestId !== request.authority.requestId) throw new TypeError("GitHub release pack authenticated request binding is invalid");
+        invocation = Object.freeze({ alias: selected.alias, authorizationHandle: String(model.authorizationHandle), requestId: String(model.requestId), semanticsDigest: request.authority.contractDigest, reviewedHost: request.arguments.host, ...(reviewedPackDigest ? { reviewedPackDigest } : {}) });
+        validateInvocation(invocation);
+      } catch { sink.failure(); return; }
+      const controller = runnerControllers.get(runner)!;
+      const execute = selected.reconcile ? controller.reconcile(invocation) : controller.execute(invocation);
+      void execute.then(async result => {
+        try {
+          if (result.status === "refused") { sink.success(JSON.stringify({ outcome: "refused", data: {} })); return; }
+          const context = normalizeContext(await input.authorizationResolver(invocation.authorizationHandle)), plan = context.authorization.operationPlan.value;
+          const events = await journal.load(invocation.requestId), mergeSha = String([...events].reverse().find(event => event.phase === "merge-verified")?.data.mergeSha ?? "");
+          const number = Number([...events].reverse().find(event => event.phase === "pr-ready-confirmed")?.data.number ?? 0);
+          const data = selected.alias === "github_release_candidate_publish_v1"
+            ? { repository: plan.repository, baseSha: plan.baseCommit, headSha: plan.expectedCommitSha, candidateDigest: plan.candidateTreeDigest }
+            : selected.alias === "github_release_pr_ensure_v1"
+              ? { repository: plan.repository, baseBranch: plan.destinationBranch, headSha: plan.expectedCommitSha, pullRequest: number, ready: result.status === "verified" }
+              : { repository: plan.repository, baseSha: plan.baseCommit, headSha: plan.expectedCommitSha, mergeCommitSha: mergeSha, treeSha: plan.expectedTreeSha };
+          sink.success(JSON.stringify({ outcome: result.status === "verified" ? "applied" : result.status === "pending-reconciliation" ? "uncertain" : "refused", data }));
+        } catch { sink.failure(); }
+      }, error => {
+        if (error instanceof TypeError || (error instanceof ReleaseRunFailure && error.deterministic)) sink.success(JSON.stringify({ outcome: "refused", data: {} }));
+        else sink.failure();
+      });
+    },
+  } });
+  const executor = mintOutcomeExecutor(null);
+  outcomeExecutors.set(runner, executor);
+  outcomeExecutorFactories.set(runner, pack => mintOutcomeExecutor(pack));
   return runner;
 }
 
 /** Routes only the four reviewed release endpoints through the dedicated saga. The ordinary
  * coordinator still performs the actual allocation consumption and receipt publication. */
 function createGitHubReleaseDispatchAdapter(input: Readonly<{ runner: GitHubReleaseRunnerV1 | null; fallback: DispatchAdapter }>): DispatchAdapter {
+  const useBrandedPreparedFallback = brandedPreparedFallbacks.has(input.fallback as object);
   const invoke = async (state: DispatchRequestState, reconcileOnly = false): Promise<DispatchOutcome | null> => {
     const endpointId = inertEndpointId(state.effect);
     const alias = endpointId ? ENDPOINTS[endpointId] : undefined;
@@ -211,12 +309,12 @@ function createGitHubReleaseDispatchAdapter(input: Readonly<{ runner: GitHubRele
     }
   };
   return Object.freeze({
-    ...(input.runner || input.fallback.prepare ? { async prepare(state: DispatchRequestState) {
+    ...(input.runner || input.fallback.prepare ? { async prepare(state: DispatchRequestState, call?: import("./dispatch.js").CoordinatorDispatchCallV1) {
       const endpointId = inertEndpointId(state.effect) ?? "";
       const alias = ENDPOINTS[endpointId];
-      if (!alias) {
+      if (!alias || useBrandedPreparedFallback) {
         if (!input.fallback.prepare) throw new TypeError("fallback prepared dispatch is unavailable");
-        return input.fallback.prepare(state);
+        return input.fallback.prepare(state, call);
       }
       const intent = state.reservation.intent as unknown as Record<string, unknown>;
       const execution = intent.executionContext as Readonly<{ allocationId?: unknown }> | undefined;
@@ -231,8 +329,8 @@ function createGitHubReleaseDispatchAdapter(input: Readonly<{ runner: GitHubRele
       const description = Object.freeze({ v: "reelier.prepared-dispatch-description/v1" as const, routeDigest, materializedRequestDigest: materializedHttpRequestDigest(projection), projection, authorityGeneration, authorityExpiresAt, absoluteDeadlineMs: performance.now() + 30_000, reservationId: state.reservation.reservationId, allocationId: execution.allocationId, behaviorDigest: authorityDigest({ v: "reelier.github-release-internal-behavior/v1", alias, routeDigest }) });
       return createPreparedDispatch({ description, send: async () => await invoke(state) ?? failure("dedicated-release-runner-absent"), requireCoordinatorCommit: true });
     } } : {}),
-    async dispatch(state: DispatchRequestState) { if (ENDPOINTS[inertEndpointId(state.effect) ?? ""]) return failure("release-provider-execution-requires-prepared-dispatch"); return input.fallback.dispatch(state); },
-    async reconcile(state: DispatchRequestState, outcome: DispatchOutcome) { return await invoke(state, true) ?? (input.fallback.reconcile ? input.fallback.reconcile(state, outcome) : outcome); },
+    async dispatch(state: DispatchRequestState) { if (useBrandedPreparedFallback) return input.fallback.dispatch(state); if (ENDPOINTS[inertEndpointId(state.effect) ?? ""]) return failure("release-provider-execution-requires-prepared-dispatch"); return input.fallback.dispatch(state); },
+    async reconcile(state: DispatchRequestState, outcome: DispatchOutcome) { if (useBrandedPreparedFallback && input.fallback.reconcile) return input.fallback.reconcile(state, outcome); return await invoke(state, true) ?? (input.fallback.reconcile ? input.fallback.reconcile(state, outcome) : outcome); },
   });
 }
 
@@ -240,8 +338,9 @@ function createGitHubReleaseDispatchAdapter(input: Readonly<{ runner: GitHubRele
  * succeeds. Later release effects require this confirmation, not provider evidence alone. */
 function createGitHubReleaseReceiptPublication(input: Readonly<{ runner: GitHubReleaseRunnerV1; publication: DispatchPublication }>): DispatchPublication {
   const confirmPublication = publicationConfirmers.get(input.runner);
+  const resolveProviderEvidence = publicationEvidenceResolvers.get(input.runner);
   const confirmAuthoritativeHead = authoritativeHeadConfirmers.get(input.runner);
-  if (!confirmPublication || !confirmAuthoritativeHead) throw new TypeError("release runner publication capability is unavailable");
+  if (!confirmPublication || !resolveProviderEvidence || !confirmAuthoritativeHead) throw new TypeError("release runner publication capability is unavailable");
   if (!input.publication.publishReservation || !input.publication.loadDurableHead) throw new TypeError("release receipt confirmation requires an authoritative durable publication head");
   const identities = new Map<string, Readonly<{ identity: any; reservationReceiptRef: string }>>();
   return Object.freeze({
@@ -274,7 +373,9 @@ function createGitHubReleaseReceiptPublication(input: Readonly<{ runner: GitHubR
         const head = await input.publication.loadDurableHead!({ v: "reelier.durable-dispatch-publication-query/v1", identity: durable.identity, ledgerState: value.phase === "dispatch" ? "dispatched" : "ambiguous", sendStarted: true }, "terminal");
         const terminalKind = value.phase === "dispatch" ? "acknowledged" : "reconciled";
         if (!head || head.phase !== value.phase || head.terminalKind !== terminalKind || head.receiptRef !== published.receiptRef || head.evidenceDigest !== published.evidenceDigest || head.reservationReceiptRef !== durable.reservationReceiptRef || head.priorReceiptRef !== (value.priorReceiptDigest ?? null) || authorityDigest(head.identity) !== authorityDigest(durable.identity)) throw new TypeError("release receipt publication is not the authoritative durable head");
-        await confirmPublication({ requestId: normalizeReservationPublicationId(value.state.reservation.reservationId), providerEvidenceDigest: value.outcome.resultDigest, receiptRef: published.receiptRef, receiptEvidenceDigest: published.evidenceDigest });
+        const authenticatedRequestId = value.state.reservation.intent.requestId;
+        const requestId = typeof authenticatedRequestId === "string" && authenticatedRequestId.length > 0 ? authenticatedRequestId : normalizeReservationPublicationId(value.state.reservation.reservationId);
+        await confirmPublication({ requestId, providerEvidenceDigest: await resolveProviderEvidence(requestId), receiptRef: published.receiptRef, receiptEvidenceDigest: published.evidenceDigest });
       }
       return published;
     },
@@ -289,7 +390,7 @@ export function createGitHubReleaseHostComposition(input: Readonly<{ runner: Git
   });
 }
 
-async function candidate(request: GitHubReleaseRunRequestV1, context: GitHubReleaseAuthorizationContextV1, initial: readonly SignedJournalEventV1[], journal: SignedJournal, provider: GitHubReleaseProviderV1, signer: ReleaseContractSignerV1, now: () => Date): Promise<GitHubReleaseRunResultV1> {
+async function candidate(request: GitHubReleaseRunRequestV1, context: GitHubReleaseAuthorizationContextV1, initial: readonly SignedJournalEventV1[], journal: SignedJournal, provider: GitHubReleaseProviderV1, signer: ReleaseContractSignerV1, now: () => Date, hostedAuthorityBindingDigest: string | null): Promise<GitHubReleaseRunResultV1> {
   const auth = context.authorization, plan = auth.operationPlan.value, byPath = new Map(context.fileContents.map(file => [file.path, file.bytesBase64]));
   const refName = `heads/${plan.candidateBranch}`;
   const base = parseRef(await provider.getRef({ repository: plan.repository, ref: `heads/${plan.destinationBranch}` }));
@@ -323,10 +424,10 @@ async function candidate(request: GitHubReleaseRunRequestV1, context: GitHubRele
   if (!existing || existing.sha !== plan.expectedCommitSha) return pending("branch-intent");
   const commit = parseCommit(await provider.getCommit({ repository: plan.repository, sha: plan.expectedCommitSha }));
   if (!commit || commit.parentSha !== plan.baseCommit || commit.treeSha !== plan.expectedTreeSha) throw new TypeError("candidate commit parent or tree readback is tampered");
-  return finish(journal, request, auth, "candidate-branch", "candidate-verified", authorityDigest({ ref: existing, commit }), signer, now());
+  return finish(journal, request, auth, "candidate-branch", "candidate-verified", authorityDigest({ ref: existing, commit }), signer, now(), {}, hostedAuthorityBindingDigest);
 }
 
-async function pullRequest(request: GitHubReleaseRunRequestV1, auth: VerifiedReleaseAuthorizationV1, events: readonly SignedJournalEventV1[], journal: SignedJournal, provider: GitHubReleaseProviderV1, signer: ReleaseContractSignerV1, now: () => Date): Promise<GitHubReleaseRunResultV1> {
+async function pullRequest(request: GitHubReleaseRunRequestV1, auth: VerifiedReleaseAuthorizationV1, events: readonly SignedJournalEventV1[], journal: SignedJournal, provider: GitHubReleaseProviderV1, signer: ReleaseContractSignerV1, now: () => Date, hostedAuthorityBindingDigest: string | null): Promise<GitHubReleaseRunResultV1> {
   const plan = auth.operationPlan.value;
   const base = parseRef(await provider.getRef({ repository: plan.repository, ref: `heads/${plan.destinationBranch}` }));
   const branch = parseRef(await provider.getRef({ repository: plan.repository, ref: `heads/${plan.candidateBranch}` }));
@@ -363,10 +464,10 @@ async function pullRequest(request: GitHubReleaseRunRequestV1, auth: VerifiedRel
   if (pr.draft) return pending("pr-ready-intent");
   assertPullRequestPlan(pr, plan, false);
   await step(journal, request, "pr-ready-confirmed", { number: pr.number });
-  return finish(journal, request, auth, "candidate-pull-request", "pr-verified", authorityDigest(pr), signer, now());
+  return finish(journal, request, auth, "candidate-pull-request", "pr-verified", authorityDigest(pr), signer, now(), {}, hostedAuthorityBindingDigest);
 }
 
-async function merge(request: GitHubReleaseRunRequestV1, auth: VerifiedReleaseAuthorizationV1, events: readonly SignedJournalEventV1[], journal: SignedJournal, provider: GitHubReleaseProviderV1, signer: ReleaseContractSignerV1, now: () => Date): Promise<GitHubReleaseRunResultV1> {
+async function merge(request: GitHubReleaseRunRequestV1, auth: VerifiedReleaseAuthorizationV1, events: readonly SignedJournalEventV1[], journal: SignedJournal, provider: GitHubReleaseProviderV1, signer: ReleaseContractSignerV1, now: () => Date, hostedAuthorityBindingDigest: string | null): Promise<GitHubReleaseRunResultV1> {
   const plan = auth.operationPlan.value;
   const matches = parsePullRequests(await provider.findPullRequests({ repository: plan.repository, head: plan.pullRequest.head, base: plan.pullRequest.base }));
   if (matches.length !== 1) throw new TypeError("release merge requires exactly one pull request");
@@ -393,10 +494,10 @@ async function merge(request: GitHubReleaseRunRequestV1, auth: VerifiedReleaseAu
   if (!main || main.sha !== mergeSha) return pending("merge-intent");
   const commit = parseCommit(await provider.getCommit({ repository: plan.repository, sha: mergeSha }));
   if (!commit || commit.parentSha !== plan.baseCommit || commit.treeSha !== plan.expectedTreeSha) throw new TypeError("squash commit parent or tree readback is tampered");
-  return finish(journal, request, auth, "merge-exact-sha", "merge-verified", authorityDigest({ pr, main, commit }), signer, now(), { mergeSha });
+  return finish(journal, request, auth, "merge-exact-sha", "merge-verified", authorityDigest({ pr, main, commit }), signer, now(), { mergeSha }, hostedAuthorityBindingDigest);
 }
 
-async function tag(request: GitHubReleaseRunRequestV1, auth: VerifiedReleaseAuthorizationV1, events: readonly SignedJournalEventV1[], journal: SignedJournal, provider: GitHubReleaseProviderV1, signer: ReleaseContractSignerV1, now: () => Date): Promise<GitHubReleaseRunResultV1> {
+async function tag(request: GitHubReleaseRunRequestV1, auth: VerifiedReleaseAuthorizationV1, events: readonly SignedJournalEventV1[], journal: SignedJournal, provider: GitHubReleaseProviderV1, signer: ReleaseContractSignerV1, now: () => Date, hostedAuthorityBindingDigest: string | null): Promise<GitHubReleaseRunResultV1> {
   const plan = auth.operationPlan.value, predecessor = await requirePredecessor(journal, auth.authorization.digest, "non-force-tag"), mergeSha = String(predecessor.data.mergeSha ?? "");
   if (!GIT_SHA.test(mergeSha)) throw new TypeError("verified merge predecessor lacks an authoritative merge SHA");
   const main = parseRef(await provider.getRef({ repository: plan.repository, ref: `heads/${plan.destinationBranch}` }));
@@ -408,7 +509,7 @@ async function tag(request: GitHubReleaseRunRequestV1, auth: VerifiedReleaseAuth
   if (existing && has(events, "tag-intent") && !has(events, "tag-dispatching")) throw new TypeError("release tag appeared after intent but before the authorized dispatching boundary");
   const manifest = parseManifest(await provider.readPackageManifest({ repository: plan.repository, sha: mergeSha }));
   if (manifest.name !== plan.npmPreflight.packageName || manifest.version !== plan.npmPreflight.version) throw new TypeError("release package name or version mismatch");
-  if (existing && has(events, "tag-dispatching")) return finish(journal, request, auth, "tag-immutable-ref", "tag-verified", authorityDigest({ tagged: existing, manifest, npmVersionAbsentAtDispatch: true, mergeSha }), signer, now(), { mergeSha });
+  if (existing && has(events, "tag-dispatching")) return finish(journal, request, auth, "tag-immutable-ref", "tag-verified", authorityDigest({ tagged: existing, manifest, npmVersionAbsentAtDispatch: true, mergeSha }), signer, now(), { mergeSha }, hostedAuthorityBindingDigest);
   if (parseBoolean(await provider.npmVersionExists({ packageName: manifest.name, version: manifest.version }), "npm version state")) throw new TypeError("release npm version already exists");
   if (!existing) {
     if (has(events, "tag-dispatching")) return pending("tag-dispatching");
@@ -423,7 +524,7 @@ async function tag(request: GitHubReleaseRunRequestV1, auth: VerifiedReleaseAuth
     existing = await safeRead(() => provider.getRef({ repository: plan.repository, ref }), parseRef);
   }
   if (!existing || existing.sha !== mergeSha) return pending("tag-intent");
-  return finish(journal, request, auth, "tag-immutable-ref", "tag-verified", authorityDigest({ tagged: existing, manifest, npmVersionAbsentAtDispatch: true, mergeSha }), signer, now(), { mergeSha });
+  return finish(journal, request, auth, "tag-immutable-ref", "tag-verified", authorityDigest({ tagged: existing, manifest, npmVersionAbsentAtDispatch: true, mergeSha }), signer, now(), { mergeSha }, hostedAuthorityBindingDigest);
 }
 
 async function requirePredecessor(journal: SignedJournal, authorizationDigest: string, effect: ReleaseProviderEffectV1): Promise<SignedJournalEventV1> {
@@ -445,20 +546,20 @@ function validateCandidate(context: GitHubReleaseAuthorizationContextV1): void {
   for (const raw of context.fileContents) { const file = exactRecord(raw, ["bytesBase64", "path"], "candidate file bytes"); if (typeof file.path !== "string" || typeof file.bytesBase64 !== "string" || byPath.has(file.path)) throw new TypeError("authenticated candidate file set is invalid"); byPath.set(file.path, file.bytesBase64); }
   for (const file of plan.files) { const bytesBase64 = byPath.get(file.path); if (!bytesBase64) throw new TypeError("authenticated candidate file bytes are missing"); const bytes = Buffer.from(bytesBase64, "base64"); if (bytes.toString("base64") !== bytesBase64 || sha256(bytes) !== file.contentDigest || gitBlobSha(bytes) !== file.blobSha) throw new TypeError("candidate bytes do not match signed content and Git blob commitments"); }
 }
-function normalizeContext(value: GitHubReleaseAuthorizationContextV1 | VerifiedReleaseAuthorizationV1): GitHubReleaseAuthorizationContextV1 { if (isPlain(value) && Object.keys(value).sort().join("\0") === ["authorization", "fileContents"].sort().join("\0")) { const context = exactRecord(value, ["authorization", "fileContents"], "release authorization context"); return Object.freeze({ authorization: context.authorization as VerifiedReleaseAuthorizationV1, fileContents: inertArray(context.fileContents, "release candidate file array") as readonly Readonly<{ path: string; bytesBase64: string }>[] }); } return Object.freeze({ authorization: value as VerifiedReleaseAuthorizationV1, fileContents: Object.freeze([]) }); }
+function normalizeContext(value: GitHubReleaseAuthorizationContextV1 | VerifiedReleaseAuthorizationV1): GitHubReleaseAuthorizationContextV1 { if (isPlain(value) && (["authorization", "fileContents"].sort().join("\0") === Object.keys(value).sort().join("\0") || ["authorization", "fileContents", "hostedAuthority"].sort().join("\0") === Object.keys(value).sort().join("\0"))) { const hasHostedAuthority = Object.prototype.hasOwnProperty.call(value, "hostedAuthority"); const context = exactRecord(value, hasHostedAuthority ? ["authorization", "fileContents", "hostedAuthority"] : ["authorization", "fileContents"], "release authorization context"); return Object.freeze({ authorization: context.authorization as VerifiedReleaseAuthorizationV1, fileContents: inertArray(context.fileContents, "release candidate file array") as readonly Readonly<{ path: string; bytesBase64: string }>[], ...(hasHostedAuthority ? { hostedAuthority: context.hostedAuthority as GitHubReleaseHostedAuthorityBindingV1 } : {}) }); } return Object.freeze({ authorization: value as VerifiedReleaseAuthorizationV1, fileContents: Object.freeze([]) }); }
 function assertLive(auth: VerifiedReleaseAuthorizationV1, now: Date): void { if (!(now instanceof Date) || !Number.isFinite(now.getTime()) || now.getTime() < Date.parse(auth.authorization.value.issuedAt) || now.getTime() >= Date.parse(auth.authorization.value.expiresAt)) throw new TypeError("release authorization is stale or clock is invalid"); }
 function assertWriteLive(auth: VerifiedReleaseAuthorizationV1, now: () => Date): void { assertLive(auth, now()); }
 async function assertPostIntentLive(journal: SignedJournal, request: GitHubReleaseRunRequestV1, auth: VerifiedReleaseAuthorizationV1, now: () => Date): Promise<void> { try { assertWriteLive(auth, now); } catch (error) { await step(journal, request, "expired-refused", { observedAt: safeNowIso(now) }); throw error; } }
 function safeNowIso(now: () => Date): string { try { const value = now(); return value instanceof Date && Number.isFinite(value.getTime()) ? value.toISOString() : "invalid-clock"; } catch { return "invalid-clock"; } }
 async function assertBaseRef(provider: GitHubReleaseProviderV1, plan: VerifiedReleaseAuthorizationV1["operationPlan"]["value"], expectedBase: string, requireCandidate = false): Promise<void> { const base = parseRef(await provider.getRef({ repository: plan.repository, ref: `heads/${plan.destinationBranch}` })); if (!base || base.sha !== expectedBase) throw new TypeError("release base branch drifted immediately before provider write"); if (requireCandidate) { const branch = parseRef(await provider.getRef({ repository: plan.repository, ref: `heads/${plan.candidateBranch}` })); if (!branch || branch.sha !== plan.expectedCommitSha) throw new TypeError("release candidate branch drifted immediately before provider write"); } }
-async function finish(journal: SignedJournal, request: GitHubReleaseRunRequestV1, auth: VerifiedReleaseAuthorizationV1, lane: keyof typeof LANES extends never ? never : any, phase: string, subjectDigest: string, signer: ReleaseContractSignerV1, now: Date, extra: Readonly<Record<string, unknown>> = {}): Promise<GitHubReleaseRunResultV1> { const evidence = createGitHubReleaseProviderEvidence({ authorization: auth, lane, observedAt: now.toISOString(), subjectDigest, signer }); await step(journal, request, phase, { ...extra, evidence, evidenceDigest: evidence.digest, subjectDigest }); return Object.freeze({ status: "verified", phase, evidenceDigest: evidence.digest }); }
+async function finish(journal: SignedJournal, request: GitHubReleaseRunRequestV1, auth: VerifiedReleaseAuthorizationV1, lane: keyof typeof LANES extends never ? never : any, phase: string, subjectDigest: string, signer: ReleaseContractSignerV1, now: Date, extra: Readonly<Record<string, unknown>> = {}, hostedAuthorityBindingDigest: string | null = null): Promise<GitHubReleaseRunResultV1> { const boundSubjectDigest = hostedAuthorityBindingDigest ? authorityDigest({ v: "reelier.github-release-provider-readback/v1", hostedAuthorityBindingDigest, providerReadbackDigest: subjectDigest }) : subjectDigest; const evidence = createGitHubReleaseProviderEvidence({ authorization: auth, lane, observedAt: now.toISOString(), subjectDigest: boundSubjectDigest, signer }); await step(journal, request, phase, { ...extra, evidence, evidenceDigest: evidence.digest, hostedAuthorityBindingDigest, subjectDigest: boundSubjectDigest }); return Object.freeze({ status: "verified", phase, evidenceDigest: evidence.digest }); }
 async function step(journal: SignedJournal, request: GitHubReleaseRunRequestV1, phase: string, data: Readonly<Record<string, unknown>>): Promise<void> { const events = await journal.load(request.requestId), prior = events.at(-1)?.phase; if (!prior || !TRANSITIONS[prior]?.includes(phase)) { if (events.some(event => event.phase === phase && authorityDigest(event.data) === authorityDigest(data))) return; throw new TypeError(`invalid release saga transition ${prior ?? "absent"} -> ${phase}`); } await journal.append(request.requestId, request.semanticsDigest, phase, data); }
 function has(events: readonly SignedJournalEventV1[], phase: string, key?: string, value?: unknown): boolean { return events.some(event => event.phase === phase && (key === undefined || event.data[key] === value)); }
 function pending(phase: string): GitHubReleaseRunResultV1 { return Object.freeze({ status: "pending-reconciliation", phase, evidenceDigest: null }); }
 function failure(reason: string, reconciliationStatus: "not-applied" | "conflict" = "not-applied"): DispatchOutcome { return Object.freeze({ kind: "definitive-failure", resultDigest: authorityDigest({ reason }), reconciliationStatus, normalizedProjectionDigest: null, reason } as DispatchOutcome); }
 function sha256(bytes: Uint8Array): string { return `sha256:${createHash("sha256").update(bytes).digest("hex")}`; }
 function gitBlobSha(bytes: Uint8Array): string { return createHash("sha1").update(`blob ${bytes.byteLength}\0`).update(bytes).digest("hex"); }
-function validateInvocation(request: unknown): asserts request is GitHubReleaseInvocationV1 { const value = exactRecord(request, ["alias", "authorizationHandle", "requestId", "semanticsDigest"], "GitHub release invocation"); if (!(String(value.alias) in ALIASES) || !/^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$/.test(String(value.authorizationHandle)) || !/^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$/.test(String(value.requestId)) || !DIGEST.test(String(value.semanticsDigest))) throw new TypeError("GitHub release invocation is invalid"); }
+function validateInvocation(request: unknown): asserts request is GitHubReleaseInvocationV1 { const hasReviewedHost = !!request && typeof request === "object" && Object.hasOwn(request, "reviewedHost"), hasReviewedPack = !!request && typeof request === "object" && Object.hasOwn(request, "reviewedPackDigest"), value = exactRecord(request, [...(hasReviewedHost ? ["reviewedHost"] : []), ...(hasReviewedPack ? ["reviewedPackDigest"] : []), "alias", "authorizationHandle", "requestId", "semanticsDigest"], "GitHub release invocation"); if (hasReviewedHost) exactRecord(value.reviewedHost, ["account", "destination", "limit"], "reviewed GitHub release host binding"); if (hasReviewedPack && !DIGEST.test(String(value.reviewedPackDigest))) throw new TypeError("GitHub release reviewed pack digest is invalid"); if (!(String(value.alias) in ALIASES) || !/^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$/.test(String(value.authorizationHandle)) || !/^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$/.test(String(value.requestId)) || !DIGEST.test(String(value.semanticsDigest))) throw new TypeError("GitHub release invocation is invalid"); }
 function validateRequest(request: unknown): asserts request is GitHubReleaseRunRequestV1 { const value = exactRecord(request, ["alias", "allocationId", "authorizationHandle", "requestId", "semanticsDigest"], "GitHub release request"); if (!(String(value.alias) in ALIASES) || !/^[a-z0-9][a-z0-9-]{7,127}$/.test(String(value.allocationId)) || !/^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$/.test(String(value.authorizationHandle)) || !/^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$/.test(String(value.requestId)) || !DIGEST.test(String(value.semanticsDigest))) throw new TypeError("GitHub release request is invalid"); }
 function isPlain(value: unknown): value is Record<string, unknown> { if (!value || typeof value !== "object" || isProxy(value) || Array.isArray(value) || Object.getPrototypeOf(value) !== Object.prototype || Reflect.ownKeys(value).some(key => typeof key !== "string")) return false; return Object.values(Object.getOwnPropertyDescriptors(value)).every(descriptor => "value" in descriptor && descriptor.enumerable); }
 function inertEndpointId(value: unknown): string | null { if (!isPlain(value)) return null; const descriptor = Object.getOwnPropertyDescriptor(value, "endpointId"); return descriptor && "value" in descriptor && typeof descriptor.value === "string" ? descriptor.value : null; }
@@ -471,6 +572,14 @@ function parsePullRequests(value: unknown): readonly GitHubReleasePullRequestV1[
 function assertPullRequestPlan(pr: GitHubReleasePullRequestV1, plan: VerifiedReleaseAuthorizationV1["operationPlan"]["value"], draft: boolean): void { if (pr.head !== plan.pullRequest.head || pr.base !== plan.pullRequest.base || pr.draft !== draft || pr.title !== plan.pullRequest.title || pr.body !== plan.pullRequest.body || pr.headSha !== plan.expectedCommitSha) throw new TypeError("pull request readback does not match exact authorized metadata"); }
 function parseChecks(value: unknown): readonly Readonly<{ name: string; status: string; workflowDigest: string; workflowPath: string }>[] { return Object.freeze(inertArray(value, "checks list").map(raw => { const item = exactRecord(raw, ["name", "status", "workflowDigest", "workflowPath"], "check"); if (typeof item.name !== "string" || typeof item.status !== "string" || typeof item.workflowPath !== "string" || !DIGEST.test(String(item.workflowDigest))) throw new TypeError("check readback is invalid"); return Object.freeze({ name: item.name, status: item.status, workflowDigest: String(item.workflowDigest), workflowPath: item.workflowPath }); })); }
 function assertChecks(checks: readonly Readonly<{ name: string; status: string; workflowDigest: string; workflowPath: string }>[], plan: VerifiedReleaseAuthorizationV1["operationPlan"]["value"]): void { const names = checks.map(check => check.name).sort(), ci = plan.workflowCommitments.find(workflow => workflow.path === ".github/workflows/ci.yml"); if (!ci || names.join("\0") !== [...plan.requiredChecks].sort().join("\0") || checks.some(check => check.status !== "success" || check.workflowPath !== ci.path || check.workflowDigest !== ci.digest)) throw new TypeError("required release checks are not bound to the signed CI workflow commitment"); }
+
+function assertReviewedHost(host: Readonly<{ account: string; destination: string; limit: string }>, plan: VerifiedReleaseAuthorizationV1["operationPlan"]["value"], contractDigest: string, signedPackDigest: string, reviewedPackDigest?: string): void {
+  const ci = plan.workflowCommitments.find(workflow => workflow.path === ".github/workflows/ci.yml");
+  if (!ci) throw new TypeError("reviewed GitHub release policy requires the signed CI workflow commitment");
+  const policyDigest = githubReviewedOutcomePolicyDigestV1({ repository: plan.repository, baseBranch: plan.destinationBranch, baseSha: plan.baseCommit, headBranch: plan.candidateBranch, headSha: plan.expectedCommitSha, candidateDigest: plan.candidateTreeDigest, workflowPath: ci.path, workflowDigest: ci.digest, requiredChecks: plan.requiredChecks, mergeMethod: "squash", postMergeTreeSha: plan.expectedTreeSha });
+  const expectedPackDigest = reviewedPackDigest ?? authorityDigest({ v: "reelier.github-reviewed-signed-pack/v1", contractDigest, policyDigest });
+  if (host.account !== plan.repository || host.destination !== plan.candidateBranch || host.limit !== policyDigest || signedPackDigest !== expectedPackDigest) throw new TypeError("reviewed GitHub release contract or host binding conflicts with signed authority");
+}
 function parseMerge(value: unknown): Readonly<{ merged: boolean; sha: string }> { const item = exactRecord(value, ["merged", "sha"], "merge result"); if (typeof item.merged !== "boolean" || !GIT_SHA.test(String(item.sha))) throw new TypeError("merge result is invalid"); return Object.freeze({ merged: item.merged, sha: String(item.sha) }); }
 function parseManifest(value: unknown): Readonly<{ name: string; version: string }> { const item = exactRecord(value, ["name", "version"], "package manifest"); if (typeof item.name !== "string" || typeof item.version !== "string") throw new TypeError("package manifest is invalid"); return Object.freeze({ name: item.name, version: item.version }); }
 function parseBoolean(value: unknown, label: string): boolean { if (typeof value !== "boolean") throw new TypeError(`${label} is invalid`); return value; }

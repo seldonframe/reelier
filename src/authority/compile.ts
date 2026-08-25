@@ -1,5 +1,9 @@
 import { createHash } from "node:crypto";
 import type { TransportEffect } from "./types.js";
+import type { ToolEffectContractV1 } from "./tool-effect-contract.js";
+
+/** Additive compile target for reviewed provider-neutral contracts; legacy compilation stays transport-only. */
+export type CompilableEffectV1 = TransportEffect | ToolEffectContractV1;
 import { authorityCanonicalBytes, authorityDigest, parseAuthorityWire } from "./wire.js";
 import { AuthorityBoundaryError } from "./errors.js";
 import type { ValidatedContract } from "./contract.js";

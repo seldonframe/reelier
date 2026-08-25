@@ -1,0 +1,320 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import {
+  AGENT_TOOL_ABI_DIGEST_V1,
+  AGENT_TOOL_CONTRACTS_V1,
+  AGENT_TOOL_NAMES_V1,
+  CERTIFIABLE_HARNESSES_V1,
+  agentToolHttpRoutesV1,
+  agentToolMcpDefinitionsV1,
+  buildAgentToolOpenApiV1,
+  parseAgentToolInputV1,
+  parseAgentToolOutputV1,
+} from "../../src/authority/ingress/agent-tool-contracts.js";
+import { authorityAgentToolOpenApiV1 } from "../../src/authority/ingress/openapi.js";
+import { createAuthorityAgentTools } from "../../src/authority/host/agent-tools.js";
+import { buildAuthorityMcpServer, type AuthorityMcpHandler } from "../../src/authority/ingress/mcp.js";
+import { handleAuthorityHttp } from "../../src/authority/ingress/http.js";
+
+const context = Object.freeze({
+  tenant: "tenant_1",
+  requester: "agent_1",
+  executionContext: Object.freeze({
+    v: "reelier.authority-execution-context/v1" as const,
+    taskId: "task_1",
+    principalId: "agent_1",
+    grantId: "grant_1",
+    grantDigest: `sha256:${"a".repeat(64)}` as const,
+    allocationId: "allocation_1",
+    runtimeSessionId: "session_1",
+    jobId: "job_1",
+    authorityCellId: "cell_1",
+  }),
+});
+
+test("one closed quartet projects byte-equivalent request semantics to MCP, HTTP, and OpenAPI", () => {
+  assert.deepEqual(AGENT_TOOL_NAMES_V1, [
+    "reelier_agent_status",
+    "reelier_outcome_proposal",
+    "reelier_outcome_request",
+    "reelier_outcome_status",
+  ]);
+  assert.equal(Object.isFrozen(AGENT_TOOL_CONTRACTS_V1), true);
+
+  const mcp = agentToolMcpDefinitionsV1();
+  const http = agentToolHttpRoutesV1();
+  const openapi = buildAgentToolOpenApiV1();
+  assert.deepEqual(mcp.map(item => item.name), AGENT_TOOL_NAMES_V1);
+  assert.deepEqual(http.map(item => item.operationId), AGENT_TOOL_NAMES_V1);
+
+  for (const contract of AGENT_TOOL_CONTRACTS_V1) {
+    const mcpProjection = mcp.find(item => item.name === contract.name)!;
+    const httpProjection = http.find(item => item.operationId === contract.name)!;
+    const openApiOperation = (openapi.paths[contract.http.path] as Record<string, unknown>)[contract.http.method.toLowerCase()] as Record<string, unknown>;
+    assert.deepEqual(mcpProjection.inputSchema, contract.inputSchema);
+    assert.deepEqual(mcpProjection.outputSchema, contract.outputSchema);
+    assert.deepEqual(httpProjection.inputSchema, contract.inputSchema);
+    assert.deepEqual(httpProjection.outputSchema, contract.outputSchema);
+    assert.equal(openApiOperation.operationId, contract.name);
+    const openApiRequest = openApiOperation.requestBody as { content: { "application/json": { schema: unknown } } } | undefined;
+    if (contract.http.method === "POST") assert.deepEqual(openApiRequest?.content["application/json"].schema, contract.inputSchema);
+    assert.deepEqual((openApiOperation.responses as Record<string, { content: { "application/json": { schema: unknown } } }>)[String(contract.http.successStatus)]!.content["application/json"].schema, contract.outputSchema);
+    assert.equal((openApiOperation.parameters as unknown[] | undefined)?.length ?? 0, contract.http.pathParameters?.length ?? 0);
+  }
+  assert.match(AGENT_TOOL_ABI_DIGEST_V1, /^sha256:[0-9a-f]{64}$/);
+});
+
+test("canonical input parsing is closed, inert, bounded, detached, and excludes host-owned identity", () => {
+  const request = {
+    outcomeRef: `outcomeref_${"1".repeat(64)}`,
+    requestId: "request_1",
+    sourceRefs: { issue: "issue_1" },
+    choices: { resolution: "complete" },
+  };
+  const parsed = parseAgentToolInputV1("reelier_outcome_request", request) as typeof request;
+  request.sourceRefs.issue = "changed";
+  assert.equal(parsed.sourceRefs.issue, "issue_1");
+  assert.equal(Object.isFrozen(parsed), true);
+
+  for (const forbidden of ["tenant", "accountId", "destinationId", "providerStatusId", "mergePolicy", "credential", "signingKey"]) {
+    assert.throws(() => parseAgentToolInputV1("reelier_outcome_request", { ...request, [forbidden]: "attacker" }), /closed|field|invalid/i);
+  }
+  const accessor = Object.create(Object.prototype, {
+    outcomeRef: { enumerable: true, value: request.outcomeRef },
+    requestId: { enumerable: true, value: request.requestId },
+    sourceRefs: { enumerable: true, get: () => { throw new Error("accessor executed"); } },
+    choices: { enumerable: true, value: {} },
+  });
+  assert.throws(() => parseAgentToolInputV1("reelier_outcome_request", accessor), /inert|plain|data/i);
+  assert.throws(() => parseAgentToolInputV1("reelier_outcome_status", { requestId: "x".repeat(257) }), /bounded|length|invalid/i);
+  let traps = 0;
+  const proxy = new Proxy(request, { getPrototypeOf() { traps += 1; return Object.prototype; }, ownKeys() { traps += 1; return []; } });
+  assert.throws(() => parseAgentToolInputV1("reelier_outcome_request", proxy), /proxy|inert/i);
+  assert.equal(traps, 0);
+  const response = { requestId: "request_1", verdict: "accepted", reasonCode: "accepted", lifecycleState: "pending" };
+  const parsedResponse = parseAgentToolOutputV1("reelier_outcome_request", response);
+  response.lifecycleState = "mutated";
+  assert.equal(parsedResponse.lifecycleState, "pending");
+  assert.throws(() => parseAgentToolOutputV1("reelier_outcome_request", { ...response, credential: "secret" }), /closed|field/i);
+});
+
+test("host agent tools translate only authenticated opaque references and never expose aliases", async () => {
+  const ref = `outcomeref_${"2".repeat(64)}`;
+  const calls: Array<readonly [string, unknown, unknown]> = [];
+  const tools = createAuthorityAgentTools({
+    async jobsSearch(input, receivedContext) {
+      calls.push(["status", input, receivedContext]);
+      return { requestId: "", verdict: "accepted", reasonCode: "agent-ready", lifecycleState: "ready", jobs: [{ jobRef: ref }] };
+    },
+    async jobLoad(input, receivedContext) {
+      calls.push(["proposal", input, receivedContext]);
+      return { requestId: "", verdict: "accepted", reasonCode: "outcome-proposed", lifecycleState: "proposed", jobRef: ref };
+    },
+    async invoke(input, receivedContext) {
+      calls.push(["request", input, receivedContext]);
+      return { requestId: "request_1", verdict: "accepted", reasonCode: "accepted", lifecycleState: "pending" };
+    },
+    async status(input, receivedContext) {
+      calls.push(["outcome-status", input, receivedContext]);
+      return { requestId: "request_1", verdict: "accepted", reasonCode: "reconciled", lifecycleState: "reconciled", receiptRef: "receipt_1" };
+    },
+  });
+
+  const agentStatus = await tools.agentStatus({}, context);
+  const proposal = await tools.outcomeProposal({ outcomeRef: ref }, context);
+  const requested = await tools.outcomeRequest({ outcomeRef: ref, requestId: "request_1", sourceRefs: { issue: "issue_1" }, choices: {} }, context);
+  const status = await tools.outcomeStatus({ requestId: "request_1" }, context);
+  assert.deepEqual(agentStatus.outcomeRefs, [ref]);
+  assert.equal(agentStatus.capability.harnessId, null);
+  assert.equal(agentStatus.capability.harnessVersion, null);
+  assert.equal(agentStatus.capability.liveTested, false);
+  assert.equal(proposal.outcomeRef, ref);
+  assert.equal(requested.lifecycleState, "pending");
+  assert.equal(status.receiptRef, "receipt_1");
+  assert.deepEqual(calls.map(item => item[0]), ["status", "proposal", "request", "outcome-status"]);
+  assert.deepEqual(calls[1]![1], { jobId: ref });
+  assert.deepEqual(calls[2]![1], { v: "reelier.outcome-request/v1", jobRef: ref, requestId: "request_1", sourceRefs: { issue: "issue_1" }, choices: {} });
+  assert.equal(calls.every(item => item[2] === context), true);
+
+  const rawAliasTools = createAuthorityAgentTools({
+    async jobsSearch() { return { requestId: "", verdict: "accepted", reasonCode: "jobs-found", lifecycleState: "catalog", jobs: [{ jobId: "github_merge", alias: "github_merge" }] }; },
+    async jobLoad() { throw new Error("not reached"); },
+    async invoke() { throw new Error("not reached"); },
+    async status() { throw new Error("not reached"); },
+  });
+  const refused = await rawAliasTools.agentStatus({}, context);
+  assert.deepEqual(refused.outcomeRefs, []);
+  assert.equal(JSON.stringify(refused).includes("github_merge"), false);
+});
+
+test("capability descriptors are detached protocol claims and cannot be promoted by callers", async () => {
+  assert.deepEqual(CERTIFIABLE_HARNESSES_V1, ["eve", "codex", "claude-code", "cursor", "grok", "hermes"]);
+  const mutable = { v: "reelier.harness-capability/v1", harnessId: "eve", harnessVersion: "0.39.0", abiDigest: AGENT_TOOL_ABI_DIGEST_V1, protocolCompatibility: "compatible", transports: ["mcp", "http", "openapi"], fixtureStatus: "passed", liveTested: true, providerCertification: "not-claimed" };
+  const tools = createAuthorityAgentTools({ async jobsSearch(){ return { verdict:"accepted", reasonCode:"ready", lifecycleState:"ready", jobs:[] }; }, async jobLoad(){ throw new Error(); }, async invoke(){ throw new Error(); }, async status(){ throw new Error(); } }, mutable as never);
+  mutable.liveTested = false;
+  const status = await tools.agentStatus({}, context);
+  assert.equal(status.capability.liveTested, false);
+  assert.equal(status.capability.fixtureStatus, "not-passed");
+  assert.equal(status.capability.harnessId, null);
+});
+
+test("host agent tools reject hostile and oversized backend graphs without observable reads", async () => {
+  let traps = 0;
+  const hostileJobs = new Proxy([{ jobRef: `outcomeref_${"9".repeat(64)}` }], {
+    get() { traps += 1; throw new Error("backend proxy executed"); },
+    getOwnPropertyDescriptor() { traps += 1; throw new Error("backend proxy executed"); },
+  });
+  const hostile = createAuthorityAgentTools({
+    async jobsSearch() { return { requestId: "", verdict: "accepted", reasonCode: "ready", lifecycleState: "ready", jobs: hostileJobs }; },
+    async jobLoad() { throw new Error("not reached"); }, async invoke() { throw new Error("not reached"); }, async status() { throw new Error("not reached"); },
+  });
+  assert.deepEqual((await hostile.agentStatus({}, context)).outcomeRefs, []);
+  assert.equal(traps, 0);
+
+  let lateReads = 0;
+  const oversized = Array.from({ length: 257 }, (_, index) => index < 256 ? { jobRef: `outcomeref_${index.toString(16).padStart(64, "0")}` } : Object.create(Object.prototype, { jobRef: { enumerable: true, get() { lateReads += 1; return `outcomeref_${"8".repeat(64)}`; } } }));
+  const bounded = createAuthorityAgentTools({
+    async jobsSearch() { return { requestId: "", verdict: "accepted", reasonCode: "ready", lifecycleState: "ready", jobs: oversized }; },
+    async jobLoad() { throw new Error("not reached"); }, async invoke() { throw new Error("not reached"); }, async status() { throw new Error("not reached"); },
+  });
+  assert.deepEqual((await bounded.agentStatus({}, context)).outcomeRefs, []);
+  assert.equal(lateReads, 0);
+
+  const backendProxy = new Proxy({}, { get() { traps += 1; throw new Error("backend proxy executed"); } });
+  assert.throws(() => createAuthorityAgentTools(backendProxy as never), /backend|proxy|inert/i);
+  assert.equal(traps, 0);
+});
+
+test("host agent tools require exact bounded backend records and dense catalogue arrays", async () => {
+  const ref = `outcomeref_${"7".repeat(64)}`;
+  const statusFrom = async (value: unknown) => createAuthorityAgentTools({
+    async jobsSearch() { return value; }, async jobLoad() { throw new Error("not reached"); }, async invoke() { throw new Error("not reached"); }, async status() { throw new Error("not reached"); },
+  }).agentStatus({}, context);
+  const unavailable = async (value: unknown) => {
+    const tools = createAuthorityAgentTools({ async jobsSearch() { throw new Error("not reached"); }, async jobLoad() { return value; }, async invoke() { return value; }, async status() { return value; } });
+    const proposal = await tools.outcomeProposal({ outcomeRef: ref }, context);
+    const requested = await tools.outcomeRequest({ outcomeRef: ref, requestId: "request_exact", sourceRefs: {}, choices: {} }, context);
+    const status = await tools.outcomeStatus({ requestId: "request_exact" }, context);
+    assert.deepEqual({ proposal: proposal.lifecycleState, requested: requested.lifecycleState, status: status.lifecycleState }, { proposal: "unavailable", requested: "unavailable", status: "unavailable" });
+    assert.equal(requested.requestId, "request_exact");
+    assert.equal(status.requestId, "request_exact");
+  };
+
+  const base = { requestId: "", verdict: "accepted", reasonCode: "ready", lifecycleState: "ready", jobs: [{ jobRef: ref }] };
+  assert.equal((await statusFrom(base)).lifecycleState, "ready");
+  for (const changed of [{ ...base, extra: true }, { ...base, reasonCode: "x".repeat(257) }]) assert.equal((await statusFrom(changed)).lifecycleState, "unavailable");
+  const rootSymbol = { ...base }; Object.defineProperty(rootSymbol, Symbol("hidden"), { enumerable: true, value: true });
+  assert.equal((await statusFrom(rootSymbol)).lifecycleState, "unavailable");
+  let reads = 0;
+  const rootAccessor = { ...base }; Object.defineProperty(rootAccessor, "extra", { enumerable: true, get() { reads += 1; throw new Error("root accessor executed"); } });
+  assert.equal((await statusFrom(rootAccessor)).lifecycleState, "unavailable"); assert.equal(reads, 0);
+
+  for (const mutate of [
+    (jobs: unknown[]) => Object.defineProperty(jobs, Symbol("hidden"), { enumerable: true, value: true }),
+    (jobs: unknown[]) => Object.defineProperty(jobs, "extra", { enumerable: true, get() { reads += 1; throw new Error("array accessor executed"); } }),
+    (jobs: unknown[]) => Object.defineProperty(jobs, "hidden", { enumerable: false, value: true }),
+  ]) { const jobs = [{ jobRef: ref }]; mutate(jobs); assert.equal((await statusFrom({ ...base, jobs })).lifecycleState, "unavailable"); assert.equal(reads, 0); }
+  const entryExtra = [{ jobRef: ref, alias: "must-not-be-read" }];
+  assert.equal((await statusFrom({ ...base, jobs: entryExtra })).lifecycleState, "unavailable");
+  const sparse = new Array(1); assert.equal((await statusFrom({ ...base, jobs: sparse })).lifecycleState, "unavailable");
+  assert.equal((await statusFrom({ ...base, jobs: Array.from({ length: 257 }, () => ({ jobRef: ref })) })).lifecycleState, "unavailable");
+
+  const outcomeBase = { requestId: "request_exact", verdict: "accepted", reasonCode: "pending", lifecycleState: "pending" };
+  await unavailable({ ...outcomeBase, extra: true });
+  const outcomeSymbol = { ...outcomeBase }; Object.defineProperty(outcomeSymbol, Symbol("hidden"), { enumerable: true, value: true }); await unavailable(outcomeSymbol);
+  const outcomeAccessor = { ...outcomeBase }; Object.defineProperty(outcomeAccessor, "extra", { enumerable: true, get() { reads += 1; throw new Error("outcome accessor executed"); } }); await unavailable(outcomeAccessor); assert.equal(reads, 0);
+});
+
+test("HTTP and MCP resolve the current agent runtime for every call", async () => {
+  const refA = `outcomeref_${"a".repeat(64)}`, refB = `outcomeref_${"b".repeat(64)}`;
+  const runtime = (ref: string) => createAuthorityAgentTools({
+    async jobsSearch() { return { requestId: "", verdict: "accepted", reasonCode: "ready", lifecycleState: "ready", jobs: [{ jobRef: ref }] }; },
+    async jobLoad() { return { requestId: "", verdict: "accepted", reasonCode: "proposed", lifecycleState: "proposed", jobRef: ref }; },
+    async invoke(input) { return { requestId: (input as any).requestId, verdict: "accepted", reasonCode: "pending", lifecycleState: "pending" }; },
+    async status(input) { return { requestId: (input as any).requestId, verdict: "accepted", reasonCode: "reconciled", lifecycleState: "reconciled", receiptRef: `sha256:${ref.slice(-64)}` }; },
+  });
+  let active = runtime(refA), resolutions = 0;
+  const handler: AuthorityMcpHandler = { async outcome(){ throw new Error("legacy disabled"); }, async status(){ throw new Error("legacy disabled"); }, resolveAgentTools(){ resolutions += 1; return active; } } as never;
+  const http = createServer((request, response) => void handleAuthorityHttp(request, response, handler, { tenant: context.tenant, requester: context.requester, resolvePrincipal: async () => context }));
+  await new Promise<void>((resolve, reject) => { http.once("error", reject); http.listen(0, "127.0.0.1", resolve); });
+  try {
+    const port = (http.address() as AddressInfo).port, call = async () => (await fetch(`http://127.0.0.1:${port}/v1/agent/status`, { headers: { authorization: "Bearer test" } })).json() as Promise<any>;
+    assert.deepEqual((await call()).outcomeRefs, [refA]); active = runtime(refB); assert.deepEqual((await call()).outcomeRefs, [refB]); assert.equal(resolutions, 2);
+  } finally { await new Promise<void>(resolve => http.close(() => resolve())); }
+
+  active = runtime(refA); resolutions = 0;
+  const server = buildAuthorityMcpServer([], handler, context), [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair(), client = new Client({ name: "runtime-swap", version: "1" }, { capabilities: {} });
+  try { await server.connect(serverTransport); await client.connect(clientTransport); assert.deepEqual(((await client.callTool({ name: "reelier_agent_status", arguments: {} })).structuredContent as any).outcomeRefs, [refA]); active = runtime(refB); assert.deepEqual(((await client.callTool({ name: "reelier_agent_status", arguments: {} })).structuredContent as any).outcomeRefs, [refB]); assert.equal(resolutions, 2); }
+  finally { await client.close(); await server.close(); }
+});
+
+test("production MCP adds the quartet from the canonical projection without removing legacy tools", async () => {
+  const ref = `jobref_${"3".repeat(64)}`;
+  const invoked: unknown[] = [];
+  const handler: AuthorityMcpHandler = {
+    async outcome() { return { requestId: "legacy", verdict: "refused", reasonCode: "legacy", lifecycleState: "refused" }; },
+    async status(input) { return { requestId: String((input as Record<string, unknown>).requestId ?? ""), verdict: "accepted", reasonCode: "reconciled", lifecycleState: "reconciled" }; },
+    async jobsSearch() { return { requestId: "", verdict: "accepted", reasonCode: "agent-ready", lifecycleState: "ready", jobs: [{ jobRef: ref }] }; },
+    async jobLoad(input) { return { requestId: "", verdict: "accepted", reasonCode: "outcome-proposed", lifecycleState: "proposed", jobRef: (input as Record<string, unknown>).jobId }; },
+    async invoke(input) { invoked.push(input); return { requestId: "request_mcp", verdict: "accepted", reasonCode: "accepted", lifecycleState: "pending" }; },
+  };
+  const server = buildAuthorityMcpServer([{ alias: "legacy_alias" }], handler, context);
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: "agent-quartet-test", version: "1" }, { capabilities: {} });
+  try {
+    await server.connect(serverTransport);
+    await client.connect(clientTransport);
+    const names = (await client.listTools()).tools.map(tool => tool.name);
+    for (const name of AGENT_TOOL_NAMES_V1) assert.equal(names.includes(name), true, name);
+    for (const legacy of ["reelier_jobs_search", "reelier_job_load", "reelier_outcome_invoke", "reelier_outcome_legacy_alias"]) assert.equal(names.includes(legacy), true, legacy);
+    const result = await client.callTool({ name: "reelier_outcome_request", arguments: { outcomeRef: ref, requestId: "request_mcp", sourceRefs: { issue: "issue_1" }, choices: {} } });
+    assert.equal(result.isError, undefined);
+    assert.deepEqual(result.structuredContent, { requestId: "request_mcp", verdict: "accepted", reasonCode: "accepted", lifecycleState: "pending" });
+    assert.deepEqual(invoked, [{ v: "reelier.outcome-request/v1", jobRef: ref, requestId: "request_mcp", sourceRefs: { issue: "issue_1" }, choices: {} }]);
+  } finally {
+    await client.close();
+    await server.close();
+  }
+});
+
+test("production HTTP serves the same quartet paths and canonical OpenAPI document", async () => {
+  const ref = `jobref_${"4".repeat(64)}`;
+  const handler: AuthorityMcpHandler = {
+    async outcome() { return { requestId: "legacy", verdict: "refused", reasonCode: "legacy", lifecycleState: "refused" }; },
+    async status(input) { return { requestId: String((input as Record<string, unknown>).requestId ?? ""), verdict: "accepted", reasonCode: "reconciled", lifecycleState: "reconciled" }; },
+    async jobsSearch() { return { requestId: "", verdict: "accepted", reasonCode: "agent-ready", lifecycleState: "ready", jobs: [{ jobRef: ref }] }; },
+    async jobLoad(input) { return { requestId: "", verdict: "accepted", reasonCode: "outcome-proposed", lifecycleState: "proposed", jobRef: (input as Record<string, unknown>).jobId }; },
+    async invoke(input) { return { requestId: String((input as Record<string, unknown>).requestId), verdict: "accepted", reasonCode: "accepted", lifecycleState: "pending" }; },
+  };
+  const server = createServer((request, response) => {
+    void handleAuthorityHttp(request, response, handler, {
+      tenant: "tenant_1",
+      requester: "agent_1",
+      resolvePrincipal: async () => context,
+    });
+  });
+  await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
+  try {
+    const port = (server.address() as AddressInfo).port;
+    const call = async (path: string, init: RequestInit = {}) => {
+      const response = await fetch(`http://127.0.0.1:${port}${path}`, { ...init, headers: { authorization: "Bearer fixture", ...(init.headers ?? {}) } });
+      return { status: response.status, body: await response.json() as Record<string, unknown> };
+    };
+    const agentStatus = await call("/v1/agent/status");
+    assert.equal(agentStatus.status, 200);
+    assert.deepEqual(agentStatus.body.outcomeRefs, [ref]);
+    const proposal = await call("/v1/outcome-proposals", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ outcomeRef: ref }) });
+    assert.equal(proposal.body.outcomeRef, ref);
+    const requested = await call("/v1/outcome-requests", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ outcomeRef: ref, requestId: "request_http", sourceRefs: { issue: "issue_1" }, choices: {} }) });
+    assert.equal(requested.status, 202);
+    const status = await call("/v1/outcome-status/request_http");
+    assert.equal(status.body.lifecycleState, "reconciled");
+    assert.deepEqual(authorityAgentToolOpenApiV1, buildAgentToolOpenApiV1());
+  } finally {
+    await new Promise<void>(resolve => server.close(() => resolve()));
+  }
+});

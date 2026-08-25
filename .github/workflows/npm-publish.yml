@@ -83,11 +83,20 @@ jobs:
         id: reconcile
         run: node scripts/reconcile-npm-destination.mjs --package reelier --version "$(node -p "require('./package.json').version")" --tarball "reelier-$(node -p "require('./package.json').version").tgz"
 
+      # A prerelease must never replace the stable `latest` pointer. The
+      # resolver accepts a closed SemVer surface and maps every prerelease to
+      # the beta channel; malformed or build-only versions fail the release.
+      - name: Resolve governed npm dist-tag
+        id: npm_dist_tag
+        run: echo "tag=$(node scripts/resolve-npm-dist-tag.mjs --version "$(node -p "require('./package.json').version")")" >> "$GITHUB_OUTPUT"
+
       # Publishes the exact digest-checked tarball file: npm does not re-pack or run
       # pack scripts for a tarball path, so the published bytes are the verified bytes.
       - name: Publish to npm with provenance
         if: steps.reconcile.outputs.state == 'absent'
-        run: npm publish "reelier-$(node -p "require('./package.json').version").tgz" --provenance --access public
+        env:
+          NPM_DIST_TAG: ${{ steps.npm_dist_tag.outputs.tag }}
+        run: npm publish "reelier-$(node -p "require('./package.json').version").tgz" --tag "$NPM_DIST_TAG" --provenance --access public
 
       - name: Post-publish destination reconciliation
         if: steps.reconcile.outputs.state == 'absent'

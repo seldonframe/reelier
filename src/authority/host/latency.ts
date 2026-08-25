@@ -2,7 +2,7 @@
 export const AUTHORITY_LATENCY_PHASES = [
   "authority-load", "identity-probe", "source-pre-read", "compile", "reserve",
   "route-reread", "authority-validation-before-prepare", "prepare", "credential",
-  "authority-validation-after-prepare", "dispatch-commit-cas", "authority-send-boundary",
+  "authority-validation-after-prepare", "authority-validation-before-cas", "dispatch-commit-cas", "authority-validation-before-send", "authority-send-boundary",
   "dns", "connect", "tls", "upload", "response-headers", "response-body",
   "reconcile-read", "receipt-publish", "terminal-transition",
 ] as const;

@@ -15,6 +15,7 @@ import { neonDatabaseMigrationAlias, neonDatabaseMigrationDefinition, parseNeonD
 import { cloudflareTokenRollAlias, cloudflareTokenRollDefinition, parseCloudflareTokenRollPolicy, compileCloudflareTokenRoll, reconcileCloudflareTokenRoll, type CloudflareTokenProjection } from "./cloudflare-token/index.js";
 import { informationFlowCommitAlias, informationFlowDefinition, parseInformationFlowPolicy, compileInformationFlowCommit, reconcileInformationFlowCommit, type InformationFlowProjection } from "./information-flow/index.js";
 import { githubReleaseCandidatePublishAlias, githubReleasePrEnsureAlias, githubReleasePrMergeAlias, githubReleaseTagCreateAlias } from "./github-release/index.js";
+import { linearEvidenceCommentAlias, linearStatusTransitionAlias, linearOnlyEvidenceCommentAlias, linearOnlyStatusTransitionAlias } from "./linear-outcomes/index.js";
 
 export interface FirstPartyConformanceReport {
   readonly aliases: readonly string[];
@@ -25,7 +26,7 @@ export interface FirstPartyConformanceReport {
 
 /** Runs the mandatory common corpus. This is intentionally offline and provider-neutral. */
 export function runFirstPartyPackConformance(): FirstPartyConformanceReport {
-  const expectedAliases = [githubIssueLabelsAlias, githubReleaseCandidatePublishAlias, githubReleasePrEnsureAlias, githubReleasePrMergeAlias, githubReleaseTagCreateAlias, slackChannelTopicAlias, gmailReplySendAlias, gmailThreadLabelsAlias, stripeRefundIssueAlias, vercelDeploymentReleaseAlias, cloudflareDnsRecordSetAlias, neonDatabaseMigrationAlias, cloudflareTokenRollAlias, informationFlowCommitAlias];
+  const expectedAliases = [githubIssueLabelsAlias, githubReleaseCandidatePublishAlias, githubReleasePrEnsureAlias, githubReleasePrMergeAlias, githubReleaseTagCreateAlias, linearEvidenceCommentAlias, linearStatusTransitionAlias, linearOnlyEvidenceCommentAlias, linearOnlyStatusTransitionAlias, slackChannelTopicAlias, gmailReplySendAlias, gmailThreadLabelsAlias, stripeRefundIssueAlias, vercelDeploymentReleaseAlias, cloudflareDnsRecordSetAlias, neonDatabaseMigrationAlias, cloudflareTokenRollAlias, informationFlowCommitAlias];
   const actualAliases = firstPartyPacks.map(pack => pack.definition.alias).sort(compareText);
   if (actualAliases.join("\0") !== expectedAliases.slice().sort(compareText).join("\0")) throw new TypeError("first-party conformance requires the reviewed v1 packs");
   createStaticPackRegistry(firstPartyPacks.map(pack => pack.definition));

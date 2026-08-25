@@ -95,7 +95,7 @@ Usage:
 
 Source (exactly one is required):
   --ref <refname>        read the artifact tree from a local git ref, e.g.
-                         refs/reelier/release-authorizations/v0.32.1 (production carrier;
+                         refs/reelier/release-authorizations/v0.33.0-beta.0 (production carrier;
                          the workflow must fetch it first: git fetch origin "+refs/reelier/*:refs/reelier/*")
   --dir <path>           read the same closed file set from a checked-out directory
   --artifact-set <file>  read a single-file reelier.release-authorization-transport/v1 envelope

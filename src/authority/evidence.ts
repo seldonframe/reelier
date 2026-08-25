@@ -7,6 +7,7 @@ import type {
   SignedAuthorityArtifact,
 } from "./types.js";
 import { authorityCanonicalBytes, authorityDigest, parseAuthorityWire } from "./wire.js";
+import { parseGovernedReceiptV1, type GovernedReceiptV1 } from "./tool-effect-contract.js";
 
 const SHA = /^sha256:(?!0{64}$)[0-9a-f]{64}$/;
 const ID = /^[A-Za-z0-9._~-]{1,128}$/;
@@ -135,4 +136,9 @@ export function digestAuthorityReceiptBundle(value: unknown): string {
 
 export function authorityEvidenceCanonicalBytes(value: AuthorityEvidence): Buffer {
   return authorityCanonicalBytes(parseAuthorityWire("authority-evidence", value));
+}
+
+/** Builds the provider-neutral lifecycle receipt arm. Durable publication remains host-owned. */
+export function createGovernedReceiptV1(input: Omit<GovernedReceiptV1, "v">): GovernedReceiptV1 {
+  return parseGovernedReceiptV1({ ...input, v: "reelier.governed-receipt/v1" });
 }

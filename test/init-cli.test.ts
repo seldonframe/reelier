@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, rename, rm, unlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { cmdInit, type ParsedArgs } from "../src/cli.js";
+import { cmdInit, type CmdInitOverrides, type ParsedArgs } from "../src/cli.js";
 import * as cliModule from "../src/cli.js";
 import type { InitializationDependencies } from "../src/initialization.js";
 import type { BootstrapNativeSessionFactory } from "../src/bootstrap/native-helper.js";
@@ -30,6 +30,17 @@ async function capture<T>(run: () => Promise<T>): Promise<{ result: T; output: s
   console.error = console.log;
   try { return { result: await run(), output: lines.join("\n") }; }
   finally { console.log = originalLog; console.error = originalError; }
+}
+
+function missionControlOverrides(root: string): Pick<CmdInitOverrides, "missionControlLauncher"> {
+  return {
+    missionControlLauncher: async () => ({
+      origin: "http://127.0.0.1:43111",
+      url: `http://127.0.0.1:43111/#${"c".repeat(64)}`,
+      pid: 4321,
+      expiresAt: "2026-08-24T20:00:00.000Z",
+    }),
+  };
 }
 
 function localDependencies(): InitializationDependencies {
@@ -136,13 +147,51 @@ test("reelier init --dry-run prints an answer-first A/B/C inspection and writes 
   });
 });
 
-test("reelier init persists only its inspection directory and reports the stable artifact identifier", async () => {
+test("reelier init --managed --dry-run prints a redacted descriptor without filesystem or network writes", async () => {
   await withTempDir(async root => {
-    const { result: code, output } = await capture(() => cmdInit(parsed(), { cwd: root, homedir: root, dependencies: localDependencies() }));
+    const originalFetch = globalThis.fetch;
+    const originalCredential = process.env.REELIER_MANAGED_CREDENTIAL;
+    globalThis.fetch = (() => { throw new Error("managed init attempted network access"); }) as typeof fetch;
+    process.env.REELIER_MANAGED_CREDENTIAL = "ambient-provider-credential";
+    try {
+      const { result: code, output } = await capture(() => cmdInit(parsed(["managed", "dry-run"]), { cwd: root, homedir: root, dependencies: localDependencies() }));
+      assert.equal(code, 0);
+      assert.match(output, /"v": "reelier\.managed-init\/v1"/);
+      assert.match(output, /"endpoint": "<remote-mcp-endpoint>"/);
+      assert.match(output, /"authority": "absent"/);
+      assert.match(output, /"completeness": "unchecked"/);
+      assert.match(output, /"credentials": "absent"/);
+      assert.match(output, /"missionAuthorization": "absent"/);
+      assert.doesNotMatch(output, /ambient-provider-credential/);
+      await assert.rejects(readFile(path.join(root, ".reelier", "init", "state.json"), "utf8"), { code: "ENOENT" });
+    } finally {
+      globalThis.fetch = originalFetch;
+      if (originalCredential === undefined) delete process.env.REELIER_MANAGED_CREDENTIAL;
+      else process.env.REELIER_MANAGED_CREDENTIAL = originalCredential;
+    }
+  });
+});
+
+test("reelier init --managed refuses names and incompatible initialization modes", async () => {
+  const namedManaged = await capture(() => cmdInit(named("my-agent", ["managed"])));
+  assert.equal(namedManaged.result, 1);
+  assert.match(namedManaged.output, /managed.*agent name/i);
+
+  const signingManaged = await capture(() => cmdInit(parsed(["managed", "signing"])));
+  assert.equal(signingManaged.result, 1);
+  assert.match(signingManaged.output, /managed.*signing/i);
+});
+
+test("bare reelier init starts accountless Mission Control instead of the legacy inspection ceremony", async () => {
+  await withTempDir(async root => {
+    const { result: code, output } = await capture(() => cmdInit(parsed(), { cwd: root, homedir: root, ...missionControlOverrides(root) }));
     assert.equal(code, 0);
-    assert.match(output, /Local artifacts: \.reelier\/init\/inspection-report\.json/);
+    assert.match(output, /^Reelier Mission Control/);
+    assert.match(output, /Local board: http:\/\/127\.0\.0\.1:43111/);
+    assert.match(output, /account: not required/i);
     assert.doesNotMatch(output, new RegExp(root.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
-    assert.equal(JSON.parse(await readFile(path.join(root, ".reelier", "init", "state.json"), "utf8")).v, "reelier.init-state/v1");
+    await assert.rejects(readFile(path.join(root, ".reelier", "init", "state.json"), "utf8"), { code: "ENOENT" });
+    assert.equal(JSON.parse(await readFile(path.join(root, ".reelier", "operator.json"), "utf8")).v, "reelier.operator-workspace/v1");
   });
 });
 
@@ -152,26 +201,61 @@ test("reelier init refuses malformed checkpoints with a sanitized exit code", as
     const { mkdir, writeFile } = await import("node:fs/promises");
     await mkdir(initDir, { recursive: true });
     await writeFile(path.join(initDir, "state.json"), "credential=never-print-this", "utf8");
-    const { result: code, output } = await capture(() => cmdInit(parsed(), { cwd: root, homedir: root, dependencies: localDependencies() }));
+    const { result: code, output } = await capture(() => cmdInit(parsed(["dry-run"]), { cwd: root, homedir: root, dependencies: localDependencies() }));
     assert.equal(code, 1);
     assert.equal(output, "Initialization refused: checkpoint state is malformed, unknown, or stale.");
     assert.doesNotMatch(output, /credential|never-print/);
   });
 });
 
-test("reelier init my-agent uses named bootstrap while bare init retains its inspection artifact", async () => {
+test("reelier init my-agent keeps named bootstrap while bare init uses Mission Control", async () => {
   await withTempDir(async root => {
-    const bare = await capture(() => cmdInit(parsed(), { cwd: root, homedir: root, dependencies: localDependencies() }));
+    const bare = await capture(() => cmdInit(parsed(), { cwd: root, homedir: root, ...missionControlOverrides(root) }));
     assert.equal(bare.result, 0);
     const namedResult = await capture(() => cmdInit(named("my-agent", ["yes"]), { cwd: root, homedir: root, dependencies: localDependencies(), nativeSessionFactory: filesystemNativeFactory() }));
     assert.equal(namedResult.result, 0);
-    assert.match(namedResult.output, /npx reelier@0\.32\.1 up my-agent/);
+    assert.match(namedResult.output, /npx reelier@0\.33\.0-beta\.0 up my-agent/);
     assert.match(namedResult.output, /Authority absent/);
     assert.match(namedResult.output, /Completeness not-proved/);
     const pointer = JSON.parse(await readFile(path.join(root, ".reelier", "bootstrap", "current.json"), "utf8"));
     const report = JSON.parse(await readFile(path.join(root, ".reelier", "bootstrap", "generations", pointer.generation, "report.json"), "utf8"));
     assert.equal(report.authority, "absent");
     assert.equal(report.completeness, "not-proved");
+  });
+});
+
+test("named init does not import Mission Control histories or create an Operator workspace", async () => {
+  await withTempDir(async root => {
+    const namedResult = await capture(() => cmdInit(named("my-agent", ["yes"]), {
+      cwd: root,
+      homedir: root,
+      dependencies: localDependencies(),
+      nativeSessionFactory: filesystemNativeFactory(),
+    }));
+    assert.equal(namedResult.result, 0);
+    await assert.rejects(readFile(path.join(root, ".reelier", "operator.json"), "utf8"), { code: "ENOENT" });
+    await assert.rejects(readFile(path.join(root, ".reelier", "operator", "events.jsonl"), "utf8"), { code: "ENOENT" });
+  });
+});
+
+test("reelier init --json emits a stable local-only summary and --no-open suppresses browser opening", async () => {
+  await withTempDir(async root => {
+    let openBrowserWasProvided = true;
+    const { result, output } = await capture(() => cmdInit(parsed(["json", "no-open"]), {
+      cwd: root,
+      homedir: root,
+      missionControlLauncher: async (input) => {
+        openBrowserWasProvided = input.openBrowser !== undefined;
+        return { origin: "http://127.0.0.1:43111", url: `http://127.0.0.1:43111/#${"d".repeat(64)}`, pid: 8, expiresAt: "2026-08-24T20:00:00.000Z" };
+      },
+    }));
+    assert.equal(result, 0);
+    assert.equal(openBrowserWasProvided, false);
+    const summary = JSON.parse(output);
+    assert.deepEqual(Object.keys(summary), ["v", "status", "harnesses", "missions", "currentRepositoryMissions", "observedOnly", "boardOrigin", "accountRequired"]);
+    assert.equal(summary.v, "reelier.mission-control-init/v1");
+    assert.equal(summary.accountRequired, false);
+    assert.equal("url" in summary, false);
   });
 });
 
@@ -241,7 +325,7 @@ test("named init applies one sealed local MCP config transaction idempotently an
     assert.match(first.output, /wrapped=1.*already-wrapped=1.*unwrappable=1.*unsupported=1/i);
     const applied = await readFile(config);
     assert.notDeepEqual(applied, original);
-    assert.deepEqual(JSON.parse(applied.toString()).mcpServers.local.args, ["-y", "reelier@0.32.1", "mcp", "--wrap", "npx -y @example/local"]);
+    assert.deepEqual(JSON.parse(applied.toString()).mcpServers.local.args, ["-y", "reelier@0.33.0-beta.0", "mcp", "--wrap", "npx -y @example/local"]);
     assert.deepEqual(JSON.parse(applied.toString()).mcpServers.remote, { type: "http", url: "https://example.invalid/mcp" });
 
     const second = await capture(() => cmdInit(named("my-agent", ["yes"]), overrides as never));

@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://reelier.dev/authority/tool-effect-contract/v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["v", "contractId", "provider", "operation", "operationDigest", "schemaDigest", "policyDigest", "effectClass", "model", "bindings", "semanticIdentity", "idempotencyKey", "readback", "result", "maximumEvidenceGrade"],
+  "properties": {
+    "v": { "const": "reelier.tool-effect-contract/v1" },
+    "contractId": { "$ref": "#/$defs/identifier" },
+    "provider": { "$ref": "#/$defs/identifier" },
+    "operation": { "$ref": "#/$defs/identifier" },
+    "operationDigest": { "$ref": "#/$defs/digest" }, "schemaDigest": { "$ref": "#/$defs/digest" }, "policyDigest": { "$ref": "#/$defs/digest" },
+    "effectClass": { "enum": ["read", "idempotent-write", "destructive"] },
+    "model": { "type": "object", "additionalProperties": false, "required": ["fields", "maxBytes"], "properties": { "fields": { "type": "array", "minItems": 1, "maxItems": 64, "uniqueItems": true, "items": { "$ref": "#/$defs/identifier" } }, "maxBytes": { "type": "integer", "minimum": 0, "maximum": 1073741824 } } },
+    "bindings": { "type": "object", "additionalProperties": false, "required": ["credentialRef", "accountRef", "destinationRef", "limitRef"], "properties": { "credentialRef": { "$ref": "#/$defs/identifier" }, "accountRef": { "$ref": "#/$defs/identifier" }, "destinationRef": { "$ref": "#/$defs/identifier" }, "limitRef": { "$ref": "#/$defs/identifier" } } },
+    "semanticIdentity": { "$ref": "#/$defs/identifier" }, "idempotencyKey": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/identifier" }] },
+    "readback": { "oneOf": [{ "type": "null" }, { "type": "object", "additionalProperties": false, "required": ["operation", "projection"], "properties": { "operation": { "$ref": "#/$defs/identifier" }, "projection": { "type": "array", "minItems": 1, "maxItems": 64, "uniqueItems": true, "items": { "type": "string", "pattern": "^/(?:[^~/]|~[01])+(?:/(?:[^~/]|~[01])+)*$" } } } }] }, "result": { "$ref": "#/$defs/result" },
+    "maximumEvidenceGrade": { "enum": ["verified", "partial", "pending", "absent", "failed"] }
+  },
+  "allOf": [{
+    "if": { "type": "object", "properties": { "maximumEvidenceGrade": { "const": "verified" } }, "required": ["maximumEvidenceGrade"] },
+    "then": { "type": "object", "properties": { "readback": { "type": "object" } } }
+  }],
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "identifier": { "type": "string", "pattern": "^[A-Za-z0-9._:-]{1,256}$" },
+    "result": {
+      "type": "object", "additionalProperties": false,
+      "required": ["success", "conflict", "definitiveFailure", "ambiguity"],
+      "properties": {
+        "success": { "$ref": "#/$defs/nonemptyIdentifierList" },
+        "conflict": { "$ref": "#/$defs/identifierList" },
+        "definitiveFailure": { "$ref": "#/$defs/identifierList" },
+        "ambiguity": { "$ref": "#/$defs/identifierList" }
+      }
+    },
+    "identifierList": { "type": "array", "maxItems": 64, "uniqueItems": true, "items": { "$ref": "#/$defs/identifier" } },
+    "nonemptyIdentifierList": { "allOf": [{ "$ref": "#/$defs/identifierList" }, { "type": "array", "minItems": 1 }] }
+  }
+}

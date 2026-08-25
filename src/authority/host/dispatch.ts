@@ -1,4 +1,5 @@
 import { authorityDigest } from "../wire.js";
+import { describeAcceptedGateReservationReadbackV1, hasAcceptedGateReservationHandleRevalidatorV1, revalidateAcceptedGateReservationHandleV1, type AcceptedGateReservationReadbackV1 } from "../gate.js";
 import { authoritySignatureDigest } from "../trust.js";
 import { verifyAuthoritySignature } from "../crypto.js";
 import type { KeyObject } from "node:crypto";
@@ -10,11 +11,14 @@ import { authorizeCoordinatorCommittedLease, authorizeCoordinatorReconciliation,
 import { normalizeReservationPublicationId } from "./reservation-identity.js";
 import type { AuthenticatedProviderIdentityV1 } from "./github-account-identity.js";
 import type { AuthorityLatencyPhase, AuthorityLatencyRecorder } from "./latency.js";
+import { isProxy } from "node:util/types";
 
-export interface DispatchRequestState { readonly reservation: { readonly reservationId: string; readonly state: LedgerState; readonly intent: Pick<StoredReservationIntent, "effectDigest" | "effectCanonicalBase64" | "executionContext" | "routeAuthority"> }; readonly effect: unknown; readonly effectCanonicalBase64: string; readonly effectDigest: string; readonly [key: string]: unknown; }
+export interface DispatchRequestState { readonly reservation: { readonly reservationId: string; readonly state: LedgerState; readonly intent: Pick<StoredReservationIntent, "effectDigest" | "effectCanonicalBase64" | "executionContext" | "routeAuthority"> & Readonly<{ requestId?: string }> }; readonly effect: unknown; readonly effectCanonicalBase64: string; readonly effectDigest: string; readonly [key: string]: unknown; }
 export type ReconciliationStatus = "matched" | "not-applied" | "conflict" | "unavailable" | "not-attempted";
-export interface DispatchOutcome { readonly kind: "acknowledged" | "definitive-failure" | "ambiguous"; readonly resultDigest: string; readonly providerResultDigest?: string; readonly providerStatus?: number; readonly responseDigest?: string; /** Digest of the exact provider request bytes when confidential material was inserted inside the Authority Cell. */ readonly materializedRequestDigest?: string; readonly reconciliationStatus?: ReconciliationStatus; readonly normalizedProjectionDigest?: string | null; readonly receiptRef?: string; readonly evidenceDigest?: string; readonly priorReceiptDigest?: string; }
-export interface DispatchAdapter { dispatch(state: DispatchRequestState): Promise<DispatchOutcome>; prepare?(state: DispatchRequestState): Promise<PreparedDispatch>; reconcile?(state: DispatchRequestState, outcome: DispatchOutcome): Promise<DispatchOutcome>; }
+export interface DispatchOutcome { readonly kind: "acknowledged" | "definitive-failure" | "ambiguous"; readonly resultDigest: string; readonly providerResultDigest?: string; readonly providerStatus?: number; readonly responseDigest?: string; /** Digest of the exact provider request bytes when confidential material was inserted inside the Authority Cell. */ readonly materializedRequestDigest?: string; readonly reconciliationStatus?: ReconciliationStatus; readonly normalizedProjectionDigest?: string | null; readonly receiptRef?: string; readonly evidenceDigest?: string; readonly priorReceiptDigest?: string; readonly reason?: string; }
+declare const coordinatorDispatchCallBrand: unique symbol;
+export type CoordinatorDispatchCallV1 = Readonly<{ readonly [coordinatorDispatchCallBrand]: true }>;
+export interface DispatchAdapter { dispatch(state: DispatchRequestState, call?: CoordinatorDispatchCallV1): Promise<DispatchOutcome>; prepare?(state: DispatchRequestState, call?: CoordinatorDispatchCallV1): Promise<PreparedDispatch>; reconcile?(state: DispatchRequestState, outcome: DispatchOutcome): Promise<DispatchOutcome>; }
 export interface DispatchEvidenceWriter { persist(input: Readonly<{ state: DispatchRequestState; outcome: DispatchOutcome; dispatchedRequestDigest: string; }>): Promise<void>; }
 export type DurableDispatchPublicationIdentityV1 = Readonly<{ v:"reelier.durable-dispatch-publication-identity/v1";reservationId:string;tenant:string;requestDigest:string;capabilityDigest:string;effectDigest:string;routeAuthorityDigest:string;expectedDispatchedRequestDigest:string;reservationIntentDigest:string }>;
 export type DurableDispatchPublicationQueryV1 = Readonly<{v:"reelier.durable-dispatch-publication-query/v1";identity:DurableDispatchPublicationIdentityV1;ledgerState:"dispatched"|"ambiguous";sendStarted:true}>;
@@ -33,7 +37,26 @@ export interface DispatchPublication {
    * window: recovery of a pre-terminal crash, and the root publication's own readback. */
   loadDurableHead?(query:DurableDispatchPublicationQueryV1,expect?:"terminal"|"root-or-terminal"):Promise<DurableDispatchPublicationHeadV1|null>;
 }
-export interface DispatchCoordinator { dispatch(handle: ReservedDispatchHandle): Promise<DispatchOutcome>; cancel(handle: ReservedDispatchHandle, reason?: string): Promise<DispatchOutcome>; reconcile(reservationId: string): Promise<DispatchOutcome>; recover(): Promise<readonly string[]>; }
+export interface DispatchReservationProjectionV1 { readonly reservationId: string; readonly state: LedgerState; readonly effectDigest: string; readonly allocationId: string | null; }
+export interface DispatchCoordinator { describe?(handle: ReservedDispatchHandle): DispatchReservationProjectionV1; dispatch(handle: ReservedDispatchHandle): Promise<DispatchOutcome>; cancel(handle: ReservedDispatchHandle, reason?: string): Promise<DispatchOutcome>; reconcile(reservationId: string): Promise<DispatchOutcome>; recoverAccepted?(readback: AcceptedGateReservationReadbackV1): Promise<DispatchOutcome>; recover(): Promise<readonly string[]>; }
+
+/** Closes and detaches the provider-returned result before coordinator logic observes it. */
+export function parseDispatchOutcomeV1(value: unknown): DispatchOutcome {
+  const required = ["kind", "resultDigest"] as const;
+  const optional = ["providerResultDigest", "providerStatus", "responseDigest", "materializedRequestDigest", "reconciliationStatus", "normalizedProjectionDigest", "receiptRef", "evidenceDigest", "priorReceiptDigest", "reason"] as const;
+  if (!value || typeof value !== "object" || Array.isArray(value) || isProxy(value) || Object.getPrototypeOf(value) !== Object.prototype) throw new TypeError("dispatch outcome must be inert provider data");
+  const permitted = new Set<string>([...required, ...optional]), raw: Record<string, unknown> = Object.create(null);
+  let count = 0; for (const key in value) { if (!Object.hasOwn(value, key)) continue; if (++count > 32 || !permitted.has(key)) throw new TypeError("dispatch outcome is not closed"); }
+  for (const key of required) { const descriptor = Object.getOwnPropertyDescriptor(value, key); if (!descriptor || !descriptor.enumerable || !Object.hasOwn(descriptor, "value")) throw new TypeError("dispatch outcome requires data properties"); raw[key] = descriptor.value; }
+  for (const key of optional) { const descriptor = Object.getOwnPropertyDescriptor(value, key); if (!descriptor) continue; if (!descriptor.enumerable) continue; if (!Object.hasOwn(descriptor, "value")) throw new TypeError("dispatch outcome requires data properties"); raw[key] = descriptor.value; }
+  if (!["acknowledged", "definitive-failure", "ambiguous"].includes(raw.kind as string) || typeof raw.resultDigest !== "string" || !/^sha256:[0-9a-f]{64}$/.test(raw.resultDigest)) throw new TypeError("dispatch outcome is invalid");
+  for (const key of ["providerResultDigest", "responseDigest", "materializedRequestDigest", "receiptRef", "evidenceDigest", "priorReceiptDigest"]) if (raw[key] !== undefined && (typeof raw[key] !== "string" || !/^sha256:[0-9a-f]{64}$/.test(raw[key] as string))) throw new TypeError("dispatch outcome digest is invalid");
+  if (raw.providerStatus !== undefined && (!Number.isSafeInteger(raw.providerStatus) || (raw.providerStatus as number) < 100 || (raw.providerStatus as number) > 599)) throw new TypeError("dispatch outcome provider status is invalid");
+  if (raw.reconciliationStatus !== undefined && !["matched", "not-applied", "conflict", "unavailable", "not-attempted"].includes(raw.reconciliationStatus as string)) throw new TypeError("dispatch outcome reconciliation status is invalid");
+  if (raw.normalizedProjectionDigest !== undefined && raw.normalizedProjectionDigest !== null && (typeof raw.normalizedProjectionDigest !== "string" || !/^sha256:[0-9a-f]{64}$/.test(raw.normalizedProjectionDigest))) throw new TypeError("dispatch outcome projection digest is invalid");
+  if (raw.reason !== undefined && (typeof raw.reason !== "string" || raw.reason.length === 0 || raw.reason.length > 4096)) throw new TypeError("dispatch outcome reason is invalid");
+  return Object.freeze(Object.fromEntries(Object.keys(raw).map(key => [key, raw[key]])) as unknown as DispatchOutcome);
+}
 export class DispatchBoundaryFailure extends Error {
   readonly classification: string;
   readonly phase: string;
@@ -51,9 +74,44 @@ export interface DispatchBudget { consumeOnce(input: Readonly<{ allocationId: st
 export interface CurrentDispatchAuthorityV1 { readonly authorityGeneration: string; readonly authorityExpiresAt: string; readonly authorityStateDigest?: string; readonly sourceBundleDigest?: string; readonly grantDigest?: string; readonly runtimeSessionId?: string; readonly routeAuthorityDigest: string; readonly providerId?: string; readonly connectorId?: string; readonly accountId?: string; readonly endpointId?: string; }
 export interface DispatchAuthorityRevalidator { revalidate(state: DispatchRequestState): Promise<CurrentDispatchAuthorityV1>; routeReread(state: DispatchRequestState): Promise<import("../ledger.js").RouteAuthoritySnapshotV1>; }
 export interface CertifiedIdentityVerifier { readonly purpose: "authority-evidence"; readonly signerId: string; readonly publicKey: KeyObject; }
-export interface CertifiedDispatchOptions { readonly identityProbe: () => Promise<AuthenticatedProviderIdentityV1>; readonly verifyIdentity?: CertifiedIdentityVerifier; readonly revalidator: DispatchAuthorityRevalidator; readonly latencyRecorder?: AuthorityLatencyRecorder; readonly onPhase?: (phase: "identity-probe" | "route-reread" | "authority-validation-before-prepare" | "prepare" | "authority-validation-after-prepare" | "dispatch-commit-cas" | "authority-send-boundary" | "send-started" | "send") => void; }
+export interface CertifiedDispatchOptions { readonly identityProbe: () => Promise<AuthenticatedProviderIdentityV1>; readonly verifyIdentity?: CertifiedIdentityVerifier; readonly revalidator: DispatchAuthorityRevalidator; readonly latencyRecorder?: AuthorityLatencyRecorder; readonly onPhase?: (phase: "identity-probe" | "route-reread" | "authority-validation-before-prepare" | "prepare" | "authority-validation-after-prepare" | "authority-validation-before-cas" | "dispatch-commit-cas" | "authority-validation-before-send" | "authority-send-boundary" | "send-started" | "send") => void; }
 
 const coordinatorPublicationCalls = new WeakMap<object, Readonly<{ phase: string; reservationId: string; effectDigest: string }>>();
+interface CoordinatorDispatchCallStateV1 { readonly call: object; readonly state: DispatchRequestState; readonly reservationId: string; readonly effectDigest: string; delegate: object | null }
+const coordinatorDispatchCalls = new WeakMap<object, CoordinatorDispatchCallStateV1>();
+const coordinatorDispatchDelegates = new WeakMap<object, CoordinatorDispatchCallStateV1>();
+
+/** @internal Binds one downstream host authority object to the exact live coordinator call. */
+export function bindCoordinatorDispatchCallDelegateV1(call: unknown, delegate: object, state: DispatchRequestState): boolean {
+  if (!call || typeof call !== "object" || !delegate || typeof delegate !== "object") return false;
+  const binding = coordinatorDispatchCalls.get(call as object);
+  if (!binding || binding.delegate !== null || coordinatorDispatchDelegates.has(delegate) || binding.state !== state || binding.reservationId !== state.reservation?.reservationId || binding.effectDigest !== state.effectDigest) return false;
+  binding.delegate = delegate;
+  coordinatorDispatchDelegates.set(delegate, binding);
+  return true;
+}
+
+/** @internal Jointly consumes the downstream delegate and its exact live coordinator call. */
+export function consumeCoordinatorDispatchCallDelegateV1(delegate: unknown, expected: Readonly<{ reservationId: string; effectDigest: string }>): boolean {
+  if (!delegate || typeof delegate !== "object") return false;
+  const binding = coordinatorDispatchDelegates.get(delegate as object);
+  if (!binding || binding.delegate !== delegate || binding.reservationId !== expected.reservationId || binding.effectDigest !== expected.effectDigest) return false;
+  revokeCoordinatorDispatchCall(binding.call);
+  return true;
+}
+
+function createCoordinatorDispatchCall(state: DispatchRequestState): CoordinatorDispatchCallV1 {
+  const call = Object.freeze(Object.create(null)) as CoordinatorDispatchCallV1;
+  coordinatorDispatchCalls.set(call as object, { call: call as object, state, reservationId: state.reservation.reservationId, effectDigest: state.effectDigest, delegate: null });
+  return call;
+}
+
+function revokeCoordinatorDispatchCall(call: object): void {
+  const binding = coordinatorDispatchCalls.get(call);
+  coordinatorDispatchCalls.delete(call);
+  if (binding?.delegate && coordinatorDispatchDelegates.get(binding.delegate) === binding) coordinatorDispatchDelegates.delete(binding.delegate);
+  if (binding) binding.delegate = null;
+}
 
 /** @internal Consumed by host-private publication wrappers; never exported from the package barrel. */
 export function consumeCoordinatorPublicationCall(input: object, expected: Readonly<{ phase: string; reservationId: string; effectDigest: string }>): void {
@@ -70,13 +128,38 @@ function coordinatorPublicationCall<T extends Readonly<{ phase: string; state: D
 export function createDispatchCoordinator(ledger: AuthorityLedger, adapter: DispatchAdapter, evidence?: DispatchEvidenceWriter, publication?: DispatchPublication, budget?: DispatchBudget, certified?: CertifiedDispatchOptions): DispatchCoordinator {
   assertLinuxAuthorityCellHost();
   if(publication&&Boolean(publication.publishReservation)!==Boolean(publication.loadDurableHead))throw new TypeError("durable dispatch publication methods must be configured as a pair");
+  const describedStates = new WeakMap<object, DispatchRequestState>();
+  const takeState = (handle: ReservedDispatchHandle): DispatchRequestState => {
+    const described = describedStates.get(handle as object);
+    if (described) { describedStates.delete(handle as object); return described; }
+    return unwrapReservedDispatchHandle(handle) as DispatchRequestState;
+  };
   const budgetFor = (state: DispatchRequestState): { allocationId: string; reservationId: string; effects: number } | undefined => {
     const context = state.reservation.intent.executionContext;
     return context ? { allocationId: context.allocationId, reservationId: state.reservation.reservationId, effects: 1 } : undefined;
   };
+  const cancelRecoveredReservation = async (reservation: import("../ledger.js").ReservationSnapshot): Promise<DispatchOutcome> => {
+    if (reservation.state !== "reserved") throw new TypeError("accepted recovery reservation is not reserved");
+    const resultDigest = authorityDigest({ v: "reelier.cancelled-result/v1", reservationId: reservation.reservationId, reason: "restart" });
+    const state = recoveredState(reservation), budgetClaim = budgetFor(state);
+    if (budget && budgetClaim) await budget.returnOnce(budgetClaim);
+    const outcome = Object.freeze({ kind: "definitive-failure" as const, resultDigest });
+    const published = publication ? await publication.publish(coordinatorPublicationCall({ phase: "cancelled", state, outcome, dispatchedRequestDigest: null })) : undefined;
+    const terminalDigest = published?.receiptRef ?? resultDigest;
+    const transitioned = await ledger.transition(reservation.reservationId, "reserved", { to: "cancelled", resultDigest: terminalDigest });
+    if (!transitioned.ok) throw new Error(`cancellation recovery transition refused: ${transitioned.reason}`);
+    return Object.freeze({ ...outcome, ...(published ? { providerResultDigest: outcome.resultDigest, receiptRef: published.receiptRef, evidenceDigest: published.evidenceDigest } : {}), resultDigest: transitioned.reservation.resultDigest ?? terminalDigest });
+  };
   return Object.freeze({
+    describe(handle: ReservedDispatchHandle): DispatchReservationProjectionV1 {
+      let state = describedStates.get(handle as object);
+      if (!state) { state = unwrapReservedDispatchHandle(handle) as DispatchRequestState; describedStates.set(handle as object, state); }
+      if (!state.reservation?.reservationId || !state.effectDigest) throw new TypeError("dispatch handle has no reservation projection");
+      return Object.freeze({ reservationId: state.reservation.reservationId, state: state.reservation.state, effectDigest: state.effectDigest, allocationId: state.reservation.intent.executionContext?.allocationId ?? null });
+    },
     async dispatch(handle: ReservedDispatchHandle): Promise<DispatchOutcome> {
-      const state = unwrapReservedDispatchHandle(handle) as DispatchRequestState;
+      const revalidateGoverned = hasAcceptedGateReservationHandleRevalidatorV1(handle) ? () => revalidateAcceptedGateReservationHandleV1(handle) : undefined;
+      const state = takeState(handle);
       if (!state.reservation || state.reservation.state !== "reserved") throw new TypeError("dispatch handle is not reserved");
       const reservationId = state.reservation.reservationId;
       const routeAuthority = state.reservation.intent.routeAuthority;
@@ -114,14 +197,17 @@ export function createDispatchCoordinator(ledger: AuthorityLedger, adapter: Disp
         ) throw new Error("route authority generation or binding mismatch");
       }
       if (adapter.prepare && ledger.commitPreparedDispatch) {
+        const call = createCoordinatorDispatchCall(state);
+        try {
         certified?.onPhase?.("prepare");
         const context = state.reservation.intent.executionContext;
-        const prepared = await measureLatency(certified?.latencyRecorder, "prepare", () => adapter.prepare!(state));
+        const prepared = await measureLatency(certified?.latencyRecorder, "prepare", () => adapter.prepare!(state, call));
         const description: PreparedDispatchDescriptionV1 = prepared.description;
         if (routeAuthority && (description.routeDigest !== routeAuthority.routeDigest || description.materializedRequestDigest !== routeAuthority.expectedMaterializedRequestDigest)) throw new Error("prepared dispatch does not match durable route authority");
-        if (certified) {
-          certified.onPhase?.("authority-validation-after-prepare");
-          const authorityAfter = await measureLatency(certified.latencyRecorder, "authority-validation-after-prepare", () => certified.revalidator.revalidate(state));
+        await revalidateGoverned?.();
+        const revalidatePreparedAuthority = certified ? async (phase: "authority-validation-after-prepare" | "authority-validation-before-cas" | "authority-validation-before-send"): Promise<void> => {
+          certified.onPhase?.(phase);
+          const authorityAfter = await measureLatency(certified.latencyRecorder, phase, () => certified.revalidator.revalidate(state));
           if (
             !authorityBefore
             || authorityAfter.authorityGeneration !== routeAuthority!.authorityGeneration
@@ -136,9 +222,12 @@ export function createDispatchCoordinator(ledger: AuthorityLedger, adapter: Disp
             || authorityAfter.accountId !== undefined && authorityAfter.accountId !== routeAuthority!.accountId
             || authorityAfter.endpointId !== undefined && authorityAfter.endpointId !== routeAuthority!.endpointId
           ) throw new Error("dispatch authority changed during preparation");
-        }
+        } : undefined;
+        await revalidatePreparedAuthority?.("authority-validation-after-prepare");
         const budgetClaim = budgetFor(state);
         if (budget && budgetClaim) await budget.consumeOnce(budgetClaim);
+        await revalidatePreparedAuthority?.("authority-validation-before-cas");
+        await revalidateGoverned?.();
         let lease: import("./prepared-dispatch.js").DispatchCommitLease;
         try { certified?.onPhase?.("dispatch-commit-cas"); lease = await measureLatency(certified?.latencyRecorder, "dispatch-commit-cas", () => ledger.commitPreparedDispatch!({ reservationId, allocationId: context?.allocationId ?? description.allocationId, expectedAuthorityGeneration: description.authorityGeneration, preparedDescription: description, absoluteDeadlineMs: description.absoluteDeadlineMs })); }
         catch (error) {
@@ -161,10 +250,19 @@ export function createDispatchCoordinator(ledger: AuthorityLedger, adapter: Disp
           try { reservationRoot=await publication.publishReservation(coordinatorPublicationCall({phase:"reservation",identity,state:rootState,outcome:rootOutcome,dispatchedRequestDigest:null,priorReceiptDigest:null})); }
           catch (error) { throw new DispatchBoundaryFailure({ classification: "reservation-publication-unavailable", phase: "reservation-publication", providerEffectPossible: false, cause: error }); }
         }
+        await revalidatePreparedAuthority?.("authority-validation-before-send");
+        await revalidateGoverned?.();
         authorizeCoordinatorCommittedLease(lease);
         let outcome: DispatchOutcome;
-        try { certified?.onPhase?.("authority-send-boundary"); outcome = await measureLatency(certified?.latencyRecorder, "authority-send-boundary", () => consumePreparedDispatch(prepared, lease)); certified?.onPhase?.("send"); }
+        try { certified?.onPhase?.("authority-send-boundary"); outcome = parseDispatchOutcomeV1(await measureLatency(certified?.latencyRecorder, "authority-send-boundary", () => consumePreparedDispatch(prepared, lease))); certified?.onPhase?.("send"); }
         catch { outcome = { kind: "ambiguous", resultDigest: authorityDigest({ v: "reelier.dispatch-result/v1", reservationId, status: "ambiguous" }) }; }
+        if (adapter.reconcile && outcome.kind !== "ambiguous" && (!outcome.reconciliationStatus || outcome.reconciliationStatus === "not-attempted")) {
+          try {
+            outcome = parseDispatchOutcomeV1(await adapter.reconcile(state, outcome));
+          } catch {
+            outcome = Object.freeze({ ...outcome, kind: "ambiguous", reconciliationStatus: "unavailable" as const, normalizedProjectionDigest: null });
+          }
+        }
         const current = await ledger.getReservation(reservationId);
         if (current?.state === "reserved") {
           const marked = await ledger.transition(reservationId, "reserved", { to: "dispatched" });
@@ -178,6 +276,7 @@ export function createDispatchCoordinator(ledger: AuthorityLedger, adapter: Disp
         const result = await measureLatency(certified?.latencyRecorder, "terminal-transition", () => ledger.transition(reservationId, "dispatched", terminal === "ambiguous" ? { to: "ambiguous" } : { to: terminal, resultDigest: outcome.resultDigest }));
         if (!result.ok) throw new Error(`dispatch result transition refused: ${result.reason}`);
         return Object.freeze({ ...outcome, materializedRequestDigest: dispatchedRequestDigest, ...(terminalPublication&&outcome.kind==="ambiguous"?{receiptRef:terminalPublication.receiptRef,evidenceDigest:terminalPublication.evidenceDigest,priorReceiptDigest:reservationRoot?.receiptRef}:{}) });
+        } finally { revokeCoordinatorDispatchCall(call as object); }
       }
       if (certified) throw new Error("certified dispatch requires prepared commit boundary");
       const transitioned = await ledger.transition(reservationId, "reserved", { to: "dispatched" });
@@ -185,11 +284,13 @@ export function createDispatchCoordinator(ledger: AuthorityLedger, adapter: Disp
       const budgetClaim = budgetFor(state);
       if (budget && budgetClaim) await budget.consumeOnce(budgetClaim);
       let outcome: DispatchOutcome;
-      try { outcome = await adapter.dispatch(state); }
+      const call = createCoordinatorDispatchCall(state);
+      try { outcome = parseDispatchOutcomeV1(await adapter.dispatch(state, call)); }
       catch { outcome = { kind: "ambiguous", resultDigest: authorityDigest({ v: "reelier.dispatch-result/v1", reservationId, status: "ambiguous" }) }; }
+      finally { revokeCoordinatorDispatchCall(call as object); }
       if (adapter.reconcile && outcome.kind !== "ambiguous") {
         try {
-          outcome = Object.freeze(await adapter.reconcile(state, outcome));
+          outcome = parseDispatchOutcomeV1(await adapter.reconcile(state, outcome));
         } catch {
           outcome = Object.freeze({ ...outcome, kind: "ambiguous", reconciliationStatus: "unavailable" as const, normalizedProjectionDigest: null });
         }
@@ -214,7 +315,7 @@ export function createDispatchCoordinator(ledger: AuthorityLedger, adapter: Disp
       return Object.freeze(outcome);
     },
     async cancel(handle: ReservedDispatchHandle, reason = "cancelled-before-dispatch"): Promise<DispatchOutcome> {
-      const state = unwrapReservedDispatchHandle(handle) as DispatchRequestState;
+      const state = takeState(handle);
       if (!state.reservation || state.reservation.state !== "reserved") throw new TypeError("dispatch handle is not reserved");
       const resultDigest = authorityDigest({ v: "reelier.cancelled-result/v1", reservationId: state.reservation.reservationId, reason });
       const budgetClaim = budgetFor(state);
@@ -253,7 +354,7 @@ export function createDispatchCoordinator(ledger: AuthorityLedger, adapter: Disp
       });
       const reconciliationContext = state.reservation.intent.executionContext;
       if (reconciliationContext) authorizeCoordinatorReconciliation(state, { reservationId, allocationId: reconciliationContext.allocationId, effectDigest: state.effectDigest });
-      let outcome = Object.freeze(await adapter.reconcile(state, pending));
+      let outcome = parseDispatchOutcomeV1(await adapter.reconcile(state, pending));
       if (outcome.reconciliationStatus === "not-attempted") throw new Error("reconciliation did not produce a verdict");
       const budgetClaim = budgetFor(state);
       if (budget && budgetClaim && outcome.reconciliationStatus === "not-applied") {
@@ -266,20 +367,20 @@ export function createDispatchCoordinator(ledger: AuthorityLedger, adapter: Disp
       if (!terminal.ok) throw new Error(`reconciliation transition refused: ${terminal.reason}`);
       return Object.freeze({ ...outcome, resultDigest, ...(published ? { receiptRef: published.receiptRef, evidenceDigest: published.evidenceDigest } : {}), ...(priorReceiptDigest ? { priorReceiptDigest } : {}) });
     },
+    async recoverAccepted(readback: AcceptedGateReservationReadbackV1): Promise<DispatchOutcome> {
+      const description = describeAcceptedGateReservationReadbackV1(readback);
+      if (description.lifecycleState !== "reserved") throw new TypeError("accepted recovery readback is not reserved");
+      const reservation = await ledger.getReservation(description.reservationId);
+      if (!reservation || reservation.state !== "reserved" || reservation.intent.definitionAlias !== description.definitionAlias || reservation.intent.contractDigest !== description.contractDigest || reservation.intent.effectDigest !== description.effectDigest || reservation.intent.capabilityDigest !== description.capabilityDigest || reservation.intent.decisionContextDigest !== description.decisionContextDigest) throw new TypeError("accepted recovery readback no longer binds the exact reservation");
+      return cancelRecoveredReservation(reservation);
+    },
     async recover(): Promise<readonly string[]> {
       const recovered = await ledger.recover({ deferTerminal: true });
       if (!recovered.ok) throw new Error(`authority recovery failed: ${recovered.reason}`);
       const ambiguous: string[] = [];
       for (const reservation of recovered.reservations) {
         if (reservation.state === "reserved") {
-          const resultDigest = authorityDigest({ v: "reelier.cancelled-result/v1", reservationId: reservation.reservationId, reason: "restart" });
-          const state = recoveredState(reservation);
-          const budgetClaim = budgetFor(state);
-          if (budget && budgetClaim) await budget.returnOnce(budgetClaim);
-          const outcome = Object.freeze({ kind: "definitive-failure" as const, resultDigest });
-          const published = publication ? await publication.publish(coordinatorPublicationCall({ phase: "cancelled", state, outcome, dispatchedRequestDigest: null })) : undefined;
-          const transitioned = await ledger.transition(reservation.reservationId, "reserved", { to: "cancelled", resultDigest: published?.receiptRef ?? resultDigest });
-          if (!transitioned.ok) throw new Error(`cancellation recovery transition refused: ${transitioned.reason}`);
+          await cancelRecoveredReservation(reservation);
           continue;
         }
         if (reservation.state === "dispatched") {
@@ -358,6 +459,8 @@ function durableIdentity(reservation:import("../ledger.js").ReservationSnapshot)
 }
 
 function durableQuery(identity:DurableDispatchPublicationIdentityV1,ledgerState:"dispatched"|"ambiguous"):DurableDispatchPublicationQueryV1{return Object.freeze({v:"reelier.durable-dispatch-publication-query/v1",identity,ledgerState,sendStarted:true});}
+/** @internal Exact predicted query for a genuine reserved effect; verified against the post-commit head. */
+export function governedDurableDispatchPublicationQueryV1(reservation:import("../ledger.js").ReservationSnapshot):DurableDispatchPublicationQueryV1{return durableQuery(durableIdentity(reservation),"dispatched");}
 function assertDurableHead(value:DurableDispatchPublicationHeadV1|null,identity:DurableDispatchPublicationIdentityV1):DurableDispatchPublicationHeadV1|null{
   if(value===null)return null;
   if(!value||typeof value!=="object"||Object.getPrototypeOf(value)!==Object.prototype||authorityDigest(value.identity)!==authorityDigest(identity))throw new TypeError("durable governed receipt head identity mismatch");

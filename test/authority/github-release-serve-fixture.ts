@@ -8,6 +8,7 @@ import { connectionAdoptionCommitmentDigest, connectionDescriptorDigest, digestN
 import { buildAuthorityDeployment } from "../../src/authority/host/deploy.js";
 import { githubReleasePacks } from "../../src/packs/github-release/index.js";
 import { githubReleaseAliases, githubReleaseEffects, githubReleaseManifest, githubReleasePolicySchemaId, githubReleaseProjectionSchemaId, githubReleaseReadEndpointId, githubReleaseRiskClass } from "../../src/packs/github-release/manifest.js";
+import { createGitHubLinearOutcomePackV1, githubReviewedReleasePackDigestV1 } from "../../src/authority/packs/github-linear-outcomes.js";
 import { jobCardTrustPinFixture } from "./job-card-trust-pin-fixture.js";
 
 const sha = (seed: string) => `sha256:${seed.repeat(64).slice(0, 64)}`;
@@ -70,7 +71,7 @@ export interface ReleaseServeFixture {
 /** A real signed four-definition GitHub release deployment plus the operator-owned runner config
  * that `authority serve --release-runner-config` must construct and inject. Modeled on
  * `multiDefinitionFixture` in local-multi-definition-jobs.test.ts. */
-export async function releaseServeFixture(title = "Governed production release"): Promise<ReleaseServeFixture> {
+export async function releaseServeFixture(title = "Governed production release", options: Readonly<{ executableCandidate?: boolean }> = {}): Promise<ReleaseServeFixture> {
   const root = await mkdtemp(path.join(os.tmpdir(), "reelier-release-serve-"));
   const candidateRoot = path.join(root, "candidate");
   await mkdir(path.join(candidateRoot, "keys"), { recursive: true });
@@ -171,7 +172,8 @@ export async function releaseServeFixture(title = "Governed production release")
   const laneKeys = new Map(LANE_SIGNERS.map(([lane, laneSignerId]) => [lane, { signerId: laneSignerId, pair: generateKeyPairSync("ed25519") }]));
   const graphMakerKeys = generateKeyPairSync("ed25519");
   const foreignAuthorityKeys = generateKeyPairSync("ed25519");
-  const evidenceVerifierBindings = LANE_SIGNERS.map(([lane, laneSignerId]) => ({ lane, publicKeySpkiDigest: spkiDigest(laneKeys.get(lane)!.pair.publicKey), signerId: laneSignerId }));
+  const executableRunnerLanes = new Set<ReleaseEvidenceLaneV1>(["candidate-branch", "candidate-pull-request", "merge-exact-sha"]);
+  const evidenceVerifierBindings = LANE_SIGNERS.map(([lane, laneSignerId]) => options.executableCandidate && executableRunnerLanes.has(lane) ? ({ lane, publicKeySpkiDigest: spkiDigest(evidenceKeys.publicKey), signerId: "release-provider-verifier" }) : ({ lane, publicKeySpkiDigest: spkiDigest(laneKeys.get(lane)!.pair.publicKey), signerId: laneSignerId }));
   const receiptGraphMakerBinding = { publicKeySpkiDigest: spkiDigest(graphMakerKeys.publicKey), signerId: RELEASE_GRAPH_MAKER_SIGNER_ID };
 
   const laneEvidence = (lane: ReleaseEvidenceLaneV1, overrides: Partial<ReleaseVerifierEvidenceV1>) => {
@@ -188,7 +190,8 @@ export async function releaseServeFixture(title = "Governed production release")
 
   const authorizationBundle = (privateKey: KeyObject, repository: string = RELEASE_REPOSITORY): Record<string, unknown> => {
     const signer = { signerId: RELEASE_AUTHORITY_SIGNER_ID, privateKey };
-    const files = [
+    const executableContents = ["CHANGELOG.md", "src/cli.ts", "test/cli-subcommand-help.test.ts"].map((filePath, index) => ({ path: filePath, bytesBase64: Buffer.from(`fixture release file ${index}\n`, "utf8").toString("base64") }));
+    const files = options.executableCandidate ? executableContents.map(item => { const bytes = Buffer.from(item.bytesBase64, "base64"); return { blobSha: createHash("sha1").update(`blob ${bytes.length}\0`).update(bytes).digest("hex"), contentDigest: `sha256:${createHash("sha256").update(bytes).digest("hex")}`, mode: "100644" as const, path: item.path }; }) : [
       { blobSha: releaseCommit("b"), contentDigest: releaseDigest("b"), mode: "100644" as const, path: "CHANGELOG.md" },
       { blobSha: releaseCommit("c"), contentDigest: releaseDigest("c"), mode: "100644" as const, path: "src/cli.ts" },
       { blobSha: releaseCommit("d"), contentDigest: releaseDigest("d"), mode: "100644" as const, path: "test/cli-subcommand-help.test.ts" },
@@ -200,18 +203,18 @@ export async function releaseServeFixture(title = "Governed production release")
     ];
     const quality = { coverageEvidenceDigest: releaseDigest("6"), coverageStatus: "non-regressed" as const, fullTestEvidenceDigest: releaseDigest("7"), fullTestsStatus: "verified" as const, headCommit: releaseCommit("a"), mutationEvidenceDigest: releaseDigest("8"), mutationScoreBasisPoints: 9_137 };
     const operationPlan = createSignedReleaseOperationPlanV1({
-      v: "reelier.release-operation-plan/v1", baseCommit: RELEASE_BASE_COMMIT, baseTreeSha: releaseCommit("b"), candidateBranch: "reelier/release/0.32.1", candidateTreeDigest,
-      commit: { author: { date: "2026-08-18T05:00:00.000Z", email: "release@seldonframe.com", name: "SeldonFrame Release" }, committer: { date: "2026-08-18T05:00:00.000Z", email: "release@seldonframe.com", name: "SeldonFrame Release" }, message: "release: v0.32.1", parentSha: RELEASE_BASE_COMMIT },
+      v: "reelier.release-operation-plan/v1", baseCommit: RELEASE_BASE_COMMIT, baseTreeSha: releaseCommit("b"), candidateBranch: "reelier/release/0.33.0-beta.0", candidateTreeDigest,
+      commit: { author: { date: "2026-08-18T05:00:00.000Z", email: "release@seldonframe.com", name: "SeldonFrame Release" }, committer: { date: "2026-08-18T05:00:00.000Z", email: "release@seldonframe.com", name: "SeldonFrame Release" }, message: "release: v0.33.0-beta.0", parentSha: RELEASE_BASE_COMMIT },
       destinationBranch: "main", expectedCommitSha: releaseCommit("a"), expectedTreeSha: releaseCommit("e"), files,
-      npmPreflight: { packageName: "reelier", version: "0.32.1", versionMustBeAbsent: true },
-      pullRequest: { base: "main", body: "Governed release v0.32.1", draft: true, head: "reelier/release/0.32.1", readyForReview: true, title: "Release v0.32.1" },
+      npmPreflight: { packageName: "reelier", version: "0.33.0-beta.0", versionMustBeAbsent: true },
+      pullRequest: { base: "main", body: "Governed release v0.33.0-beta.0", draft: true, head: "reelier/release/0.33.0-beta.0", readyForReview: true, title: "Release v0.33.0-beta.0" },
       repository, requiredChecks: ["coverage", "full-tests", "mutation"],
-      squash: { commitMessage: "release: v0.32.1", commitTitle: "Release v0.32.1" }, tag: "v0.32.1", workflowCommitments,
+      squash: { commitMessage: "release: v0.33.0-beta.0", commitTitle: "Release v0.33.0-beta.0" }, tag: "v0.33.0-beta.0", workflowCommitments,
     } as never, signer);
     const candidateManifest = createSignedStagedCandidateManifestV1({
-      v: "reelier.staged-candidate-manifest/v1", baseCommit: RELEASE_BASE_COMMIT, branch: "reelier/release/0.32.1", candidateCommit: releaseCommit("a"), candidateTreeDigest,
+      v: "reelier.staged-candidate-manifest/v1", baseCommit: RELEASE_BASE_COMMIT, branch: "reelier/release/0.33.0-beta.0", candidateCommit: releaseCommit("a"), candidateTreeDigest,
       changedBytes: 4_096, changedPaths: ["CHANGELOG.md", "src/cli.ts", "test/cli-subcommand-help.test.ts"], destinationBranch: "main", qualityEvidence: quality,
-      packageName: "reelier", packageVersion: "0.32.1", packedTarballDigest: releaseDigest("2"), repository, tag: "v0.32.1", workflowCommitments,
+      packageName: "reelier", packageVersion: "0.33.0-beta.0", packedTarballDigest: releaseDigest("2"), repository, tag: "v0.33.0-beta.0", workflowCommitments,
     }, signer);
     const policy = createSignedReleasePolicyV1({
       v: "reelier.release-policy/v1", allowedPaths: ["CHANGELOG.md", "src/cli.ts", "test/cli-subcommand-help.test.ts"], destinations: ["ghcr", "mcp-registry", "npm"],
@@ -219,6 +222,7 @@ export async function releaseServeFixture(title = "Governed production release")
       forbiddenChangeClasses: ["authority-contract", "credential", "dependency", "generated-contract", "lockfile", "policy", "release-script", "workflow"],
       maxChangedBytes: 65_536, maxChangedFiles: 3,
     }, signer);
+    const reviewedPack = createGitHubLinearOutcomePackV1({ v: "reelier.github-linear-reviewed-authority/v1", github: { repository, baseBranch: operationPlan.value.destinationBranch, baseSha: operationPlan.value.baseCommit, headBranch: operationPlan.value.candidateBranch, headSha: operationPlan.value.expectedCommitSha, candidateDigest: operationPlan.value.candidateTreeDigest, workflowPath: ".github/workflows/ci.yml", workflowDigest: workflowCommitments[0]!.digest, requiredChecks: operationPlan.value.requiredChecks, mergeMethod: "squash", postMergeTreeSha: operationPlan.value.expectedTreeSha, accountRef: "github_account_ref", destinationRef: "github_repository_ref", credentialRef: "github_credential_ref", limitRef: "github_release_policy_ref" }, linear: { workspace: "workspace_01", team: "team_01", project: "project_01", issue: "REEL-TEST-1", preStatus: "In Progress", targetStatus: "Done", commentMarker: "reelier:evidence:fixture", evidenceUrl: "https://www.reelier.com/r/fixture", evidenceContentDigest: releaseDigest("f"), accountRef: "linear_account_ref", destinationRef: "linear_issue_ref", credentialRef: "linear_credential_ref", limitRef: "linear_transition_policy_ref" } });
     const authorization = createSignedReleaseAuthorizationBundleV1({
       v: "reelier.release-authorization-bundle/v1", authorityCellDigest: releaseDigest("9"),
       effectAllocations: [
@@ -228,7 +232,7 @@ export async function releaseServeFixture(title = "Governed production release")
         { allocationDigest: releaseDigest("d"), allocationId: "release-non-force-tag-01", effect: "non-force-tag", maxEffects: 1 },
       ],
       evidenceVerifierBindings, expiresAt: AUTHORIZATION_EXPIRES_AT, issuedAt: AUTHORIZATION_ISSUED_AT, jobCardDigest: releaseDigest("e"), missionDigest: releaseDigest("f"),
-      operationPlanDigest: operationPlan.digest, packDigest: releaseDigest("0"), policyDigest: policy.digest, receiptGraphMakerBinding,
+      operationPlanDigest: operationPlan.digest, packDigest: githubReviewedReleasePackDigestV1(reviewedPack), policyDigest: policy.digest, receiptGraphMakerBinding,
       rootGrantDigest: releaseDigest("1"), stagedCandidateManifestDigest: candidateManifest.digest, taskDigest: releaseDigest("2"),
     }, signer);
     const evidence = [
@@ -236,7 +240,7 @@ export async function releaseServeFixture(title = "Governed production release")
       laneEvidence("ci-full-tests", { candidateCommit: releaseCommit("a"), resultValue: 1, subjectDigest: quality.fullTestEvidenceDigest, workflowDigest: workflowCommitments[0]!.digest, workflowPath: workflowCommitments[0]!.path as ReleaseVerifierEvidenceV1["workflowPath"] }),
       laneEvidence("ci-mutation", { candidateCommit: releaseCommit("a"), resultValue: quality.mutationScoreBasisPoints, subjectDigest: quality.mutationEvidenceDigest, workflowDigest: workflowCommitments[0]!.digest, workflowPath: workflowCommitments[0]!.path as ReleaseVerifierEvidenceV1["workflowPath"] }),
     ];
-    return { authorization, candidateManifest, operationPlan, policy, evidence, fileContents: [] };
+    return { authorization, candidateManifest, operationPlan, policy, evidence, fileContents: options.executableCandidate ? executableContents : [] };
   };
 
   const writeAuthorizationBundle = async (handle: string, body: unknown): Promise<string> => {

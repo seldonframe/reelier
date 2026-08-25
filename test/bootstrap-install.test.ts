@@ -15,10 +15,10 @@ test("named bootstrap plans an exact-version proxy without changing legacy wrapp
       legacy: { command: "npx", args: ["-y", "reelier", "mcp", "--wrap", "npx -y @legacy/server"] },
       remote: { type: "http", url: "https://example.test/mcp" },
     } }), "utf8");
-    const plan = await planBootstrapInstall(config, "0.32.1");
+    const plan = await planBootstrapInstall(config, "0.33.0-beta.0");
     assert.equal(plan.changed, true);
     assert.deepEqual(JSON.parse(plan.after).mcpServers.local, {
-      command: "npx", args: ["-y", "reelier@0.32.1", "mcp", "--wrap", "npx -y @example/server"],
+      command: "npx", args: ["-y", "reelier@0.33.0-beta.0", "mcp", "--wrap", "npx -y @example/server"],
     });
     assert.deepEqual(JSON.parse(plan.after).mcpServers.legacy, {
       command: "npx", args: ["-y", "reelier", "mcp", "--wrap", "npx -y @legacy/server"],
@@ -46,10 +46,10 @@ test("exact-version pinning is scoped to the newly wrapped server map entry", as
       },
     }), "utf8");
 
-    const after = JSON.parse((await planBootstrapInstall(config, "0.32.1", root)).after);
+    const after = JSON.parse((await planBootstrapInstall(config, "0.33.0-beta.0", root)).after);
     assert.deepEqual(after.mcpServers.shared.args, ["-y", "reelier", "mcp", "--wrap", "npx -y @legacy/server"]);
     assert.deepEqual(after.projects[otherProject].mcpServers.shared.args, ["-y", "reelier", "mcp", "--wrap", "npx -y @legacy/server"]);
-    assert.deepEqual(after.projects[root].mcpServers.shared.args, ["-y", "reelier@0.32.1", "mcp", "--wrap", "npx -y @current/server"]);
+    assert.deepEqual(after.projects[root].mcpServers.shared.args, ["-y", "reelier@0.33.0-beta.0", "mcp", "--wrap", "npx -y @current/server"]);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
@@ -59,7 +59,7 @@ test("named install applies only with explicit consent, backs up before replacem
     const config = path.join(root, ".mcp.json");
     const original = JSON.stringify({ mcpServers: { local: { command: "npx", args: ["-y", "@example/server"] } } }, null, 2);
     await writeFile(config, original, "utf8");
-    const plan = await planBootstrapInstall(config, "0.32.1");
+    const plan = await planBootstrapInstall(config, "0.33.0-beta.0");
     await assert.rejects(() => applyBootstrapInstall(plan, { consent: false }), /consent/i);
     assert.equal(await readFile(config, "utf8"), original);
     const result = await applyBootstrapInstall(plan, { consent: true });

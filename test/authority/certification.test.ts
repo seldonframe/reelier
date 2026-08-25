@@ -12,11 +12,11 @@ test("the certification target and distributed metadata use the next publishable
   const packageVersion = JSON.parse(readFileSync("package.json", "utf8")).version;
   const serverVersion = JSON.parse(readFileSync("server.json", "utf8")).version;
   const pluginVersion = JSON.parse(readFileSync("plugin/agent-plugins/plugin.json", "utf8")).version;
-  assert.equal(CERTIFICATION_TARGET_PACKAGE_VERSION, "0.32.1");
+  assert.equal(CERTIFICATION_TARGET_PACKAGE_VERSION, "0.33.0-beta.0");
   assert.equal(packageVersion, CERTIFICATION_TARGET_PACKAGE_VERSION);
   assert.equal(serverVersion, CERTIFICATION_TARGET_PACKAGE_VERSION);
   assert.equal(pluginVersion, CERTIFICATION_TARGET_PACKAGE_VERSION);
-  assert.match(readFileSync("action.yml", "utf8"), /default: "0\.32\.1"/);
+  assert.match(readFileSync("action.yml", "utf8"), /default: "0\.33\.0-beta\.0"/);
 });
 
 const baseInput: CertificationPreflightInput = {

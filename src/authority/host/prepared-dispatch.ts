@@ -1,7 +1,18 @@
 import type { DispatchOutcome } from "./dispatch.js";
 import { materializedHttpRequestDigest, type MaterializedHttpRequestProjectionV1 } from "./http-response-semantics.js";
+import { authorityDigest } from "../wire.js";
+import { isProxy } from "node:util/types";
 
 export type { MaterializedHttpRequestProjectionV1 };
+
+/** Credential-free commitment for prepared effects that are not HTTP requests. */
+export interface PreparedEffectProjectionV1 {
+  readonly v: "reelier.prepared-effect-projection/v1";
+  readonly transport: string;
+  readonly operationDigest: string;
+  readonly requestDigest: string;
+}
+export type PreparedDispatchProjectionV1 = MaterializedHttpRequestProjectionV1 | PreparedEffectProjectionV1;
 
 const DIGEST = /^sha256:(?!0{64}$)[0-9a-f]{64}$/;
 const preparedBrand = Symbol("reelier.prepared-dispatch");
@@ -11,7 +22,7 @@ export interface PreparedDispatchDescriptionV1 {
   readonly v: "reelier.prepared-dispatch-description/v1";
   readonly routeDigest: string;
   readonly materializedRequestDigest: string;
-  readonly projection: MaterializedHttpRequestProjectionV1;
+  readonly projection: PreparedDispatchProjectionV1;
   readonly authorityGeneration: string;
   readonly authorityExpiresAt: string;
   readonly absoluteDeadlineMs: number;
@@ -48,10 +59,11 @@ const coordinatorCommittedLeases = new WeakSet<object>();
 const coordinatorReconciliations = new WeakMap<object, Readonly<{ reservationId: string; allocationId: string; effectDigest: string }>>();
 
 export function createPreparedDispatch(input: Readonly<{ description: PreparedDispatchDescriptionV1; send: () => Promise<DispatchOutcome>; monotonicNow?: () => number; wallClockNow?: () => number; /** @internal Host-only release boundary. */ requireCoordinatorCommit?: boolean }>): PreparedDispatch {
-  if (!input || typeof input !== "object" || typeof input.send !== "function") throw new TypeError("prepared dispatch is invalid");
-  const description = validateDescription(input.description);
+  const raw = inertRecord(input, ["description", "send"], ["monotonicNow", "wallClockNow", "requireCoordinatorCommit"], "prepared dispatch");
+  if (typeof raw.send !== "function") throw new TypeError("prepared dispatch is invalid");
+  const description = validateDescription(raw.description as PreparedDispatchDescriptionV1);
   const capability = Object.freeze(Object.defineProperty({ [preparedBrand]: true as const } as { [preparedBrand]: true; description: PreparedDispatchDescriptionV1 }, "description", { value: description, enumerable: false, writable: false, configurable: false }));
-  preparedStates.set(capability, { description, send: input.send, monotonicNow: input.monotonicNow ?? (() => performance.now()), wallClockNow: input.wallClockNow ?? (() => Date.now()), requireCoordinatorCommit: input.requireCoordinatorCommit === true });
+  preparedStates.set(capability, { description, send: raw.send as () => Promise<DispatchOutcome>, monotonicNow: typeof raw.monotonicNow === "function" ? raw.monotonicNow as () => number : (() => performance.now()), wallClockNow: typeof raw.wallClockNow === "function" ? raw.wallClockNow as () => number : (() => Date.now()), requireCoordinatorCommit: raw.requireCoordinatorCommit === true });
   return capability;
 }
 
@@ -126,16 +138,57 @@ export async function consumePreparedDispatch(prepared: PreparedDispatch, commit
   commitStates.delete(commitLease as object);
   coordinatorCommittedLeases.delete(commitLease as object);
   if (lease.commit) await lease.commit(description);
-  try { return Object.freeze(await state.send()); }
-  catch { return Object.freeze({ kind: "ambiguous" as const, resultDigest: materializedHttpRequestDigest({ ...description.projection, v: "reelier.materialized-http-request/v1" }) }); }
+  try { return inertDispatchOutcome(await state.send()); }
+  catch { return Object.freeze({ kind: "ambiguous" as const, resultDigest: preparedDispatchProjectionDigest(description.projection) }); }
 }
 
 function validateDescription(value: PreparedDispatchDescriptionV1): PreparedDispatchDescriptionV1 {
-  if (!value || typeof value !== "object" || value.v !== "reelier.prepared-dispatch-description/v1") throw new TypeError("prepared dispatch description is invalid");
-  if (!DIGEST.test(value.routeDigest) || !DIGEST.test(value.materializedRequestDigest) || !value.reservationId || !value.allocationId || !value.authorityGeneration || !Number.isFinite(value.absoluteDeadlineMs)) throw new TypeError("prepared dispatch description is invalid");
-  if (value.behaviorDigest !== undefined && !DIGEST.test(value.behaviorDigest)) throw new TypeError("prepared dispatch behavior digest is invalid");
-  const projection = Object.freeze({ ...value.projection, reviewedHeaders: Object.freeze({ ...value.projection.reviewedHeaders }) });
-  if (materializedHttpRequestDigest(projection) !== value.materializedRequestDigest) throw new TypeError("prepared request digest does not match projection");
-  if (!Number.isFinite(Date.parse(value.authorityExpiresAt))) throw new TypeError("prepared dispatch expiry is invalid");
-  return Object.freeze({ ...value, projection });
+  const raw = inertRecord(value, ["v", "routeDigest", "materializedRequestDigest", "projection", "authorityGeneration", "authorityExpiresAt", "absoluteDeadlineMs", "reservationId", "allocationId"], ["behaviorDigest"], "prepared dispatch description");
+  if (raw.v !== "reelier.prepared-dispatch-description/v1" || typeof raw.routeDigest !== "string" || !DIGEST.test(raw.routeDigest) || typeof raw.materializedRequestDigest !== "string" || !DIGEST.test(raw.materializedRequestDigest) || typeof raw.reservationId !== "string" || !raw.reservationId || typeof raw.allocationId !== "string" || !raw.allocationId || typeof raw.authorityGeneration !== "string" || !raw.authorityGeneration || !Number.isFinite(raw.absoluteDeadlineMs)) throw new TypeError("prepared dispatch description is invalid");
+  if (raw.behaviorDigest !== undefined && (typeof raw.behaviorDigest !== "string" || !DIGEST.test(raw.behaviorDigest))) throw new TypeError("prepared dispatch behavior digest is invalid");
+  const projection = validateProjection(raw.projection as PreparedDispatchProjectionV1);
+  if (preparedDispatchProjectionDigest(projection) !== raw.materializedRequestDigest) throw new TypeError("prepared request digest does not match projection");
+  if (typeof raw.authorityExpiresAt !== "string" || !Number.isFinite(Date.parse(raw.authorityExpiresAt))) throw new TypeError("prepared dispatch expiry is invalid");
+  return Object.freeze({ v: "reelier.prepared-dispatch-description/v1", routeDigest: raw.routeDigest, materializedRequestDigest: raw.materializedRequestDigest, projection, authorityGeneration: raw.authorityGeneration, authorityExpiresAt: raw.authorityExpiresAt, absoluteDeadlineMs: raw.absoluteDeadlineMs as number, reservationId: raw.reservationId, allocationId: raw.allocationId, ...(raw.behaviorDigest === undefined ? {} : { behaviorDigest: raw.behaviorDigest as string }) });
+}
+
+export function preparedDispatchProjectionDigest(value: PreparedDispatchProjectionV1): string {
+  const projection = validateProjection(value);
+  return projection.v === "reelier.materialized-http-request/v1" ? materializedHttpRequestDigest(projection) : authorityDigest(projection);
+}
+
+function validateProjection(value: PreparedDispatchProjectionV1): PreparedDispatchProjectionV1 {
+  const version = value && typeof value === "object" && !isProxy(value) ? Object.getOwnPropertyDescriptor(value, "v") : undefined;
+  if (!version || !version.enumerable || !Object.hasOwn(version, "value")) throw new TypeError("prepared projection requires inert data properties");
+  if (version.value !== "reelier.materialized-http-request/v1") return validateNeutralProjection(value);
+  const raw = inertRecord(value, ["v", "method", "origin", "normalizedPath", "normalizedQuery", "reviewedHeaders", "bodyDigest"], [], "materialized HTTP projection");
+  if (!["POST", "PUT", "PATCH", "DELETE"].includes(raw.method as string) || typeof raw.origin !== "string" || typeof raw.normalizedPath !== "string" || typeof raw.normalizedQuery !== "string" || typeof raw.bodyDigest !== "string" || !/^sha256:[0-9a-f]{64}$/.test(raw.bodyDigest)) throw new TypeError("materialized HTTP projection primitives are invalid");
+  const headersRaw = raw.reviewedHeaders;
+  if (!headersRaw || typeof headersRaw !== "object" || Array.isArray(headersRaw) || isProxy(headersRaw) || Object.getPrototypeOf(headersRaw) !== Object.prototype) throw new TypeError("materialized HTTP headers are not inert");
+  const headers: Record<string, string> = {}; let count = 0;
+  for (const name in headersRaw) { if (!Object.hasOwn(headersRaw, name)) continue; if (++count > 64) throw new TypeError("materialized HTTP headers are too large"); const descriptor = Object.getOwnPropertyDescriptor(headersRaw, name); if (!descriptor || !descriptor.enumerable || !Object.hasOwn(descriptor, "value") || typeof descriptor.value !== "string") throw new TypeError("materialized HTTP headers require data properties"); headers[name] = descriptor.value; }
+  return Object.freeze({ v: raw.v, method: raw.method, origin: raw.origin, normalizedPath: raw.normalizedPath, normalizedQuery: raw.normalizedQuery, reviewedHeaders: Object.freeze(headers), bodyDigest: raw.bodyDigest } as MaterializedHttpRequestProjectionV1);
+}
+
+function validateNeutralProjection(value: PreparedDispatchProjectionV1): PreparedEffectProjectionV1 {
+  const raw = inertRecord(value, ["v", "transport", "operationDigest", "requestDigest"], [], "prepared effect projection");
+  if (raw.v !== "reelier.prepared-effect-projection/v1" || typeof raw.transport !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(raw.transport) || typeof raw.operationDigest !== "string" || !DIGEST.test(raw.operationDigest) || typeof raw.requestDigest !== "string" || !DIGEST.test(raw.requestDigest)) throw new TypeError("prepared effect projection is invalid");
+  return Object.freeze({ v: raw.v, transport: raw.transport, operationDigest: raw.operationDigest, requestDigest: raw.requestDigest });
+}
+
+function inertRecord(value: unknown, required: readonly string[], optional: readonly string[], label: string): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value) || isProxy(value) || Object.getPrototypeOf(value) !== Object.prototype) throw new TypeError(`${label} must be inert data`);
+  const allowed = new Set([...required, ...optional]); let count = 0;
+  for (const key in value) { if (!Object.hasOwn(value, key)) continue; if (++count > 64 || !allowed.has(key)) throw new TypeError(`${label} is not closed`); }
+  const result: Record<string, unknown> = Object.create(null);
+  for (const key of required) { const descriptor = Object.getOwnPropertyDescriptor(value, key); if (!descriptor || !descriptor.enumerable || !Object.hasOwn(descriptor, "value")) throw new TypeError(`${label} requires data properties`); result[key] = descriptor.value; }
+  for (const key of optional) { const descriptor = Object.getOwnPropertyDescriptor(value, key); if (!descriptor || !descriptor.enumerable) continue; if (!Object.hasOwn(descriptor, "value")) throw new TypeError(`${label} requires data properties`); result[key] = descriptor.value; }
+  return result;
+}
+
+function inertDispatchOutcome(value: unknown): DispatchOutcome {
+  const raw = inertRecord(value, ["kind", "resultDigest"], ["providerResultDigest", "providerStatus", "responseDigest", "materializedRequestDigest", "reconciliationStatus", "normalizedProjectionDigest", "receiptRef", "evidenceDigest", "priorReceiptDigest", "reason"], "prepared dispatch result");
+  if (!["acknowledged", "definitive-failure", "ambiguous"].includes(raw.kind as string) || typeof raw.resultDigest !== "string" || !/^sha256:[0-9a-f]{64}$/.test(raw.resultDigest)) throw new TypeError("prepared dispatch result is invalid");
+  if (raw.reason !== undefined && (typeof raw.reason !== "string" || raw.reason.length === 0 || raw.reason.length > 4096)) throw new TypeError("prepared dispatch result reason is invalid");
+  return Object.freeze(Object.fromEntries(Object.keys(raw).map(key => [key, raw[key]])) as unknown as DispatchOutcome);
 }

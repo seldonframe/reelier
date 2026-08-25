@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { authorityDigest } from "../wire.js";
 
 export const CERTIFICATION_PROVIDER_IDS = ["cloudflare", "codex", "fly", "github", "hubspot", "neon", "slack", "vercel"] as const;
-export const CERTIFICATION_TARGET_PACKAGE_VERSION = "0.32.1";
+export const CERTIFICATION_TARGET_PACKAGE_VERSION = "0.33.0-beta.0";
 export type CertificationProviderId = typeof CERTIFICATION_PROVIDER_IDS[number];
 export type CertificationClaim = "verified" | "failed" | "unchecked" | "absent";
 

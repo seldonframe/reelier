@@ -4,7 +4,7 @@ import path from "node:path";
 import { authorityDigest } from "../wire.js";
 import { signedJobCardDigest } from "../job.js";
 import { signAuthorityDigest } from "../crypto.js";
-import { createAuthorityGate } from "../gate.js";
+import { createAuthorityGate, type AuthorityGate } from "../gate.js";
 import { createTrustRoots } from "../trust.js";
 import { verifyTrustedAuthority } from "../trust.js";
 import { createConnectorRegistry } from "../connector.js";
@@ -15,6 +15,7 @@ import { FsAuthorityLedger } from "./fs-ledger.js";
 import { createDispatchCoordinator, type DispatchAdapter, type DispatchPublication } from "./dispatch.js";
 import { createJsonHttpsDispatchAdapter } from "./json-https-connector.js";
 import { createFileReceiptPublication } from "./receipts.js";
+import { createGovernedOutcomeKernelAuthorityFactoryV1, type GovernedOutcomeKernelAuthorityFactoryV1 } from "./governed-outcome-composition.js";
 import { createFileDispatchFailureRecorder } from "./runtime-failures.js";
 import { createPortableAuthorityReceiptPublication } from "./portable-receipts.js";
 import { createAuthorityHostRuntime } from "./runtime.js";
@@ -44,6 +45,10 @@ import { loadProfileGovernanceFromOperatorTrust } from "./profile-governance-loa
 import type { AuthorityExecutionContextV1 } from "../types.js";
 import { assertGitHubReleaseRunnerCapability, createGitHubReleaseHostComposition, type GitHubReleaseRunnerV1 } from "./github-release-runner.js";
 import { githubReleaseAliases } from "../../packs/github-release/manifest.js";
+import { createAuthorityAgentTools, type AuthorityAgentToolsV1 } from "./agent-tools.js";
+import { governedOutcomeCompositionAliasesV1 } from "../packs/github-linear-outcomes.js";
+import type { AuthorityLedger } from "../ledger.js";
+import type { DispatchCoordinator } from "./dispatch.js";
 
 /** Builds the local host from signed-artifact boundaries. An empty workspace is intentionally
  * usable for discovery and status, but every Outcome refuses until a signed contract is installed. */
@@ -65,7 +70,7 @@ export interface LocalAuthorityRuntimeOptions {
   /** Host-owned credential slots are injected out-of-band and never loaded from authority.yml. */
   readonly secretResolver?: SecretResolver;
   readonly secretResolverOptions?: SecretResolverOptions;
-  readonly routeAuthority?: (input: Readonly<{ tenant:string; requester:string; definitionAlias:string; connectorId:string; accountId:string; endpointId:string; authorityGeneration:string; authorityExpiresAt:string }>) => RouteAuthoritySnapshotV1 | undefined;
+  readonly routeAuthority?: (input: Readonly<{ tenant:string; requester:string; definitionAlias:string; requestId:string; connectorId:string; accountId:string; endpointId:string; authorityGeneration:string; authorityExpiresAt:string }>) => RouteAuthoritySnapshotV1 | undefined;
   readonly authenticatedProviderIdentity?: () => Promise<AuthenticatedProviderIdentityV1>;
   readonly verifyAuthenticatedProviderIdentity?: CertifiedIdentityVerifier;
   readonly certifiedDispatch?: CertifiedDispatchOptions;
@@ -79,6 +84,7 @@ export interface LocalAuthorityRuntimeOptions {
 }
 
 export interface LocalAuthorityRuntime extends AuthorityHostRuntime {
+  readonly agentTools: AuthorityAgentToolsV1;
   /** Explicitly opens an adopted host-owned route. Loading the deployment never calls this. */
   resolveAdoptedConnection(connectionId: string): Promise<DownstreamConnection>;
 }
@@ -117,7 +123,8 @@ export async function createStdioBoundLocalAuthorityRuntime(config: AuthorityHos
   return createLocalAuthorityRuntimeCore(config, options, { authenticatedExecutionContext: executionContext });
 }
 
-interface LocalAuthorityRuntimeInternalOptions {readonly gateSigner?:LocalGateSigner;readonly beforeReserve?:(intent:Readonly<import("../ledger.js").ReservationIntent>)=>Promise<void>;readonly governedPublication?:DispatchPublication;readonly deployment?:LoadedAuthorityDeployment;readonly authenticatedExecutionContext?:AuthorityExecutionContextV1}
+export interface GenuineGovernedOutcomeLocalComponentsV1 { readonly gate: AuthorityGate; readonly ledger: AuthorityLedger; readonly coordinator: DispatchCoordinator; readonly publication: DispatchPublication; readonly governedAuthorityFactory: GovernedOutcomeKernelAuthorityFactoryV1; readonly deployment: LoadedAuthorityDeployment }
+interface LocalAuthorityRuntimeInternalOptions {readonly gateSigner?:LocalGateSigner;readonly beforeReserve?:(intent:Readonly<import("../ledger.js").ReservationIntent>)=>Promise<void>;readonly governedPublication?:DispatchPublication;readonly deployment?:LoadedAuthorityDeployment;readonly authenticatedExecutionContext?:AuthorityExecutionContextV1;readonly captureGovernedComponents?:(components:GenuineGovernedOutcomeLocalComponentsV1)=>void}
 async function createLocalAuthorityRuntimeCore(config:AuthorityHostConfig,options:LocalAuthorityRuntimeOptions,internal:LocalAuthorityRuntimeInternalOptions):Promise<LocalAuthorityRuntime>{
   if (config.cloud && config.topology !== "isolated") throw new TypeError("managed authority requires isolated topology");
   if (config.cloud) {
@@ -161,9 +168,18 @@ async function createLocalAuthorityRuntimeCore(config:AuthorityHostConfig,option
   const packs = createStaticPackRegistry(firstPartyPacks.map(pack => pack.definition));
   const sources = createFirstPartySourceRegistry(config.tenant);
   const snapshots = new Map(deployment?.states.map(state => [state.definitionAlias, state]) ?? []);
+  const deploymentJobCardDigest = deployment?.jobCard ? signedJobCardDigest(deployment.jobCard) : null;
   const connectorRegistry = deployment?.connectorRegistry ?? createConnectorRegistry([]);
   const state = createAuthorityStatePort({
-    async loadCompleteContractSet(tenant, definitionAlias) { const snapshot = snapshots.get(definitionAlias); return { ok: true as const, snapshot: snapshot && snapshot.tenant === tenant ? snapshot : { tenant, definitionAlias, stateVersion: 1, candidates: [] }, backendToken: Object.freeze({}) }; },
+    async loadCompleteContractSet(tenant, definitionAlias) {
+      let snapshot = snapshots.get(definitionAlias);
+      if (deployment && config.deploymentPath) {
+        const current = await loadAuthorityDeployment(config.deploymentPath, { jobCardTrustPin });
+        if (current.tenant !== deployment.tenant || !current.jobCard || signedJobCardDigest(current.jobCard) !== deploymentJobCardDigest) throw new TypeError("current authority deployment identity changed");
+        snapshot = current.states.find(item => item.definitionAlias === definitionAlias);
+      }
+      return { ok: true as const, snapshot: snapshot && snapshot.tenant === tenant ? snapshot : { tenant, definitionAlias, stateVersion: 1, candidates: [] }, backendToken: Object.freeze({}) };
+    },
     async advanceVersion(backendToken) { void backendToken; return { ok: true as const, backendObservedToken: Object.freeze({}) }; },
     async withCurrent(_token, callback) { return { ok: true as const, value: await callback() }; },
     async executeSourceReads(plans) {
@@ -176,7 +192,8 @@ async function createLocalAuthorityRuntimeCore(config:AuthorityHostConfig,option
     },
   });
   const gate = createAuthorityGate({ trustRoots, packs, sources, connectors: connectorRegistry, state, ledger, ...(options.routeAuthority ? { routeAuthority: options.routeAuthority } : {}), ...(options.authenticatedProviderIdentity ? { authenticatedProviderIdentity: options.authenticatedProviderIdentity } : {}), ...(internal.beforeReserve?{beforeReserve:internal.beforeReserve}:{}), ...(options.latencyRecorder ? { latencyRecorder: options.latencyRecorder } : {}), localGatePolicyDigest: authorityDigest({ v: "reelier.local-gate-policy/v1", tenant: config.tenant }), decisionSink: decisions, signer: { async sign(input) { return { signerId: "local-gate", signature: signAuthorityDigest(privateKey, input.purpose, input.digest) }; } }, eventId: () => `evt_${randomUUID()}`, capabilityId: () => `cap_${randomUUID()}` });
-  const basePublication = internal.governedPublication??createLocalAuthorityReceiptPublication({ localPublication: createFileReceiptPublication({ rootDir: config.receiptDir }), ...(options.portableReceiptPublication ? { portablePublication: options.portableReceiptPublication } : {}) });
+  const filePublication = createFileReceiptPublication({ rootDir: config.receiptDir });
+  const basePublication = internal.governedPublication??createLocalAuthorityReceiptPublication({ localPublication: filePublication, ...(options.portableReceiptPublication ? { portablePublication: options.portableReceiptPublication } : {}) });
   const secrets = options.secretResolver ?? createSecretResolver(options.secretResolverOptions);
   if (config.nativeHttpsRoutes && config.nativeHttpsRoutes.length > 0 && (!options.routeAuthority || !options.authenticatedProviderIdentity || !options.certifiedDispatch || !options.verifyAuthenticatedProviderIdentity)) throw new TypeError("native HTTPS routes require certified route, identity, verifier, and dispatch wiring");
   const certifiedDispatch = options.certifiedDispatch ? { ...options.certifiedDispatch, ...(options.latencyRecorder ? { latencyRecorder: options.latencyRecorder } : {}), verifyIdentity: options.verifyAuthenticatedProviderIdentity ?? options.certifiedDispatch.verifyIdentity } : undefined;
@@ -185,6 +202,7 @@ async function createLocalAuthorityRuntimeCore(config:AuthorityHostConfig,option
   const releaseHost = createGitHubReleaseHostComposition({ runner: options.githubReleaseRunner ?? null, fallback: fallbackAdapter, publication: basePublication });
   const { adapter, publication } = releaseHost;
   const dispatch = createDispatchCoordinator(ledger, adapter, undefined, publication, options.delegation?.budget, certifiedDispatch);
+  if(internal.captureGovernedComponents){if(!deployment||internal.governedPublication)throw new TypeError("governed Outcome composition requires a signed deployment and local durable publication");internal.captureGovernedComponents(Object.freeze({gate,ledger,coordinator:dispatch,publication,governedAuthorityFactory:createGovernedOutcomeKernelAuthorityFactoryV1(filePublication),deployment}));}
   const runtime = createAuthorityHostRuntime({ gate, dispatch, ledger, decisions, failureRecorder: createFileDispatchFailureRecorder(path.join(config.receiptDir, "runtime-failures")), delegation: options.delegation, ...(options.delegation ? { verifyRootGrant: (grant, tenant) => { verifyTrustedAuthority(trustRoots, { tenant, signerId: grant.signerId, purpose: "delegation-grant", advertisedDigest: grant.digest, value: grant.grant, signature: grant.signature }); } } : {}) });
   const jobs = deployment?.jobCard
     ? Object.freeze(deployment.jobCard.definitionAliases.map(alias => Object.freeze({ jobId: deployment.jobCard!.jobId, alias })))
@@ -207,7 +225,7 @@ async function createLocalAuthorityRuntimeCore(config:AuthorityHostConfig,option
     }));
   };
   const catalogRefusal = (requestId = "") => Object.freeze({ requestId, verdict: "refused" as const, reasonCode: "job-authority-refused", lifecycleState: "refused" });
-  return Object.freeze({
+  const legacyRuntime = {
     ...runtime,
     directOutcomeAliases: Object.freeze(multiDefinitionSigned ? [] : [...config.definitions]),
     requiresAuthenticatedExecutionContext: multiDefinitionSigned,
@@ -266,7 +284,20 @@ async function createLocalAuthorityRuntimeCore(config:AuthorityHostConfig,option
       try { return await promise; }
       finally { if (invokeFlights.get(flightKey)?.promise === promise) invokeFlights.delete(flightKey); }
     },
+  };
+  return Object.freeze({
+    ...legacyRuntime,
+    agentTools: createAuthorityAgentTools({ jobsSearch: legacyRuntime.jobsSearch, jobLoad: legacyRuntime.jobLoad, invoke: legacyRuntime.invoke, status: legacyRuntime.status }),
   });
+}
+
+/** Package-internal exact five-alias local Cell composition seam. */
+export async function createGenuineGovernedOutcomeLocalComponentsV1(config: AuthorityHostConfig, options: LocalAuthorityRuntimeOptions): Promise<GenuineGovernedOutcomeLocalComponentsV1> {
+  if (config.definitions.length !== governedOutcomeCompositionAliasesV1.length || config.definitions.some((alias, index) => alias !== governedOutcomeCompositionAliasesV1[index]) || !config.deploymentPath || !config.jobCardTrustPinPath) throw new TypeError("genuine governed Outcome local Cell requires the exact signed five-alias profile");
+  let captured: GenuineGovernedOutcomeLocalComponentsV1 | undefined;
+  await createLocalAuthorityRuntimeCore(config, options, { captureGovernedComponents(value) { captured = value; } });
+  if (!captured) throw new TypeError("genuine governed Outcome local Cell composition was not admitted");
+  return captured;
 }
 
 const LOCAL_RUNTIME_OPTION_FIELDS=["dispatchAdapter","delegation","topologyEvidence","signedTopologyEvidence","topologySigner","signedLease","leaseSigner","sourceReadAdapter","connectionRoutes","jobCardTrustPin","secretResolver","secretResolverOptions","routeAuthority","authenticatedProviderIdentity","verifyAuthenticatedProviderIdentity","certifiedDispatch","portableReceiptPublication","latencyRecorder","githubReleaseRunner"] as const;
@@ -287,5 +318,6 @@ export async function createAdmittedLocalAuthorityRuntime(config: AuthorityHostC
   const revalidate=async(intent?:Readonly<import("../ledger.js").ReservationIntent>)=>{const original=admittedProfileGovernanceState(admitted),freshHandle=await loadProfileGovernanceFromOperatorTrust({...original.reload,verificationTime:new Date()}),fresh=admittedProfileGovernanceState(freshHandle);if(authorityDigest(fresh.manifest)!==authorityDigest(original.manifest)||fresh.operatorRootDigest!==original.operatorRootDigest)throw new TypeError("profile governance changed after admission");assertProfileRuntimeBinding({governance:freshHandle,expectedProfileDigest:original.manifest.profileDigest,expectedActivationDigest:original.manifest.activationDigest},{packDigest:installedPack.definition.packDigest,definitionDigest:installedPack.definition.definitionDigest,registrationDigest:definitionRegistrationDigest(installedRegistry,fresh.draft.packAlias)},{contractDigest:fresh.activation.contractDigest,jobCardDigest:fresh.activation.jobCardDigest,deploymentDigest:fresh.activation.deploymentDigest,routeScopeDigest:fresh.activation.routeScopeDigest,trustHeadDigest:fresh.activation.trustHeadDigest,authorityTrustHeadDigest:fresh.activation.authorityTrustHeadDigest});await internal.externalRevalidate?.(intent);};
   const gateSigner=internal.gateSigner??await loadExistingLocalGateSigner(config.gateKeyFile ?? path.join(config.receiptDir,"..","keys","local-gate.pem"));
   const runtime=await createLocalAuthorityRuntimeCore(config,options,{gateSigner,beforeReserve:async intent=>revalidate(intent),...(internal.deployment?{deployment:internal.deployment}:{}),...(internal.governedPublication?{governedPublication:internal.governedPublication}:{})});
-  return Object.freeze({...runtime,async outcome(alias:string,input:unknown,context:{readonly tenant:string;readonly requester:string}){await revalidate();return runtime.outcome(alias,input,context);},async invoke(input:unknown,context:{readonly tenant:string;readonly requester:string}){await revalidate();return runtime.invoke!(input,context);}});
+  const admittedRuntime={...runtime,async outcome(alias:string,input:unknown,context:{readonly tenant:string;readonly requester:string}){await revalidate();return runtime.outcome(alias,input,context);},async invoke(input:unknown,context:{readonly tenant:string;readonly requester:string}){await revalidate();return runtime.invoke!(input,context);}};
+  return Object.freeze({...admittedRuntime,agentTools:createAuthorityAgentTools({jobsSearch:admittedRuntime.jobsSearch!,jobLoad:admittedRuntime.jobLoad!,invoke:admittedRuntime.invoke,status:admittedRuntime.status})});
 }

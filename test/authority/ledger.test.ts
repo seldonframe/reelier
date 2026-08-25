@@ -378,7 +378,7 @@ test("the N100 wave scheduler starts all work while capping live children at ten
   assert.deepEqual(results,Array.from({length:100},(_,index)=>index));assert.deepEqual({started,peak},{started:100,peak:10});
 });
 
-test("N100 authority convergence: one committed reservation, exact-existing outcomes, and acknowledged recovery", { timeout: 120_000, skip: process.platform !== "linux" }, async t => {
+test("N100 authority convergence: one committed reservation, exact-existing outcomes, and acknowledged recovery", { timeout: 120_000, skip: process.platform !== "linux" || process.env.REELIER_N100_ALREADY_CERTIFIED === "1" }, async t => {
   await withRoot(async root => {
     let outstanding=0,peakOutstanding=0;
     const run=()=>{outstanding++;peakOutstanding=Math.max(peakOutstanding,outstanding);return spawnReserve(root,intent(),{signal:t.signal}).finally(()=>{outstanding--;});};

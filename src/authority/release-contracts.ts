@@ -51,7 +51,7 @@ const REPOSITORY = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}\/[A-Za-z0-9][A-Za-z0-9._-]{
 //                                 must equal plan.baseCommit — direct-child ancestry on main
 // Branch, tag, package name/version, changed paths, and workflow paths below stay constant-pinned
 // under both amendments — R3 moved the repository only.
-const RELEASE_BRANCH = "reelier/release/0.32.1";
+const RELEASE_BRANCH = "reelier/release/0.33.0-beta.0";
 const RELEASE_PATHS = ["CHANGELOG.md", "src/cli.ts", "test/cli-subcommand-help.test.ts"] as const;
 const RELEASE_DESTINATIONS = ["ghcr", "mcp-registry", "npm"] as const;
 const RELEASE_EFFECTS = ["candidate-branch", "draft-pr", "exact-sha-merge", "non-force-tag"] as const;
@@ -92,7 +92,7 @@ export interface StagedCandidateManifestV1 {
   readonly changedPaths: readonly string[];
   readonly destinationBranch: "main";
   readonly packageName: "reelier";
-  readonly packageVersion: "0.32.1";
+  readonly packageVersion: "0.33.0-beta.0";
   readonly packedTarballDigest: string;
   readonly qualityEvidence: Readonly<{
     coverageEvidenceDigest: string;
@@ -105,7 +105,7 @@ export interface StagedCandidateManifestV1 {
   }>;
   /** R3 amendment: owner/name format, carried by the signed bundle, equal to the plan's. */
   readonly repository: string;
-  readonly tag: "v0.32.1";
+  readonly tag: "v0.33.0-beta.0";
   readonly workflowCommitments: readonly Readonly<{ digest: string; path: string }>[];
 }
 
@@ -125,13 +125,13 @@ export interface ReleaseOperationPlanV1 {
   readonly expectedCommitSha: string;
   readonly expectedTreeSha: string;
   readonly files: readonly ReleaseCandidateFileV1[];
-  readonly npmPreflight: Readonly<{ packageName: "reelier"; version: "0.32.1"; versionMustBeAbsent: true }>;
-  readonly pullRequest: Readonly<{ base: "main"; body: string; draft: true; head: "reelier/release/0.32.1"; readyForReview: true; title: string }>;
+  readonly npmPreflight: Readonly<{ packageName: "reelier"; version: "0.33.0-beta.0"; versionMustBeAbsent: true }>;
+  readonly pullRequest: Readonly<{ base: "main"; body: string; draft: true; head: "reelier/release/0.33.0-beta.0"; readyForReview: true; title: string }>;
   /** R3 amendment: owner/name format, carried by the signed bundle, equal to the manifest's. */
   readonly repository: string;
   readonly requiredChecks: readonly string[];
   readonly squash: Readonly<{ commitMessage: string; commitTitle: string }>;
-  readonly tag: "v0.32.1";
+  readonly tag: "v0.33.0-beta.0";
   readonly workflowCommitments: readonly Readonly<{ digest: string; path: string }>[];
 }
 
@@ -357,7 +357,7 @@ export function verifyReleaseReceiptGraphV1(value: unknown, verifier: ReleaseCon
 
 function parseStagedCandidateManifestV1(value: unknown): StagedCandidateManifestV1 {
   const item = exact(value, ["baseCommit", "branch", "candidateCommit", "candidateTreeDigest", "changedBytes", "changedPaths", "destinationBranch", "packageName", "packageVersion", "packedTarballDigest", "qualityEvidence", "repository", "tag", "v", "workflowCommitments"], "staged candidate manifest") as unknown as StagedCandidateManifestV1;
-  if (item.v !== "reelier.staged-candidate-manifest/v1" || item.destinationBranch !== "main" || item.branch !== RELEASE_BRANCH || item.tag !== "v0.32.1" || item.packageName !== "reelier" || item.packageVersion !== "0.32.1") throw new TypeError("staged candidate manifest release identity or ref is invalid");
+  if (item.v !== "reelier.staged-candidate-manifest/v1" || item.destinationBranch !== "main" || item.branch !== RELEASE_BRANCH || item.tag !== "v0.33.0-beta.0" || item.packageName !== "reelier" || item.packageVersion !== "0.33.0-beta.0") throw new TypeError("staged candidate manifest release identity or ref is invalid");
   requireRepository(item.repository, "staged candidate manifest repository");
   requireCommit(item.baseCommit, "staged candidate manifest base commit");
   requireCommit(item.candidateCommit, "candidate commit");
@@ -382,7 +382,7 @@ function parseStagedCandidateManifestV1(value: unknown): StagedCandidateManifest
 
 function parseReleaseOperationPlanV1(value: unknown): ReleaseOperationPlanV1 {
   const item = exact(value, ["baseCommit", "baseTreeSha", "candidateBranch", "candidateTreeDigest", "commit", "destinationBranch", "expectedCommitSha", "expectedTreeSha", "files", "npmPreflight", "pullRequest", "repository", "requiredChecks", "squash", "tag", "v", "workflowCommitments"], "release operation plan") as unknown as ReleaseOperationPlanV1;
-  if (item.v !== "reelier.release-operation-plan/v1" || item.candidateBranch !== RELEASE_BRANCH || item.destinationBranch !== "main" || item.tag !== "v0.32.1") throw new TypeError("release operation plan identity or ref is invalid");
+  if (item.v !== "reelier.release-operation-plan/v1" || item.candidateBranch !== RELEASE_BRANCH || item.destinationBranch !== "main" || item.tag !== "v0.33.0-beta.0") throw new TypeError("release operation plan identity or ref is invalid");
   requireRepository(item.repository, "release operation plan repository");
   requireCommit(item.baseCommit, "release operation plan base commit");
   requireCommit(item.expectedCommitSha, "release expected commit");
@@ -408,7 +408,7 @@ function parseReleaseOperationPlanV1(value: unknown): ReleaseOperationPlanV1 {
   const squash = exact(item.squash, ["commitMessage", "commitTitle"], "release squash metadata");
   if (!boundedText(squash.commitTitle, 1, 256) || !boundedText(squash.commitMessage, 1, 16_384)) throw new TypeError("release squash metadata is invalid");
   const npm = exact(item.npmPreflight, ["packageName", "version", "versionMustBeAbsent"], "release npm preflight");
-  if (npm.packageName !== "reelier" || npm.version !== "0.32.1" || npm.versionMustBeAbsent !== true) throw new TypeError("release npm preflight is invalid");
+  if (npm.packageName !== "reelier" || npm.version !== "0.33.0-beta.0" || npm.versionMustBeAbsent !== true) throw new TypeError("release npm preflight is invalid");
   if (!Array.isArray(item.requiredChecks) || item.requiredChecks.length === 0 || item.requiredChecks.length > 32 || item.requiredChecks.some(check => !boundedText(check, 1, 128)) || !equalStrings(item.requiredChecks, [...item.requiredChecks].sort(compareText)) || new Set(item.requiredChecks).size !== item.requiredChecks.length) throw new TypeError("release required checks must be a sorted unique bounded set");
   if (!Array.isArray(item.workflowCommitments) || item.workflowCommitments.length !== RELEASE_WORKFLOWS.length) throw new TypeError("release operation workflow commitments must be complete");
   item.workflowCommitments.forEach((raw, index) => {

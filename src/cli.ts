@@ -69,7 +69,20 @@ import {
   formatNextSteps,
   LAUNCH_BENCHMARK_COMPARISON,
   type DemoBenchmarkComparison,
+  initializeOperatorV1,
+  readOperatorWorkspaceV1,
 } from "./init.js";
+import { createOperatorSessionStoreV1 } from "./operator/session-store.js";
+import { launchDetachedMissionControlBoardV1, runMissionControlBoardServerFromEnvironmentV1, type DetachedMissionControlBoardV1 } from "./operator/mission-board-process.js";
+import { createMissionControlJournalV1 } from "./operator/mission-journal.js";
+import { resumeMissionControlMissionV1, runMissionControlMissionV1 } from "./operator/mission-runner.js";
+import { stopOwnedMissionProcessV1 } from "./operator/mission-process-control.js";
+import { runMissionControlDoctorV1, type MissionControlDoctorResultV1 } from "./operator/doctor.js";
+import { createAutopilotHandoffV1, waitForAutopilotReadyV1, type ManagedUpgradeTargetManifest } from "./operator/autopilot-handoff-client.js";
+import { startAutopilotTargetSelectionV1, waitForAutopilotTargetSelectionV1 } from "./operator/autopilot-target-selection-client.js";
+import { compileAndStageGitHubOnlyManagedAutopilotBundleV1, compileAndStageManagedAutopilotBundleV1 } from "./operator/managed-autopilot-compiler.js";
+import { loadManagedUpgradeTargetBundleV1 } from "./operator/managed-upgrade-target-store.js";
+import { createAutonomyBenchmarkStoreV1 } from "./operator/autonomy-benchmark-store.js";
 import { compileSessionTranscript, detectSessionFormat, SESSION_FORMAT_LABELS, type SessionSkip, type SessionFormatId } from "./session.js";
 import {
   scanTranscripts,
@@ -128,6 +141,7 @@ import {
   renderInitializationReport,
   type InitializationDependencies,
 } from "./initialization.js";
+import { createManagedInitDescriptor, renderManagedInitDescriptor } from "./managed-init.js";
 import { initializeAgentProject, type InitializeAgentProjectOptions } from "./bootstrap/initialize.js";
 import { BootstrapNativeSessionError } from "./bootstrap/native-helper.js";
 
@@ -223,6 +237,7 @@ export function parseArgv(argv: string[]): ParsedArgs {
       || arg === "--token-ref"
       || arg === "--cell-id"
       || arg === "--adapter-contract-digest"
+      || arg === "--harness"
     ) {
       const val = argv[++i];
       if (!val || val.startsWith("--")) {
@@ -4255,14 +4270,80 @@ export interface CmdInitOverrides {
   readonly dependencies?: InitializationDependencies;
   readonly nativeSessionFactory?: InitializeAgentProjectOptions["nativeSessionFactory"];
   readonly failAt?: InitializeAgentProjectOptions["failAt"];
+  readonly missionControlLauncher?: (input: Readonly<{ root: string; openBrowser?: (url: string) => void }>) => Promise<DetachedMissionControlBoardV1>;
 }
 
 export async function cmdInit(args: ParsedArgs, overrides: CmdInitOverrides = {}): Promise<number> {
   const cwd = overrides.cwd ?? process.cwd();
   const homedir = overrides.homedir ?? os.homedir();
 
+  if (args.flags.has("managed")) {
+    if (args.flags.has("signing")) {
+      console.error("Initialization refused: --managed cannot be combined with --signing.");
+      return 1;
+    }
+    if (args.positional.length !== 0) {
+      console.error("Initialization refused: --managed does not accept an agent name.");
+      return 1;
+    }
+    if (
+      [...args.flags].some(flag => flag !== "managed" && flag !== "dry-run") ||
+      Object.keys(args.opts).length !== 0 ||
+      Object.keys(args.vars).length !== 0 ||
+      args.wraps.length !== 0 ||
+      args.fails.length !== 0
+    ) {
+      console.error("Usage: reelier init --managed [--dry-run]");
+      return 1;
+    }
+    console.log(renderManagedInitDescriptor(createManagedInitDescriptor()));
+    console.log(args.flags.has("dry-run") ? "Dry run: no files written." : "Managed init is a local preview; no files written.");
+    return 0;
+  }
+
   if (args.flags.has("signing")) {
     return cmdInitSigning(homedir);
+  }
+
+  const missionControlFlags = new Set(["json", "no-open"]);
+  const isMissionControlInit = args.positional.length === 0
+    && [...args.flags].every((flag) => missionControlFlags.has(flag))
+    && Object.keys(args.opts).length === 0
+    && Object.keys(args.vars).length === 0
+    && args.wraps.length === 0
+    && args.fails.length === 0;
+  if (isMissionControlInit) {
+    try {
+      const operator = await initializeOperatorV1({ cwd, home: homedir });
+      const board = await (overrides.missionControlLauncher ?? launchDetachedMissionControlBoardV1)({
+        root: cwd,
+        ...(args.flags.has("no-open") ? {} : { openBrowser }),
+      });
+      const installedHarnesses = operator.harnesses.filter((probe) => probe.installed).map((probe) => probe.descriptor.id);
+      if (args.flags.has("json")) {
+        console.log(JSON.stringify({
+          v: "reelier.mission-control-init/v1",
+          status: "ready",
+          harnesses: installedHarnesses,
+          missions: operator.missionCount,
+          currentRepositoryMissions: operator.currentWorkspaceMissionCount,
+          observedOnly: operator.observedOnly,
+          boardOrigin: board.origin,
+          accountRequired: false,
+        }));
+      } else {
+        console.log("Reelier Mission Control");
+        console.log(`Harnesses: ${installedHarnesses.join(", ") || "none detected"}`);
+        console.log(`Imported missions: ${operator.missionCount} (${operator.currentWorkspaceMissionCount} current repository)`);
+        console.log("Account: not required; storage: local; telemetry: off");
+        console.log(`Local board: ${board.origin}`);
+        console.log("Harness completion is not Outcome verification. Reelier shows evidence and exceptions separately.");
+      }
+      return 0;
+    } catch (error: unknown) {
+      console.error(`Mission Control initialization refused: ${error instanceof Error ? error.message : "unavailable"}`);
+      return 1;
+    }
   }
 
   if (args.positional.length > 1) {
@@ -4539,9 +4620,368 @@ async function cmdDoctor(args: ParsedArgs): Promise<number> {
   return runAuthorityCommand({ positional: ["doctor"], flags: args.flags, opts: { path: args.opts.path ?? "authority/authority.yml" } });
 }
 
+export interface CmdOperatorOverrides {
+  readonly cwd?: string;
+  readonly home?: string;
+  readonly initialize?: typeof initializeOperatorV1;
+  readonly launchBoard?: (input: Readonly<{ root: string; openBrowser?: (url: string) => void }>) => Promise<DetachedMissionControlBoardV1>;
+  readonly runBoardServer?: () => Promise<never>;
+  readonly runMission?: typeof runMissionControlMissionV1;
+  readonly resumeMission?: typeof resumeMissionControlMissionV1;
+  readonly stopMission?: typeof stopOwnedMissionProcessV1;
+  readonly doctor?: (input: Readonly<{ root: string }>) => Promise<MissionControlDoctorResultV1>;
+  readonly createAutopilotHandoff?: typeof createAutopilotHandoffV1;
+  readonly waitForAutopilotReady?: typeof waitForAutopilotReadyV1;
+  readonly startAutopilotTargetSelection?: typeof startAutopilotTargetSelectionV1;
+  readonly waitForAutopilotTargetSelection?: typeof waitForAutopilotTargetSelectionV1;
+  readonly compileManagedAutopilotBundle?: typeof compileAndStageManagedAutopilotBundleV1;
+  readonly compileGitHubOnlyManagedAutopilotBundle?: typeof compileAndStageGitHubOnlyManagedAutopilotBundleV1;
+  readonly openBrowser?: (url: string) => void;
+  readonly now?: () => Date;
+}
+
+const OPERATOR_USAGE = `Usage: reelier operator <command> [options]
+
+Local Mission Control is local, accountless, and independently useful.
+
+  init [--no-open]                         Import local sessions and open Mission Control
+  open [--no-open]                         Open the loopback-only Mission Control board
+  import                                   Refresh supported local harness histories
+  run --harness codex|claude-code [--max-cost-usd N --max-tokens N --max-context N] "<task>"
+                                           Launch one Reelier-owned mission with optional attention ceilings
+  list                                     List missions without prompts or reasoning
+  status [mission-ref]                     Show truthful harness and Outcome state
+  stop <mission-ref>                       Stop only an exactly owned Reelier process
+  resume <mission-ref>                     Resume only with a captured harness identity
+  review [--open]                          Review local evidence and exceptions
+  autopilot <mission-ref>                  Hand off an exact external consequence
+  doctor                                   Check local readiness without an account
+  benchmark <record|export> ...            Record or export closed measured evidence
+
+Managed Autopilot appears only at an exact reviewed external consequence.
+Native execution remains available; harness completion never becomes a reconciled Outcome.`;
+
+function parseOperatorIntegerCeiling(value: string | undefined): number | undefined {
+  if (value === undefined) return undefined;
+  if (!/^(0|[1-9]\d*)$/.test(value)) throw new TypeError("Operator attention ceiling must be a non-negative integer");
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed)) throw new TypeError("Operator attention ceiling is too large");
+  return parsed;
+}
+
+function parseOperatorCostCeiling(value: string | undefined): number | undefined {
+  if (value === undefined) return undefined;
+  const match = /^(0|[1-9]\d*)(?:\.(\d{1,6}))?$/.exec(value);
+  if (!match) throw new TypeError("Operator cost ceiling must be a non-negative USD amount with at most six decimal places");
+  const micros = Number(match[1]) * 1_000_000 + Number((match[2] ?? "").padEnd(6, "0"));
+  if (!Number.isSafeInteger(micros)) throw new TypeError("Operator cost ceiling is too large");
+  return micros;
+}
+
+export async function cmdOperator(args: ParsedArgs, overrides: CmdOperatorOverrides = {}): Promise<number> {
+  const subcommand = args.positional[0] ?? "status";
+  const sessionId = args.positional[1];
+  const cwd = overrides.cwd ?? process.cwd();
+  const home = overrides.home ?? os.homedir();
+  const initialize = overrides.initialize ?? initializeOperatorV1;
+  if (subcommand === "board-server") {
+    await (overrides.runBoardServer ?? runMissionControlBoardServerFromEnvironmentV1)();
+  }
+  if (subcommand === "open") {
+    if (sessionId || [...args.flags].some((flag) => flag !== "no-open") || Object.keys(args.opts).length !== 0 || Object.keys(args.vars).length !== 0 || args.wraps.length !== 0 || args.fails.length !== 0) {
+      console.error("Usage: reelier operator open [--no-open]");
+      return 1;
+    }
+    const board = await (overrides.launchBoard ?? launchDetachedMissionControlBoardV1)({ root: cwd, ...(args.flags.has("no-open") ? {} : { openBrowser }) });
+    console.log(`Mission Control: ${board.origin}`);
+    console.log(`Local board process: ${board.pid}; capability expires ${board.expiresAt}`);
+    return 0;
+  }
+  if (subcommand === "import") {
+    if (sessionId || args.flags.size !== 0 || Object.keys(args.opts).length !== 0 || Object.keys(args.vars).length !== 0 || args.wraps.length !== 0 || args.fails.length !== 0) {
+      console.error("Usage: reelier operator import");
+      return 1;
+    }
+    const summary = await initialize({ cwd, home });
+    console.log(`Imported missions: ${summary.missionCount} (${summary.currentWorkspaceMissionCount} current repository)`);
+    for (const observed of summary.observedOnly) console.log(`${observed.harness === "cursor" ? "Cursor" : observed.harness}: ${observed.sessions} observed-only (${observed.reason})`);
+    return 0;
+  }
+  if (subcommand === "run") {
+    const task = sessionId;
+    const harness = args.opts.harness;
+    const allowedOptions = new Set(["harness", "max-cost-usd", "max-tokens", "max-context"]);
+    if (!task || (harness !== "codex" && harness !== "claude-code") || args.positional.length !== 2 || args.flags.size !== 0 || Object.keys(args.opts).some((key) => !allowedOptions.has(key)) || Object.keys(args.vars).length !== 0 || args.wraps.length !== 0 || args.fails.length !== 0) {
+      console.error("Usage: reelier operator run --harness codex|claude-code [--max-cost-usd N --max-tokens N --max-context N] \"<task>\"");
+      return 1;
+    }
+    let costLimitMicros: number | undefined;
+    let tokenLimit: number | undefined;
+    let contextLimit: number | undefined;
+    try {
+      costLimitMicros = parseOperatorCostCeiling(args.opts["max-cost-usd"]);
+      tokenLimit = parseOperatorIntegerCeiling(args.opts["max-tokens"]);
+      contextLimit = parseOperatorIntegerCeiling(args.opts["max-context"]);
+    } catch {
+      console.error("Usage: reelier operator run --harness codex|claude-code [--max-cost-usd N --max-tokens N --max-context N] \"<task>\"");
+      return 1;
+    }
+    const mission = await (overrides.runMission ?? runMissionControlMissionV1)({
+      root: cwd,
+      cwd,
+      harness,
+      task,
+      ...(costLimitMicros === undefined ? {} : { costLimitMicros }),
+      ...(tokenLimit === undefined ? {} : { tokenLimit }),
+      ...(contextLimit === undefined ? {} : { contextLimit }),
+    });
+    console.log(`Mission: ${mission.missionId}`);
+    console.log(`Harness: ${mission.harness} (${mission.harnessLifecycle})`);
+    console.log(`Outcome: ${mission.outcomeLifecycle}`);
+    console.log(`Evidence: ${mission.evidenceRefs.length}`);
+    if (mission.outcomeLifecycle === "locally-observed") console.log("Local evidence observed. Provider completion still requires Managed authoritative readback.");
+    return mission.outcomeLifecycle === "failed" ? 1 : 0;
+  }
+  if (subcommand === "stop") {
+    if (!sessionId || args.positional.length !== 2 || args.flags.size !== 0 || Object.keys(args.opts).length !== 0 || Object.keys(args.vars).length !== 0 || args.wraps.length !== 0 || args.fails.length !== 0) {
+      console.error("Usage: reelier operator stop <mission-ref>");
+      return 1;
+    }
+    try {
+      const result = await (overrides.stopMission ?? stopOwnedMissionProcessV1)({ root: cwd, missionId: sessionId });
+      console.log(`Stopped Reelier-owned mission: ${result.missionId}`);
+      return 0;
+    } catch (error) {
+      console.error(`Mission stop refused: ${error instanceof Error ? error.message : String(error)}`);
+      return 1;
+    }
+  }
+  if (subcommand === "doctor") {
+    if (sessionId || args.flags.size !== 0 || Object.keys(args.opts).length !== 0 || Object.keys(args.vars).length !== 0 || args.wraps.length !== 0 || args.fails.length !== 0) {
+      console.error("Usage: reelier operator doctor");
+      return 1;
+    }
+    const result = await (overrides.doctor ?? runMissionControlDoctorV1)({ root: cwd });
+    console.log(`Local Mission Control: ${result.status}`);
+    console.log(`Harnesses: ${result.productReadyHarnesses.join(", ") || "none product-ready"}`);
+    console.log(`Journal: ${result.journalReadable ? "readable" : "needs attention"}`);
+    console.log("Account: not required; Cloud: not required");
+    return result.status === "ready" ? 0 : 1;
+  }
+  if (subcommand === "resume") {
+    if (!sessionId || args.positional.length !== 2 || args.flags.size !== 0 || Object.keys(args.opts).length !== 0 || Object.keys(args.vars).length !== 0 || args.wraps.length !== 0 || args.fails.length !== 0) {
+      console.error("Usage: reelier operator resume <mission-ref>");
+      return 1;
+    }
+    try {
+      const mission = await (overrides.resumeMission ?? resumeMissionControlMissionV1)({ root: cwd, cwd, missionId: sessionId });
+      console.log(`Resumed mission: ${mission.missionId}`);
+      console.log(`Harness: ${mission.harness} (${mission.harnessLifecycle})`);
+      console.log(`Outcome: ${mission.outcomeLifecycle}`);
+      return mission.outcomeLifecycle === "failed" ? 1 : 0;
+    } catch (error) {
+      console.error(`Mission resume refused: captured harness-native resume identity is unavailable (${error instanceof Error ? error.message : "unknown mission"})`);
+      return 1;
+    }
+  }
+  if (subcommand === "benchmark") {
+    const operation = sessionId;
+    if (operation === "record") {
+      const inputFile = args.opts.input;
+      if (args.positional.length !== 2 || typeof inputFile !== "string" || args.flags.size !== 0 || Object.keys(args.opts).some((key) => key !== "input") || Object.keys(args.vars).length !== 0 || args.wraps.length !== 0 || args.fails.length !== 0) {
+        console.error("Usage: reelier operator benchmark record --input <closed-run.json>");
+        return 1;
+      }
+      try {
+        const inputPath = path.resolve(cwd, inputFile);
+        const details = await stat(inputPath);
+        if (!details.isFile() || details.size < 1 || details.size > 16 * 1024 * 1024 || await realpath(inputPath) !== inputPath) throw new Error("benchmark input is not a bounded unlinked regular file");
+        const store = await createAutonomyBenchmarkStoreV1({ root: cwd });
+        const recorded = await store.record(JSON.parse(await readFile(inputPath, "utf8")));
+        console.log(`Benchmark recorded: ${recorded.benchmarkId}`);
+        console.log("Only closed timing, guardrail, harness, workload, and reconciled Outcome reference fields were accepted.");
+        return 0;
+      } catch (error) {
+        console.error(`Benchmark record refused: ${error instanceof Error ? error.message : String(error)}`);
+        return 1;
+      }
+    }
+    if (operation === "export") {
+      const nativeBenchmarkId = args.opts.native;
+      const reelierBenchmarkId = args.opts.reelier;
+      const outputFile = args.opts.out;
+      if (args.positional.length !== 2 || typeof nativeBenchmarkId !== "string" || typeof reelierBenchmarkId !== "string" || typeof outputFile !== "string" || args.flags.size !== 0 || Object.keys(args.opts).some((key) => key !== "native" && key !== "reelier" && key !== "out") || Object.keys(args.vars).length !== 0 || args.wraps.length !== 0 || args.fails.length !== 0) {
+        console.error("Usage: reelier operator benchmark export --native <id> --reelier <id> --out <bundle.json>");
+        return 1;
+      }
+      try {
+        const outputPath = path.resolve(cwd, outputFile);
+        const parent = path.dirname(outputPath);
+        if (await realpath(parent) !== parent) throw new Error("benchmark output parent is linked or invalid");
+        const bundle = await (await createAutonomyBenchmarkStoreV1({ root: cwd })).exportMatched({ nativeBenchmarkId, reelierBenchmarkId });
+        await writeFile(outputPath, `${JSON.stringify(bundle, null, 2)}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
+        console.log(`Matched benchmark exported: ${outputPath}`);
+        console.log(`Improvement: ${bundle.comparison.improvement}x (measured; no extrapolation)`);
+        return 0;
+      } catch (error) {
+        console.error(`Benchmark export refused: ${error instanceof Error ? error.message : String(error)}`);
+        return 1;
+      }
+    }
+    console.error("Usage: reelier operator benchmark <record|export> ...");
+    return 1;
+  }
+  if (subcommand === "autopilot") {
+    const manifestFile = args.opts.manifest;
+    const artifactFile = args.opts.artifact;
+    if (!sessionId || args.positional.length !== 2 || (manifestFile !== undefined && typeof manifestFile !== "string") || (artifactFile !== undefined && typeof artifactFile !== "string") || (artifactFile !== undefined && manifestFile === undefined) || args.flags.size !== 0 || Object.keys(args.opts).some((key) => key !== "manifest" && key !== "artifact") || Object.keys(args.vars).length !== 0 || args.wraps.length !== 0 || args.fails.length !== 0) {
+      console.error("Usage: reelier operator autopilot <mission-ref> [--manifest <exact-target-manifest.json> --artifact <candidate-file>]");
+      console.error("An exact reviewed boundary stages the default target bundle; Reelier never infers targets from agent prose.");
+      return 1;
+    }
+    try {
+      const missions = await (await createMissionControlJournalV1({ root: cwd })).reconstruct();
+      const mission = missions.find((item) => item.missionId === sessionId);
+      if (!mission) throw new Error("mission is not present in the local Mission Control journal");
+      let targetManifest: ManagedUpgradeTargetManifest;
+      let artifactBytes: Buffer | undefined;
+      if (typeof manifestFile === "string") {
+        const targetPath = path.resolve(cwd, manifestFile);
+        const targetDetails = await stat(targetPath);
+        if (await realpath(targetPath) !== targetPath || !targetDetails.isFile() || targetDetails.size > 65_536) throw new Error("exact target manifest is not a bounded unlinked regular file");
+        targetManifest = JSON.parse(await readFile(targetPath, "utf8")) as ManagedUpgradeTargetManifest;
+      } else {
+        let bundle;
+        try {
+          bundle = await loadManagedUpgradeTargetBundleV1({ root: cwd, missionRef: mission.missionId });
+        } catch (error) {
+          if ((error as { code?: string }).code !== "ENOENT") throw error;
+          bundle = await (overrides.compileGitHubOnlyManagedAutopilotBundle ?? compileAndStageGitHubOnlyManagedAutopilotBundleV1)({ root: cwd, missionRef: mission.missionId, ...(overrides.now ? { now: overrides.now } : {}) });
+        }
+        targetManifest = bundle.targetManifest;
+        if (bundle.artifactBytes) artifactBytes = Buffer.from(bundle.artifactBytes);
+      }
+      if (typeof artifactFile === "string") {
+        const artifactPath = path.resolve(cwd, artifactFile), artifactDetails = await stat(artifactPath);
+        if (await realpath(artifactPath) !== artifactPath || !artifactDetails.isFile() || artifactDetails.size < 1 || artifactDetails.size > 4 * 1024 * 1024) throw new Error("candidate artifact is not a bounded unlinked regular file");
+        artifactBytes = await readFile(artifactPath);
+      }
+      const result = await (overrides.createAutopilotHandoff ?? createAutopilotHandoffV1)({
+        root: cwd,
+        cloudBaseUrl: await resolveBaseUrl(),
+        missionRef: mission.missionId,
+        localEvidenceRefs: mission.evidenceRefs,
+        targetManifest,
+        ...(artifactBytes ? { artifactBytes } : {}),
+        ...(overrides.now ? { now: overrides.now } : {}),
+      });
+      (overrides.openBrowser ?? openBrowser)(result.browserUrl);
+      console.log("Finish this mission without supervising the merge.");
+      console.log("Exact bounded powers are ready for review in your browser. Continue locally at any time; no write occurs before confirmation.");
+      console.log("Waiting for the exact onboarding session. Closing the browser preserves this local mission.");
+      await (overrides.waitForAutopilotReady ?? waitForAutopilotReadyV1)({ root: cwd, missionRef: mission.missionId });
+      console.log("Reelier Autopilot is ready for this mission. Exact powers are confirmed; execution and verification will continue here.");
+      return 0;
+    } catch (error) {
+      console.error(`Autopilot handoff refused: ${error instanceof Error ? error.message : String(error)}`);
+      return 1;
+    }
+  }
+  if (subcommand === "init") {
+    if (sessionId || [...args.flags].some((flag) => flag !== "no-open") || Object.keys(args.opts).length !== 0 || Object.keys(args.vars).length !== 0 || args.wraps.length !== 0 || args.fails.length !== 0) {
+      console.error("Usage: reelier operator init [--no-open]");
+      return 1;
+    }
+    const summary = await initialize({ cwd, home });
+    const board = await (overrides.launchBoard ?? launchDetachedMissionControlBoardV1)({ root: cwd, ...(args.flags.has("no-open") ? {} : { openBrowser }) });
+    console.log("Reelier Mission Control initialized.");
+    console.log(`Harnesses: ${summary.harnesses.filter((probe) => probe.installed).map((probe) => probe.descriptor.displayName).join(", ") || "none detected"}`);
+    console.log(`Imported missions: ${summary.missionCount} (${summary.currentWorkspaceMissionCount} current repository)`);
+    console.log(`Mission Control: ${board.origin}`);
+    console.log(`Next: ${summary.next.join(" → ")}`);
+    return 0;
+  }
+  if (subcommand === "review") {
+    if (sessionId || args.flags.size > 1 || (args.flags.size === 1 && !args.flags.has("open")) || Object.keys(args.opts).length !== 0 || Object.keys(args.vars).length !== 0 || args.wraps.length !== 0 || args.fails.length !== 0) {
+      console.error("Usage: reelier operator review [--open]");
+      return 1;
+    }
+    const missions = await (await createMissionControlJournalV1({ root: cwd })).reconstruct();
+    const reviewable = missions.filter((mission) => mission.attentionState !== "none" || ["completed-unverified", "locally-observed", "reconciled", "refused", "failed", "ambiguous"].includes(mission.outcomeLifecycle));
+    for (const mission of reviewable) console.log(`${mission.missionId}\t${mission.harness}\t${mission.harnessLifecycle}\t${mission.outcomeLifecycle}\t${mission.attentionState}`);
+    const attentionCount = reviewable.filter((mission) => mission.attentionState !== "none").length;
+    console.log(`Local review: ${reviewable.length} ${reviewable.length === 1 ? "mission" : "missions"}; ${attentionCount} ${attentionCount === 1 ? "needs" : "need"} attention`);
+    console.log("Harness completion remains separate from Outcome reconciliation.");
+    if (args.flags.has("open")) {
+      const board = await (overrides.launchBoard ?? launchDetachedMissionControlBoardV1)({ root: cwd, openBrowser: overrides.openBrowser ?? openBrowser });
+      console.log(`Mission Control: ${board.origin}`);
+    }
+    return 0;
+  }
+  if (subcommand !== "status" && subcommand !== "list") {
+    console.error("Usage: reelier operator <init|open|import|run|stop|resume|doctor|benchmark|autopilot|status [sessionId]|list|review [--open]>");
+    return 1;
+  }
+  const sessionStore = createOperatorSessionStoreV1({ root: cwd });
+  const missionJournal = await createMissionControlJournalV1({ root: cwd });
+  const missions = await missionJournal.reconstruct();
+  if (subcommand === "list") {
+    if (sessionId) {
+      console.error("Usage: reelier operator list");
+      return 1;
+    }
+    if (missions.length > 0) {
+      for (const mission of missions) console.log(`${mission.missionId}\t${mission.harness}\t${mission.harnessLifecycle}\t${mission.outcomeLifecycle}\t${mission.attentionState}`);
+      return 0;
+    }
+    const sessions = await sessionStore.list();
+    if (sessions.length === 0) {
+      console.log("No persisted Operator sessions.");
+      return 0;
+    }
+    for (const session of sessions) {
+      console.log(`${session.sessionId}\t${session.harness}\t${session.harnessLifecycle}\t${session.cellVerdict}/${session.cellLifecycle}${session.receiptRef ? `\t${session.receiptRef}` : ""}`);
+    }
+    return 0;
+  }
+  if (sessionId) {
+    const mission = missions.find((item) => item.missionId === sessionId);
+    if (mission) {
+      console.log(`Mission: ${mission.missionId}`);
+      console.log(`Harness: ${mission.harness} (${mission.harnessLifecycle})`);
+      console.log(`Outcome: ${mission.outcomeLifecycle}`);
+      console.log(`Attention: ${mission.attentionState}${mission.attentionReasons.length ? ` (${mission.attentionReasons.join(", ")})` : ""}`);
+      console.log(`Evidence: ${mission.evidenceRefs.length}`);
+      console.log(`Updated: ${mission.updatedAt}`);
+      return 0;
+    }
+    const session = await sessionStore.load(sessionId);
+    if (!session) {
+      console.error(`Operator session not found: ${sessionId}`);
+      return 1;
+    }
+    console.log(`Session: ${session.sessionId}`);
+    console.log(`Harness: ${session.harness} (${session.harnessLifecycle})`);
+    console.log(`Cell: ${session.cellVerdict} (${session.cellLifecycle})`);
+    if (session.receiptRef) console.log(`Receipt: ${session.receiptRef}`);
+    console.log(`Updated: ${session.updatedAt}`);
+    return 0;
+  }
+  const state = await readOperatorWorkspaceV1(cwd);
+  if (!state) {
+    console.log("Operator not initialized. Run `npx reelier@latest init`.");
+    return 1;
+  }
+  console.log(`Operator: ${state.workspaceId}`);
+  console.log(`Cell: ${state.authorityCell} (${state.mode})`);
+  console.log(`Harnesses: ${state.selectedHarnesses.join(", ") || "none"}`);
+  console.log("Remote writes: Authority Cell only; local completeness: unchecked");
+  return 0;
+}
+
 const USAGE =
-  "Usage: reelier <run|bench|baseline|cost|prices|mcp|serve|trace|compile|manifest|approve|push|get|verify|diff|ci|policy|init|up|discover|connections|connect|deploy|doctor|bridge|from-session|scan|install|uninstall|login|logout|whoami> [options]\n" +
-  "  discover â€” rank observed workflow opportunities locally; use --upload to preview and explicitly send one sanitized bundle to Arena Cloud.\n" +
+  "Usage: reelier <run|bench|baseline|cost|prices|mcp|serve|trace|compile|manifest|approve|push|get|verify|diff|ci|policy|init|operator|up|discover|connections|connect|deploy|doctor|bridge|from-session|scan|install|uninstall|login|logout|whoami> [options]\n" +
+  "  discover — rank observed workflow opportunities locally; use --upload to preview and explicitly send one sanitized bundle to Arena Cloud.\n" +
   "  bridge  — reelier bridge --port 4777: expose nonce-gated local capabilities and Work Card handoff metadata; never executes Cloud plugin code.\n" +
   "  login  — reelier login: connect this machine to Reelier Cloud via a device-code browser handshake; writes ~/.reelier/config.json.\n" +
   "  logout — reelier logout: clears the locally stored key (revoke it from the dashboard's Settings, not locally).\n" +
@@ -4559,9 +4999,12 @@ const USAGE =
   "           An explicit per-call cwd/out argument always wins over the workspace.\n" +
   "  get    — fetch a public registry skill to ./skills/<skill>.skill.md; never executes it.\n" +
   "           reelier get --mine <name> fetches YOUR OWN private skill (authenticated) instead.\n" +
-  "  init   - reelier init [--dry-run]: checkpointed local inspection of Path A observation, Path B replay/freeze\n" +
-  "           candidates, and Path C connections/candidates. It does not deploy, gate, dispatch, upload, or rewrite configs.\n" +
-  "           --dry-run performs the same local inspection without writing .reelier/init artifacts.\n" +
+  "  init   - reelier init [--no-open] [--json]: start accountless Local Mission Control, import supported local\n" +
+  "           harness histories, print a truthful summary, and serve the loopback board. `reelier operator init` is an alias.\n" +
+  "           Account and Cloud are not required; --no-open suppresses browser launch and --json emits the stable summary.\n" +
+  "           Expert mode `reelier init --dry-run` retains the checkpointed read-only authority inspection without writes.\n" +
+  "  init --managed [--dry-run] — local preview of a redacted managed-session configuration diff; it does not authorize missions,\n" +
+  "           receive credentials, contact Cloud/providers, or write configuration files.\n" +
   "  init --signing — generate (or print the existing) Ed25519 signing key at ~/.reelier/signing/; idempotent.\n" +
   "  up     - reelier up <agent-name>: verify a completed named preparation against its exact package build, route snapshot, and consented local configuration; starts nothing.\n" +
   "  authority certify — private expert workflow: init --config <v2>, then require --scenario <id> or --all for preflight,\n" +
@@ -4597,7 +5040,7 @@ const USAGE =
 const HELP_DISPATCH_COMMANDS = new Set([
   "run", "bench", "baseline", "cost", "prices", "mcp", "serve", "trace", "compile", "manifest", "resolve",
   "approve", "push", "get", "verify", "diff", "ci", "policy", "authority", "init", "up", "discover", "connections",
-  "connect", "deploy", "doctor", "bridge", "coverage", "from-session", "scan", "install", "uninstall", "login", "logout", "whoami",
+  "connect", "deploy", "doctor", "bridge", "coverage", "from-session", "scan", "install", "uninstall", "login", "logout", "whoami", "operator",
 ]);
 
 function isReadOnlySubcommandHelp(cmd: string | undefined, rest: string[]): boolean {
@@ -4624,7 +5067,7 @@ async function main(): Promise<number> {
   // `<known-command> --help|-h` grammar before parsing or dispatching; flags
   // in option values and unknown commands retain their ordinary behavior.
   if (isReadOnlySubcommandHelp(cmd, rest)) {
-    console.log(USAGE);
+    console.log(cmd === "operator" ? OPERATOR_USAGE : USAGE);
     return 0;
   }
 
@@ -4671,6 +5114,8 @@ async function main(): Promise<number> {
       return runAuthorityCommand(args);
     case "init":
       return cmdInit(args);
+    case "operator":
+      return cmdOperator(args);
     case "up":
       return cmdUp(args);
     case "discover":

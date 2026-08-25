@@ -26,10 +26,17 @@ test("Eve fixture is isolated and its model-facing schemas exclude authority", a
   for (const forbidden of ["taskId", "actorPrincipalId", "workloadId", "jobCardDigest", "authoritySnapshotDigest"]) {
     assert.equal(exportedSchemaKeys(checkpoint).includes(forbidden), false);
   }
-  const outcome = await readFile(join(fixtureRoot, "agent/tools/reelier_outcome_request.ts"), "utf8");
-  assert.deepEqual(exportedSchemaKeys(outcome), ["choices", "requestId", "sourceRefs"]);
-  const status = await readFile(join(fixtureRoot, "agent/tools/reelier_outcome_status.ts"), "utf8");
-  assert.deepEqual(exportedSchemaKeys(status), ["requestId"]);
+  const quartet = await Promise.all([
+    ["agent/tools/reelier_agent_status.ts", []],
+    ["agent/tools/reelier_outcome_proposal.ts", ["outcomeRef"]],
+    ["agent/tools/reelier_outcome_request.ts", ["outcomeRef", "choices", "requestId", "sourceRefs"]],
+    ["agent/tools/reelier_outcome_status.ts", ["requestId"]],
+  ].map(async ([file, keys]) => ({ source: await readFile(join(fixtureRoot, file as string), "utf8"), keys })));
+  for (const item of quartet) {
+    assert.deepEqual(exportedSchemaKeys(item.source), item.keys);
+    assert.match(item.source, /from "\.\.\/lib\/cell\.js"/u);
+    assert.doesNotMatch(item.source, /lib\/runtime|continuityRuntime|REELIER_PATH_C_PORT/u);
+  }
 
   // The remote Authority Cell tools are model-facing too: the model may name a filter and an opaque
   // reference, never authority. The bearer is environment-held and never appears in a schema.
@@ -42,6 +49,7 @@ test("Eve fixture is isolated and its model-facing schemas exclude authority", a
       assert.equal(source.includes(forbidden), false, `a model-facing tool must not name ${forbidden}`);
     }
   }
+  await assert.rejects(readFile(join(fixtureRoot, "agent/lib/governed-outcomes.ts"), "utf8"), /ENOENT/);
 });
 
 test("active Eve process conformance documentation matches the pinned fixture version", async () => {

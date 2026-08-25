@@ -14,7 +14,7 @@ const DISPATCH_COMMANDS = [
   "compile", "manifest", "resolve", "approve", "push", "get", "verify", "diff",
   "ci", "policy", "authority", "init", "up", "discover", "connections", "connect",
   "deploy", "doctor", "bridge", "coverage", "from-session", "scan", "install", "uninstall",
-  "login", "logout", "whoami",
+  "login", "logout", "whoami", "operator",
 ] as const;
 
 const cliPath = fileURLToPath(new URL("../src/cli.js", import.meta.url));
@@ -169,6 +169,32 @@ test("dedicated help inventory exactly matches main's dispatch switch", async ()
   assert.ok(dispatch, "could not locate main()'s dispatch switch");
   const actual = [...dispatch.matchAll(/case "([^"]+)":/g)].map((match) => match[1]).sort();
   assert.deepEqual([...DISPATCH_COMMANDS].sort(), actual);
+});
+
+test("init help documents the managed local preview without implying authorization", () => {
+  const result = spawnSync(process.execPath, [cliPath, "init", "--help"], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /reelier init \[--no-open\] \[--json\]/);
+  assert.match(result.stdout, /Local Mission Control/i);
+  assert.match(result.stdout, /reelier operator init/);
+  assert.match(result.stdout, /account.*not required/i);
+  assert.doesNotMatch(result.stdout, /â|Ã/, "top-level help must not ship mojibake");
+  assert.doesNotMatch(result.stdout, /^\s*init\s+- reelier init \[--dry-run\]: checkpointed local inspection/m);
+  assert.match(result.stdout, /init --managed \[--dry-run\]/);
+  assert.match(result.stdout, /local preview/i);
+  assert.match(result.stdout, /does not authorize missions/i);
+});
+
+test("operator help exposes the Local Mission Control command surface instead of the global CLI wall", () => {
+  const result = spawnSync(process.execPath, [cliPath, "operator", "--help"], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^Usage: reelier operator/m);
+  for (const command of ["init", "open", "import", "run", "list", "status", "stop", "resume", "review", "autopilot", "doctor"] as const) {
+    assert.match(result.stdout, new RegExp(`^  ${command}(?:\\s|$)`, "m"), `operator help omitted ${command}`);
+  }
+  assert.match(result.stdout, /Local Mission Control is local, accountless, and independently useful/i);
+  assert.match(result.stdout, /Managed Autopilot appears only at an exact reviewed external consequence/i);
+  assert.doesNotMatch(result.stdout, /^Record, replay, attest, and diff/m, "operator help fell back to the global CLI wall");
 });
 
 test("network oracle inventory exactly matches Node's callable network surfaces", () => {

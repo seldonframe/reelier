@@ -6,6 +6,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import type { AuthorityKind, AuthorityWire, AuthorityWireByKind, DecisionArtifactPresence, DecisionContext, DecisionContextPresence } from "./types.js";
+import { parseToolEffectContractV1 } from "./tool-effect-contract.js";
 
 // Keep the schema lookup filesystem-based rather than passing directory URLs to
 // bundlers. Node resolves both forms, but Turbopack treats a directory-shaped
@@ -51,6 +52,7 @@ export function authorityDigest(value: unknown): string {
 
 /** Validates a closed authority object and returns a detached, immutable-typed copy. */
 export function parseAuthorityWire<K extends AuthorityKind>(kind: K, value: unknown): AuthorityWireByKind[K] {
+  if (kind === "tool-effect-contract") return parseToolEffectContractV1(value) as AuthorityWireByKind[K];
   const validate = validator(kind);
   if (!validate(value)) throw new TypeError(`invalid ${kind}: ${errorMessage(validate)}`);
   const parsed = JSON.parse(authorityCanonicalBytes(value).toString("utf8")) as AuthorityWireByKind[K];

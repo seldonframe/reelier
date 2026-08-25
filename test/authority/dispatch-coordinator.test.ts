@@ -1,7 +1,16 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { generateKeyPairSync } from "node:crypto";
-import { createDispatchCoordinator } from "reelier/authority/host";
+import { createDispatchCoordinator, preparedDispatchProjectionDigest } from "reelier/authority/host";
+import {
+  bindCoordinatorDispatchCallDelegateV1,
+  consumeCoordinatorDispatchCallDelegateV1,
+  createDispatchCoordinator as createSourceDispatchCoordinator,
+  parseDispatchOutcomeV1,
+} from "../../src/authority/host/dispatch.js";
+import { createReservedDispatchHandle as createSourceReservedDispatchHandle } from "../../src/authority/gate.js";
+import { authorizeCoordinatorCommittedLease, consumePreparedDispatch as consumeSourcePreparedDispatch, createDispatchCommitLease as createSourceDispatchCommitLease, createPreparedDispatch as createSourcePreparedDispatch } from "../../src/authority/host/prepared-dispatch.js";
+import { __testSetAuthorityCellHostPlatform as __testSetSourceAuthorityCellHostPlatform } from "../../src/authority/host/platform.js";
 import type {
   DurableDispatchPublicationHeadV1,
   DurableDispatchPublicationIdentityV1,
@@ -11,7 +20,7 @@ import { sha } from "./profile-governance-fixture.js";
 import { authorityDigest } from "../../src/authority/wire.js";
 import { signAuthorityDigest } from "../../src/authority/crypto.js";
 // @ts-ignore built imports share opaque capability brands with the public package under test.
-import { createDispatchCommitLease, createPreparedDispatch } from "../../../dist/authority/host/prepared-dispatch.js";
+import { createDispatchCommitLease, createPreparedDispatch, describePreparedDispatch } from "../../../dist/authority/host/prepared-dispatch.js";
 // @ts-ignore built helper shares the public package's projection contract.
 import { materializedHttpRequestDigest } from "../../../dist/authority/host/http-response-semantics.js";
 // @ts-ignore test-only import uses the built module so the opaque WeakMap brand is shared.
@@ -22,9 +31,9 @@ import { __testSetAuthorityCellHostPlatform } from "../../../dist/authority/host
 const restorePlatform = __testSetAuthorityCellHostPlatform("linux");
 test.after(() => restorePlatform());
 
-function ledger() {
-  let state: any = { reservationId: "r1", state: "reserved", intent: { effectDigest: "sha256:" + "1".repeat(64) } };
-  return { get: () => state, getReservation: async () => state, transition: async (id: string, expected: string, event: any) => { if (id !== "r1" || state.state !== expected) return { ok: false, reason: "state-conflict" as const }; if (event.to === "ambiguous" && "resultDigest" in event) return { ok: false, reason: "corruption" as const }; state = { ...state, state: event.to, resultDigest: event.resultDigest }; return { ok: true, status: "transitioned" as const, reservation: state }; }, recover: async () => ({ ok: true as const, reservations: [state], highWaterMark: null, topology: { directorySync: "verified" as const } }) } as any;
+function ledger(reservationId = "r1", effectDigest = "sha256:" + "1".repeat(64)) {
+  let state: any = { reservationId, state: "reserved", intent: { effectDigest } };
+  return { get: () => state, getReservation: async () => state, transition: async (id: string, expected: string, event: any) => { if (id !== reservationId || state.state !== expected) return { ok: false, reason: "state-conflict" as const }; if (event.to === "ambiguous" && "resultDigest" in event) return { ok: false, reason: "corruption" as const }; state = { ...state, state: event.to, resultDigest: event.resultDigest }; return { ok: true, status: "transitioned" as const, reservation: state }; }, recover: async () => ({ ok: true as const, reservations: [state], highWaterMark: null, topology: { directorySync: "verified" as const } }) } as any;
 }
 
 test("dispatch consumes an opaque handle once and records ambiguity on restart", async () => {
@@ -295,4 +304,296 @@ test("a stale colluding revalidator cannot cross credential, prepare, store, or 
   const state = { reservation: persisted, effect: {}, effectCanonicalBase64: "e30=", effectDigest: persisted.intent.effectDigest };
   await assert.rejects(() => coordinator.dispatch(createReservedDispatchHandle(state)), /generation|route authority|binding|stale/i);
   assert.deepEqual(effects, { credential: 0, prepare: 0, store: 0, provider: 0, commit: 0 });
+});
+
+test("prepared dispatch revalidates the same gate authority after host resolution immediately before CAS", async () => {
+  const generation = sha("1"), revokedGeneration = sha("2"), expiresAt = new Date(Date.now() + 60_000).toISOString();
+  const projection = { v: "reelier.materialized-http-request/v1" as const, method: "POST" as const, origin: "https://provider.example", normalizedPath: "/write", normalizedQuery: "", reviewedHeaders: {}, bodyDigest: sha("3") }, materializedRequestDigest = materializedHttpRequestDigest(projection);
+  const keys = generateKeyPairSync("ed25519"), identityBody = { v: "reelier.authenticated-provider-identity/v1" as const, providerId: "github" as const, credentialSlotId: "slot_1", slotInstanceId: "instance_1", slotVersion: "version_1", slotExpiresAt: expiresAt, providerAccountId: "account_1", providerLogin: "account_1", routeDigest: sha("4"), observedAt: new Date().toISOString() };
+  const identity = Object.freeze({ ...identityBody, signerId: "identity_1", signature: signAuthorityDigest(keys.privateKey, "authority-evidence", authorityDigest(identityBody)) });
+  const routeAuthority = Object.freeze({ v: "reelier.route-authority-snapshot/v1" as const, connectorRegistrationDigest: sha("5"), operatorConfigurationDigest: sha("6"), routeDigest: identityBody.routeDigest, providerId: "github", connectorId: "github", accountId: "account_1", providerAccountIdentity: "github:account_1", endpointId: "write", credentialSlotId: identityBody.credentialSlotId, slotInstanceId: identityBody.slotInstanceId, slotVersion: identityBody.slotVersion, authenticatedProviderIdentityDigest: authorityDigest(identityBody), sourceReadRouteDigest: sha("7"), projectionSchemaDigest: sha("8"), expectedMaterializedRequestDigest: materializedRequestDigest, authorityGeneration: generation, authorityExpiresAt: expiresAt });
+  let persisted: any = { reservationId: "reservation_revoked_after_prepare", state: "reserved", intent: { tenant: "tenant_1", requestDigest: sha("9"), requestKey: sha("a"), outcomeKey: sha("b"), capabilityId: "capability_1", capabilityDigest: sha("c"), effectDigest: sha("d"), effectCanonicalBase64: "e30=", executionContext: { allocationId: "allocation_1" }, routeAuthority } };
+  let revoked = false, revalidations = 0, commits = 0, providerCalls = 0;
+  const current = () => ({ authorityGeneration: revoked ? revokedGeneration : generation, authorityExpiresAt: expiresAt, routeAuthorityDigest: authorityDigest(routeAuthority), providerId: "github", connectorId: "github", accountId: "account_1", endpointId: "write" });
+  const coordinator = createDispatchCoordinator({
+    async getReservation() { return persisted; },
+    async commitPreparedDispatch(input: any) { commits += 1; persisted = { ...persisted, state: "dispatched", sendStarted: true }; return createDispatchCommitLease({ reservationId: input.reservationId, allocationId: input.allocationId, preparedDigest: input.preparedDescription.materializedRequestDigest, authorityGeneration: input.expectedAuthorityGeneration, authorityExpiresAt: input.preparedDescription.authorityExpiresAt, absoluteDeadlineMs: input.absoluteDeadlineMs, commitGeneration: "commit_1" }); },
+    async transition(_id: string, expected: string, event: any) { if (persisted.state !== expected) return { ok: false, reason: "state-conflict" }; persisted = { ...persisted, state: event.to, resultDigest: event.resultDigest }; return { ok: true, reservation: persisted }; },
+    async recover() { return { ok: true, reservations: [] }; },
+  } as any, {
+    async prepare() { return createPreparedDispatch({ description: { v: "reelier.prepared-dispatch-description/v1", routeDigest: routeAuthority.routeDigest, materializedRequestDigest, projection, authorityGeneration: generation, authorityExpiresAt: expiresAt, absoluteDeadlineMs: performance.now() + 60_000, reservationId: persisted.reservationId, allocationId: "allocation_1" }, send: async () => { providerCalls += 1; return { kind: "acknowledged", resultDigest: sha("e") }; } }); },
+    async dispatch() { throw new Error("legacy provider path reached"); },
+  }, undefined, undefined, { async consumeOnce() { revoked = true; }, async returnOnce() {}, async releaseConsumedOnce() {} }, {
+    identityProbe: async () => identity,
+    verifyIdentity: { purpose: "authority-evidence", signerId: identity.signerId, publicKey: keys.publicKey },
+    revalidator: { async revalidate() { revalidations += 1; return current(); }, async routeReread() { return routeAuthority; } },
+  });
+  const state = { reservation: persisted, effect: {}, effectCanonicalBase64: "e30=", effectDigest: persisted.intent.effectDigest };
+  await assert.rejects(() => coordinator.dispatch(createReservedDispatchHandle(state)), /changed|generation|authority/i);
+  assert.deepEqual({ revalidations, commits, providerCalls }, { revalidations: 3, commits: 0, providerCalls: 0 });
+});
+
+test("closed deterministic refusal preserves its inert diagnostic reason", () => {
+  const outcome = parseDispatchOutcomeV1({ kind: "definitive-failure", resultDigest: sha("1"), reconciliationStatus: "conflict", normalizedProjectionDigest: null, reason: "base branch drift" });
+  assert.deepEqual(outcome, { kind: "definitive-failure", resultDigest: sha("1"), reconciliationStatus: "conflict", normalizedProjectionDigest: null, reason: "base branch drift" });
+  assert.throws(() => parseDispatchOutcomeV1({ kind: "definitive-failure", resultDigest: sha("1"), reason: "x".repeat(4097) }), /reason/i);
+});
+
+test("prepared deterministic refusal preserves the same bounded inert reason", async () => {
+  const projection = { v: "reelier.prepared-effect-projection/v1" as const, transport: "fixed-cli", operationDigest: sha("2"), requestDigest: sha("3") }, materializedRequestDigest = preparedDispatchProjectionDigest(projection), expiresAt = new Date(Date.now() + 60_000).toISOString(), deadline = performance.now() + 60_000;
+  const prepared = createSourcePreparedDispatch({ description: { v: "reelier.prepared-dispatch-description/v1", routeDigest: sha("4"), materializedRequestDigest, projection, authorityGeneration: "generation_1", authorityExpiresAt: expiresAt, absoluteDeadlineMs: deadline, reservationId: "prepared_refusal", allocationId: "allocation_1" }, send: async () => ({ kind: "definitive-failure", resultDigest: sha("5"), reconciliationStatus: "conflict", normalizedProjectionDigest: null, reason: "base branch drift" }), requireCoordinatorCommit: true });
+  const lease = createSourceDispatchCommitLease({ reservationId: "prepared_refusal", allocationId: "allocation_1", preparedDigest: materializedRequestDigest, authorityGeneration: "generation_1", authorityExpiresAt: expiresAt, absoluteDeadlineMs: deadline, commitGeneration: "commit_1" });
+  authorizeCoordinatorCommittedLease(lease);
+  assert.deepEqual(await consumeSourcePreparedDispatch(prepared, lease), { kind: "definitive-failure", resultDigest: sha("5"), reconciliationStatus: "conflict", normalizedProjectionDigest: null, reason: "base branch drift" });
+});
+
+test("prepared dispatch carries the exact one-call coordinator capability through commit and finally revokes it", async () => {
+  const expected = { reservationId: "prepared_r1", effectDigest: sha("3") };
+  let persisted: any = { reservationId: expected.reservationId, state: "reserved", intent: { effectDigest: expected.effectDigest, effectCanonicalBase64: "e30=", executionContext: { allocationId: "allocation_1" } } };
+  const testLedger = {
+    async getReservation() { return persisted; },
+    async commitPreparedDispatch(input: any) { persisted = { ...persisted, state: "dispatched", sendStarted: true }; return createSourceDispatchCommitLease({ reservationId: input.reservationId, allocationId: input.allocationId, preparedDigest: input.preparedDescription.materializedRequestDigest, authorityGeneration: input.expectedAuthorityGeneration, authorityExpiresAt: input.preparedDescription.authorityExpiresAt, absoluteDeadlineMs: input.absoluteDeadlineMs, commitGeneration: "commit_1" }); },
+    async transition(_id: string, state: string, event: any) { if (persisted.state !== state) return { ok: false, reason: "state-conflict" }; persisted = { ...persisted, state: event.to }; return { ok: true, status: "transitioned", reservation: persisted }; },
+    async recover() { return { ok: true, reservations: [persisted], highWaterMark: null, topology: { directorySync: "verified" } }; },
+  } as any;
+  let delegate: object | undefined;
+  let reconciles = 0;
+  const projection = { v: "reelier.prepared-effect-projection/v1" as const, transport: "fixed-cli", operationDigest: sha("6"), requestDigest: sha("7") };
+  const materializedRequestDigest = preparedDispatchProjectionDigest(projection);
+  const restore = __testSetSourceAuthorityCellHostPlatform("linux");
+  const coordinator = createSourceDispatchCoordinator(testLedger, {
+    async prepare(state: import("../../src/authority/host/dispatch.js").DispatchRequestState, call: import("../../src/authority/host/dispatch.js").CoordinatorDispatchCallV1) {
+      delegate = Object.freeze(Object.create(null));
+      assert.equal(bindCoordinatorDispatchCallDelegateV1(call, delegate!, state), true);
+      return createSourcePreparedDispatch({ description: { v: "reelier.prepared-dispatch-description/v1", routeDigest: sha("4"), materializedRequestDigest, projection, authorityGeneration: "generation_1", authorityExpiresAt: new Date(Date.now() + 60_000).toISOString(), absoluteDeadlineMs: performance.now() + 60_000, reservationId: expected.reservationId, allocationId: "allocation_1" }, send: async () => {
+        assert.equal(consumeCoordinatorDispatchCallDelegateV1(delegate!, expected), true);
+        return { kind: "acknowledged", resultDigest: sha("8") };
+      } });
+    },
+    async dispatch() { throw new Error("non-prepared path must not run"); },
+    async reconcile() { reconciles += 1; return { kind: "acknowledged", resultDigest: sha("9"), reconciliationStatus: "matched", normalizedProjectionDigest: sha("a") }; },
+  });
+  restore();
+  const state = { reservation: persisted, effect: {}, effectCanonicalBase64: "e30=", effectDigest: expected.effectDigest };
+  const outcome = await coordinator.dispatch(createSourceReservedDispatchHandle(state));
+  assert.equal(outcome.kind, "acknowledged");
+  assert.equal(outcome.reconciliationStatus, "matched");
+  assert.equal(reconciles, 1, "prepared acknowledged writes receive the same authoritative readback as legacy dispatch");
+  assert.equal(consumeCoordinatorDispatchCallDelegateV1(delegate!, expected), false, "the prepared call cannot survive finally");
+});
+
+test("exact coordinator dispatch delegates are single-use and revoked when the adapter call returns", async () => {
+  const expected = { reservationId: "r1", effectDigest: "sha256:" + "1".repeat(64) };
+  const firstLedger = ledger();
+  let firstDelegate: object | undefined;
+  const restoreFirst = __testSetSourceAuthorityCellHostPlatform("linux");
+  const firstCoordinator = createSourceDispatchCoordinator(firstLedger, {
+    async dispatch(state, call) {
+      firstDelegate = Object.freeze(Object.create(null)) as object;
+      const competing = Object.freeze(Object.create(null)) as object;
+      assert.equal(bindCoordinatorDispatchCallDelegateV1(call, firstDelegate, state), true);
+      assert.equal(bindCoordinatorDispatchCallDelegateV1(call, competing, state), false);
+      assert.equal(consumeCoordinatorDispatchCallDelegateV1(competing, expected), false);
+      assert.equal(consumeCoordinatorDispatchCallDelegateV1(firstDelegate, expected), true);
+      assert.equal(consumeCoordinatorDispatchCallDelegateV1(firstDelegate, expected), false);
+      return { kind: "acknowledged", resultDigest: "sha256:" + "2".repeat(64) };
+    },
+  });
+  restoreFirst();
+  const firstHandle = createSourceReservedDispatchHandle({ reservation: firstLedger.get(), effect: { x: 1 }, effectCanonicalBase64: "e30=", effectDigest: expected.effectDigest });
+  await firstCoordinator.dispatch(firstHandle);
+  assert.equal(consumeCoordinatorDispatchCallDelegateV1(firstDelegate!, expected), false);
+
+  const secondLedger = ledger();
+  let lateDelegate: object | undefined;
+  const restoreSecond = __testSetSourceAuthorityCellHostPlatform("linux");
+  const secondCoordinator = createSourceDispatchCoordinator(secondLedger, {
+    async dispatch(state, call) {
+      lateDelegate = Object.freeze(Object.create(null)) as object;
+      assert.equal(bindCoordinatorDispatchCallDelegateV1(call, lateDelegate, state), true);
+      return { kind: "acknowledged", resultDigest: "sha256:" + "3".repeat(64) };
+    },
+  });
+  restoreSecond();
+  const secondHandle = createSourceReservedDispatchHandle({ reservation: secondLedger.get(), effect: { x: 1 }, effectCanonicalBase64: "e30=", effectDigest: expected.effectDigest });
+  await secondCoordinator.dispatch(secondHandle);
+  assert.equal(consumeCoordinatorDispatchCallDelegateV1(lateDelegate!, expected), false);
+
+  const throwingLedger = ledger();
+  let throwingDelegate: object | undefined;
+  const restoreThrowing = __testSetSourceAuthorityCellHostPlatform("linux");
+  const throwingCoordinator = createSourceDispatchCoordinator(throwingLedger, {
+    async dispatch(state, call) {
+      throwingDelegate = Object.freeze(Object.create(null)) as object;
+      assert.equal(bindCoordinatorDispatchCallDelegateV1(call, throwingDelegate, state), true);
+      throw new Error("adapter failed");
+    },
+  });
+  restoreThrowing();
+  const throwingOutcome = await throwingCoordinator.dispatch(createSourceReservedDispatchHandle({ reservation: throwingLedger.get(), effect: { x: 1 }, effectCanonicalBase64: "e30=", effectDigest: expected.effectDigest }));
+  assert.equal(throwingOutcome.kind, "ambiguous");
+  assert.equal(consumeCoordinatorDispatchCallDelegateV1(throwingDelegate!, expected), false);
+});
+
+test("coordinator dispatch call and delegate identities refuse copies, serialization, proxies, and crossed state", async () => {
+  const expected = { reservationId: "identity_exact", effectDigest: "sha256:" + "8".repeat(64) };
+  const identityLedger = ledger(expected.reservationId, expected.effectDigest);
+  const restoreIdentityPlatform = __testSetSourceAuthorityCellHostPlatform("linux");
+  const coordinator = createSourceDispatchCoordinator(identityLedger, {
+    async dispatch(state, call) {
+      const delegate = Object.freeze(Object.create(null)) as object;
+      const fakeCall = Object.freeze(Object.create(null));
+      const copiedCall = Object.freeze({ ...(call as object) });
+      const serializedCall = JSON.parse(JSON.stringify(call));
+      const proxiedCall = new Proxy(call as object, {});
+      for (const candidate of [fakeCall, copiedCall, serializedCall, proxiedCall]) {
+        assert.equal(bindCoordinatorDispatchCallDelegateV1(candidate, delegate, state), false);
+      }
+      assert.equal(bindCoordinatorDispatchCallDelegateV1(call, delegate, { ...state }), false);
+      assert.equal(bindCoordinatorDispatchCallDelegateV1(call, delegate, { ...state, reservation: { ...state.reservation, reservationId: "identity_crossed" } }), false);
+      assert.equal(bindCoordinatorDispatchCallDelegateV1(call, delegate, { ...state, effectDigest: "sha256:" + "9".repeat(64) }), false);
+      assert.equal(bindCoordinatorDispatchCallDelegateV1(call, delegate, { ...state, reservation: { ...state.reservation, state: "acknowledged" } }), false);
+      assert.equal(bindCoordinatorDispatchCallDelegateV1(call, delegate, state), true);
+      const copiedDelegate = Object.freeze({ ...delegate });
+      const serializedDelegate = JSON.parse(JSON.stringify(delegate));
+      const proxiedDelegate = new Proxy(delegate, {});
+      for (const candidate of [Object.freeze(Object.create(null)), copiedDelegate, serializedDelegate, proxiedDelegate]) {
+        assert.equal(consumeCoordinatorDispatchCallDelegateV1(candidate, expected), false);
+      }
+      assert.equal(consumeCoordinatorDispatchCallDelegateV1(delegate, expected), true);
+      assert.equal(consumeCoordinatorDispatchCallDelegateV1(delegate, expected), false);
+      return { kind: "acknowledged", resultDigest: "sha256:" + "a".repeat(64) };
+    },
+  });
+  restoreIdentityPlatform();
+  const outcome = await coordinator.dispatch(createSourceReservedDispatchHandle({ reservation: identityLedger.get(), effect: { x: 1 }, effectCanonicalBase64: "e30=", effectDigest: expected.effectDigest }));
+  assert.equal(outcome.kind, "acknowledged");
+});
+
+test("coordinator remains compatible with a one-argument dispatch adapter", async () => {
+  const oneArgumentLedger = ledger("one_argument", "sha256:" + "b".repeat(64));
+  const restoreOneArgumentPlatform = __testSetSourceAuthorityCellHostPlatform("linux");
+  const coordinator = createSourceDispatchCoordinator(oneArgumentLedger, {
+    async dispatch(state) {
+      assert.equal(state.reservation.reservationId, "one_argument");
+      return { kind: "acknowledged", resultDigest: "sha256:" + "c".repeat(64) };
+    },
+  });
+  restoreOneArgumentPlatform();
+  const outcome = await coordinator.dispatch(createSourceReservedDispatchHandle({ reservation: oneArgumentLedger.get(), effect: { x: 1 }, effectCanonicalBase64: "e30=", effectDigest: "sha256:" + "b".repeat(64) }));
+  assert.equal(outcome.kind, "acknowledged");
+});
+
+test("one delegate cannot be bound to two live coordinator calls", async () => {
+  const firstExpected = { reservationId: "collision_first", effectDigest: "sha256:" + "4".repeat(64) };
+  const secondExpected = { reservationId: "collision_second", effectDigest: "sha256:" + "5".repeat(64) };
+  const firstLedger = ledger(firstExpected.reservationId, firstExpected.effectDigest);
+  const secondLedger = ledger(secondExpected.reservationId, secondExpected.effectDigest);
+  const delegate = Object.freeze(Object.create(null)) as object;
+  let releaseFirst!: () => void;
+  let releaseSecond!: () => void;
+  let firstEntered!: () => void;
+  let secondEntered!: () => void;
+  const firstRelease = new Promise<void>(resolve => { releaseFirst = resolve; });
+  const secondRelease = new Promise<void>(resolve => { releaseSecond = resolve; });
+  const firstReady = new Promise<void>(resolve => { firstEntered = resolve; });
+  const secondReady = new Promise<void>(resolve => { secondEntered = resolve; });
+  let firstBound = false;
+  let secondBound = false;
+  const restoreCollisionPlatform = __testSetSourceAuthorityCellHostPlatform("linux");
+  const firstCoordinator = createSourceDispatchCoordinator(firstLedger, {
+    async dispatch(state, call) {
+      firstBound = bindCoordinatorDispatchCallDelegateV1(call, delegate, state);
+      firstEntered();
+      await firstRelease;
+      return { kind: "acknowledged", resultDigest: "sha256:" + "6".repeat(64) };
+    },
+  });
+  const secondCoordinator = createSourceDispatchCoordinator(secondLedger, {
+    async dispatch(state, call) {
+      secondBound = bindCoordinatorDispatchCallDelegateV1(call, delegate, state);
+      secondEntered();
+      await secondRelease;
+      return { kind: "acknowledged", resultDigest: "sha256:" + "7".repeat(64) };
+    },
+  });
+  restoreCollisionPlatform();
+  const firstDispatch = firstCoordinator.dispatch(createSourceReservedDispatchHandle({ reservation: firstLedger.get(), effect: { x: 1 }, effectCanonicalBase64: "e30=", effectDigest: firstExpected.effectDigest }));
+  await firstReady;
+  const secondDispatch = secondCoordinator.dispatch(createSourceReservedDispatchHandle({ reservation: secondLedger.get(), effect: { x: 2 }, effectCanonicalBase64: "e30=", effectDigest: secondExpected.effectDigest }));
+  await secondReady;
+  const rejectedSecondConsumed = consumeCoordinatorDispatchCallDelegateV1(delegate, secondExpected);
+  const firstConsumed = consumeCoordinatorDispatchCallDelegateV1(delegate, firstExpected);
+  const firstConsumedAgain = consumeCoordinatorDispatchCallDelegateV1(delegate, firstExpected);
+  releaseFirst();
+  releaseSecond();
+  await Promise.all([firstDispatch, secondDispatch]);
+  assert.deepEqual(
+    { firstBound, secondBound, rejectedSecondConsumed, firstConsumed, firstConsumedAgain },
+    { firstBound: true, secondBound: false, rejectedSecondConsumed: false, firstConsumed: true, firstConsumedAgain: false },
+  );
+});
+
+test("coordinator exposes a detached reservation projection without exposing the prepared send", async () => {
+  const l = ledger();
+  const coordinator = createDispatchCoordinator(l, { async dispatch() { throw new Error("must not dispatch"); } });
+  const handle = createReservedDispatchHandle({ reservation: l.get(), effect: { secret: "not projected" }, effectCanonicalBase64: "e30=", effectDigest: sha("1") });
+  const projection = coordinator.describe!(handle);
+  assert.deepEqual(projection, {
+    reservationId: "r1",
+    state: "reserved",
+    effectDigest: sha("1"),
+    allocationId: null,
+  });
+  assert.equal(Object.isFrozen(projection), true);
+  assert.equal("effect" in projection, false);
+});
+
+test("prepared dispatch accepts a closed credential-free non-HTTP projection", () => {
+  const projection = Object.freeze(Object.defineProperty({ v: "reelier.prepared-effect-projection/v1" as const, transport: "fixed-cli", operationDigest: sha("1"), requestDigest: sha("2") }, "credential", { value: "must-not-survive", enumerable: false }));
+  const digest = preparedDispatchProjectionDigest(projection);
+  const prepared = createPreparedDispatch({
+    description: { v: "reelier.prepared-dispatch-description/v1", routeDigest: sha("3"), materializedRequestDigest: digest, projection, authorityGeneration: "generation_1", authorityExpiresAt: new Date(Date.now() + 60_000).toISOString(), absoluteDeadlineMs: performance.now() + 60_000, reservationId: "r1", allocationId: "allocation_1" },
+    send: async () => ({ kind: "acknowledged", resultDigest: sha("4") }),
+  });
+  const produced = describePreparedDispatch(prepared).projection;
+  assert.equal(prepared.description.v, "reelier.prepared-dispatch-description/v1");
+  assert.equal("credential" in produced, false);
+  assert.equal(JSON.stringify(produced).includes("must-not-survive"), false);
+});
+
+test("prepared projections and provider results reject accessors without executing them", async () => {
+  let getters = 0;
+  const hostile = Object.defineProperty({ v: "reelier.prepared-effect-projection/v1", transport: "fixed-cli", operationDigest: sha("1") }, "requestDigest", { enumerable: true, get() { getters++; return sha("2"); } });
+  assert.throws(() => preparedDispatchProjectionDigest(hostile as any), /data|accessor|closed|inert/i);
+  assert.equal(getters, 0);
+
+  const l = ledger(); let resultGetters = 0;
+  const coordinator = createDispatchCoordinator(l, { async dispatch() { return Object.defineProperty({ resultDigest: sha("3") }, "kind", { enumerable: true, get() { resultGetters++; return "acknowledged"; } }) as any; } });
+  const result = await coordinator.dispatch(createReservedDispatchHandle({ reservation: l.get(), effect: {}, effectCanonicalBase64: "e30=", effectDigest: sha("1") }));
+  assert.equal(result.kind, "ambiguous");
+  assert.equal(resultGetters, 0);
+});
+
+test("HTTP and neutral prepared projections validate primitives without coercion and detach produced data", () => {
+  let coercions = 0;
+  const disguised = { toString() { coercions++; return "fixed-cli"; } };
+  assert.throws(() => preparedDispatchProjectionDigest({ v: "reelier.prepared-effect-projection/v1", transport: disguised, operationDigest: sha("1"), requestDigest: sha("2") } as any), /projection|transport|invalid/i);
+  assert.equal(coercions, 0);
+
+  for (const invalid of [
+    { method: "GET" },
+    { bodyDigest: "not-a-digest" },
+    { normalizedQuery: 7 },
+    { reviewedHeaders: { accept: 7 } },
+  ]) {
+    const projection = { v: "reelier.materialized-http-request/v1" as const, method: "POST" as const, origin: "https://provider.example", normalizedPath: "/write", normalizedQuery: "", reviewedHeaders: {}, bodyDigest: sha("3"), ...invalid };
+    assert.throws(() => preparedDispatchProjectionDigest(projection as any), /projection|request|header|digest|method|query|invalid/i);
+  }
+
+  const source: any = { v: "reelier.materialized-http-request/v1", method: "POST", origin: "https://provider.example", normalizedPath: "/write", normalizedQuery: "", reviewedHeaders: { accept: "application/json" }, bodyDigest: sha("3") };
+  const materializedRequestDigest = preparedDispatchProjectionDigest(source);
+  const prepared = createPreparedDispatch({ description: { v: "reelier.prepared-dispatch-description/v1", routeDigest: sha("4"), materializedRequestDigest, projection: source, authorityGeneration: "generation_1", authorityExpiresAt: new Date(Date.now() + 60_000).toISOString(), absoluteDeadlineMs: performance.now() + 60_000, reservationId: "r1", allocationId: "allocation_1" }, send: async () => ({ kind: "acknowledged", resultDigest: sha("5") }) });
+  source.reviewedHeaders.accept = "mutated"; source.normalizedPath = "/mutated";
+  assert.deepEqual(describePreparedDispatch(prepared).projection, { v: "reelier.materialized-http-request/v1", method: "POST", origin: "https://provider.example", normalizedPath: "/write", normalizedQuery: "", reviewedHeaders: { accept: "application/json" }, bodyDigest: sha("3") });
 });

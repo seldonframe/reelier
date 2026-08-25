@@ -8,10 +8,10 @@ import { test } from "node:test";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 
-test("npm packaging declares the universal native artifact directory and refuses when generated artifacts are absent", async () => {
+test("npm packaging rebuilds production output, declares the universal native artifacts, and refuses when they are absent", async () => {
   const manifest = JSON.parse(await readFile(path.join(root, "package.json"), "utf8")) as { files?: unknown; scripts?: Record<string, string> };
   assert.ok(Array.isArray(manifest.files) && manifest.files.includes("native/bootstrap-helper/manifest.json") && manifest.files.includes("native/bootstrap-helper/linux-x64/reelier-bootstrap-helper") && manifest.files.includes("native/bootstrap-helper/win32-x64/reelier-bootstrap-helper.exe"));
-  assert.equal(manifest.scripts?.prepack, "node scripts/verify-bootstrap-native-artifacts.mjs");
+  assert.equal(manifest.scripts?.prepack, "npm run build && node scripts/verify-bootstrap-native-artifacts.mjs");
   const npmCli = [process.env.npm_execpath, path.join(process.execPath, "..", "node_modules", "npm", "bin", "npm-cli.js"), path.join(process.execPath, "..", "..", "lib", "node_modules", "npm", "bin", "npm-cli.js")].find(value => value && existsSync(value));
   assert.ok(npmCli, "npm CLI path is available");
   const hasCertifiedArtifacts = existsSync(path.join(root, "native", "bootstrap-helper", "manifest.json"));

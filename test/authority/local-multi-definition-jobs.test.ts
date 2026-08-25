@@ -121,6 +121,10 @@ test("multi-definition signed Job Card returns deterministic opaque references i
       assert.equal(ref.includes("gmail"), false);
       assert.equal(ref.includes("slack"), false);
     }
+    const agentStatus = await runtime.agentTools.agentStatus({}, fixture.context);
+    assert.deepEqual(agentStatus.outcomeRefs, refs);
+    assert.equal(agentStatus.capability.protocolCompatibility, "compatible");
+    assert.equal(agentStatus.capability.liveTested, false);
     const restarted = await createLocalAuthorityRuntime(fixture.config, { jobCardTrustPin: fixture.trustPin, delegation: fixture.delegation });
     const recovered = await restarted.jobsSearch!({ query: "ignored" }, fixture.context) as { jobs: Array<{ jobRef: string }> };
     assert.deepEqual(recovered.jobs.map(job => job.jobRef), refs);

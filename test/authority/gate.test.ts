@@ -15,12 +15,15 @@ import { createAuthorityStatePort, digestAuthorityState, type AuthorityStateBack
 import { FsAuthorityLedger } from "../../src/authority/host/fs-ledger.js";
 import { createFileGateDecisionSink } from "../../src/authority/decision.js";
 import {
-  createAuthorityGate, createReservedDispatchHandle, selectEligibleAuthorityContract,
+  bindAcceptedGateReservationAuthorityV1, createAuthorityGate, createReservedDispatchHandle, describeAcceptedGateReservationAuthorityV1, describeAcceptedGateReservationReadbackV1, recoverAcceptedGateReservationReadbackV1, revalidateAcceptedGateReservationAuthorityV1, revalidateAcceptedGateReservationHandleV1, selectEligibleAuthorityContract, takeAcceptedGateReservationHandleV1,
   unwrapReservedDispatchHandle, type AuthorityGateDependencies, type GateResult,
 } from "../../src/authority/gate.js";
 import { AuthorityBoundaryError, type GateRefusalReason } from "../../src/authority/errors.js";
 import { bindableTempRoot } from "./bindable-root.js";
 import { profileGovernanceFixture } from "./profile-governance-fixture.js";
+import { createDispatchCoordinator, type DurableDispatchPublicationHeadV1 } from "../../src/authority/host/dispatch.js";
+import { createDispatchCommitLease, createPreparedDispatch, preparedDispatchProjectionDigest } from "../../src/authority/host/prepared-dispatch.js";
+import { __testSetAuthorityCellHostPlatform } from "../../src/authority/host/platform.js";
 
 const sha=(c:string)=>`sha256:${c.repeat(64)}`;
 
@@ -30,6 +33,118 @@ test("the shared eligible-contract selector is closed and cannot be caller-direc
   const hostile = Object.defineProperty({}, "snapshot", { enumerable: true, get() { getters += 1; throw new Error("getter invoked"); } });
   assert.throws(() => selectEligibleAuthorityContract(hostile as never), /own data|closed|exact fields/i);
   assert.equal(getters, 0);
+});
+
+test("only a newly accepted genuine gate reservation carries send authority", async () => {
+  const f = await fixture();
+  try {
+    const accepted = await f.gate.decide(f.request);
+    assert.equal(accepted.kind, "accepted");
+    if (accepted.kind !== "accepted") return;
+    const authority = bindAcceptedGateReservationAuthorityV1(f.gate, accepted);
+    const description = describeAcceptedGateReservationAuthorityV1(authority);
+    assert.equal(description.reservationId, accepted.signedDecision.reservationId);
+    assert.equal(description.contractDigest, accepted.signedDecision.decisionContext.contractDigest);
+    assert.equal(description.effectDigest, accepted.signedDecision.decisionContext.effectDigest);
+    assert.equal(Object.keys(authority).length, 0);
+    assert.throws(() => bindAcceptedGateReservationAuthorityV1(Object.freeze({ decide: f.gate.decide }), accepted), /genuine|gate|authority/i);
+    assert.throws(() => describeAcceptedGateReservationAuthorityV1(structuredClone(authority) as never), /genuine|authority/i);
+    await revalidateAcceptedGateReservationAuthorityV1(authority);
+    const handle = takeAcceptedGateReservationHandleV1(authority);
+    assert.equal(handle, accepted.handle, "the exact newly accepted handle crosses once");
+    await revalidateAcceptedGateReservationHandleV1(handle);
+    await assert.rejects(() => revalidateAcceptedGateReservationHandleV1(structuredClone(handle) as never), /genuine|handle|authority/i);
+    (f.stateInput.snapshot.candidates[0]!.stateEvents as any[]).push({ index: 1, kind: "revoked", contractDigest: accepted.signedDecision.decisionContext.contractDigest, at: decisionAt });
+    await assert.rejects(() => revalidateAcceptedGateReservationHandleV1(handle), /changed|revoked|current|authority/i);
+    await assert.rejects(() => revalidateAcceptedGateReservationAuthorityV1(authority), /consumed|invalid|authority/i);
+    assert.throws(() => takeAcceptedGateReservationHandleV1(authority), /consumed|authority/i);
+
+    const existing = await f.gate.decide(f.request);
+    assert.equal(existing.kind, "existing");
+    assert.throws(() => bindAcceptedGateReservationAuthorityV1(f.gate, existing), /newly accepted|authority/i);
+  } finally { await f.cleanup(); }
+});
+
+test("the real prepared coordinator revalidates the transferred gate handle after asynchronous prepare", async () => {
+  const f = await fixture(), restore = __testSetAuthorityCellHostPlatform("linux");
+  try {
+    const accepted = await f.gate.decide(f.request);
+    assert.equal(accepted.kind, "accepted");
+    if (accepted.kind !== "accepted") return;
+    const authority = bindAcceptedGateReservationAuthorityV1(f.gate, accepted), description = describeAcceptedGateReservationAuthorityV1(authority), handle = takeAcceptedGateReservationHandleV1(authority);
+    let persisted: any = await f.ledger.getReservation(description.reservationId), commits = 0, providers = 0;
+    const expiresAt = new Date(Date.now() + 60_000).toISOString(), projection = { v: "reelier.prepared-effect-projection/v1" as const, transport: "mcp", operationDigest: sha("7"), requestDigest: sha("9") }, requestDigest = preparedDispatchProjectionDigest(projection);
+    const coordinator = createDispatchCoordinator({
+      async getReservation() { return persisted; },
+      async commitPreparedDispatch(input: any) { commits += 1; persisted = { ...persisted, state: "dispatched", sendStarted: true }; return createDispatchCommitLease({ reservationId: input.reservationId, allocationId: input.allocationId, preparedDigest: input.preparedDescription.materializedRequestDigest, authorityGeneration: input.expectedAuthorityGeneration, authorityExpiresAt: input.preparedDescription.authorityExpiresAt, absoluteDeadlineMs: input.absoluteDeadlineMs, commitGeneration: "commit_1" }); },
+      async transition(_id: string, expected: string, event: any) { if (persisted.state !== expected) return { ok: false, reason: "state-conflict" }; persisted = { ...persisted, state: event.to, resultDigest: event.resultDigest }; return { ok: true, status: "transitioned", reservation: persisted }; },
+      async recover() { return { ok: true, reservations: [persisted], highWaterMark: null, topology: { directorySync: "verified" } }; },
+    } as any, {
+      async prepare() {
+        (f.stateInput.snapshot.candidates[0]!.stateEvents as any[]).push({ index: 1, kind: "revoked", contractDigest: description.contractDigest, at: decisionAt });
+        return createPreparedDispatch({ description: { v: "reelier.prepared-dispatch-description/v1", routeDigest: sha("8"), materializedRequestDigest: requestDigest, projection, authorityGeneration: "generation_1", authorityExpiresAt: expiresAt, absoluteDeadlineMs: performance.now() + 60_000, reservationId: description.reservationId, allocationId: "allocation_1" }, send: async () => { providers += 1; return { kind: "acknowledged", resultDigest: sha("6") }; } });
+      },
+      async dispatch() { throw new Error("legacy dispatch must not run"); },
+    });
+    await assert.rejects(() => coordinator.dispatch(handle), /changed|revoked|current|authority/i);
+    assert.deepEqual({ commits, providers }, { commits: 0, providers: 0 });
+  } finally { restore(); await f.cleanup(); }
+});
+
+test("the real coordinator refuses post-CAS publication revocation before send and recovers without resend", async () => {
+  const f = await fixture(), restore = __testSetAuthorityCellHostPlatform("linux");
+  try {
+    const accepted = await f.gate.decide(f.request);
+    assert.equal(accepted.kind, "accepted");
+    if (accepted.kind !== "accepted") return;
+    const authority = bindAcceptedGateReservationAuthorityV1(f.gate, accepted), description = describeAcceptedGateReservationAuthorityV1(authority), handle = takeAcceptedGateReservationHandleV1(authority);
+    let persisted: any = await f.ledger.getReservation(description.reservationId), providers = 0, head: DurableDispatchPublicationHeadV1 | null = null;
+    const expiresAt = new Date(Date.now() + 60_000).toISOString(), projection = { v: "reelier.prepared-effect-projection/v1" as const, transport: "mcp", operationDigest: sha("7"), requestDigest: sha("9") }, requestDigest = preparedDispatchProjectionDigest(projection);
+    const coordinator = createDispatchCoordinator({
+      async getReservation() { return persisted; },
+      async commitPreparedDispatch(input: any) { persisted = { ...persisted, state: "dispatched", sendStarted: true, intent: { ...persisted.intent, routeAuthority: { routeDigest: sha("8"), expectedMaterializedRequestDigest: requestDigest } } }; return createDispatchCommitLease({ reservationId: input.reservationId, allocationId: input.allocationId, preparedDigest: input.preparedDescription.materializedRequestDigest, authorityGeneration: input.expectedAuthorityGeneration, authorityExpiresAt: input.preparedDescription.authorityExpiresAt, absoluteDeadlineMs: input.absoluteDeadlineMs, commitGeneration: "commit_1" }); },
+      async transition(_id: string, expected: string, event: any) { if (persisted.state !== expected) return { ok: false, reason: "state-conflict" }; persisted = { ...persisted, state: event.to, resultDigest: event.resultDigest }; return { ok: true, status: "transitioned", reservation: persisted }; },
+      async recover() { return { ok: true, reservations: [persisted], highWaterMark: null, topology: { directorySync: "verified" } }; },
+    } as any, {
+      async prepare() { return createPreparedDispatch({ description: { v: "reelier.prepared-dispatch-description/v1", routeDigest: sha("8"), materializedRequestDigest: requestDigest, projection, authorityGeneration: "generation_1", authorityExpiresAt: expiresAt, absoluteDeadlineMs: performance.now() + 60_000, reservationId: description.reservationId, allocationId: "allocation_1" }, send: async () => { providers += 1; return { kind: "acknowledged", resultDigest: sha("6") }; } }); },
+      async dispatch() { throw new Error("legacy dispatch must not run"); },
+    }, undefined, {
+      async publishReservation(input) {
+        head = { v: "reelier.durable-dispatch-publication-head/v1", identity: input.identity, receiptRef: sha("8"), evidenceDigest: sha("9"), reservationReceiptRef: sha("8"), priorReceiptRef: null, phase: "reservation", terminalKind: null };
+        (f.stateInput.snapshot.candidates[0]!.stateEvents as any[]).push({ index: 1, kind: "revoked", contractDigest: description.contractDigest, at: decisionAt });
+        return { receiptRef: head.receiptRef, evidenceDigest: head.evidenceDigest };
+      },
+      async loadDurableHead() { return head; },
+      async publish(input) {
+        assert.equal(input.phase, "ambiguous");
+        head = { v: "reelier.durable-dispatch-publication-head/v1", identity: head!.identity, receiptRef: sha("a"), evidenceDigest: sha("b"), reservationReceiptRef: sha("8"), priorReceiptRef: sha("8"), phase: "ambiguous", terminalKind: "ambiguous" };
+        return { receiptRef: head.receiptRef, evidenceDigest: head.evidenceDigest };
+      },
+    });
+    await assert.rejects(() => coordinator.dispatch(handle), /changed|revoked|current|authority/i);
+    assert.deepEqual({ state: persisted.state, sendStarted: persisted.sendStarted, providers }, { state: "dispatched", sendStarted: true, providers: 0 }, "post-CAS refusal preserves the honest recovery marker without sending");
+    assert.deepEqual(await coordinator.recover(), [description.reservationId]);
+    assert.deepEqual({ state: persisted.state, providers }, { state: "ambiguous", providers: 0 });
+    assert.deepEqual(await coordinator.recover(), []);
+    assert.equal(providers, 0, "repeated recovery never resends after post-publication revocation");
+  } finally { restore(); await f.cleanup(); }
+});
+
+test("accepted exact-existing recovery exposes only an opaque durable readback linkage", async () => {
+  const f = await fixture();
+  try {
+    const accepted = await f.gate.decide(f.request);
+    assert.equal(accepted.kind, "accepted");
+    const beforeRecovery = f.counts();
+    const recovered = await recoverAcceptedGateReservationReadbackV1(f.gate, f.request);
+    const description = describeAcceptedGateReservationReadbackV1(recovered);
+    assert.deepEqual({ reservationId: description.reservationId, contractDigest: description.contractDigest, effectDigest: description.effectDigest }, { reservationId: accepted.kind === "accepted" ? accepted.signedDecision.reservationId : null, contractDigest: accepted.kind === "accepted" ? accepted.signedDecision.decisionContext.contractDigest : null, effectDigest: accepted.kind === "accepted" ? accepted.signedDecision.decisionContext.effectDigest : null });
+    assert.equal(Object.keys(recovered).length, 0);
+    assert.equal(JSON.stringify(recovered), "{}");
+    assert.deepEqual({ events: f.counts().events, capabilities: f.counts().capabilities, signatures: f.counts().signatures, reads: f.counts().reads, providerWrites: f.counts().providerWrites }, { events: beforeRecovery.events, capabilities: beforeRecovery.capabilities, signatures: beforeRecovery.signatures, reads: beforeRecovery.reads, providerWrites: 0 });
+    assert.throws(() => describeAcceptedGateReservationReadbackV1(structuredClone(recovered) as never), /genuine|readback|authority/i);
+    assert.throws(() => takeAcceptedGateReservationHandleV1(recovered as never), /invalid|consumed|authority/i);
+  } finally { await f.cleanup(); }
 });
 const planAt="2026-01-15T00:00:29.000Z",decisionAt="2026-01-15T00:00:30.000Z";
 const limits={maxEffectsPerWindow:10,windowSeconds:3600,maxEffectsPerSourceTrigger:2,maxBodyBytes:4096};

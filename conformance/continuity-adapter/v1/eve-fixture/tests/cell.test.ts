@@ -8,6 +8,8 @@ import {
   readCellJobCatalog,
   readCellJobLoad,
   remoteCellConfigured,
+  requestRemoteOutcome,
+  statusRemoteOutcome,
   scrubCellSecrets,
   searchCellJobs,
 } from "../agent/lib/cell.js";
@@ -102,6 +104,17 @@ test("job load posts an explicit JSON body the ingress can parse", async () => {
       // which the ingress answers with 400 invalid-request.
       assert.equal(request?.body, "{}");
     });
+  });
+});
+
+test("all four canonical quartet calls use the remote Cell and request binds its opaque Outcome reference", async () => {
+  await withServer(request => request.url?.startsWith("/v1/agent/status") ? ({status:200,body:{requestId:"",verdict:"accepted",reasonCode:"ready",lifecycleState:"ready",outcomeRefs:[JOB_REF],capability:{v:"reelier.harness-capability/v1",harnessId:null,harnessVersion:null,abiDigest:`sha256:${"c".repeat(64)}`,protocolCompatibility:"compatible",transports:["mcp","http","openapi"],fixtureStatus:"not-passed",liveTested:false,providerCertification:"not-claimed"}}}) : request.url?.startsWith("/v1/outcome-proposals") ? ({status:200,body:{requestId:"",verdict:"accepted",reasonCode:"proposed",lifecycleState:"proposed",outcomeRef:JOB_REF}}) : ({status:request.method==="POST"?202:200,body:{requestId:"request_1",verdict:"accepted",reasonCode:"reconciled",lifecycleState:"reconciled",receiptRef:`sha256:${"d".repeat(64)}`}}), async (base,seen)=>{
+    await withEnvAsync({REELIER_CELL_URL:base,REELIER_CELL_TOKEN:TOKEN},async()=>{
+      await requestRemoteOutcome({outcomeRef:JOB_REF,requestId:"request_1",sourceRefs:{issue:"issue_1"},choices:{}});
+      await statusRemoteOutcome("request_1");
+    });
+    assert.deepEqual(seen.map(item=>[item.method,item.url]),[["POST","/v1/outcome-requests"],["GET","/v1/outcome-status/request_1"]]);
+    assert.deepEqual(JSON.parse(seen[0]!.body),{outcomeRef:JOB_REF,requestId:"request_1",sourceRefs:{issue:"issue_1"},choices:{}});
   });
 });
 

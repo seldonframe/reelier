@@ -1,6 +1,6 @@
 # Governed release contracts v1
 
-Status: implemented for the Reelier `0.32.1` governed production release.
+Status: implemented for the Reelier `0.33.0-beta.0` governed production release.
 
 ## Canonical form and signatures
 
@@ -12,7 +12,7 @@ Every authorization, receipt-graph, and evidence verification key enters as the 
 
 ## Authorization closure
 
-The staged manifest fixes destination `main`, candidate branch `reelier/release/0.32.1`, tag `v0.32.1`, and package `reelier@0.32.1`. Its candidate commit is a full Git SHA.
+The staged manifest fixes destination `main`, candidate branch `reelier/release/0.33.0-beta.0`, tag `v0.33.0-beta.0`, and package `reelier@0.33.0-beta.0`. Its candidate commit is a full Git SHA.
 
 The repository is not among those fixed constants — frozen-contract amendment under operator exception R3, 2026-08-20; it was previously pinned to `seldonframe/reelier`. Under the constant, a rehearsal-scoped artifact set naming a scratch repository refused at parse, before any signature, key, or provider was consulted, so the governed release path could not be rehearsed end to end. `repository` is instead validated as `owner/name` format — one slash, alphanumeric-led on both sides, at most 100 characters per side, the same pattern the HTTPS provider applies to its own configuration — and the staged candidate manifest's `repository` and the operation plan's `repository` must be identical; the exact value travels inside the Ed25519-signed, operator-reviewed authorization bundle. The safety case is a runtime control the bundle signer cannot influence: the operator's runner config names one repository, and `requireConfiguredRepository` (`src/authority/host/github-release-https-provider.ts`) refuses any other as a `definitive-refusal` before any credential, DNS, or socket work, with the configured value additionally baked into the provider's closed path prefix `/repos/<repository>/`. A signed repository the operator has not independently configured therefore produces no provider effect. Branch, tag, package name/version, changed paths, and workflow paths stay constant-pinned. A signed repository is proof of what was authorized, never proof that the authorized repository was the right one — that remains an operator review claim.
 

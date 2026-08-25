@@ -1,8 +1,10 @@
-import { mkdir, open, readFile, readdir, rename, unlink } from "node:fs/promises";
+import { lstat, mkdir, open, readFile, readdir, realpath, rename, unlink, type FileHandle } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
 import path from "node:path";
 import { authorityCanonicalBytes, authorityDigest } from "../wire.js";
 import type { DispatchPublication, DispatchRequestState, DispatchOutcome, DurableDispatchPublicationHeadV1, DurableDispatchPublicationIdentityV1, DurableDispatchPublicationQueryV1 } from "./dispatch.js";
+import { governedDurableDispatchPublicationQueryV1 } from "./dispatch.js";
+import type { ReservationSnapshot } from "../ledger.js";
 import { assertLinuxAuthorityCellHost } from "./platform.js";
 import { noteDurableEntryCreated, syncDirectory } from "./durability.js";
 import { normalizeReservationPublicationId } from "./reservation-identity.js";
@@ -36,6 +38,22 @@ export interface FileReceiptPublicationOptions {
   readonly rootDir: string;
 }
 
+declare const fileReceiptPublicationReadbackBrand: unique symbol;
+export interface FileReceiptPublicationReadbackV1 { readonly [fileReceiptPublicationReadbackBrand]: true }
+type FileReceiptPublicationReadbackStateV1 = Readonly<{ publication: DispatchPublication; query: DurableDispatchPublicationQueryV1; reservationId: string; effectDigest: string }>;
+const genuineFilePublications = new WeakSet<object>(), filePublicationReadbacks = new WeakMap<object, FileReceiptPublicationReadbackStateV1>();
+export function assertGenuineFileReceiptPublicationV1(publication: DispatchPublication): void { if (!publication || typeof publication !== "object" || !genuineFilePublications.has(publication as object)) throw new TypeError("genuine file receipt publication is required"); }
+
+/** @internal Opaque resolver/query pair minted only by the genuine file publication. */
+export function bindFileReceiptPublicationReadbackV1(publication: DispatchPublication, reservation: ReservationSnapshot): FileReceiptPublicationReadbackV1 {
+  assertGenuineFileReceiptPublicationV1(publication);
+  const query = governedDurableDispatchPublicationQueryV1(reservation), readback = Object.freeze(Object.create(null)) as FileReceiptPublicationReadbackV1;
+  filePublicationReadbacks.set(readback as object, Object.freeze({ publication, query, reservationId: reservation.reservationId, effectDigest: reservation.intent.effectDigest }));
+  return readback;
+}
+export function describeFileReceiptPublicationReadbackV1(readback: FileReceiptPublicationReadbackV1): Readonly<{ reservationId: string; effectDigest: string }> { const state = filePublicationReadbacks.get(readback as object); if (!state) throw new TypeError("file receipt publication readback is not genuine"); return Object.freeze({ reservationId: state.reservationId, effectDigest: state.effectDigest }); }
+export async function loadFileReceiptPublicationReadbackV1(readback: FileReceiptPublicationReadbackV1, expect: "terminal" | "root-or-terminal" = "terminal"): Promise<DurableDispatchPublicationHeadV1 | null> { const state = filePublicationReadbacks.get(readback as object); if (!state) throw new TypeError("file receipt publication readback is not genuine"); return state.publication.loadDurableHead!(state.query, expect); }
+
 function fileName(receiptRef: string): string {
   return `receipt-${receiptRef.replace(/[^A-Za-z0-9_-]/g, "_")}.json`;
 }
@@ -44,8 +62,26 @@ function fileName(receiptRef: string): string {
 export function createFileReceiptPublication(options: FileReceiptPublicationOptions): DispatchPublication {
   assertLinuxAuthorityCellHost();
   const root = path.resolve(options.rootDir);
+  let publisherRootIdentity: PublisherRootIdentityV1 | undefined;
+  // Portable Node has no no-follow, handle-relative directory traversal. The held directory handle
+  // plus lexical/realpath/dev/ino checks before and after every operation close restart and repoint
+  // substitution. A privileged host administrator racing namespace replacement between individual
+  // syscalls remains outside this local trusted-host boundary.
+  const withRoot = async <T>(create: boolean, operation: (identity: PublisherRootIdentityV1) => Promise<T>): Promise<T | null> => {
+    const observed = await openPublisherRoot(root, create);
+    if (!observed) return null;
+    try {
+      if (publisherRootIdentity && publisherRootIdentity.digest !== observed.identity.digest) throw new TypeError("durable publication publisher root identity changed");
+      publisherRootIdentity ??= observed.identity;
+      let result: T | undefined, failure: unknown;
+      try { result = await operation(observed.identity); } catch (error) { failure = error; }
+      await revalidatePublisherRoot(root, observed.identity, observed.handle);
+      if (failure !== undefined) throw failure;
+      return result!;
+    } finally { await observed.handle.close(); }
+  };
   const identities = new Map<string, DurableDispatchPublicationIdentityV1>();
-  const legacyPublish = async (input: Readonly<{ phase: "dispatch" | "cancelled" | "ambiguous" | "reconcile"; state: DispatchRequestState; outcome: DispatchOutcome; dispatchedRequestDigest: string | null; priorReceiptDigest?: string | null }>) => {
+  const legacyPublish = async (input: Readonly<{ phase: "dispatch" | "cancelled" | "ambiguous" | "reconcile"; state: DispatchRequestState; outcome: DispatchOutcome; dispatchedRequestDigest: string | null; priorReceiptDigest?: string | null }>, _rootIdentity: PublisherRootIdentityV1) => {
       const reservationId = input.state.reservation.reservationId;
       const stable = {
         v: "reelier.authority-publication-preimage/internal-v1",
@@ -114,10 +150,10 @@ export function createFileReceiptPublication(options: FileReceiptPublicationOpti
       }
       return Object.freeze({ receiptRef, evidenceDigest });
   };
-  const publishDurable = async (identity: DurableDispatchPublicationIdentityV1, input: Readonly<{ phase: "reservation" | "dispatch" | "ambiguous" | "reconcile"; state: DispatchRequestState; outcome: DispatchOutcome; dispatchedRequestDigest: string | null; priorReceiptDigest: string | null }>) => {
+  const publishDurable = async (identity: DurableDispatchPublicationIdentityV1, input: Readonly<{ phase: "reservation" | "dispatch" | "ambiguous" | "reconcile"; state: DispatchRequestState; outcome: DispatchOutcome; dispatchedRequestDigest: string | null; priorReceiptDigest: string | null }>, rootIdentity: PublisherRootIdentityV1) => {
     assertDurableIdentity(identity);
     if (identity.reservationId !== normalizeReservationPublicationId(input.state.reservation.reservationId) || identity.effectDigest !== input.state.effectDigest) throw new TypeError("durable publication state identity mismatch");
-    const current = await loadDurableChain(root, identity, "root-or-terminal");
+    const current = await loadDurableChain(root, identity, "root-or-terminal", rootIdentity.digest);
     const terminalKind = input.phase === "reservation" ? null : input.phase === "reconcile" ? "reconciled" : input.outcome.kind;
     if (input.phase === "reservation") {
       if (input.priorReceiptDigest !== null || input.dispatchedRequestDigest !== null) throw new TypeError("durable reservation root is malformed");
@@ -129,8 +165,9 @@ export function createFileReceiptPublication(options: FileReceiptPublicationOpti
       }
     }
     const reservationReceiptRef = input.phase === "reservation" ? null : current!.reservationReceiptRef;
-    const preimage = Object.freeze({ v: "reelier.durable-file-publication-preimage/internal-v1", identity, phase: input.phase, terminalKind, reservationReceiptRef, priorReceiptRef: input.priorReceiptDigest, lifecycle: input.outcome.kind, effectDigest: input.state.effectDigest, dispatchedRequestDigest: input.dispatchedRequestDigest, providerResultDigest: input.outcome.resultDigest, reconciliationStatus: input.outcome.reconciliationStatus ?? null, normalizedProjectionDigest: input.outcome.normalizedProjectionDigest ?? null });
-    const receiptRef = authorityDigest(preimage), evidenceDigest = authorityDigest({ v: "reelier.durable-file-publication-evidence/internal-v1", receiptRef, identity, phase: input.phase, terminalKind, providerResultDigest: input.outcome.resultDigest });
+    const publisherRootDigest = rootIdentity.digest;
+    const preimage = Object.freeze({ v: "reelier.durable-file-publication-preimage/internal-v3", publisherRootDigest, identity, phase: input.phase, terminalKind, reservationReceiptRef, priorReceiptRef: input.priorReceiptDigest, lifecycle: input.outcome.kind, effectDigest: input.state.effectDigest, dispatchedRequestDigest: input.dispatchedRequestDigest, providerResultDigest: input.outcome.resultDigest, reconciliationStatus: input.outcome.reconciliationStatus ?? null, normalizedProjectionDigest: input.outcome.normalizedProjectionDigest ?? null });
+    const receiptRef = authorityDigest(preimage), evidenceDigest = authorityDigest({ v: "reelier.durable-file-publication-evidence/internal-v3", publisherRootDigest, receiptRef, identity, phase: input.phase, terminalKind, providerResultDigest: input.outcome.resultDigest });
     const head = Object.freeze({ v: "reelier.durable-dispatch-publication-head/v1" as const, identity, receiptRef, evidenceDigest, reservationReceiptRef: input.phase === "reservation" ? receiptRef : current!.reservationReceiptRef, priorReceiptRef: input.priorReceiptDigest, phase: input.phase, terminalKind }) as DurableDispatchPublicationHeadV1;
     if (current) {
       if (current.receiptRef === receiptRef && authorityDigest(current) === authorityDigest(head)) return Object.freeze({ receiptRef, evidenceDigest });
@@ -140,30 +177,33 @@ export function createFileReceiptPublication(options: FileReceiptPublicationOpti
     await mkdir(directory, { recursive: true });
     noteDurableEntryCreated("durable-mkdir", directory);
     await syncDirectory(root, "durable-mkdir");
-    await writeImmutable(path.join(directory, `node-${receiptRef.slice(7)}.json`), Object.freeze({ v: "reelier.durable-file-publication-node/internal-v1", preimage, head }));
-    const reread = await loadDurableChain(root, identity, "root-or-terminal");
+    await writeImmutable(path.join(directory, `node-${receiptRef.slice(7)}.json`), Object.freeze({ v: "reelier.durable-file-publication-node/internal-v3", publisherRootDigest, preimage, head }));
+    const reread = await loadDurableChain(root, identity, "root-or-terminal", publisherRootDigest);
     if (!reread || reread.receiptRef !== receiptRef || authorityDigest(reread) !== authorityDigest(head)) throw new Error("durable publication authoritative readback mismatch");
     return Object.freeze({ receiptRef, evidenceDigest });
   };
-  return Object.freeze({
+  const publication = Object.freeze({
     async publishReservation(input: Parameters<NonNullable<DispatchPublication["publishReservation"]>>[0]) {
       const identity = snapshotDurableIdentity(input.identity);
       identities.set(normalizeReservationPublicationId(identity.reservationId), identity);
-      return publishDurable(identity, { phase: input.phase, state: input.state, outcome: input.outcome, dispatchedRequestDigest: input.dispatchedRequestDigest, priorReceiptDigest: input.priorReceiptDigest });
+      return (await withRoot(true, rootIdentity => publishDurable(identity, { phase: input.phase, state: input.state, outcome: input.outcome, dispatchedRequestDigest: input.dispatchedRequestDigest, priorReceiptDigest: input.priorReceiptDigest }, rootIdentity)))!;
     },
     async loadDurableHead(query: DurableDispatchPublicationQueryV1, expect: "terminal" | "root-or-terminal" = "terminal") {
       assertDurableQuery(query);
       const identity = snapshotDurableIdentity(query.identity);
       identities.set(normalizeReservationPublicationId(identity.reservationId), identity);
-      return loadDurableChain(root, identity, expect);
+      return withRoot(false, rootIdentity => loadDurableChain(root, identity, expect, rootIdentity.digest));
     },
     async publish(input: Readonly<{ phase: "dispatch" | "cancelled" | "ambiguous" | "reconcile"; state: DispatchRequestState; outcome: DispatchOutcome; dispatchedRequestDigest: string | null; priorReceiptDigest?: string | null }>) {
       const identity = identities.get(normalizeReservationPublicationId(input.state.reservation.reservationId));
-      if (!identity) return legacyPublish(input);
+      if (!identity) return (await withRoot(true, rootIdentity => legacyPublish(input, rootIdentity)))!;
       if (input.phase === "cancelled") throw new TypeError("a durable send-started chain cannot publish cancellation");
-      return publishDurable(identity, { phase: input.phase, state: input.state, outcome: input.outcome, dispatchedRequestDigest: input.dispatchedRequestDigest, priorReceiptDigest: input.priorReceiptDigest ?? null });
+      const phase = input.phase;
+      return (await withRoot(true, rootIdentity => publishDurable(identity, { phase, state: input.state, outcome: input.outcome, dispatchedRequestDigest: input.dispatchedRequestDigest, priorReceiptDigest: input.priorReceiptDigest ?? null }, rootIdentity)))!;
     },
   });
+  genuineFilePublications.add(publication as object);
+  return publication;
 }
 
 const DIGEST = /^sha256:(?!0{64}$)[0-9a-f]{64}$/;
@@ -188,6 +228,51 @@ function assertDurableQuery(value: DurableDispatchPublicationQueryV1): void {
 }
 
 function durableDirectory(root: string, identity: DurableDispatchPublicationIdentityV1): string { return path.join(root, `durable-${authorityDigest(identity).slice(7)}`); }
+type PublisherRootIdentityV1 = Readonly<{ canonicalRoot: string; device: string; inode: string; digest: string }>;
+
+async function openPublisherRoot(root: string, create: boolean): Promise<Readonly<{ identity: PublisherRootIdentityV1; handle: FileHandle }> | null> {
+  const present = await assertNoLinkedPathComponents(root);
+  if (!present) {
+    if (!create) return null;
+    await mkdir(root, { recursive: true });
+    if (!await assertNoLinkedPathComponents(root)) throw new TypeError("durable publication root creation did not converge");
+  }
+  const canonicalRoot = await realpath(root);
+  if (path.normalize(canonicalRoot) !== path.normalize(root)) throw new TypeError("durable publication root lexical path differs from canonical realpath");
+  const handle = await open(root, "r");
+  try {
+    const stats = await handle.stat({ bigint: true });
+    if (!stats.isDirectory()) throw new TypeError("durable publication root is not a directory");
+    const identity = publisherRootIdentity(canonicalRoot, stats.dev, stats.ino);
+    await revalidatePublisherRoot(root, identity, handle);
+    return Object.freeze({ identity, handle });
+  } catch (error) { await handle.close(); throw error; }
+}
+
+async function revalidatePublisherRoot(root: string, expected: PublisherRootIdentityV1, handle: FileHandle): Promise<void> {
+  if (!await assertNoLinkedPathComponents(root)) throw new TypeError("durable publication root disappeared");
+  const canonicalRoot = await realpath(root), held = await handle.stat({ bigint: true }), currentHandle = await open(root, "r");
+  try {
+    const current = await currentHandle.stat({ bigint: true });
+    if (path.normalize(canonicalRoot) !== path.normalize(root) || publisherRootIdentity(canonicalRoot, held.dev, held.ino).digest !== expected.digest || publisherRootIdentity(canonicalRoot, current.dev, current.ino).digest !== expected.digest) throw new TypeError("durable publication publisher root identity changed or was repointed");
+  } finally { await currentHandle.close(); }
+}
+
+function publisherRootIdentity(canonicalRoot: string, device: bigint, inode: bigint): PublisherRootIdentityV1 {
+  const deviceText = device.toString(10), inodeText = inode.toString(10), digest = authorityDigest({ v: "reelier.durable-file-publication-root/internal-v2", canonicalRoot, device: deviceText, inode: inodeText });
+  return Object.freeze({ canonicalRoot, device: deviceText, inode: inodeText, digest });
+}
+
+async function assertNoLinkedPathComponents(root: string): Promise<boolean> {
+  const parsed = path.parse(root), segments = root.slice(parsed.root.length).split(path.sep).filter(Boolean);
+  let current = parsed.root;
+  for (const segment of segments) {
+    current = path.join(current, segment);
+    try { if ((await lstat(current)).isSymbolicLink()) throw new TypeError("durable publication root contains a symlink or junction"); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return false; throw error; }
+  }
+  return true;
+}
 
 /**
  * Publishes a node through a temp file, so partial JSON can only ever exist under a dot-prefixed
@@ -213,7 +298,7 @@ async function writeImmutable(file: string, value: unknown): Promise<void> {
   await syncDirectory(directory, "node-create");
 }
 
-async function loadDurableChain(root: string, identity: DurableDispatchPublicationIdentityV1, expect: "terminal" | "root-or-terminal"): Promise<DurableDispatchPublicationHeadV1 | null> {
+async function loadDurableChain(root: string, identity: DurableDispatchPublicationIdentityV1, expect: "terminal" | "root-or-terminal", publisherRootDigest: string): Promise<DurableDispatchPublicationHeadV1 | null> {
   assertDurableIdentity(identity);
   if (expect !== "terminal" && expect !== "root-or-terminal") throw new TypeError("durable publication head expectation is invalid");
   const directory = durableDirectory(root, identity);
@@ -223,10 +308,10 @@ async function loadDurableChain(root: string, identity: DurableDispatchPublicati
   if (names.length === 0) return null;
   const nodes = await Promise.all(names.map(async name => JSON.parse(await readFile(path.join(directory, name), "utf8")) as any));
   for (const node of nodes) {
-    if (!node || node.v !== "reelier.durable-file-publication-node/internal-v1" || authorityDigest(node.head.identity) !== authorityDigest(identity) || authorityDigest(node.preimage) !== node.head.receiptRef || !DIGEST.test(node.head.evidenceDigest)) throw new TypeError("durable publication node is invalid or conflicting");
+    if (!node || node.v !== "reelier.durable-file-publication-node/internal-v3" || node.publisherRootDigest !== publisherRootDigest || node.preimage?.v !== "reelier.durable-file-publication-preimage/internal-v3" || node.preimage.publisherRootDigest !== publisherRootDigest || authorityDigest(node.head.identity) !== authorityDigest(identity) || authorityDigest(node.preimage) !== node.head.receiptRef || !DIGEST.test(node.head.evidenceDigest)) throw new TypeError("durable publication publisher root binding, version, or node is invalid or conflicting");
     // The receiptRef binds the preimage only. Recompute the evidence digest and cross-check every
     // head field the preimage already determines, so a tampered head cannot ride a valid receiptRef.
-    const expectedEvidenceDigest = authorityDigest({ v: "reelier.durable-file-publication-evidence/internal-v1", receiptRef: node.head.receiptRef, identity: node.head.identity, phase: node.preimage.phase, terminalKind: node.preimage.terminalKind, providerResultDigest: node.preimage.providerResultDigest });
+    const expectedEvidenceDigest = authorityDigest({ v: "reelier.durable-file-publication-evidence/internal-v3", publisherRootDigest, receiptRef: node.head.receiptRef, identity: node.head.identity, phase: node.preimage.phase, terminalKind: node.preimage.terminalKind, providerResultDigest: node.preimage.providerResultDigest });
     if (node.head.evidenceDigest !== expectedEvidenceDigest || node.head.v !== "reelier.durable-dispatch-publication-head/v1" || node.head.phase !== node.preimage.phase || node.head.terminalKind !== node.preimage.terminalKind || node.head.priorReceiptRef !== node.preimage.priorReceiptRef || node.head.reservationReceiptRef !== (node.preimage.phase === "reservation" ? node.head.receiptRef : node.preimage.reservationReceiptRef)) throw new TypeError("durable publication node is invalid or conflicting");
   }
   const roots = nodes.filter(node => node.head.phase === "reservation" && node.head.priorReceiptRef === null && node.head.reservationReceiptRef === node.head.receiptRef);

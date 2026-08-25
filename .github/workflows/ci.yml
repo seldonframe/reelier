@@ -260,6 +260,10 @@ jobs:
         if: ${{ needs.pack-authority-host-boundary.result == 'success' && needs.produce-authority-factory-evidence.result == 'success' }}
         shell: bash
         run: node test/packed/native-github-labels.mjs "$(pwd)/authority-host-boundary-pack/$(basename authority-host-boundary-pack/*.tgz)"
+      - name: Verify packed Operator and canonical quartet exports
+        if: ${{ needs.pack-authority-host-boundary.result == 'success' && needs.produce-authority-factory-evidence.result == 'success' }}
+        shell: bash
+        run: node test/packed/operator-contract.mjs "$(pwd)/authority-host-boundary-pack/$(basename authority-host-boundary-pack/*.tgz)"
       - name: Run native authority platform evidence
         if: ${{ needs.pack-authority-host-boundary.result == 'success' && needs.produce-authority-factory-evidence.result == 'success' }}
         shell: bash
@@ -280,7 +284,7 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          if [ '${{ matrix.os }}' = 'ubuntu-latest' ]; then REELIER_EVE_MATRIX_DIAGNOSTICS=1 timeout --signal=TERM --kill-after=30s 20m npm test 2>&1 | tee test-output.txt; else node --test --test-concurrency=1 dist-test/test/authority/package.test.js dist-test/test/authority/linux-authority-cell.test.js dist-test/test/authority/authority-cell-connection.test.js dist-test/test/authority/certification-portable-evidence.test.js; fi
+          if [ '${{ matrix.os }}' = 'ubuntu-latest' ]; then REELIER_N100_ALREADY_CERTIFIED=1 REELIER_EVE_MATRIX_DIAGNOSTICS=1 timeout --signal=TERM --kill-after=30s 20m npm test 2>&1 | tee test-output.txt; else node --test --test-concurrency=1 dist-test/test/authority/package.test.js dist-test/test/authority/linux-authority-cell.test.js dist-test/test/authority/authority-cell-connection.test.js dist-test/test/authority/certification-portable-evidence.test.js; fi
       - name: Upload Ubuntu test output
         if: ${{ always() && matrix.os == 'ubuntu-latest' }}
         uses: actions/upload-artifact@v4

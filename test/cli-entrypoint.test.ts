@@ -67,6 +67,13 @@ test("root parser retains authority connection values required by the existing c
   });
 });
 
+test("root parser retains the harness value required by the public Operator run command", () => {
+  const parsed = parseArgv(["operator", "run", "--harness", "codex", "prepare the exact local candidate"]);
+  assert.deepEqual(parsed.positional, ["operator", "run", "prepare the exact local candidate"]);
+  assert.deepEqual(parsed.opts, { harness: "codex" });
+  assert.deepEqual([...parsed.flags], []);
+});
+
 test("real CLI restart recovers an interrupted exact plan and refuses later identity drift", async t => {
   try { await access(path.resolve(CLI_DIR, "../../native/bootstrap-helper/manifest.json")); }
   catch { t.skip("certified native bootstrap artifacts are unavailable on this checkout"); return; }
@@ -101,7 +108,8 @@ test("real CLI restart recovers an interrupted exact plan and refuses later iden
     assert.notEqual(JSON.parse(await readFile(transactionPath, "utf8")).state, "complete");
 
     const restarted = await execFileAsync(process.execPath, [cliPath, "init", "restart-agent"], { cwd: project });
-    assert.match(restarted.stdout, /npx reelier@0\.32\.1 up/);
+    const packageVersion = (JSON.parse(await readFile(path.resolve(CLI_DIR, "../../package.json"), "utf8")) as { version: string }).version;
+    assert.ok(restarted.stdout.includes(`npx reelier@${packageVersion} up`), `restart command did not pin the current package version ${packageVersion}`);
     const pointer = JSON.parse(await readFile(path.join(bootstrap, "current.json"), "utf8"));
     assert.deepEqual((await readdir(path.join(bootstrap, "generations", pointer.generation))).sort(), ["checkpoint.json", "project.json", "recovery-command.txt", "report.json"]);
 

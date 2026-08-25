@@ -3,6 +3,7 @@ import { authenticateOutcomeRequest } from "../keys.js";
 import { bindInvokeJobRef, normalizeOutcomeRequestV1 } from "./request.js";
 import type { AuthorityMcpHandler } from "./mcp.js";
 import type { AuthorityExecutionContextV1 } from "../types.js";
+import { createAuthorityAgentTools } from "../host/agent-tools.js";
 
 export async function handleAuthorityHttp(request: IncomingMessage, response: ServerResponse, handler: AuthorityMcpHandler, context: { readonly tenant: string; readonly requester: string; readonly resolvePrincipal?: (header: string | undefined) => Promise<{ readonly tenant: string; readonly requester: string; readonly executionContext: AuthorityExecutionContextV1 } | undefined>; readonly identity?: { readonly cellId: string; readonly adapterContractDigest: string } }, artifactStage?: (input: unknown, context: { readonly tenant: string; readonly requester: string; readonly executionContext?: AuthorityExecutionContextV1 }) => Promise<unknown>): Promise<void> {
   let resolved: Awaited<ReturnType<NonNullable<typeof context.resolvePrincipal>>>;
@@ -10,8 +11,29 @@ export async function handleAuthorityHttp(request: IncomingMessage, response: Se
   if (!resolved) { write(response, 401, { verdict: "refused", reasonCode: "authentication-required", lifecycleState: "refused", requestId: "" }); return; }
   try {
     const requestContext = resolved;
+    const defaultAgentTools = handler.agentTools ?? createAuthorityAgentTools({
+      jobsSearch: async (input, toolContext) => {
+        if (!handler.jobsSearch) throw new TypeError("agent status is unavailable");
+        return handler.jobsSearch(input, toolContext);
+      },
+      jobLoad: async (input, toolContext) => {
+        if (!handler.jobLoad) throw new TypeError("Outcome proposal is unavailable");
+        return handler.jobLoad(input, toolContext);
+      },
+      invoke: async (input, toolContext) => {
+        if (!handler.invoke) throw new TypeError("Outcome request is unavailable");
+        return handler.invoke(input, toolContext);
+      },
+      status: handler.status,
+    });
+    const agentTools = handler.resolveAgentTools ? handler.resolveAgentTools() : defaultAgentTools;
     if (request.method !== "POST" && request.method !== "GET") return write(response, 405, { verdict: "refused", reasonCode: "method-not-allowed" });
     const url = new URL(request.url ?? "/", "http://authority.invalid");
+    if (url.pathname === "/v1/agent/status" && request.method === "GET") return write(response, 200, await agentTools.agentStatus({}, publicContext(requestContext)));
+    if (url.pathname === "/v1/outcome-proposals" && request.method === "POST") return write(response, 200, await agentTools.outcomeProposal(await readJson(request), publicContext(requestContext)));
+    if (url.pathname === "/v1/outcome-requests" && request.method === "POST") return write(response, 202, await agentTools.outcomeRequest(await readJson(request), publicContext(requestContext)));
+    const canonicalOutcomeStatus = /^\/v1\/outcome-status\/([^/]+)$/.exec(url.pathname);
+    if (canonicalOutcomeStatus && request.method === "GET") return write(response, 200, await agentTools.outcomeStatus({ requestId: decodeURIComponent(canonicalOutcomeStatus[1]) }, publicContext(requestContext)));
     if (url.pathname === "/v1/identity" && request.method === "GET" && context.identity) return write(response, 200, { v: "reelier.authority-cell-identity/v1", cellId: context.identity.cellId, adapterContractDigest: context.identity.adapterContractDigest });
     if (url.pathname === "/v1/jobs" && request.method === "GET") {
       if (!handler.jobsSearch) return write(response, 503, { verdict: "refused", reasonCode: "job-catalog-unavailable", lifecycleState: "unavailable", requestId: "" });

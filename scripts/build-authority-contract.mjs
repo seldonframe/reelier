@@ -24,7 +24,7 @@ const adapterContractMembers = [
   "connection-inventory.schema.json", "decision-context.schema.json", "delegation-grant.schema.json", "gate-event.schema.json", "golden-vectors.json",
   "observation-envelope.schema.json", "observed-action.schema.json", "outcome-contract.schema.json", "outcome-request.schema.json", "pack-manifest.schema.json",
   "principal.schema.json", "shadow-report.schema.json", "signed-certification-readiness.schema.json", "source-bundle.schema.json",
-  "staged-artifact-commitment.schema.json", "transport-effect.schema.json", "trust-event.schema.json",
+  "staged-artifact-commitment.schema.json", "tool-effect-contract.schema.json", "transport-effect.schema.json", "trust-event.schema.json",
 ];
 
 const digest = "sha256:" + "9".repeat(64);
@@ -68,6 +68,7 @@ const vectors = {
   "outcome-contract": { v: "reelier.outcome-contract/v1", tenant: "tenant_1", alias: "definition_1", contractId: "contract_1", validFrom: at, validUntil: "2026-02-01T00:00:00.000Z", packDigest: digest, definitionDigest: digest, sponsor: "sponsor_1", audiences: ["requester_1"], delegationGrantDigest: digest, connectorId: "highlevel", accountId: "location_1", sourceAuthority: { resolverId: "highlevel_appointment", projectionSchemaId: "highlevel.appointment-reminder/v1", allowedReadEndpointIds: ["appointments.get", "contacts.get"], authorizedProjectionPointers: ["/appointment/startTime", "/contact/phone"], maxFreshnessSeconds: 60 }, riskClasses: ["message"], limits, policyCommitment: { schemaId: "highlevel.sms-reminder-policy/v1", jcsBase64: Buffer.from(policyJcs, "utf8").toString("base64"), digest: policyDigest } },
   "outcome-request": { v: "reelier.outcome-request/v1", requestId: "request_1", sourceRefs: { appointment: "ref_1" }, choices: {} },
   "transport-effect": { v: "reelier.transport-effect/v1", endpointId: "connector_1", method: "POST", path: "/v1/messages", query: "account=tenant_1&mode=send", headers: { "Content-Type": "application/json" }, bodyBase64: "e30=", riskClass: "message", idempotency: "native", preconditions: [], reconciliation: { recipeId: "message-readback" } },
+  "tool-effect-contract": { v: "reelier.tool-effect-contract/v1", contractId: "contract_1", provider: "provider-neutral", operation: "records.create", operationDigest: digest, schemaDigest: digest, policyDigest: digest, effectClass: "idempotent-write", model: { fields: ["title"], maxBytes: 1024 }, bindings: { credentialRef: "credential_1", accountRef: "account_1", destinationRef: "destination_1", limitRef: "limit_1" }, semanticIdentity: "record:1", idempotencyKey: "idem_1", readback: { operation: "records.get", projection: ["/id"] }, result: { success: ["created"], conflict: [], definitiveFailure: ["forbidden"], ambiguity: ["timeout"] }, maximumEvidenceGrade: "verified" },
   "compiled-capability": { v: "reelier.compiled-capability/v1", tenant: "tenant_1", requester: "requester_1", definitionAlias: "definition_1", requestDigest: digest, requestKey: digest, contractDigest: digest, sourceBundleDigest: digest, sourceSnapshotDigest: digest, authorityStateDigest: digest, limits, limitsDigest: vectorLimitsDigest, capabilityId: "capability_1", outcomeKey: digest, effectDigest: digest, issuedAt: at, expiresAt: "2026-01-01T00:01:00.000Z" },
   "decision-context": acceptedDecisionContext,
   "gate-event": gateEvent,
