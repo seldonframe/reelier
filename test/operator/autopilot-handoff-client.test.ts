@@ -62,3 +62,31 @@ test("Autopilot client signs the exact reviewed execution authority and artifact
     assert.equal(request.artifactBase64, candidate.toString("base64"));
   } finally { await rm(root, { recursive: true, force: true }); }
 });
+
+test("Autopilot client signs a GitHub-only v3 handoff without inventing Linear authority", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "reelier-autopilot-v3-"));
+  const d = (char: string) => `sha256:${char.repeat(64)}`;
+  const candidate = Buffer.from("exact GitHub-only candidate bytes", "utf8");
+  const artifactDigest = `sha256:${createHash("sha256").update(candidate).digest("hex")}`;
+  let request: any;
+  const manifest = {
+    version: "reelier.managed-upgrade-target-manifest/v3" as const,
+    mode: "github-only" as const,
+    missionRef: "mission-v3",
+    repository: "fixlyai/reelier-beta",
+    githubActions: ["github_release_candidate_publish_v1", "github_release_pr_ensure_v1", "github_release_pr_merge_v1"] as const,
+    maximumWrites: 3 as const,
+    expiresAt: "2026-08-24T12:10:00.000Z",
+    artifactDigest,
+    authority: { github: { repository: "fixlyai/reelier-beta", baseBranch: "main", baseSha: "a".repeat(40), headBranch: "reelier/mission-v3", headSha: "b".repeat(40), candidateDigest: artifactDigest, workflowPath: ".github/workflows/ci.yml", workflowDigest: d("d"), requiredChecks: ["test"], postMergeTreeSha: "e".repeat(40) } },
+  };
+  try {
+    await createAutopilotHandoffV1({ root, cloudBaseUrl: "https://www.reelier.com", missionRef: "mission-v3", localEvidenceRefs: [d("a")], artifactBytes: candidate, now: () => new Date("2026-08-24T12:00:00.000Z"), targetManifest: manifest, fetch: async (_url, init) => { request = JSON.parse(String(init?.body)); return new Response(JSON.stringify({ browserPath: `/autopilot?mission=mission-v3#init=${"b".repeat(43)}`, pollSecret: "p".repeat(43) }), { status: 201 }); } });
+    assert.equal(request.targetManifest.version, "reelier.managed-upgrade-target-manifest/v3");
+    assert.equal(request.targetManifest.mode, "github-only");
+    assert.deepEqual(request.intent.requestedOperations, ["github_release_candidate_publish_v1", "github_release_pr_ensure_v1", "github_release_pr_merge_v1"]);
+    assert.equal(JSON.stringify(request).includes("linear"), false);
+    assert.equal(request.artifactBase64, candidate.toString("base64"));
+    await assert.rejects(() => createAutopilotHandoffV1({ root, cloudBaseUrl: "https://www.reelier.com", missionRef: "mission-v3", localEvidenceRefs: [], artifactBytes: candidate, now: () => new Date("2026-08-24T12:00:00.000Z"), targetManifest: { ...manifest, maximumWrites: 4 as never }, fetch: async () => new Response() }), /write limit/i);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});

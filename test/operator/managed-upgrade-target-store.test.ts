@@ -72,3 +72,26 @@ test("target staging rejects an operation outside the exact manifest and mismatc
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("target staging durably reopens the exact GitHub-only v3 bundle", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "reelier-autopilot-github-only-target-"));
+  const candidate = Buffer.from("exact GitHub-only candidate", "utf8"), artifactDigest = digest(candidate.toString("utf8"));
+  const targetManifest = {
+    version: "reelier.managed-upgrade-target-manifest/v3" as const,
+    mode: "github-only" as const,
+    missionRef: "mission-github-only",
+    repository: "fixlyai/reelier-beta",
+    githubActions: ["github_release_candidate_publish_v1", "github_release_pr_ensure_v1", "github_release_pr_merge_v1"] as const,
+    maximumWrites: 3 as const,
+    expiresAt: "2026-08-24T12:10:00.000Z",
+    artifactDigest,
+    authority: { github: { repository: "fixlyai/reelier-beta", baseBranch: "main", baseSha: "a".repeat(40), headBranch: "reelier/mission-github-only", headSha: "b".repeat(40), candidateDigest: artifactDigest, workflowPath: ".github/workflows/ci.yml", workflowDigest: digest("workflow"), requiredChecks: ["test"], postMergeTreeSha: "c".repeat(40) } },
+  };
+  try {
+    await stageManagedUpgradeTargetBundleV1({ root, operation: "github_release_candidate_publish_v1", targetManifest, artifactBytes: candidate, seen: new Set() });
+    const reopened = await loadManagedUpgradeTargetBundleV1({ root, missionRef: "mission-github-only" });
+    assert.deepEqual(reopened.targetManifest, targetManifest);
+    assert.deepEqual(Buffer.from(reopened.artifactBytes!), candidate);
+    assert.equal("linearTarget" in reopened.targetManifest, false);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});

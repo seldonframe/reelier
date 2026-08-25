@@ -338,7 +338,7 @@ test("operator autopilot binds an exact manifest to an existing mission and open
   }
 });
 
-test("operator autopilot obtains exact browser targets, compiles locally, and then opens the contextual handoff", async () => {
+test("operator autopilot defaults to an exact GitHub-only compile and never opens Linear selection", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "reelier-operator-autopilot-select-"));
   const originalLog = console.log;
   const opened: string[] = [], phases: string[] = [];
@@ -347,20 +347,20 @@ test("operator autopilot obtains exact browser targets, compiles locally, and th
       v: "reelier.mission-control-mission/v1", missionId: "mission-select", workspaceDigest: `sha256:${"a".repeat(64)}`, harness: "codex", harnessLifecycle: "exited", outcomeLifecycle: "locally-observed", attentionState: "none", attentionReasons: [], evidenceRefs: [`sha256:${"b".repeat(64)}`], processOwnership: "reelier", imported: false, updatedAt: "2026-08-24T12:00:00.000Z",
     });
     console.log = () => undefined;
-    const targetManifest = { version: "reelier.managed-upgrade-target-manifest/v1" as const, missionRef: "mission-select", repository: "fixlyai/reelier-beta", githubActions: ["github_release_pr_merge_v1" as const], linearTarget: { workspaceId: "workspace", teamId: "team", projectId: "project", issueIds: ["issue-1"] }, linearActions: ["linear_evidence_comment_v1" as const], maximumWrites: 2, expiresAt: "2026-08-24T12:10:00.000Z" };
+    const targetManifest = { version: "reelier.managed-upgrade-target-manifest/v3" as const, mode: "github-only" as const, missionRef: "mission-select", repository: "fixlyai/reelier-beta", githubActions: ["github_release_candidate_publish_v1" as const, "github_release_pr_ensure_v1" as const, "github_release_pr_merge_v1" as const], maximumWrites: 3 as const, expiresAt: "2026-08-24T12:10:00.000Z", artifactDigest: `sha256:${"d".repeat(64)}`, authority: { github: { repository: "fixlyai/reelier-beta", baseBranch: "main", baseSha: "a".repeat(40), headBranch: "reelier/mission-select", headSha: "b".repeat(40), candidateDigest: `sha256:${"d".repeat(64)}`, workflowPath: ".github/workflows/ci.yml", workflowDigest: `sha256:${"c".repeat(64)}`, requiredChecks: ["test"], postMergeTreeSha: "e".repeat(40) } } };
     assert.equal(await cmdOperator({ positional: ["autopilot", "mission-select"], flags: new Set(), vars: {}, wraps: [], opts: {}, fails: [] }, {
       cwd: root,
       home: root,
-      startAutopilotTargetSelection: async () => { phases.push("start-selection"); return { browserUrl: "https://www.reelier.com/autopilot/targets?mission=mission-select#selection=secret" }; },
-      waitForAutopilotTargetSelection: async () => { phases.push("claim-selection"); return { version: "reelier.autopilot-target-selection/v1", missionRef: "mission-select", workspaceId: "workspace", teamId: "team", projectId: "project", composite: { issueId: "issue-1", preStatusId: "state-progress", preStatusName: "In Progress", targetStatusId: "state-done", targetStatusName: "Done" }, linearOnly: { issueId: "issue-2", preStatusId: "state-todo", preStatusName: "Todo", targetStatusId: "state-done", targetStatusName: "Done" } }; },
-      compileManagedAutopilotBundle: async () => { phases.push("compile"); return { targetManifest }; },
+      startAutopilotTargetSelection: async () => { throw new Error("Linear selection must not start"); },
+      waitForAutopilotTargetSelection: async () => { throw new Error("Linear selection must not be claimed"); },
+      compileGitHubOnlyManagedAutopilotBundle: async () => { phases.push("compile-github-only"); return { targetManifest, artifactBytes: Buffer.from("candidate") }; },
       createAutopilotHandoff: async () => { phases.push("handoff"); return { browserUrl: "https://www.reelier.com/autopilot?mission=mission-select", pollSecret: "p".repeat(43), intent: {} as never }; },
       waitForAutopilotReady: async () => ({ status: "ready", agentRef: "agent-opaque", configurationDigest: `sha256:${"c".repeat(64)}` }),
       openBrowser: url => opened.push(url),
       now: () => new Date("2026-08-24T12:00:00.000Z"),
     }), 0);
-    assert.deepEqual(phases, ["start-selection", "claim-selection", "compile", "handoff"]);
-    assert.deepEqual(opened, ["https://www.reelier.com/autopilot/targets?mission=mission-select#selection=secret", "https://www.reelier.com/autopilot?mission=mission-select"]);
+    assert.deepEqual(phases, ["compile-github-only", "handoff"]);
+    assert.deepEqual(opened, ["https://www.reelier.com/autopilot?mission=mission-select"]);
   } finally { console.log = originalLog; await rm(root, { recursive: true, force: true }); }
 });
 

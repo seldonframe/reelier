@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
-import { compileAndStageManagedAutopilotBundleV1 } from "../../src/operator/managed-autopilot-compiler.js";
+import { compileAndStageGitHubOnlyManagedAutopilotBundleV1, compileAndStageManagedAutopilotBundleV1 } from "../../src/operator/managed-autopilot-compiler.js";
 import { loadManagedUpgradeTargetBundleV1 } from "../../src/operator/managed-upgrade-target-store.js";
 
 const run = promisify(execFile);
@@ -58,6 +58,22 @@ test("compiler freezes a clean Git candidate and selected Linear targets into th
     assert.deepEqual(artifact.files.map((file: { path: string }) => file.path), ["README.md", "src/new.txt"]);
     assert.equal(compiled.targetManifest.artifactDigest, `sha256:${createHash("sha256").update(compiled.artifactBytes).digest("hex")}`);
     assert.deepEqual(await loadManagedUpgradeTargetBundleV1({ root, missionRef: "mission-1" }), compiled);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("GitHub-only compiler freezes the current repository into the reviewed three-definition v3 bundle", async () => {
+  const root = await repository();
+  try {
+    const compiled = await compileAndStageGitHubOnlyManagedAutopilotBundleV1({ root, missionRef: "mission-github-only", now: () => new Date("2026-08-24T20:00:00.000Z") });
+    assert.equal(compiled.targetManifest.version, "reelier.managed-upgrade-target-manifest/v3");
+    assert.equal(compiled.targetManifest.mode, "github-only");
+    assert.deepEqual(compiled.targetManifest.githubActions, ["github_release_candidate_publish_v1", "github_release_pr_ensure_v1", "github_release_pr_merge_v1"]);
+    assert.equal(compiled.targetManifest.maximumWrites, 3);
+    assert.equal("linearTarget" in compiled.targetManifest, false);
+    assert.equal("linear" in compiled.targetManifest.authority, false);
+    assert.equal(compiled.targetManifest.authority.github.postMergeTreeSha, await git(root, "rev-parse", "HEAD^{tree}"));
+    assert.ok(compiled.artifactBytes);
+    assert.deepEqual(await loadManagedUpgradeTargetBundleV1({ root, missionRef: "mission-github-only" }), compiled);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
