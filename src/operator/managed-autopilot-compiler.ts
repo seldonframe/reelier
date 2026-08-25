@@ -5,6 +5,7 @@ import canonicalize from "canonicalize";
 import {
   parseManagedUpgradeTargetManifestV1,
   type ManagedUpgradeExecutionTargetManifestV2,
+  type ManagedUpgradeGithubOnlyExecutionTargetManifestV3,
 } from "./autopilot-handoff-client.js";
 import {
   parseAutopilotTargetSelectionV1,
@@ -143,21 +144,23 @@ function inferWorkflowChecks(value: Buffer): readonly string[] {
   return checks(discovered);
 }
 
-export async function compileAndStageManagedAutopilotBundleV1(input: Readonly<{
+type FrozenGitCandidate = Readonly<{
+  repository: string;
+  artifactBytes: Buffer;
+  artifactDigest: string;
+  expiresAt: string;
+  github: ManagedUpgradeExecutionTargetManifestV2["authority"]["github"];
+}>;
+
+async function freezeGitCandidate(input: Readonly<{
   root: string;
   missionRef: string;
-  selection: AutopilotTargetSelectionV1;
   requiredChecks?: readonly string[];
   workflowPath?: string;
   now?: () => Date;
   git?: GitRunner;
-}>): Promise<ManagedUpgradeTargetBundleV1> {
-  const selection = parseAutopilotTargetSelectionV1(input.selection);
-  if (selection.missionRef !== input.missionRef) throw new TypeError("Autopilot selection mission binding mismatch");
+}>): Promise<FrozenGitCandidate> {
   const requestedChecks = input.requiredChecks ? checks(input.requiredChecks) : undefined;
-  try { return exactRetry(await loadManagedUpgradeTargetBundleV1({ root: input.root, missionRef: input.missionRef }), selection, requestedChecks); }
-  catch (error) { if ((error as { code?: string }).code !== "ENOENT") throw error; }
-
   const git = input.git ?? defaultGit(path.resolve(input.root));
   const dirty = text(await git(["status", "--porcelain=v1", "--untracked-files=all", "--", ".", ":(exclude).reelier"]));
   if (dirty) throw new TypeError("Autopilot requires a clean committed Git candidate");
@@ -173,8 +176,7 @@ export async function compileAndStageManagedAutopilotBundleV1(input: Readonly<{
   }
   const workflowPath = input.workflowPath ?? ".github/workflows/ci.yml";
   if (!/^\.github\/workflows\/[A-Za-z0-9._-]+\.ya?ml$/u.test(workflowPath)) throw new TypeError("Autopilot workflow path is invalid");
-  const workflow = await git(["show", `HEAD:${workflowPath}`]);
-  const requiredChecks = requestedChecks ?? inferWorkflowChecks(workflow);
+  const workflow = await git(["show", `HEAD:${workflowPath}`]), requiredChecks = requestedChecks ?? inferWorkflowChecks(workflow);
   const name = text(await git(["config", "user.name"])), email = text(await git(["config", "user.email"]));
   if (!name || name.length > 128 || /[<>\r\n]/u.test(name) || !/^[^\s@]{1,128}@[^\s@]{1,128}$/u.test(email)) throw new TypeError("Autopilot Git actor is invalid");
   const now = (input.now ?? (() => new Date()))();
@@ -182,12 +184,31 @@ export async function compileAndStageManagedAutopilotBundleV1(input: Readonly<{
   const message = `Reelier mission ${input.missionRef}`, headBranch = `reelier/${input.missionRef}`, headSha = gitCommitSha({ tree: treeSha, parent: baseSha, message, name, email, date: now });
   const artifact = Object.freeze({ v: "reelier.github-candidate-artifact/v1" as const, repository, baseSha, headBranch, expectedHeadSha: headSha, expectedTreeSha: treeSha, commit: Object.freeze({ message, author: Object.freeze({ name, email, date: now.toISOString() }), committer: Object.freeze({ name, email, date: now.toISOString() }) }), files: Object.freeze(files) });
   const artifactBytes = canonicalBytes(artifact), artifactDigest = digest(artifactBytes), expiresAt = new Date(now.getTime() + 15 * 60_000).toISOString();
-  const compositeEvidenceDigest = digest(canonicalBytes({ v: "reelier.autopilot-evidence/v1", repository, headSha, treeSha }));
+  return Object.freeze({ repository, artifactBytes, artifactDigest, expiresAt, github: Object.freeze({ repository, baseBranch: base, baseSha, headBranch, headSha, candidateDigest: artifactDigest, workflowPath, workflowDigest: digest(workflow), requiredChecks, postMergeTreeSha: treeSha }) });
+}
+
+export async function compileAndStageManagedAutopilotBundleV1(input: Readonly<{
+  root: string;
+  missionRef: string;
+  selection: AutopilotTargetSelectionV1;
+  requiredChecks?: readonly string[];
+  workflowPath?: string;
+  now?: () => Date;
+  git?: GitRunner;
+}>): Promise<ManagedUpgradeTargetBundleV1> {
+  const selection = parseAutopilotTargetSelectionV1(input.selection);
+  if (selection.missionRef !== input.missionRef) throw new TypeError("Autopilot selection mission binding mismatch");
+  const requestedChecks = input.requiredChecks ? checks(input.requiredChecks) : undefined;
+  try { return exactRetry(await loadManagedUpgradeTargetBundleV1({ root: input.root, missionRef: input.missionRef }), selection, requestedChecks); }
+  catch (error) { if ((error as { code?: string }).code !== "ENOENT") throw error; }
+
+  const frozen = await freezeGitCandidate(input), { repository, artifactBytes, artifactDigest, expiresAt, github } = frozen;
+  const compositeEvidenceDigest = digest(canonicalBytes({ v: "reelier.autopilot-evidence/v1", repository, headSha: github.headSha, treeSha: github.postMergeTreeSha }));
   const linearOnlyEvidenceDigest = digest(canonicalBytes({ v: "reelier.autopilot-evidence/v1", missionRef: input.missionRef, issue: selection.linearOnly.issueId, project: selection.projectId }));
   const linearTarget = { workspaceId: selection.workspaceId, teamId: selection.teamId, projectId: selection.projectId, issueIds: [selection.composite.issueId, selection.linearOnly.issueId] };
   const target = (mode: "composite" | "linear-only") => {
     const operation = mode === "composite" ? selection.composite : selection.linearOnly, evidenceContentDigest = mode === "composite" ? compositeEvidenceDigest : linearOnlyEvidenceDigest;
-    return Object.freeze({ workspace: selection.workspaceId, team: selection.teamId, project: selection.projectId, issue: operation.issueId, preStatus: operation.preStatusName, targetStatus: operation.targetStatusName, commentMarker: `reelier:${input.missionRef}:${mode}`, evidenceUrl: mode === "composite" ? `https://github.com/${repository}/commit/${headSha}` : `https://www.reelier.com/autopilot/evidence/${evidenceContentDigest.slice(7)}`, evidenceContentDigest });
+    return Object.freeze({ workspace: selection.workspaceId, team: selection.teamId, project: selection.projectId, issue: operation.issueId, preStatus: operation.preStatusName, targetStatus: operation.targetStatusName, commentMarker: `reelier:${input.missionRef}:${mode}`, evidenceUrl: mode === "composite" ? `https://github.com/${repository}/commit/${github.headSha}` : `https://www.reelier.com/autopilot/evidence/${evidenceContentDigest.slice(7)}`, evidenceContentDigest });
   };
   const targetManifest = parseManagedUpgradeTargetManifestV1({
     version: "reelier.managed-upgrade-target-manifest/v2",
@@ -199,8 +220,40 @@ export async function compileAndStageManagedAutopilotBundleV1(input: Readonly<{
     maximumWrites: 7,
     expiresAt,
     artifactDigest,
-    authority: { github: { repository, baseBranch: base, baseSha, headBranch, headSha, candidateDigest: artifactDigest, workflowPath, workflowDigest: digest(workflow), requiredChecks, postMergeTreeSha: treeSha }, linear: { githubLinear: target("composite"), linearOnly: target("linear-only") } },
+    authority: { github, linear: { githubLinear: target("composite"), linearOnly: target("linear-only") } },
   }) as ManagedUpgradeExecutionTargetManifestV2;
   await stageManagedUpgradeTargetBundleV1({ root: input.root, operation: "github_release_candidate_publish_v1", targetManifest, artifactBytes, seen: new Set() });
+  return loadManagedUpgradeTargetBundleV1({ root: input.root, missionRef: input.missionRef });
+}
+
+export async function compileAndStageGitHubOnlyManagedAutopilotBundleV1(input: Readonly<{
+  root: string;
+  missionRef: string;
+  requiredChecks?: readonly string[];
+  workflowPath?: string;
+  now?: () => Date;
+  git?: GitRunner;
+}>): Promise<ManagedUpgradeTargetBundleV1> {
+  const requestedChecks = input.requiredChecks ? checks(input.requiredChecks) : undefined;
+  try {
+    const existing = await loadManagedUpgradeTargetBundleV1({ root: input.root, missionRef: input.missionRef });
+    if (existing.targetManifest.version !== "reelier.managed-upgrade-target-manifest/v3" || (requestedChecks && JSON.stringify(existing.targetManifest.authority.github.requiredChecks) !== JSON.stringify(requestedChecks))) throw new TypeError("existing Autopilot target conflicts with the GitHub-only authority");
+    return existing;
+  } catch (error) {
+    if ((error as { code?: string }).code !== "ENOENT") throw error;
+  }
+  const frozen = await freezeGitCandidate(input);
+  const targetManifest = parseManagedUpgradeTargetManifestV1({
+    version: "reelier.managed-upgrade-target-manifest/v3",
+    mode: "github-only",
+    missionRef: input.missionRef,
+    repository: frozen.repository,
+    githubActions: ["github_release_candidate_publish_v1", "github_release_pr_ensure_v1", "github_release_pr_merge_v1"],
+    maximumWrites: 3,
+    expiresAt: frozen.expiresAt,
+    artifactDigest: frozen.artifactDigest,
+    authority: { github: frozen.github },
+  }) as ManagedUpgradeGithubOnlyExecutionTargetManifestV3;
+  await stageManagedUpgradeTargetBundleV1({ root: input.root, operation: "github_release_candidate_publish_v1", targetManifest, artifactBytes: frozen.artifactBytes, seen: new Set() });
   return loadManagedUpgradeTargetBundleV1({ root: input.root, missionRef: input.missionRef });
 }

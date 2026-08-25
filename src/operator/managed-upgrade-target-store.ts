@@ -85,7 +85,7 @@ export async function loadManagedUpgradeTargetBundleV1(input: Readonly<{ root: s
   if (!details.isFile() || details.size < 1 || details.size > MAX_MANIFEST_BYTES || await realpath(manifestPath) !== manifestPath) throw new TypeError("Autopilot target manifest is not a bounded unlinked file");
   const targetManifest = parseManagedUpgradeTargetManifestV1(JSON.parse(await readFile(manifestPath, "utf8")));
   if (targetManifest.missionRef !== input.missionRef) throw new TypeError("Autopilot target mission binding mismatch");
-  if (targetManifest.version !== "reelier.managed-upgrade-target-manifest/v2") return Object.freeze({ targetManifest });
+  if (targetManifest.version !== "reelier.managed-upgrade-target-manifest/v2" && targetManifest.version !== "reelier.managed-upgrade-target-manifest/v3") return Object.freeze({ targetManifest });
   const artifactPath = path.join(directory, "candidate.bin");
   const artifactDetails = await stat(artifactPath);
   if (!artifactDetails.isFile() || artifactDetails.size < 1 || artifactDetails.size > MAX_ARTIFACT_BYTES || await realpath(artifactPath) !== artifactPath) throw new TypeError("Autopilot candidate artifact is not a bounded unlinked file");
@@ -103,10 +103,10 @@ export async function stageManagedUpgradeTargetBundleV1(input: Readonly<{
 }>): Promise<Readonly<{ cta: string | null }>> {
   const root = await checkedRoot(input.root);
   const targetManifest = parseManagedUpgradeTargetManifestV1(input.targetManifest);
-  const operations = [...targetManifest.githubActions, ...targetManifest.linearActions];
+  const operations = "linearActions" in targetManifest ? [...targetManifest.githubActions, ...targetManifest.linearActions] : [...targetManifest.githubActions];
   if (!operations.includes(input.operation)) throw new TypeError("reviewed consequential operation is outside the exact target manifest");
   let artifactBytes: Uint8Array | undefined;
-  if (targetManifest.version === "reelier.managed-upgrade-target-manifest/v2") {
+  if (targetManifest.version === "reelier.managed-upgrade-target-manifest/v2" || targetManifest.version === "reelier.managed-upgrade-target-manifest/v3") {
     if (!(input.artifactBytes instanceof Uint8Array) || input.artifactBytes.byteLength < 1 || input.artifactBytes.byteLength > MAX_ARTIFACT_BYTES) throw new TypeError("Autopilot candidate artifact is required");
     artifactBytes = new Uint8Array(input.artifactBytes);
     if (sha(artifactBytes) !== targetManifest.artifactDigest) throw new TypeError("Autopilot candidate artifact digest mismatch");

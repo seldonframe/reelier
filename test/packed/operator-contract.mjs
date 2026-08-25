@@ -35,7 +35,24 @@ try {
   assert.equal(typeof operator.createOperatorManagedHandoffV1, "function");
   assert.equal(typeof operator.createOperatorLocalCellV1, "function");
   assert.equal(typeof operator.operatorPlanV1, "function");
+  assert.equal(typeof operator.compileAndStageGitHubOnlyManagedAutopilotBundleV1, "function");
+  assert.equal(typeof operator.parseManagedUpgradeTargetManifestV1, "function");
   assert.equal(operator.operatorPlanV1("managed-personal").monthlyPriceUsd, 49);
+  const artifactDigest = `sha256:${"a".repeat(64)}`;
+  const githubOnly = operator.parseManagedUpgradeTargetManifestV1({
+    version: "reelier.managed-upgrade-target-manifest/v3",
+    mode: "github-only",
+    missionRef: "mission-packed-github-only",
+    repository: "fixlyai/reelier-beta",
+    githubActions: ["github_release_candidate_publish_v1", "github_release_pr_ensure_v1", "github_release_pr_merge_v1"],
+    maximumWrites: 3,
+    expiresAt: "2026-08-24T12:10:00.000Z",
+    artifactDigest,
+    authority: { github: { repository: "fixlyai/reelier-beta", baseBranch: "main", baseSha: "b".repeat(40), headBranch: "reelier/mission-packed-github-only", headSha: "c".repeat(40), candidateDigest: artifactDigest, workflowPath: ".github/workflows/ci.yml", workflowDigest: `sha256:${"d".repeat(64)}`, requiredChecks: ["test"], postMergeTreeSha: "e".repeat(40) } },
+  });
+  assert.equal(githubOnly.version, "reelier.managed-upgrade-target-manifest/v3");
+  assert.equal("linearActions" in githubOnly, false);
+  assert.equal(githubOnly.maximumWrites, 3);
   const hostPath = require.resolve("reelier/authority/host");
   const host = await import(pathToFileURL(hostPath).href);
   assert.deepEqual(host.AGENT_TOOL_NAMES_V1, ["reelier_agent_status", "reelier_outcome_proposal", "reelier_outcome_request", "reelier_outcome_status"]);
