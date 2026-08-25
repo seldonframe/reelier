@@ -33,6 +33,24 @@ test("a signed contextual upgrade intent is closed, exact, expiring, and one-sho
   assert.throws(() => createManagedUpgradeIntentConsumerV1({ intent, now: () => "2026-08-24T12:10:00.000Z", verify: () => true }).consume(), /expired/);
 });
 
+test("managed upgrade intents accept every valid base64url signature prefix", () => {
+  for (const prefix of ["_", "-"]) {
+    const signature = `${prefix}${"a".repeat(85)}`;
+    const intent = createManagedUpgradeIntentV1({
+      missionRef: "mission-signature",
+      localEvidenceDigest: digest("a"),
+      requestedOperations: ["github_release_pr_merge_v1"],
+      targetSummaryDigest: digest("b"),
+      returnChannelRef: "return-signature",
+      issuedAt: "2026-08-24T12:00:00.000Z",
+      expiresAt: "2026-08-24T12:10:00.000Z",
+      nonce: "nonce-signature",
+      sign: () => signature,
+    });
+    assert.equal(intent.signature, signature);
+  }
+});
+
 test("the contextual CTA appears once for an exact reviewed consequence and never for local work", () => {
   assert.equal(recordConsequentialBoundaryV1({ missionRef: "mission-1", operation: "local.commit", seen: new Set() }), null);
   const seen = new Set<string>();
